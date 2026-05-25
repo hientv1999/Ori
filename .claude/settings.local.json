@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(& \"$env:USERPROFILE\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run -d \"f:\\\\OneDrive\\\\Desktop\\\\GREEN_SMART_HOME\\\\My_Invention\\\\Ori\\\\firmware\" 2>&1 | Select-Object -Last 60)",
+      "Bash(\"/c/Users/hient/.platformio/penv/Scripts/pio.exe\" run *)",
+      "PowerShell(Get-Process ori_sim -ErrorAction SilentlyContinue)",
+      "PowerShell(Stop-Process -Force)",
+      "PowerShell(\"ok\")",
+      "Bash(\"/c/Program Files/CodeBlocks/MinGW/bin/mingw32-make.exe\")",
+      "Bash(./build/ori_sim.exe)",
+      "Bash(echo \"exit_$?\")",
+      "Bash(\"C:\\\\Users\\\\hient\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run *)",
+      "PowerShell(cd \"f:\\\\OneDrive\\\\Desktop\\\\GREEN_SMART_HOME\\\\My_Invention\\\\Ori\\\\firmware\"; & \"C:\\\\Users\\\\hient\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run 2>&1 | Where-Object { $_ -match \"error:\" } | Select-Object -First 40)",
+      "PowerShell(cd \"f:\\\\OneDrive\\\\Desktop\\\\GREEN_SMART_HOME\\\\My_Invention\\\\Ori\\\\firmware\"; & \"C:\\\\Users\\\\hient\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run 2>&1 | Where-Object { $_ -match \"ota_receiver\" })",
+      "Bash(find /c/Users/hient/.platformio/packages -name \"NimBLEClient.h\" 2>/dev/null | head -3)",
+      "Bash(find /c/Users/hient/.platformio/packages -name \"NimBLEServer.h\" 2>/dev/null | head -3)",
+      "PowerShell(cd \"f:\\\\OneDrive\\\\Desktop\\\\GREEN_SMART_HOME\\\\My_Invention\\\\Ori\\\\firmware\"; & \"C:\\\\Users\\\\hient\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run 2>&1 | Where-Object { $_ -match \"error:|warning: \" } | Select-Object -First 50)",
+      "Bash(xargs grep -l \"ble_gap_conn_desc\")",
+      "PowerShell(cd \"f:\\\\OneDrive\\\\Desktop\\\\GREEN_SMART_HOME\\\\My_Invention\\\\Ori\\\\firmware\"; & \"C:\\\\Users\\\\hient\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run 2>&1 | Where-Object { $_ -match \"error:\" } | Select-Object -First 30)"
+    ]
+  }
+}

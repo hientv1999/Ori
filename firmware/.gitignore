@@ -1,0 +1,11 @@
+.pio/
+.pioenvs/
+.piolibdeps/
+.vscode/
+.idea/
+.clangd/
+*.swp
+*.swo
+*.bak
+build/
+dist/

@@ -1,0 +1,49 @@
+[sim] Ori LVGL screenshot renderer starting (LV_MEM_SIZE=2097152)
+[sim] runtime LVGL pool total_size=2097152
+[sim] wrote screenshots/00_color_test.bmp
+[sim] wrote screenshots/01_meeting_list.bmp
+[sim] wrote screenshots/02_meeting_list_overlap.bmp
+[sim] wrote screenshots/03_meeting_list_long_title.bmp
+[sim] wrote screenshots/04_meeting_list_overlap_long.bmp
+[sim] wrote screenshots/05_meeting_list_scrollable.bmp
+[sim] wrote screenshots/06_meeting_list_cached.bmp
+[sim] wrote screenshots/07_no_meetings.bmp
+[Warn]	(0.029, +29)	 lv_draw_sw_layer_create: Rendering this widget needs LV_COLOR_SCREEN_TRANSP 1 	(in lv_draw_sw_layer.c line #46)
+[Warn]	(0.029, +0)	 refr_obj: Couldn't create a new layer context 	(in lv_refr.c line #994)
+[Warn]	(0.030, +1)	 lv_draw_sw_layer_create: Rendering this widget needs LV_COLOR_SCREEN_TRANSP 1 	(in lv_draw_sw_layer.c line #46)
+[Warn]	(0.030, +0)	 refr_obj: Couldn't create a new layer context 	(in lv_refr.c line #994)
+[Warn]	(0.030, +0)	 lv_draw_sw_layer_create: Rendering this widget needs LV_COLOR_SCREEN_TRANSP 1 	(in lv_draw_sw_layer.c line #46)
+[Warn]	(0.030, +0)	 refr_obj: Couldn't create a new layer context 	(in lv_refr.c line #994)
+[Warn]	(0.030, +0)	 lv_draw_sw_layer_create: Rendering this widget needs LV_COLOR_SCREEN_TRANSP 1 	(in lv_draw_sw_layer.c line #46)
+[Warn]	(0.031, +1)	 refr_obj: Couldn't create a new layer context 	(in lv_refr.c line #994)
+[Warn]	(0.031, +0)	 lv_draw_sw_layer_create: Rendering this widget needs LV_COLOR_SCREEN_TRANSP 1 	(in lv_draw_sw_layer.c line #46)
+[Warn]	(0.031, +0)	 refr_obj: Couldn't create a new layer context 	(in lv_refr.c line #994)
+[Warn]	(0.031, +0)	 lv_draw_sw_layer_create: Rendering this widget needs LV_COLOR_SCREEN_TRANSP 1 	(in lv_draw_sw_layer.c line #46)
+[Warn]	(0.031, +0)	 refr_obj: Couldn't create a new layer context 	(in lv_refr.c line #994)
+[Warn]	(0.031, +0)	 lv_draw_sw_layer_create: Rendering this widget needs LV_COLOR_SCREEN_TRANSP 1 	(in lv_draw_sw_layer.c line #46)
+[Warn]	(0.032, +1)	 refr_obj: Couldn't create a new layer context 	(in lv_refr.c line #994)
+[Warn]	(0.032, +0)	 lv_draw_sw_layer_create: Rendering this widget needs LV_COLOR_SCREEN_TRANSP 1 	(in lv_draw_sw_layer.c line #46)
+[Warn]	(0.032, +0)	 refr_obj: Couldn't create a new layer context 	(in lv_refr.c line #994)
+[Warn]	(0.032, +0)	 lv_draw_sw_layer_create: Rendering this widget needs LV_COLOR_SCREEN_TRANSP 1 	(in lv_draw_sw_layer.c line #46)
+[Warn]	(0.032, +0)	 refr_obj: Couldn't create a new layer context 	(in lv_refr.c line #994)
+[Warn]	(0.033, +1)	 lv_draw_sw_layer_create: Rendering this widget needs LV_COLOR_SCREEN_TRANSP 1 	(in lv_draw_sw_layer.c line #46)
+[Warn]	(0.033, +0)	 refr_obj: Couldn't create a new layer context 	(in lv_refr.c line #994)
+[Warn]	(0.033, +0)	 lv_draw_sw_layer_create: Rendering this widget needs LV_COLOR_SCREEN_TRANSP 1 	(in lv_draw_sw_layer.c line #46)
+[Warn]	(0.033, +0)	 refr_obj: Couldn't create a new layer context 	(in lv_refr.c line #994)
+[Warn]	(0.033, +0)	 lv_draw_sw_layer_create: Rendering this widget needs LV_COLOR_SCREEN_TRANSP 1 	(in lv_draw_sw_layer.c line #46)
+[Warn]	(0.034, +1)	 refr_obj: Couldn't create a new layer context 	(in lv_refr.c line #994)
+[sim] wrote screenshots/08_clock.bmp
+[sim] wrote screenshots/09_pto.bmp
+[sim] wrote screenshots/10_modal_countdown.bmp
+[sim] wrote screenshots/11_modal_factory_reset.bmp
+[sim] wrote screenshots/12_setup_welcome.bmp
+[sim] wrote screenshots/13_setup_step1_install.bmp
+[sim] wrote screenshots/14_setup_step2_pairing.bmp
+[sim] wrote screenshots/15_setup_step2_passkey.bmp
+[sim] wrote screenshots/16_setup_step3_orioning.bmp
+[sim] wrote screenshots/17_setup_step4_phone.bmp
+[sim] wrote screenshots/18_setup_complete.bmp
+[sim] wrote screenshots/19_repair_phone.bmp
+[sim] wrote screenshots/20_reconnect_syncing.bmp
+[sim] wrote screenshots/21_ota_updating.bmp
+[sim] done.

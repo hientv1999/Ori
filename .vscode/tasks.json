@@ -1,0 +1,15 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "🚀 Claude Dashboard",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-Command",
+                "if (!(Test-Path C:\\Users\\hient\\claude-usage)) { git clone https://github.com/phuryn/claude-usage C:\\Users\\hient\\claude-usage }; cd C:\\Users\\hient\\claude-usage; py cli.py dashboard"
+            ],
+            "problemMatcher": []
+        }
+    ]
+}
