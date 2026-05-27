@@ -3,35 +3,43 @@
 // Boot order is deliberate:
 //
 //   1. nvs::init()         — opens Preferences; cheap.
-//   2. touch::init()       — brings up the shared Wire bus, then ch422g::init()
+//   2. ble_core::init()    — NimBLEDevice::init() writes BLE config and IRK to
+//                            flash, which temporarily disables the CPU cache.
+//                            This MUST happen before lcd_panel::init() starts
+//                            the RGB DMA — the DMA ISR lives in flash and will
+//                            fault if the cache is toggled underneath it.
+//   3. touch::init()       — brings up the shared Wire bus, then ch422g::init()
 //                            (which leaves EXIO2/LCD_BL low so the panel is
 //                            dark), then issues the GT911 reset over EXIO1.
-//   3. backlight::init()   — restores the saved on/off state over CH422G EXIO2.
+//   4. backlight::init()   — restores the saved on/off state over CH422G EXIO2.
 //                            This is the "no white flash" guarantee: the
 //                            backlight is brought from the deliberately-off
 //                            state ch422g::init() left it in, straight to the
 //                            user's saved state, before the panel framebuffer
 //                            has any content. (Backlight is binary on this
 //                            hardware — see backlight.cpp.)
-//   4. lcd_panel::init()   — pulses LCD_RST via EXIO3, then brings up the
+//   5. lcd_panel::init()   — pulses LCD_RST via EXIO3, then brings up the
 //                            RGB16 bus and clears the framebuffer to black.
-//   5. LVGL init + display driver + input adapter.
-//   6. Long-press threshold — set to 3000 ms per memory.md before any widget
+//                            Safe now: all BLE flash writes are complete.
+//   6. LVGL init + display driver + input adapter.
+//   7. Long-press threshold — set to 3000 ms per memory.md before any widget
 //                             is created so the profile-photo and phone-disconnect
 //                             long-press handlers fire at the right duration.
-//   7. screen_manager::init() — calls state_machine::init() then evaluate()
+//   8. screen_manager::init() — calls state_machine::init() then evaluate()
 //                               to pick the correct initial screen.
 
 #include <Arduino.h>
 #include <lvgl.h>
 
 #include "backlight.h"
+#include "ble/ble_core.h"
 #include "gesture.h"
 #include "lcd_panel.h"
 #include "lvgl_display.h"
 #include "lvgl_input.h"
 #include "nvs_store.h"
 #include "screen_manager.h"
+#include "state_machine.h"
 #include "touch_gt911.h"
 
 // Print a one-line memory snapshot to Serial.
@@ -54,6 +62,12 @@ void setup() {
     mem_snapshot("boot");
 
     nvs::init();
+
+    // NimBLE writes BLE config + IRK to flash here — cache temporarily disabled.
+    // Must complete before lcd_panel::init() starts the RGB DMA.
+    ble_core::init();
+    mem_snapshot("after ble_core");
+
     touch::init();
     mem_snapshot("after touch+ch422g");
 
@@ -115,6 +129,7 @@ void loop() {
     // ------------------------------------------------------------------
     lvgl_input::feed(points, n);
     screen_manager::poll_serial();  // before timer so a screen change renders this iteration
+    ble_core::poll();               // drain BLE events → LVGL calls (M5)
     lv_timer_handler();
 
     // 100 Hz loop. LVGL refreshes at 60 Hz, touch is INT-driven, nothing
