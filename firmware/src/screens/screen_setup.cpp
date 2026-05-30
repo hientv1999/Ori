@@ -545,7 +545,7 @@ void build_phone_pairing(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
 
     // Tertiary ghost button — low visual weight; phone pairing is optional.
     ui::make_btn(content, "Skip for now",
-        ui::BtnStyle::Secondary,
+        ui::BtnStyle::Tertiary,
         on_skip_clicked, screen,
         14, 56, theme::font_time());
 }

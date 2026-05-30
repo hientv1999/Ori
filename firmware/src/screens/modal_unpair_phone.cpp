@@ -61,42 +61,26 @@ lv_obj_t* make_phone_circle(lv_obj_t* parent) {
 namespace modal_unpair_phone {
 
 lv_obj_t* create(lv_obj_t* base_screen) {
-    lv_obj_t* scrim = lv_obj_create(base_screen);
-    lv_obj_set_size(scrim, 800, 480);
-    lv_obj_set_pos(scrim, 0, 0);
-    lv_obj_set_style_bg_color(scrim, theme::color(theme::COLOR_SCRIM), 0);
-    lv_obj_set_style_bg_opa(scrim, theme::SCRIM_OPA, 0);
-    lv_obj_set_style_border_width(scrim, 0, 0);
-    lv_obj_set_style_pad_all(scrim, 0, 0);
-    lv_obj_clear_flag(scrim, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(scrim, LV_OBJ_FLAG_CLICKABLE);
+    ui::ModalLayout layout = ui::make_modal_layout(base_screen);
+    lv_obj_t* scrim      = layout.scrim;
+    lv_obj_t* scroll_area = layout.scroll_area;
+    lv_obj_t* actions    = layout.actions;
 
-    lv_obj_t* card = lv_obj_create(scrim);
-    lv_obj_set_size(card, 520, LV_SIZE_CONTENT);
-    lv_obj_center(card);
-    lv_obj_set_style_bg_color(card, theme::color(theme::COLOR_CARD), 0);
-    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(card, theme::color(theme::COLOR_DIVIDER_STRONG), 0);
-    lv_obj_set_style_border_width(card, 1, 0);
-    lv_obj_set_style_radius(card, 18, 0);
-    lv_obj_set_style_shadow_color(card, theme::color(0x000000), 0);
-    lv_obj_set_style_shadow_width(card, 30, 0);
-    lv_obj_set_style_shadow_opa(card, LV_OPA_70, 0);
-    lv_obj_set_style_pad_all(card, 32, 0);
-    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_t* spacer_top = lv_obj_create(scroll_area);
+    ui::clear_container(spacer_top);
+    lv_obj_set_size(spacer_top, 0, 0);
+    lv_obj_set_flex_grow(spacer_top, 1);
 
-    make_phone_circle(card);
+    make_phone_circle(scroll_area);
 
-    lv_obj_t* heading = lv_label_create(card);
+    lv_obj_t* heading = lv_label_create(scroll_area);
     lv_label_set_text(heading, "Unpair phone?");
     lv_obj_set_style_text_color(heading, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(heading, theme::font_h2(), 0);
     lv_obj_set_style_text_align(heading, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_top(heading, 18, 0);
 
-    lv_obj_t* body = lv_label_create(card);
+    lv_obj_t* body = lv_label_create(scroll_area);
     lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
     lv_label_set_text(body,
         "Ori will no longer show notification icons from your phone");
@@ -106,17 +90,10 @@ lv_obj_t* create(lv_obj_t* base_screen) {
     lv_obj_set_style_text_align(body, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_top(body, 10, 0);
 
-    lv_obj_t* actions = lv_obj_create(card);
-    lv_obj_set_size(actions, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(actions, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(actions, 0, 0);
-    lv_obj_set_style_pad_all(actions, 0, 0);
-    lv_obj_set_style_pad_top(actions, 22, 0);
-    lv_obj_set_style_pad_column(actions, 14, 0);
-    lv_obj_clear_flag(actions, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(actions, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_flex_flow(actions, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(actions, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_t* spacer_bot = lv_obj_create(scroll_area);
+    ui::clear_container(spacer_bot);
+    lv_obj_set_size(spacer_bot, 0, 0);
+    lv_obj_set_flex_grow(spacer_bot, 1);
 
     // Danger action on the left — users instinctively tap the right button,
     // so placing the destructive action on the left reduces accidental presses.
@@ -124,7 +101,7 @@ lv_obj_t* create(lv_obj_t* base_screen) {
                                     nullptr, nullptr, 12, 26, theme::font_meta());
     lv_obj_add_event_cb(unpair, on_unpair_confirm, LV_EVENT_CLICKED, scrim);
 
-    lv_obj_t* cancel = ui::make_btn(actions, "Cancel", ui::BtnStyle::Secondary,
+    lv_obj_t* cancel = ui::make_btn(actions, "Cancel", ui::BtnStyle::Tertiary,
                                     nullptr, nullptr, 12, 26, theme::font_meta());
     lv_obj_add_event_cb(cancel, on_cancel, LV_EVENT_CLICKED, scrim);
 

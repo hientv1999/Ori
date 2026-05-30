@@ -142,7 +142,7 @@ lv_obj_t* create() {
     // machine.  Closure captures the screen pointer so we can delete it
     // after loading the replacement.
     lv_obj_t* cancel_btn = ui::make_btn(content, "Cancel",
-        ui::BtnStyle::Secondary,
+        ui::BtnStyle::Tertiary,
         nullptr, nullptr,
         14, 56, theme::font_time());
     lv_obj_add_event_cb(cancel_btn, [](lv_event_t* /*e*/) {
