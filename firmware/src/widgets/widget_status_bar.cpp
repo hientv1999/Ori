@@ -1,5 +1,7 @@
 #include "widgets/widget_status_bar.h"
 
+#include <functional>
+
 #include "assets/ancs_icons.h"
 #include "mock_data.h"
 #include "screens/modal_ancs_notification.h"
@@ -322,10 +324,27 @@ void rebuild_mode_toggle_glyph(lv_obj_t* btn, widget_status_bar::Mode mode) {
     }
 }
 
+// Deferred mode-toggle callback. Calling on_mode_toggle() directly from
+// within LVGL's event dispatch stack overflows the loopTask stack (NVS
+// flash write + full screen rebuild on top of the event depth). Store the
+// callback here and fire it from a 1 ms one-shot timer, which executes at
+// the top of lv_timer_handler() — a much shallower call frame.
+static std::function<void()> s_deferred_toggle_cb;
+
 void on_mode_toggle_tap(lv_event_t* e) {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
     auto* state = static_cast<StatusBarState*>(lv_event_get_user_data(e));
-    if (state && state->mode_cb) state->mode_cb();
+    if (!state || !state->mode_cb) return;
+    s_deferred_toggle_cb = state->mode_cb;
+    lv_timer_t* t = lv_timer_create([](lv_timer_t* t) {
+        lv_timer_delete(t);
+        if (s_deferred_toggle_cb) {
+            auto cb = std::move(s_deferred_toggle_cb);
+            s_deferred_toggle_cb = nullptr;
+            cb();
+        }
+    }, 1, nullptr);
+    lv_timer_set_repeat_count(t, 1);
 }
 
 lv_obj_t* make_mode_toggle(lv_obj_t* parent, StatusBarState* state) {

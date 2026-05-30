@@ -118,13 +118,15 @@ lv_obj_t* create(lv_obj_t* base_screen) {
     lv_obj_set_flex_flow(actions, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(actions, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    lv_obj_t* cancel = ui::make_btn(actions, "Cancel", ui::BtnStyle::Secondary,
-                                    nullptr, nullptr, 12, 26, theme::font_meta());
-    lv_obj_add_event_cb(cancel, on_cancel, LV_EVENT_CLICKED, scrim);
-
+    // Danger action on the left — users instinctively tap the right button,
+    // so placing the destructive action on the left reduces accidental presses.
     lv_obj_t* unpair = ui::make_btn(actions, "Unpair", ui::BtnStyle::Danger,
                                     nullptr, nullptr, 12, 26, theme::font_meta());
     lv_obj_add_event_cb(unpair, on_unpair_confirm, LV_EVENT_CLICKED, scrim);
+
+    lv_obj_t* cancel = ui::make_btn(actions, "Cancel", ui::BtnStyle::Secondary,
+                                    nullptr, nullptr, 12, 26, theme::font_meta());
+    lv_obj_add_event_cb(cancel, on_cancel, LV_EVENT_CLICKED, scrim);
 
     return scrim;
 }
