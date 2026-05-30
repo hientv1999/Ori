@@ -7,7 +7,7 @@
 
 namespace {
 
-static lv_indev_drv_t indev_drv;
+static lv_indev_t* indev;
 
 // Cached state populated by feed() from the single touch::poll() that
 // main.cpp performs every loop tick.
@@ -25,9 +25,8 @@ static int16_t clamp_i16(int32_t v, int32_t lo, int32_t hi) {
     return (int16_t)v;
 }
 
-static void read_cb(lv_indev_drv_t* drv, lv_indev_data_t* data) {
-    (void)drv;
-
+// LVGL 9 read callback: first arg is lv_indev_t*, not lv_indev_drv_t*.
+static void read_cb(lv_indev_t* /*indev*/, lv_indev_data_t* data) {
     const int16_t maxX = (int16_t)lcd_panel::width()  - 1;
     const int16_t maxY = (int16_t)lcd_panel::height() - 1;
 
@@ -38,7 +37,7 @@ static void read_cb(lv_indev_drv_t* drv, lv_indev_data_t* data) {
         data->point.y = last_y;
         data->state   = LV_INDEV_STATE_PRESSED;
     } else {
-        // Two or more fingers => backlight swipe gesture owns the surface, so
+        // Two or more fingers => backlight swipe gesture owns the surface;
         // single-touch UI is suspended. Same handling as "no touch".
         data->point.x = last_x;
         data->point.y = last_y;
@@ -54,12 +53,16 @@ void init() {
     cached_n = 0;
     for (auto& p : cached_points) { p.x = 0; p.y = 0; p.pressed = false; }
 
-    lv_indev_drv_init(&indev_drv);
-    indev_drv.type    = LV_INDEV_TYPE_POINTER;
-    indev_drv.read_cb = read_cb;
-    lv_indev_drv_register(&indev_drv);
+    // LVGL 9 API: create an indev object, then set its type and read callback.
+    indev = lv_indev_create();
+    lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(indev, read_cb);
 
     Serial.println("[lvgl] input registered (gt911 pointer, 2+ touches suspend)");
+}
+
+lv_indev_t* get() {
+    return indev;
 }
 
 void feed(const TouchPoint* points, uint8_t n) {

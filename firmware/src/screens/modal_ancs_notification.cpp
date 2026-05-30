@@ -30,13 +30,13 @@ struct ModalCtx {
 void on_read(lv_event_t* e) {
     auto* ctx = static_cast<ModalCtx*>(lv_event_get_user_data(e));
     if (ctx->ancs_tile) lv_obj_add_flag(ctx->ancs_tile, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_del(ctx->scrim);
+    lv_obj_delete(ctx->scrim);
     // ctx is freed by the scrim's LV_EVENT_DELETE handler below.
 }
 
 void on_close(lv_event_t* e) {
     auto* ctx = static_cast<ModalCtx*>(lv_event_get_user_data(e));
-    lv_obj_del(ctx->scrim);
+    lv_obj_delete(ctx->scrim);
 }
 
 } // namespace

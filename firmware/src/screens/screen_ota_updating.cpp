@@ -30,7 +30,7 @@ struct OtaState {
 };
 
 void mock_tick(lv_timer_t* t) {
-    auto* s = static_cast<OtaState*>(t->user_data);
+    auto* s = static_cast<OtaState*>(lv_timer_get_user_data(t));
     uint32_t elapsed = lv_tick_elaps(s->start_ms);
     if (elapsed > MOCK_DURATION_MS) {
         s->start_ms = lv_tick_get();
@@ -48,7 +48,7 @@ void mock_tick(lv_timer_t* t) {
 
 void on_screen_delete(lv_event_t* e) {
     auto* s = static_cast<OtaState*>(lv_event_get_user_data(e));
-    if (s && s->tick_timer) lv_timer_del(s->tick_timer);
+    if (s && s->tick_timer) lv_timer_delete(s->tick_timer);
     delete s;
 }
 

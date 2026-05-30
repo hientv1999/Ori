@@ -48,7 +48,7 @@ struct SpinnerState {
 };
 
 static void spinner_timer_cb(lv_timer_t* t) {
-    lv_obj_t* arc = static_cast<lv_obj_t*>(t->user_data);
+    lv_obj_t* arc = static_cast<lv_obj_t*>(lv_timer_get_user_data(t));
     auto* s = static_cast<SpinnerState*>(lv_obj_get_user_data(arc));
     s->rotation = (uint16_t)((s->rotation + SPIN_STEP_DEG) % 360);
     lv_arc_set_rotation(arc, s->rotation);
@@ -73,8 +73,8 @@ lv_obj_t* make_spinner(lv_obj_t* parent, int16_t size) {
     s->timer = lv_timer_create(spinner_timer_cb, SPIN_INTERVAL_MS, arc);
     lv_obj_add_event_cb(arc, [](lv_event_t* e) {
         auto* ss = static_cast<SpinnerState*>(
-            lv_obj_get_user_data(lv_event_get_target(e)));
-        if (ss) { lv_timer_del(ss->timer); delete ss; }
+            lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e)));
+        if (ss) { lv_timer_delete(ss->timer); delete ss; }
     }, LV_EVENT_DELETE, nullptr);
     return arc;
 }

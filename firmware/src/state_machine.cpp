@@ -185,9 +185,9 @@ void load_screen(lv_obj_t* new_screen) {
     lv_obj_t* prev = g_current_screen;
     g_current_screen = new_screen;
     lv_scr_load(new_screen);
-    lv_refr_now(lv_disp_get_default());
+    lv_refr_now(lv_display_get_default());
     if (prev && prev != new_screen) {
-        lv_obj_del(prev);
+        lv_obj_delete(prev);
     }
 }
 

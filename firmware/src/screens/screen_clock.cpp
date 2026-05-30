@@ -31,7 +31,7 @@ struct ColonState {
 };
 
 void colon_blink_timer_cb(lv_timer_t* t) {
-    auto* cs = static_cast<ColonState*>(t->user_data);
+    auto* cs = static_cast<ColonState*>(lv_timer_get_user_data(t));
     cs->tick = (uint16_t)((cs->tick + 1) % BLINK_TOTAL_TICKS);
     lv_opa_t opa;
     if (cs->tick < BLINK_HALF_TICKS) {
@@ -105,7 +105,7 @@ lv_obj_t* create() {
 
     lv_obj_add_event_cb(screen, [](lv_event_t* e) {
         auto* cs = static_cast<ColonState*>(lv_event_get_user_data(e));
-        if (cs) { lv_timer_del(cs->timer); delete cs; }
+        if (cs) { lv_timer_delete(cs->timer); delete cs; }
     }, LV_EVENT_DELETE, cs);
 
     ui::make_panel_divider(body);

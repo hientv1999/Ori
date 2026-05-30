@@ -63,6 +63,9 @@ void setup() {
     mem_snapshot("after lcd_panel");
 
     lv_init();
+    // LVGL 9: provide the tick source via callback instead of LV_TICK_CUSTOM.
+    // millis() is uint32_t on ESP32, matching lv_tick_get_cb_t.
+    lv_tick_set_cb((uint32_t(*)(void))millis);
     mem_snapshot("after lv_init");
 
     lvgl_display::init();
@@ -71,20 +74,10 @@ void setup() {
     lvgl_input::init();
 
     // Long-press threshold — 3000 ms per memory.md (factory reset trigger,
-    // re-pair phone trigger). In LVGL 8.x the value lives on the driver struct:
-    //   indev->driver->long_press_time
-    // Set it on every registered input device before screen_manager::init()
-    // so all long-press callbacks fire at the right duration.
-    {
-        lv_indev_t* indev = lv_indev_get_next(nullptr);
-        while (indev) {
-            if (indev->driver) {
-                indev->driver->long_press_time = 3000;
-            }
-            indev = lv_indev_get_next(indev);
-        }
-        Serial.println("[ori] long press threshold set to 3000 ms");
-    }
+    // re-pair phone trigger). In LVGL 9 the value is set via API on the
+    // lv_indev_t object directly (the driver struct no longer exists).
+    lv_indev_set_long_press_time(lvgl_input::get(), 3000);
+    Serial.println("[ori] long press threshold set to 3000 ms");
 
     screen_manager::init();
     mem_snapshot("after screen_manager");

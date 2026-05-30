@@ -184,7 +184,7 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
     lv_obj_t* close_btn = ui::make_btn(box, "Close", ui::BtnStyle::Tertiary,
                                        nullptr, nullptr, 12, 26, theme::font_meta());
     lv_obj_add_event_cb(close_btn, [](lv_event_t* e) {
-        lv_obj_del(static_cast<lv_obj_t*>(lv_event_get_user_data(e)));
+        lv_obj_delete(static_cast<lv_obj_t*>(lv_event_get_user_data(e)));
     }, LV_EVENT_CLICKED, scrim);
 
     return scrim;

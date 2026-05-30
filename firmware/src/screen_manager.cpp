@@ -79,8 +79,8 @@ void debug_load(lv_obj_t* scr) {
     lv_obj_t* prev = g_debug_screen;
     g_debug_screen = scr;
     lv_scr_load(scr);
-    lv_refr_now(lv_disp_get_default());
-    if (prev && prev != scr) lv_obj_del(prev);
+    lv_refr_now(lv_display_get_default());
+    if (prev && prev != scr) lv_obj_delete(prev);
 }
 
 void debug_load_meeting_default() {
@@ -279,7 +279,7 @@ void init() {
     state_machine::evaluate();
 
 #ifdef ORI_DEBUG_SERIAL
-    g_debug_screen = lv_scr_act();
+    g_debug_screen = lv_screen_active();
     print_keymap();
 #endif
 }

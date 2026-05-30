@@ -103,10 +103,10 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_add_flag(s->photo, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_opa(s->photo, LV_OPA_60, LV_STATE_PRESSED);
     lv_obj_add_event_cb(s->photo, [](lv_event_t* e) {
-        modal_profile::create(lv_scr_act(), lv_event_get_target(e));
+        modal_profile::create(lv_screen_active(), (lv_obj_t*)lv_event_get_target(e));
     }, LV_EVENT_CLICKED, nullptr);
     lv_obj_add_event_cb(s->photo, [](lv_event_t*) {
-        modal_factory_reset::create(lv_scr_act());
+        modal_factory_reset::create(lv_screen_active());
     }, LV_EVENT_LONG_PRESSED, nullptr);
 
     // Initials, large light-weight glyphs centered in the circle.

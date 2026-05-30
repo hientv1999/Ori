@@ -24,14 +24,14 @@ namespace {
 
 void on_cancel(lv_event_t* e) {
     lv_obj_t* scrim = static_cast<lv_obj_t*>(lv_event_get_user_data(e));
-    lv_obj_del(scrim);
+    lv_obj_delete(scrim);
 }
 
 // One-shot deferred timer so factory_reset::execute() is not called from
 // inside an LVGL event callback (avoids the LCD DMA ISR / NVS cache fault
 // documented in CLAUDE.md known-bugs for M4).
 static void factory_reset_timer_cb(lv_timer_t* t) {
-    lv_timer_del(t);
+    lv_timer_delete(t);
     factory_reset::execute();
 }
 

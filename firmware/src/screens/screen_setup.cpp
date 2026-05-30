@@ -261,7 +261,7 @@ struct SpinnerState {
 };
 
 static void spinner_timer_cb(lv_timer_t* t) {
-    lv_obj_t* arc = static_cast<lv_obj_t*>(t->user_data);
+    lv_obj_t* arc = static_cast<lv_obj_t*>(lv_timer_get_user_data(t));
     auto* s = static_cast<SpinnerState*>(lv_obj_get_user_data(arc));
     s->rotation = (uint16_t)((s->rotation + SPIN_STEP_DEG) % 360);
     lv_arc_set_rotation(arc, s->rotation);
@@ -288,8 +288,8 @@ lv_obj_t* make_spinner(lv_obj_t* parent, int16_t size) {
     s->timer = lv_timer_create(spinner_timer_cb, SPIN_INTERVAL_MS, arc);
     lv_obj_add_event_cb(arc, [](lv_event_t* e) {
         auto* ss = static_cast<SpinnerState*>(
-            lv_obj_get_user_data(lv_event_get_target(e)));
-        if (ss) { lv_timer_del(ss->timer); delete ss; }
+            lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e)));
+        if (ss) { lv_timer_delete(ss->timer); delete ss; }
     }, LV_EVENT_DELETE, nullptr);
     return arc;
 }
@@ -301,8 +301,8 @@ static void ring_anim_cb(void* obj, int32_t val) {
 
 // One-shot timer: reveal the tick mark once the ring sweep is nearly done.
 static void reveal_tick_cb(lv_timer_t* t) {
-    lv_obj_clear_flag(static_cast<lv_obj_t*>(t->user_data), LV_OBJ_FLAG_HIDDEN);
-    lv_timer_del(t);
+    lv_obj_clear_flag(static_cast<lv_obj_t*>(lv_timer_get_user_data(t)), LV_OBJ_FLAG_HIDDEN);
+    lv_timer_delete(t);
 }
 
 // Animated "OK" check — a 130×130 arc ring that sweeps clockwise in 550 ms,
@@ -347,7 +347,7 @@ lv_obj_t* make_ok_check(lv_obj_t* parent) {
     // Checkmark via two-segment lv_line — hidden until reveal timer fires.
     // Points are inside the 130×130 frame, matching prototype SVG path
     // "M29 51 L43 65 L71 35" scaled to 130 px.
-    static lv_point_t tick_pts[3] = { {27, 65}, {52, 87}, {95, 43} };
+    static lv_point_precise_t tick_pts[3] = { {27, 65}, {52, 87}, {95, 43} };
     lv_obj_t* tick = lv_line_create(root);
     lv_line_set_points(tick, tick_pts, 3);
     lv_obj_set_style_line_color(tick, theme::color(theme::COLOR_OK), 0);
@@ -552,7 +552,7 @@ void build_phone_pairing(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
 
 // Timer callback: 5 s elapsed without user interaction → advance to runtime.
 static void complete_timer_cb(lv_timer_t* t) {
-    SetupState* s = static_cast<SetupState*>(t->user_data);
+    SetupState* s = static_cast<SetupState*>(lv_timer_get_user_data(t));
     if (s) s->complete_timer = nullptr;
     Serial.println("[setup] Complete timer fired — transitioning to runtime");
     state_machine::on_setup_complete();
@@ -591,7 +591,7 @@ void build_complete(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
     // Stored in s->complete_timer so rebuild_for() can cancel it if the
     // step ever changes before the timer fires (e.g. during testing).
     if (s->complete_timer) {
-        lv_timer_del(s->complete_timer);
+        lv_timer_delete(s->complete_timer);
     }
     s->complete_timer = lv_timer_create(complete_timer_cb, 5000, s);
     lv_timer_set_repeat_count(s->complete_timer, 1);
@@ -600,12 +600,12 @@ void build_complete(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
 void rebuild_for(lv_obj_t* screen, SetupState* s) {
     // Cancel any pending auto-advance timer from a previous Complete render.
     if (s->complete_timer) {
-        lv_timer_del(s->complete_timer);
+        lv_timer_delete(s->complete_timer);
         s->complete_timer = nullptr;
     }
 
     if (s->content) {
-        lv_obj_del(s->content);
+        lv_obj_delete(s->content);
         s->content = nullptr;
     }
     s->pairing_spinner = nullptr;
@@ -668,7 +668,7 @@ void on_complete_clicked(lv_event_t* e) {
     // transition immediately to the runtime screen.
     SetupState* s = static_cast<SetupState*>(lv_event_get_user_data(e));
     if (s && s->complete_timer) {
-        lv_timer_del(s->complete_timer);
+        lv_timer_delete(s->complete_timer);
         s->complete_timer = nullptr;
     }
     Serial.println("[setup] Complete tapped — transitioning to runtime");
@@ -722,7 +722,7 @@ lv_obj_t* create(Step initial) {
     lv_obj_add_event_cb(screen, [](lv_event_t* e) {
         auto* ss = static_cast<SetupState*>(lv_event_get_user_data(e));
         if (ss && ss->complete_timer) {
-            lv_timer_del(ss->complete_timer);
+            lv_timer_delete(ss->complete_timer);
             ss->complete_timer = nullptr;
         }
         delete ss;
@@ -794,7 +794,7 @@ lv_obj_t* show_passkey_modal(lv_obj_t* screen) {
 void hide_passkey_modal(lv_obj_t* screen) {
     auto* s = static_cast<SetupState*>(lv_obj_get_user_data(screen));
     if (!s || !s->passkey_modal) return;
-    lv_obj_del(s->passkey_modal);
+    lv_obj_delete(s->passkey_modal);
     s->passkey_modal = nullptr;
     if (s->pairing_spinner) lv_obj_clear_flag(s->pairing_spinner, LV_OBJ_FLAG_HIDDEN);
 }

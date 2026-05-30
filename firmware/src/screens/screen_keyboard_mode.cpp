@@ -33,11 +33,9 @@ constexpr int     V_SENS_DEN        = 2;
 // triangle). LVGL's LV_SYMBOL_PLAY (U+F04B in FontAwesome) is not present
 // in our custom Ori Montserrat fonts (we only ship ASCII + a handful of
 // punctuation glyphs), and adding FontAwesome would balloon the font asset.
-// So we draw the triangle ourselves with lv_canvas + a chroma-keyed buffer.
-// Memory cost: PLAY_ICON_SIZE^2 * 2 bytes RGB565 = 8 KB in BSS, shared
-// across all controls-mode screen instances (only one is ever live).
-constexpr int     PLAY_ICON_SIZE    = 64;
-static lv_color_t s_play_icon_buf[PLAY_ICON_SIZE * PLAY_ICON_SIZE];
+// In LVGL 9 we use lv_draw_triangle() via a LV_EVENT_DRAW_MAIN callback —
+// no canvas buffer needed, no chroma-key required.
+constexpr int PLAY_ICON_SIZE = 64;
 
 static void fmt_time(char* buf, size_t sz, uint32_t seconds) {
     lv_snprintf(buf, sz, "%u:%02u", seconds / 60, seconds % 60);
@@ -73,30 +71,33 @@ struct ArtState {
 // Build the paused-state play-triangle widget on top of the album art.
 // Matches the HTML #i-play SVG path `M7 5v14l12-7z` at viewBox 24x24,
 // scaled to PLAY_ICON_SIZE x PLAY_ICON_SIZE (~×2.67).
+// LVGL 9: drawn via lv_draw_triangle() in a LV_EVENT_DRAW_MAIN callback
+// rather than a canvas buffer — no chroma key, no BSS allocation.
 lv_obj_t* make_play_triangle(lv_obj_t* parent) {
-    lv_obj_t* canvas = lv_canvas_create(parent);
-    lv_canvas_set_buffer(canvas, s_play_icon_buf,
-                         PLAY_ICON_SIZE, PLAY_ICON_SIZE,
-                         LV_IMG_CF_TRUE_COLOR_CHROMA_KEYED);
-    // Pure green = the LVGL default chroma key → fully transparent.
-    lv_canvas_fill_bg(canvas, lv_color_hex(0x00FF00), LV_OPA_COVER);
-
+    lv_obj_t* obj = lv_obj_create(parent);
+    lv_obj_set_size(obj, PLAY_ICON_SIZE, PLAY_ICON_SIZE);
+    lv_obj_set_style_bg_opa(obj, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(obj, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(obj, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(obj, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_center(obj);
     // Triangle vertices: HTML (7,5)/(7,19)/(19,12) ×2.67 → (19,13)/(19,51)/(51,32).
-    lv_point_t pts[3] = {
-        { 19, 13 },   // top-left corner of the flat back edge
-        { 19, 51 },   // bottom-left corner
-        { 51, 32 },   // right apex (vertically centred)
-    };
-    lv_draw_rect_dsc_t dsc;
-    lv_draw_rect_dsc_init(&dsc);
-    dsc.bg_color = lv_color_white();
-    dsc.bg_opa   = LV_OPA_COVER;
-    lv_canvas_draw_polygon(canvas, pts, 3, &dsc);
-
-    lv_obj_center(canvas);
-    lv_obj_clear_flag(canvas, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(canvas, LV_OBJ_FLAG_SCROLLABLE);
-    return canvas;
+    lv_obj_add_event_cb(obj, [](lv_event_t* e) {
+        lv_layer_t* layer = lv_event_get_layer(e);
+        lv_obj_t*   o     = (lv_obj_t*)lv_event_get_target(e);
+        lv_area_t   coords;
+        lv_obj_get_coords(o, &coords);
+        lv_draw_triangle_dsc_t dsc;
+        lv_draw_triangle_dsc_init(&dsc);
+        dsc.p[0].x = coords.x1 + 19; dsc.p[0].y = coords.y1 + 13;
+        dsc.p[1].x = coords.x1 + 19; dsc.p[1].y = coords.y1 + 51;
+        dsc.p[2].x = coords.x1 + 51; dsc.p[2].y = coords.y1 + 32;
+        dsc.color = lv_color_white();
+        dsc.opa   = LV_OPA_COVER;
+        lv_draw_triangle(layer, &dsc);
+    }, LV_EVENT_DRAW_MAIN, nullptr);
+    return obj;
 }
 
 void apply_paused_visual(ArtState* s, bool paused) {

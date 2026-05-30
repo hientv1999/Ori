@@ -20,12 +20,12 @@ namespace {
 
 void on_cancel(lv_event_t* e) {
     lv_obj_t* scrim = static_cast<lv_obj_t*>(lv_event_get_user_data(e));
-    lv_obj_del(scrim);
+    lv_obj_delete(scrim);
 }
 
 void on_unpair_confirm(lv_event_t* e) {
     lv_obj_t* scrim = static_cast<lv_obj_t*>(lv_event_get_user_data(e));
-    lv_obj_del(scrim);
+    lv_obj_delete(scrim);
     Serial.println("[modal_unpair_phone] Unpair confirmed");
     // Notify state machine (M5 wires BLE bond wipe here).
     state_machine::on_unpair_phone();

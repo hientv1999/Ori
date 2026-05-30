@@ -46,7 +46,7 @@ lv_obj_t* make_btn(lv_obj_t* parent, const char* text,
                    lv_event_cb_t cb, void* user,
                    int16_t pad_v, int16_t pad_h,
                    const lv_font_t* font) {
-    lv_obj_t* btn = lv_btn_create(parent);
+    lv_obj_t* btn = lv_button_create(parent);
     lv_obj_set_size(btn, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_style_pad_left(btn, pad_h, 0);
     lv_obj_set_style_pad_right(btn, pad_h, 0);
@@ -119,7 +119,7 @@ lv_obj_t* make_btn(lv_obj_t* parent, const char* text,
         lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
         lv_anim_start(&a);
         lv_obj_add_event_cb(btn, [](lv_event_t* e) {
-            lv_anim_del(lv_event_get_current_target(e), btn_glow_anim_cb);
+            lv_anim_delete(lv_event_get_current_target(e), btn_glow_anim_cb);
         }, LV_EVENT_DELETE, nullptr);
     }
 

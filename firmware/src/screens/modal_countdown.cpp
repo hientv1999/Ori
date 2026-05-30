@@ -31,10 +31,10 @@ struct CountdownState {
 };
 
 void countdown_tick(lv_timer_t* t) {
-    auto* s = static_cast<CountdownState*>(t->user_data);
+    auto* s = static_cast<CountdownState*>(lv_timer_get_user_data(t));
     int remaining_ms = s->total_s * 1000 - (int)lv_tick_elaps(s->start_tick);
     if (remaining_ms <= 0) {
-        lv_obj_del(s->scrim);
+        lv_obj_delete(s->scrim);
         return;
     }
     // Arc: degree resolution (0-360) moves ~1° per second vs 1° per 3 s with 0-100.
@@ -52,7 +52,7 @@ void countdown_tick(lv_timer_t* t) {
 
 void on_scrim_delete(lv_event_t* e) {
     auto* s = static_cast<CountdownState*>(lv_event_get_user_data(e));
-    if (s && s->timer) lv_timer_del(s->timer);
+    if (s && s->timer) lv_timer_delete(s->timer);
     delete s;
 }
 
@@ -127,7 +127,7 @@ lv_obj_t* create(lv_obj_t* base_screen,
     lv_obj_t* close_btn = ui::make_btn(col, "Close", ui::BtnStyle::Tertiary,
                                        nullptr, nullptr, 12, 26, theme::font_meta());
     lv_obj_add_event_cb(close_btn, [](lv_event_t* e) {
-        lv_obj_del(static_cast<lv_obj_t*>(lv_event_get_user_data(e)));
+        lv_obj_delete(static_cast<lv_obj_t*>(lv_event_get_user_data(e)));
     }, LV_EVENT_CLICKED, scrim);
 
     // Self-contained 1 s timer drives the ring and label on every tick.

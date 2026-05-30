@@ -62,9 +62,9 @@ lv_obj_t* make_ancs_tile(lv_obj_t* parent, const char* token) {
     // Tap → open the ANCS notification detail modal.
     lv_obj_set_user_data(tile, const_cast<char*>(token));
     lv_obj_add_event_cb(tile, [](lv_event_t* e) {
-        lv_obj_t* t = lv_event_get_current_target(e);
+        lv_obj_t* t = (lv_obj_t*)lv_event_get_current_target(e);
         const char* tok = static_cast<const char*>(lv_obj_get_user_data(t));
-        modal_ancs_notification::create(lv_scr_act(), t, tok);
+        modal_ancs_notification::create(lv_screen_active(), t, tok);
     }, LV_EVENT_CLICKED, nullptr);
 
     return tile;
@@ -144,7 +144,7 @@ lv_obj_t* make_phone_disconnect(lv_obj_t* parent) {
     // an lv_line so LVGL renders it without needing a transparent layer.
     // The points array must outlive the line widget; static storage is fine
     // since the geometry never changes.
-    static lv_point_t slash_pts[] = {
+    static lv_point_precise_t slash_pts[] = {
         { 8, PHONE_SIZE - 8 },
         { PHONE_SIZE - 8, 8 },
     };
@@ -436,7 +436,7 @@ lv_obj_t* create(lv_obj_t* parent) {
     state->ancs_row = lv_obj_create(bar);
     state->right_row = state->ancs_row;  // alias for legacy references
     // Width is recomputed by refresh() based on the actual tile count
-    // (LV_SIZE_CONTENT does NOT re-expand reliably after lv_obj_clean()).
+    // (LV_SIZE_CONTENT does NOT re-expand reliably after lv_obj_delete_children()).
     // Start at 0 — refresh() runs at the end of create() and sets the
     // right value before the bar is laid out.
     lv_obj_set_size(state->ancs_row, 0, LV_SIZE_CONTENT);
@@ -460,7 +460,7 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_add_event_cb(state->phone_icon, [](lv_event_t* e) {
         auto* st = static_cast<StatusBarState*>(lv_event_get_user_data(e));
         if (!st) return;
-        lv_obj_t* screen = lv_scr_act();
+        lv_obj_t* screen = lv_screen_active();
         if (st->phone_bonded) {
             // Phone already bonded — offer to unpair.
             modal_unpair_phone::create(screen);
@@ -470,8 +470,8 @@ lv_obj_t* create(lv_obj_t* parent) {
             // to restore the correct runtime screen.
             lv_obj_t* repair = screen_repair_phone::create();
             lv_scr_load(repair);
-            lv_refr_now(lv_disp_get_default());
-            lv_obj_del(screen);
+            lv_refr_now(lv_display_get_default());
+            lv_obj_delete(screen);
         }
     }, LV_EVENT_LONG_PRESSED, state);
 
@@ -569,7 +569,7 @@ void refresh(lv_obj_t* bar) {
     }
     // Size the ANCS row to exactly its tile count so the bar's flex
     // doesn't overshoot and push the mode-toggle off the right edge.
-    // (LV_SIZE_CONTENT does not re-expand the row after lv_obj_clean()
+    // (LV_SIZE_CONTENT does not re-expand the row after lv_obj_delete_children()
     // in LVGL 8, so we compute the width explicitly.)
     int ancs_w = (visible_tiles == 0)
                  ? 0
