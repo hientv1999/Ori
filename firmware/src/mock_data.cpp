@@ -219,9 +219,11 @@ static const AncsNotification k_ancs_fallback = {
 };
 
 // Default ANCS state shown in the prototype meeting-list screen.
+// 7 queued notifications — only the first 5 are visible in the status bar.
+// Dismissing any of the first 5 shifts the queue left and reveals the next.
 AncsConfig k_ancs = {
-    { "gmail", "slack", "whatsapp", "teams", nullptr, nullptr, nullptr, nullptr },
-    4,
+    { "gmail", "slack", "whatsapp", "teams", "messenger", "instagram", "discord" },
+    7,
     true,
 };
 
@@ -259,8 +261,15 @@ MeetingList meetings_long_title()   { return { k_long_title,   sizeof(k_long_tit
 MeetingList meetings_overlap_long() { return { k_overlap_long, sizeof(k_overlap_long) / sizeof(Meeting) }; }
 MeetingList meetings_long_list()    { return { k_long_list,    sizeof(k_long_list)    / sizeof(Meeting) }; }
 
-const AncsConfig& ancs_config()                 { return k_ancs; }
-void              set_ancs_config(const AncsConfig& cfg) { k_ancs = cfg; }
+const AncsConfig& ancs_config() { return k_ancs; }
+
+void set_ancs_config(const AncsConfig& cfg) {
+    k_ancs = cfg;
+    // Clamp to the queue depth — prevents out-of-bounds reads if the caller
+    // passes a count larger than the icons[] array. The display cap
+    // (MAX_ANCS_ICONS = 5) is enforced separately in widget_status_bar::refresh().
+    if (k_ancs.count > MAX_ANCS_NOTIFICATIONS) k_ancs.count = MAX_ANCS_NOTIFICATIONS;
+}
 
 const AncsNotification& ancs_notification(const char* token) {
     if (token) {

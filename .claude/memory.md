@@ -91,6 +91,7 @@ These swatches are **brighter and more saturated than the rest of Ori's calm pal
 | Backlight swipe presence | ~80 ms | Two-finger contact time before a swipe is evaluated |
 | Backlight swipe travel | ≥ 60 px vertical | Minimum deliberate displacement to fire the gesture |
 | Backlight NVS debounce | ~2 seconds | Saved 2 s after last toggle |
+| Profile photo | 228 × 228 px | JPEG; Orion resizes before sending; `PHOTO_SIZE` constant in `widget_profile_card.h` |
 
 ---
 

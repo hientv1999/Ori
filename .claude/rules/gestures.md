@@ -7,7 +7,7 @@
 | Two-finger swipe up | Turn screen backlight **ON** | Every state |
 | Two-finger swipe down | Turn screen backlight **OFF** | Every state |
 | Long-press profile photo (3 s) | Open factory reset confirmation | Every state |
-| Long-press phone-disconnect icon (3 s) | Open re-pair phone screen | Every runtime state (not during first-boot setup) |
+| Long-press phone-disconnect icon (3 s) | Open re-pair iPhone screen | Every runtime state (not during first-boot setup) |
 | **Tap mode-toggle button** (rightmost status-bar element) | Switch between calendar mode and **Controls** mode | Every runtime state — except: not during setup, not during firmware update, and **not when Orion is offline** (the toggle is hidden entirely in the offline case — see `keyboard-mode.md`) |
 | Tap Close button on countdown modal | Dismiss countdown | Countdown modal only |
 | **Tap album art** (movement < 20 px in both axes) | Emit `KeyboardCommand{op:"play_pause"}` to Orion | Controls mode only — see `keyboard-mode.md` |

@@ -16,7 +16,7 @@
 #include "screens/screen_ota_updating.h"
 #include "screens/screen_pto.h"
 #include "screens/screen_reconnect_syncing.h"
-#include "screens/screen_repair_phone.h"
+// #include "screens/screen_repair_phone.h" // removed obsolete repair screen
 #include "screens/screen_setup.h"
 #include "widgets/widget_profile_card.h"
 #include "widgets/widget_status_bar.h"
@@ -58,19 +58,19 @@ void apply_state_defaults() {
 #ifdef ORI_DEBUG_SERIAL
 
 const mock_data::AncsConfig k_default_ancs = {
-    { "gmail", "messenger", "instagram", nullptr, nullptr, nullptr }, 3, true,
+    { "gmail", "messenger", "instagram", nullptr, nullptr }, 3, true,
 };
 const mock_data::AncsConfig k_phone_off = {
-    { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr }, 0, false,
+    { nullptr, nullptr, nullptr, nullptr, nullptr }, 0, false,
 };
 const mock_data::AncsConfig k_minimal = {
-    { "gmail", nullptr, nullptr, nullptr, nullptr, nullptr }, 1, true,
+    { "gmail", nullptr, nullptr, nullptr, nullptr }, 1, true,
 };
 const mock_data::AncsConfig k_two = {
-    { "gmail", "messenger", nullptr, nullptr, nullptr, nullptr }, 2, true,
+    { "gmail", "messenger", nullptr, nullptr, nullptr }, 2, true,
 };
 const mock_data::AncsConfig k_clock_set = {
-    { "gmail", "facebook", nullptr, nullptr, nullptr, nullptr }, 2, true,
+    { "gmail", "facebook", nullptr, nullptr, nullptr }, 2, true,
 };
 
 lv_obj_t* g_debug_screen = nullptr;
@@ -123,24 +123,24 @@ void print_keymap() {
     Serial.println("  3   Meeting list — overlap + long titles");
     Serial.println("  4   Meeting list — long scrollable list");
     Serial.println("  5   Meeting list — cached state");
-    Serial.println("  d   Meeting list — phone disconnected");
+    Serial.println("  d   Meeting list — iPhone disconnected");
     Serial.println("  n   No meetings today");
-    Serial.println("  c   After-hours digital clock");
+    Serial.println("  c   Digital clock (entered via time tap)");
     Serial.println("  p   PTO scenic");
     Serial.println("  k   Controls mode");
     Serial.println("  C   5-minute countdown modal");
     Serial.println("  P   Cycle Teams presence");
     Serial.println("  X   Toggle PC link state");
     Serial.println("  f   Factory reset modal");
-    Serial.println("  U   Unpair phone modal");
+    Serial.println("  U   Unpair iPhone modal");
     Serial.println("  w   Setup — Welcome");
     Serial.println("  i   Setup — Step 1 Install");
     Serial.println("  b   Setup — Step 2 Pairing");
     Serial.println("  B   Setup — Step 2 Pairing + Passkey");
     Serial.println("  o   Setup — Step 3 Orioning");
-    Serial.println("  t   Setup — Step 4 Phone pairing");
+    Serial.println("  t   Setup — Step 4 iPhone pairing");
     Serial.println("  e   Setup — Complete");
-    Serial.println("  r   Re-pair phone");
+    Serial.println("  r   Re-pair iPhone");
     Serial.println("  x   Reconnect-Syncing overlay");
     Serial.println("  u   OTA-Updating");
     Serial.println("  R   Re-run state machine evaluate() (real boot logic)");
@@ -249,7 +249,7 @@ void debug_handle_key(char c) {
         case 'o': debug_load_setup(screen_setup::Step::Orioning,     false); break;
         case 't': debug_load_setup(screen_setup::Step::PhonePairing, false); break;
         case 'e': debug_load_setup(screen_setup::Step::Complete,     false); break;
-        case 'r': debug_load(screen_repair_phone::create());                  break;
+        // case 'r': debug_load(screen_repair_phone::create()); // removed obsolete repair screen
         case 'x': mock_data::set_ancs_config(k_two);
                   debug_load(screen_reconnect_syncing::create());              break;
         case 'u': debug_load(screen_ota_updating::create());                  break;

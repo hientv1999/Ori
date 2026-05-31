@@ -107,6 +107,11 @@ lv_obj_t* make_btn(lv_obj_t* parent, const char* text,
                    lv_event_cb_t cb, void* user,
                    int16_t pad_v, int16_t pad_h,
                    const lv_font_t* font) {
+    const lv_font_t* active_font = font ? font : theme::font_meta();
+    const lv_coord_t font_h = lv_font_get_line_height(active_font);
+    const lv_coord_t glow_w = font_h;
+    const lv_coord_t glow_spread = font_h/4;
+
     lv_obj_t* btn = lv_button_create(parent);
     lv_obj_set_size(btn, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_style_pad_left(btn, pad_h, 0);
@@ -117,9 +122,9 @@ lv_obj_t* make_btn(lv_obj_t* parent, const char* text,
     lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
 
     // Shared ghost-button emphasis so every button inherits a visible outline.
-    lv_obj_set_style_border_width(btn, 4, 0);
-    lv_obj_set_style_shadow_width(btn, 28, 0);
-    lv_obj_set_style_shadow_spread(btn, 4, 0);
+    lv_obj_set_style_border_width(btn, glow_spread/4, 0);
+    lv_obj_set_style_shadow_width(btn, glow_w, 0);
+    lv_obj_set_style_shadow_spread(btn, glow_spread, 0);
     // Danger glow profile is the baseline for non-tertiary buttons.
     lv_obj_set_style_shadow_opa(btn, LV_OPA_40, 0);
     lv_obj_set_style_shadow_ofs_x(btn, 0, 0);
@@ -171,7 +176,7 @@ lv_obj_t* make_btn(lv_obj_t* parent, const char* text,
     lv_obj_t* lbl = lv_label_create(btn);
     lv_label_set_text(lbl, text);
     lv_obj_set_style_text_color(lbl, text_color, 0);
-    lv_obj_set_style_text_font(lbl, font ? font : theme::font_meta(), 0);
+    lv_obj_set_style_text_font(lbl, active_font, 0);
     if (style == BtnStyle::Primary) {
         lv_obj_set_style_text_letter_space(lbl, 4, 0);
     }

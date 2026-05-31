@@ -20,7 +20,7 @@
 #include "screens/screen_ota_updating.h"
 #include "screens/screen_pto.h"
 #include "screens/screen_reconnect_syncing.h"
-#include "screens/screen_repair_phone.h"
+// #include "screens/screen_repair_phone.h" // removed obsolete repair screen
 #include "screens/screen_setup.h"
 #include "widgets/widget_profile_card.h"
 #include "widgets/widget_status_bar.h"
@@ -28,23 +28,26 @@
 // Ori — State machine.
 //
 // Left-panel priority logic per state-machine.md. 1 s tick drives the
-// work-hour boundary, 5-min countdown, and meeting-list refresh.
+// 5-min countdown and meeting-list refresh. Two user-selectable modes:
+// Calendar (0, default) and Controls (1, requires PC link).
+// Clock is a separate state entered by tapping the status-bar time;
+// not part of the mode-toggle cycle; exits via the mode-toggle button.
 
 namespace {
 
 // ─── Constants ────────────────────────────────────────────────────────────
 
-constexpr int WORK_HOUR_START   = 8;   // 08:00 local
-constexpr int WORK_HOUR_END     = 17;  // 17:00 local
 constexpr int ALERT_WINDOW_S    = 300; // 5 minutes in seconds
 constexpr uint32_t TICK_MS      = 1000;
 
 // ─── Module state ─────────────────────────────────────────────────────────
 
-AppState g_state        = AppState::CLOCK;     // current rendered state
-uint8_t  g_mode         = 0;                   // 0 = Calendar, 1 = Controls
-bool     g_pc_connected = true;
+AppState g_state           = AppState::NO_MEETINGS; // current rendered state
+uint8_t  g_mode            = 0;                     // 0=Calendar, 1=Controls
+uint8_t  g_pre_clock_mode  = 0;                     // mode to restore when leaving Clock
+bool     g_pc_connected    = true;
 bool     g_phone_connected = false;
+bool     g_force_rebuild   = false; // force evaluate() to rebuild even if state unchanged
 
 // Set of meeting start-times (encoded as minutes since midnight) for which
 // the 5-minute alert has already fired this boot.  Cleared on reboot only.
@@ -61,14 +64,6 @@ lv_obj_t* g_countdown_base = nullptr;
 lv_timer_t* g_tick_timer = nullptr;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
-
-bool is_work_hours() {
-    time_t now_t = time(nullptr);
-    struct tm tm_buf;
-    localtime_r(&now_t, &tm_buf);
-    int h = tm_buf.tm_hour;
-    return (h >= WORK_HOUR_START && h < WORK_HOUR_END);
-}
 
 bool is_pto_active() {
     // Stubbed until M5 provides the NVS-cached PTO entry with epoch timestamps.
@@ -166,17 +161,31 @@ void apply_widget_defaults() {
             ? widget_profile_card::Presence::Available
             : widget_profile_card::Presence::Offline);
 
-    widget_status_bar::set_default_pc_connected(g_pc_connected);
+    // Mode-toggle is shown when PC is connected OR when in Clock mode
+    // (the toggle acts as a "return" button in Clock, works even offline).
+    bool show_toggle = g_pc_connected || (g_state == AppState::CLOCK);
+    widget_status_bar::set_default_pc_connected(show_toggle);
     widget_status_bar::set_default_phone_bonded(false);
 
-    widget_status_bar::Mode mode = (g_mode == 1)
-        ? widget_status_bar::Mode::Keyboard
-        : widget_status_bar::Mode::Calendar;
-    widget_status_bar::set_default_mode(mode);
+    // In Clock state the bar shows Mode::Clock so the toggle glyph reads
+    // "return to previous mode"; otherwise reflect the current g_mode.
+    widget_status_bar::Mode bar_mode;
+    if (g_state == AppState::CLOCK) {
+        bar_mode = widget_status_bar::Mode::Clock;
+    } else {
+        bar_mode = (g_mode == 1) ? widget_status_bar::Mode::Keyboard
+                                 : widget_status_bar::Mode::Calendar;
+    }
+    widget_status_bar::set_default_mode(bar_mode);
 
-    // Mode-toggle callback: flip mode and re-evaluate.
+    // Mode-toggle callback: advance mode or exit Clock.
     widget_status_bar::set_default_mode_toggle_cb([]() {
         state_machine::on_mode_toggle();
+    });
+
+    // Time-tap callback: enter Clock mode.
+    widget_status_bar::set_default_time_tap_cb([]() {
+        state_machine::on_clock_enter();
     });
 }
 
@@ -233,15 +242,13 @@ void fire_countdown(const char* title, const char* when, int diff_s) {
     lv_obj_t* base = nullptr;
     if (g_mode == 1 && g_pc_connected) {
         base = build_controls_screen();
-    } else if (is_work_hours()) {
+    } else {
         mock_data::MeetingList list = filtered_meetings();
         if (list.count > 0) {
             base = build_meeting_list_screen();
         } else {
             base = build_no_meetings_screen();
         }
-    } else {
-        base = build_clock_screen();
     }
 
     g_countdown_base = base;
@@ -259,9 +266,10 @@ AppState compute_target_state() {
     if (is_pto_active())             return AppState::PTO_ACTIVE;
     // Countdown is handled inline in tick() before evaluate() is called for
     // state changes, so if we reach here it has already been cleared.
-    if (!is_work_hours())            return AppState::CLOCK;
+    // Note: CLOCK is never returned here — it is entered exclusively via
+    // on_clock_enter() (user taps the status-bar time) and protected in
+    // evaluate() from being overwritten by normal Calendar state changes.
 
-    // Work hours.
     mock_data::MeetingList list = filtered_meetings();
     if (list.count > 0)              return AppState::MEETING_LIST;
     return AppState::NO_MEETINGS;
@@ -314,13 +322,24 @@ void init() {
 AppState evaluate() {
     AppState target = compute_target_state();
 
-    // If we're in COUNTDOWN, don't tear it down via evaluate() — the user
-    // must tap the Close button to dismiss it (or it times out when the meeting starts).
+    // COUNTDOWN: user must tap Close; not overridden by normal state changes.
     if (g_state == AppState::COUNTDOWN && target != AppState::SETUP) {
         return g_state;
     }
 
-    if (target == g_state && g_current_screen != nullptr) {
+    // CLOCK: user-entered by tapping the time; persists through normal
+    // Calendar state changes (meeting list updates, etc.). Only overridden
+    // by high-priority states or an explicit on_mode_toggle() call.
+    bool force = g_force_rebuild;
+    g_force_rebuild = false;
+    if (!force && g_state == AppState::CLOCK &&
+        target != AppState::SETUP &&
+        target != AppState::OTA_UPDATING &&
+        target != AppState::PTO_ACTIVE) {
+        return g_state;
+    }
+
+    if (!force && target == g_state && g_current_screen != nullptr) {
         return g_state;   // no change; avoid needless rebuilds
     }
 
@@ -384,7 +403,8 @@ AppState evaluate() {
 void on_setup_complete() {
     Serial.println("[sm] on_setup_complete");
     nvs::mark_setup_complete();
-    g_state = AppState::CLOCK;   // force re-evaluate from non-SETUP
+    // g_state is SETUP; compute_target_state() now returns something else
+    // so evaluate() will naturally rebuild.
     evaluate();
 }
 
@@ -398,11 +418,23 @@ void on_factory_reset() {
 void on_unpair_phone() {
     // Bond wipe wired in M5; for now dismiss the modal and return to runtime.
     Serial.println("[sm] on_unpair_phone");
-    g_state = AppState::CLOCK;
+    g_force_rebuild = true;
+    g_state = AppState::NO_MEETINGS;  // break out of any early-return guard
     evaluate();
 }
 
 void on_mode_toggle() {
+    if (g_state == AppState::CLOCK) {
+        // In Clock: return to the mode that was active before the time tap.
+        g_mode = g_pre_clock_mode;
+        Serial.printf("[sm] clock exit -> mode=%d\n", (int)g_mode);
+        g_force_rebuild = true;
+        g_state = AppState::NO_MEETINGS;  // break Clock protection in evaluate()
+        evaluate();
+        return;
+    }
+
+    // Normal 2-mode cycle: Calendar (0) ↔ Controls (1).
     g_mode = (g_mode == 0) ? 1 : 0;
     nvs::set_mode(g_mode);
     Serial.printf("[sm] mode toggle -> %s\n", g_mode ? "Controls" : "Calendar");
@@ -414,8 +446,18 @@ void on_mode_toggle() {
         Serial.println("[sm] PC offline — Controls mode reverted to Calendar");
     }
 
-    g_state = AppState::CLOCK;  // force rebuild
+    g_force_rebuild = true;
+    g_state = AppState::NO_MEETINGS;  // ensure evaluate() rebuilds
     evaluate();
+}
+
+void on_clock_enter() {
+    if (g_state == AppState::CLOCK) return;  // already in Clock, no-op
+    g_pre_clock_mode = g_mode;
+    g_state = AppState::CLOCK;
+    apply_widget_defaults();
+    load_screen(build_clock_screen());
+    Serial.printf("[sm] clock enter (pre_mode=%d)\n", (int)g_pre_clock_mode);
 }
 
 void on_ota_begin() {
@@ -434,8 +476,10 @@ void on_reconnect_begin() {
 
 void on_reconnect_end() {
     Serial.println("[sm] on_reconnect_end");
-    // Clear the RECONNECT sentinel so compute_target_state() can proceed.
-    g_state = AppState::CLOCK;
+    // Clear the RECONNECT_SYNCING sentinel so compute_target_state() runs
+    // the full logic (it early-returns RECONNECT_SYNCING when g_state matches).
+    g_force_rebuild = true;
+    g_state = AppState::NO_MEETINGS;
     evaluate();
 }
 
@@ -443,15 +487,21 @@ void set_pc_connected(bool connected) {
     bool changed = (connected != g_pc_connected);
     g_pc_connected = connected;
 
-    if (!connected && g_mode == 1) {
-        // Controls mode is useless without Orion — revert to Calendar.
-        g_mode = 0;
-        nvs::set_mode(0);
-        Serial.println("[sm] PC disconnected — Controls mode reverted to Calendar");
+    if (!connected) {
+        if (g_mode == 1) {
+            g_mode = 0;
+            nvs::set_mode(0);
+            Serial.println("[sm] PC disconnected — Controls mode reverted to Calendar");
+        }
+        // If user was in Clock, ensure the return-to mode is also Calendar.
+        if (g_pre_clock_mode == 1) {
+            g_pre_clock_mode = 0;
+        }
     }
 
     if (changed) {
-        g_state = AppState::CLOCK;  // force rebuild
+        g_force_rebuild = true;
+        g_state = AppState::NO_MEETINGS;  // ensure evaluate() does a full rebuild
         evaluate();
     }
 }

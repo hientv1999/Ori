@@ -3,7 +3,7 @@
 #include <Arduino.h>
 #include <lvgl.h>
 
-#include "screens/screen_repair_phone.h"
+// #include "screens/screen_repair_phone.h" // removed obsolete repair screen
 #include "state_machine.h"
 #include "theme.h"
 #include "ui_helpers.h"
@@ -31,7 +31,7 @@ void on_unpair_confirm(lv_event_t* e) {
     state_machine::on_unpair_phone();
     // After unpairing, load the re-pair phone screen so the user can
     // immediately re-bond if they want.
-    lv_scr_load_anim(screen_repair_phone::create(), LV_SCR_LOAD_ANIM_FADE_ON, 300, 0, true);
+    // lv_scr_load_anim(screen_repair_phone::create(), LV_SCR_LOAD_ANIM_FADE_ON, 300, 0, true); // removed obsolete repair screen
 }
 
 // Phone icon circle — mirrors make_warn_circle from modal_factory_reset but
@@ -74,7 +74,7 @@ lv_obj_t* create(lv_obj_t* base_screen) {
     make_phone_circle(scroll_area);
 
     lv_obj_t* heading = lv_label_create(scroll_area);
-    lv_label_set_text(heading, "Unpair phone?");
+    lv_label_set_text(heading, "Unpair iPhone?");
     lv_obj_set_style_text_color(heading, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(heading, theme::font_h2(), 0);
     lv_obj_set_style_text_align(heading, LV_TEXT_ALIGN_CENTER, 0);
@@ -83,7 +83,7 @@ lv_obj_t* create(lv_obj_t* base_screen) {
     lv_obj_t* body = lv_label_create(scroll_area);
     lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
     lv_label_set_text(body,
-        "Ori will no longer show notification icons from your phone");
+        "Ori will no longer show notification icons from your iPhone");
     lv_obj_set_width(body, lv_pct(100));
     lv_obj_set_style_text_color(body, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
     lv_obj_set_style_text_font(body, theme::font_meta(), 0);

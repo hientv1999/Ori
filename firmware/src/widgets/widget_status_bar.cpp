@@ -6,8 +6,9 @@
 #include "mock_data.h"
 #include "screens/modal_ancs_notification.h"
 #include "screens/modal_unpair_phone.h"
-#include "screens/screen_repair_phone.h"
+// #include "screens/screen_repair_phone.h" // removed obsolete repair screen
 #include "state_machine.h"
+#include "screens/screen_setup.h" // for screen_setup::create
 #include "theme.h"
 
 // Status bar: 800 x 84 px, full panel width, anchored top.
@@ -24,7 +25,7 @@
 
 namespace {
 
-constexpr int16_t PAD_X         = 22;
+constexpr int16_t PAD_X         = 12;
 constexpr int16_t ICON_SIZE     = 60;
 constexpr int16_t ICON_GAP      = 14;
 constexpr int16_t PHONE_SIZE    = 64;
@@ -44,6 +45,7 @@ struct StatusBarState {
     bool      phone_bonded;      // true if a phone BLE bond exists
     widget_status_bar::Mode mode;
     widget_status_bar::ModeToggleCb mode_cb;
+    widget_status_bar::TimeTapCb    time_tap_cb;
 };
 
 // Solid-colour circle ANCS tile. Brand colours come from ancs_icons::color().
@@ -305,31 +307,36 @@ lv_obj_t* make_calendar_glyph(lv_obj_t* parent, uint32_t color) {
 
 constexpr int16_t MODE_TOGGLE_SIZE = 60;
 
-// Re-draw the mode-toggle visuals to reflect Calendar vs Controls (Keyboard).
-// Icon shows the mode you will SWITCH TO — so the glyph is the OPPOSITE of
-// the current mode:
-//   In Calendar mode  → headphones glyph, neutral bg   ("tap to enter Controls")
-//   In Controls mode  → calendar glyph, accent-tinted bg ("tap to return to Calendar")
+// Re-draw the mode-toggle visuals to reflect the current mode.
+// Icon always shows the action you'll perform on tap:
+//   Calendar mode → headphones glyph, neutral bg    ("tap to enter Controls")
+//   Clock mode    → calendar glyph,   neutral bg    ("tap to return to previous mode")
+//   Keyboard mode → calendar glyph,   accent-tinted ("tap to return to Calendar")
 void rebuild_mode_toggle_glyph(lv_obj_t* btn, widget_status_bar::Mode mode) {
     lv_obj_clean(btn);
     if (mode == widget_status_bar::Mode::Calendar) {
         lv_obj_set_style_bg_color(btn, theme::color(theme::COLOR_ELEV), LV_PART_MAIN);
         lv_obj_set_style_border_color(btn, theme::color(theme::COLOR_DIVIDER), LV_PART_MAIN);
         make_headphones_glyph(btn, theme::COLOR_TEXT_PRIMARY);
+    } else if (mode == widget_status_bar::Mode::Clock) {
+        // In Clock: show calendar icon (neutral) — "return to previous mode".
+        lv_obj_set_style_bg_color(btn, theme::color(theme::COLOR_ELEV), LV_PART_MAIN);
+        lv_obj_set_style_border_color(btn, theme::color(theme::COLOR_DIVIDER), LV_PART_MAIN);
+        make_calendar_glyph(btn, theme::COLOR_TEXT_PRIMARY);
     } else {
-        // Controls (Keyboard) mode active — show calendar icon to return.
+        // Controls (Keyboard) mode active — show calendar icon, accent-tinted.
         lv_obj_set_style_bg_color(btn, theme::color(theme::COLOR_ACCENT_SOFT), LV_PART_MAIN);
         lv_obj_set_style_border_color(btn, theme::color(theme::COLOR_ACCENT_LINE), LV_PART_MAIN);
         make_calendar_glyph(btn, theme::COLOR_ACCENT);
     }
 }
 
-// Deferred mode-toggle callback. Calling on_mode_toggle() directly from
-// within LVGL's event dispatch stack overflows the loopTask stack (NVS
-// flash write + full screen rebuild on top of the event depth). Store the
-// callback here and fire it from a 1 ms one-shot timer, which executes at
-// the top of lv_timer_handler() — a much shallower call frame.
+// Deferred callbacks. Calling state-machine functions directly from within
+// LVGL's event dispatch stack overflows the loopTask stack (NVS flash write +
+// full screen rebuild on top of the event depth). Store the callback here and
+// fire it from a 1 ms one-shot timer at the top of lv_timer_handler().
 static std::function<void()> s_deferred_toggle_cb;
+static std::function<void()> s_deferred_time_tap_cb;
 
 void on_mode_toggle_tap(lv_event_t* e) {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
@@ -341,6 +348,22 @@ void on_mode_toggle_tap(lv_event_t* e) {
         if (s_deferred_toggle_cb) {
             auto cb = std::move(s_deferred_toggle_cb);
             s_deferred_toggle_cb = nullptr;
+            cb();
+        }
+    }, 1, nullptr);
+    lv_timer_set_repeat_count(t, 1);
+}
+
+void on_time_tap(lv_event_t* e) {
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+    auto* state = static_cast<StatusBarState*>(lv_event_get_user_data(e));
+    if (!state || !state->time_tap_cb) return;
+    s_deferred_time_tap_cb = state->time_tap_cb;
+    lv_timer_t* t = lv_timer_create([](lv_timer_t* t) {
+        lv_timer_delete(t);
+        if (s_deferred_time_tap_cb) {
+            auto cb = std::move(s_deferred_time_tap_cb);
+            s_deferred_time_tap_cb = nullptr;
             cb();
         }
     }, 1, nullptr);
@@ -371,7 +394,8 @@ namespace widget_status_bar {
 bool g_default_pc_connected   = true;
 bool g_default_phone_bonded   = false;
 Mode g_default_mode           = Mode::Calendar;
-ModeToggleCb g_default_mode_cb = nullptr;
+ModeToggleCb g_default_mode_cb  = nullptr;
+TimeTapCb    g_default_time_tap_cb = nullptr;
 
 lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_t* bar = lv_obj_create(parent);
@@ -392,20 +416,24 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     auto* state = new StatusBarState();
-    state->show_datetime = true;
-    state->pc_connected  = g_default_pc_connected;
-    state->phone_bonded  = g_default_phone_bonded;
-    state->mode          = g_default_mode;
-    state->mode_cb       = g_default_mode_cb;
-    state->mode_toggle   = nullptr;
+    state->show_datetime  = true;
+    state->pc_connected   = g_default_pc_connected;
+    state->phone_bonded   = g_default_phone_bonded;
+    state->mode           = g_default_mode;
+    state->mode_cb        = g_default_mode_cb;
+    state->time_tap_cb    = g_default_time_tap_cb;
+    state->mode_toggle    = nullptr;
 
-    // ===== Date/time block =====
+    // ===== Date/time block — tappable to enter Clock mode =====
     state->datetime_row = lv_obj_create(bar);
     lv_obj_set_size(state->datetime_row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(state->datetime_row, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(state->datetime_row, 0, 0);
     lv_obj_set_style_pad_all(state->datetime_row, 0, 0);
     lv_obj_clear_flag(state->datetime_row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(state->datetime_row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_opa(state->datetime_row, LV_OPA_60, LV_STATE_PRESSED);
+    lv_obj_add_event_cb(state->datetime_row, on_time_tap, LV_EVENT_CLICKED, state);
     lv_obj_set_flex_flow(state->datetime_row, LV_FLEX_FLOW_ROW);
     // Cross-axis CENTER so the 30 px time and 22 px sep/date are vertically
     // centered to each other; the row as a whole is then centered in the
@@ -472,11 +500,9 @@ lv_obj_t* create(lv_obj_t* parent) {
     state->phone_icon = make_phone_disconnect(bar);
     lv_obj_add_flag(state->phone_icon, LV_OBJ_FLAG_HIDDEN);
 
-    // Long-press (3 s) on the phone-disconnect icon opens
-    // either the re-pair phone screen (no existing bond) or the unpair
-    // phone modal (bond exists).  LV_EVENT_LONG_PRESSED fires after the
-    // indev long_press_time set in main.cpp (3000 ms).
-    lv_obj_add_event_cb(state->phone_icon, [](lv_event_t* e) {
+
+    // Tap or long-press on the phone-disconnect icon triggers repair flow.
+    auto phone_icon_cb = [](lv_event_t* e) {
         auto* st = static_cast<StatusBarState*>(lv_event_get_user_data(e));
         if (!st) return;
         lv_obj_t* screen = lv_screen_active();
@@ -484,15 +510,15 @@ lv_obj_t* create(lv_obj_t* parent) {
             // Phone already bonded — offer to unpair.
             modal_unpair_phone::create(screen);
         } else {
-            // No bond — push re-pair phone screen.
-            // The re-pair screen's Cancel button calls state_machine::evaluate()
-            // to restore the correct runtime screen.
-            lv_obj_t* repair = screen_repair_phone::create();
-            lv_scr_load(repair);
+            // No bond — push iPhone pairing screen.
+            lv_obj_t* pairing = screen_setup::create(screen_setup::Step::PhonePairing);
+            lv_scr_load(pairing);
             lv_refr_now(lv_display_get_default());
             lv_obj_delete(screen);
         }
-    }, LV_EVENT_LONG_PRESSED, state);
+    };
+    lv_obj_add_event_cb(state->phone_icon, phone_icon_cb, LV_EVENT_CLICKED, state);
+    lv_obj_add_event_cb(state->phone_icon, phone_icon_cb, LV_EVENT_LONG_PRESSED, state);
 
     // Mode-toggle — direct child of bar, rightmost when visible.
     state->mode_toggle = make_mode_toggle(bar, state);
@@ -555,16 +581,23 @@ void set_mode_toggle_cb(lv_obj_t* bar, ModeToggleCb cb) {
     s->mode_cb = cb;
 }
 
+void set_time_tap_cb(lv_obj_t* bar, TimeTapCb cb) {
+    auto* s = static_cast<StatusBarState*>(lv_obj_get_user_data(bar));
+    if (!s) return;
+    s->time_tap_cb = cb;
+}
+
 void set_phone_bonded(lv_obj_t* bar, bool bonded) {
     auto* s = static_cast<StatusBarState*>(lv_obj_get_user_data(bar));
     if (!s) return;
     s->phone_bonded = bonded;
 }
 
-void set_default_pc_connected(bool connected)     { g_default_pc_connected = connected; }
-void set_default_phone_bonded(bool bonded)         { g_default_phone_bonded = bonded; }
-void set_default_mode(Mode mode)                   { g_default_mode = mode; }
-void set_default_mode_toggle_cb(ModeToggleCb cb)   { g_default_mode_cb = cb; }
+void set_default_pc_connected(bool connected)      { g_default_pc_connected = connected; }
+void set_default_phone_bonded(bool bonded)          { g_default_phone_bonded = bonded; }
+void set_default_mode(Mode mode)                    { g_default_mode = mode; }
+void set_default_mode_toggle_cb(ModeToggleCb cb)    { g_default_mode_cb = cb; }
+void set_default_time_tap_cb(TimeTapCb cb)          { g_default_time_tap_cb = cb; }
 
 void refresh(lv_obj_t* bar) {
     auto* s = static_cast<StatusBarState*>(lv_obj_get_user_data(bar));
@@ -579,7 +612,9 @@ void refresh(lv_obj_t* bar) {
     lv_obj_clean(s->ancs_row);
     size_t visible_tiles = 0;
     if (cfg.phone_connected) {
-        for (size_t i = 0; i < cfg.count; ++i) {
+        // i < MAX_ANCS_ICONS is a hard guard: even if cfg.count is somehow
+        // corrupted above the array size, we never read past icons[MAX-1].
+        for (size_t i = 0; i < cfg.count && i < mock_data::MAX_ANCS_ICONS; ++i) {
             if (cfg.icons[i]) {
                 make_ancs_tile(s->ancs_row, cfg.icons[i]);
                 ++visible_tiles;

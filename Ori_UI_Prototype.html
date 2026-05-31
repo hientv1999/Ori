@@ -10,7 +10,7 @@
 <style>
 :root {
   --page-bg: #0A0B0E; --page-panel: #121418; --page-border: rgba(255,255,255,0.06);
-  --screen-bg: #0E1116; --screen-card: #161A21; --screen-elev: #1B2029;
+  --screen-bg: #000000; --screen-card: #0F1217; --screen-elev: #161B23;
   --divider: rgba(255,255,255,0.10); --divider-strong: rgba(255,255,255,0.14);
   --text-1: #ECEEF1; --text-2: #9097A1; --text-3: #565B65;
   --accent: #E0B86A; --accent-soft: rgba(224,184,106,0.14); --accent-line: rgba(224,184,106,0.55);
@@ -61,7 +61,7 @@ html, body { background: var(--page-bg); color: var(--text-1); font-family: var(
 .body { height: calc(100% - 84px); display: grid; grid-template-columns: 528px 5px 267px; }
 .left-panel { position: relative; overflow: hidden; }
 .vertical-divider { background: var(--divider); }
-.right-panel { padding: 0 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; background: linear-gradient(180deg, var(--screen-bg) 0%, #0B0E13 100%); }
+.right-panel { padding: 0 8px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; background: linear-gradient(180deg, var(--screen-bg) 0%, #000000 100%); }
 .profile-photo { width: 228px; height: 228px; border-radius: 50%; overflow: hidden; background: linear-gradient(135deg, #2a3140 0%, #1a1f28 100%); border: 6px solid var(--accent-line); display: flex; align-items: center; justify-content: center; color: var(--accent); font-size: 80px; font-weight: 300; letter-spacing: 1px; user-select: none; cursor: pointer; flex-shrink: 0; transition: border-color 0.3s ease, box-shadow 0.3s ease; }
 /* Teams-presence border colors. Applied via a class set by setScreen(); the
    offline class also wins automatically when the PC link is down (set in JS). */
@@ -154,14 +154,12 @@ html, body { background: var(--page-bg); color: var(--text-1); font-family: var(
 .alert-card p { margin-top: 10px; font-size: 18px; line-height: 1.5; color: var(--text-2); }
 .alert-card .actions { margin-top: 26px; display: flex; gap: 14px; justify-content: center; }
 .btn { padding: 18px 36px; border-radius: 999px; font: inherit; font-size: 18px; font-weight: 500; border: none; cursor: pointer; letter-spacing: 0.2px; }
-.btn-secondary { background: transparent; color: var(--text-2); border: 1px solid var(--divider-strong); animation: btn-glow-secondary 2.4s ease-in-out infinite; }
 .btn-tertiary { background: transparent; color: var(--text-2); border: 1px solid var(--divider); font-weight: 400; }
 .btn-danger { background: transparent; color: var(--danger); border: 1px solid var(--danger); animation: btn-glow-danger 2.4s ease-in-out infinite; }
 .btn-primary { background: transparent; color: var(--accent); border: 1.5px solid rgba(224,184,106,0.65); animation: btn-glow-accent 2.4s ease-in-out infinite; }
 .setup .btn-primary { padding: 24px 44px; min-width: 220px; font-size: 20px; font-weight: 600; text-transform: uppercase; letter-spacing: 2.5px; border-radius: 999px; animation: btn-glow-accent-setup 2.4s ease-in-out infinite; }
 @keyframes btn-glow-accent { 0%, 100% { box-shadow: 0 0 24px rgba(224,184,106,0.18), 0 0 8px rgba(224,184,106,0.10); } 50% { box-shadow: 0 0 42px rgba(224,184,106,0.50), 0 0 18px rgba(224,184,106,0.30); } }
 @keyframes btn-glow-accent-setup { 0%, 100% { box-shadow: 0 0 32px rgba(224,184,106,0.22), 0 0 10px rgba(224,184,106,0.14), 0 2px 8px rgba(0,0,0,0.45); } 50% { box-shadow: 0 0 52px rgba(224,184,106,0.58), 0 0 22px rgba(224,184,106,0.38), 0 2px 8px rgba(0,0,0,0.45); } }
-@keyframes btn-glow-secondary { 0%, 100% { box-shadow: 0 0 16px rgba(144,151,161,0.08), 0 0 5px rgba(144,151,161,0.04); } 50% { box-shadow: 0 0 28px rgba(144,151,161,0.24), 0 0 10px rgba(144,151,161,0.14); } }
 @keyframes btn-glow-danger { 0%, 100% { box-shadow: 0 0 20px rgba(216,106,106,0.16), 0 0 7px rgba(216,106,106,0.08); } 50% { box-shadow: 0 0 36px rgba(216,106,106,0.44), 0 0 14px rgba(216,106,106,0.24); } }
 .ancs-detail { width: 480px; text-align: center; color: var(--text-1); }
 .ancs-detail .ad-app-icon { width: 80px; height: 80px; border-radius: 18px; overflow: hidden; margin: 0 auto 16px; }
@@ -187,10 +185,10 @@ html, body { background: var(--page-bg); color: var(--text-1); font-family: var(
 .profile-close-row { margin-top: 28px; flex-shrink: 0; }
 .passkey-card { width: 540px; background: var(--screen-card); border: 1px solid var(--divider-strong); border-radius: 18px; padding: 36px 40px; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,0.7); }
 .passkey-card h3 { font-size: 26px; font-weight: 400; color: var(--text-1); }
-.passkey-digits { margin: 26px auto 6px; font-size: 76px; font-weight: 300; font-variant-numeric: tabular-nums; letter-spacing: 16px; padding-left: 16px; color: var(--accent); text-shadow: 0 0 24px rgba(224,184,106,0.55), 0 0 6px rgba(224,184,106,0.80); }
+.passkey-digits { margin: 26px auto 6px; font-size: 76px; font-weight: 300; font-variant-numeric: tabular-nums; letter-spacing: 16px; padding-left: 16px; color: var(--accent); }
 .device.no-status-bar .status-bar { display: none; }
 .device.no-status-bar .body { display: none; }
-.setup { position: absolute; inset: 84px 0 0 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; text-align: center; padding: 20px 0 70px; background-color: var(--screen-bg); background-image: radial-gradient(circle, rgba(255,255,255,0.038) 1px, transparent 1px); background-size: 28px 28px; z-index: 10; }
+.setup { position: absolute; inset: 84px 0 0 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; text-align: center; padding: 20px 0 70px; background-color: var(--screen-bg); background-image: radial-gradient(circle, rgba(255,255,255,0.07) 1px, transparent 1px); background-size: 28px 28px; z-index: 10; }
 .device.no-status-bar .setup { inset: 0; }
 .setup h2 { font-size: 42px; font-weight: 300; letter-spacing: 0.2px; margin-top: 4px; }
 .setup p { margin-top: 8px; font-size: 19px; color: var(--text-2); line-height: 1.55; }
@@ -221,7 +219,7 @@ html, body { background: var(--page-bg); color: var(--text-1); font-family: var(
 .brand-mark .word { margin-top: 0; font-size: 30px; font-weight: 300; letter-spacing: 10px; padding-left: 10px; background: linear-gradient(90deg, var(--text-1) 10%, var(--accent) 50%, var(--text-1) 90%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
 .brand-mark .word .dot { color: var(--accent); }
 .orioning-ring { margin-top: 6px; width: 200px; height: 200px; position: relative; }
-.orioning-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); filter: drop-shadow(0 0 10px rgba(224,184,106,0.55)) drop-shadow(0 0 3px rgba(224,184,106,0.80)); }
+.orioning-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
 .orioning-ring .track { stroke: rgba(255,255,255,0.08); }
 .orioning-ring .progress { stroke: var(--accent); stroke-linecap: round; }
 .orioning-ring .pct-label { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 54px; font-weight: 200; color: var(--text-1); font-variant-numeric: tabular-nums; }
@@ -314,7 +312,7 @@ html, body { background: var(--page-bg); color: var(--text-1); font-family: var(
     <div class="group-title">Primary states</div>
     <button data-screen="meeting-list" class="active">Meeting list</button>
     <button data-screen="no-meetings">No meetings today</button>
-    <button data-screen="clock">After-hours clock</button>
+    <button data-screen="clock">Digital Clock</button>
     <button data-screen="pto">PTO active</button>
     <button data-screen="pto-long-dest">PTO — long destination</button>
     <button data-screen="kbd-mode">Controls (BLE bridge)</button>
@@ -334,16 +332,16 @@ html, body { background: var(--page-bg); color: var(--text-1); font-family: var(
     <button data-screen="setup-install">Step 1 · Install Orion</button>
     <button data-screen="setup-pc">Step 2 · Orion pairing</button>
     <button data-screen="setup-passkey">Step 2 · Passkey popup</button>
-    <button data-screen="setup-orioning">Step 3 · Orioning</button>
-    <button data-screen="setup-phone">Step 4 · Phone pairing</button>
+    <button data-screen="setup-orioning">Step 2 · Orioning</button>
+    <button data-screen="setup-phone">Step 3 · iPhone pairing</button>
     <button data-screen="setup-done">Setup complete</button>
   </div>
   <div class="group">
     <div class="group-title">Runtime</div>
     <button data-screen="reconnect-syncing">Reconnect-Syncing overlay</button>
     <button data-screen="ota-updating">OTA — updating firmware</button>
-    <button data-screen="unpair-phone">Unpair phone? (has bond)</button>
-    <button data-screen="repair-phone">Re-pair phone (no bond)</button>
+    <button data-screen="unpair-phone">Unpair iPhone? (has bond)</button>
+    <button data-screen="repair-phone">Re-pair iPhone (no bond)</button>
   </div>
   <div class="group">
     <div class="group-title">Teams presence</div>
@@ -354,14 +352,14 @@ html, body { background: var(--page-bg); color: var(--text-1); font-family: var(
   </div>
   <div class="group">
     <div class="group-title">Edge cases</div>
-    <button data-screen="phone-disconnected">Phone disconnected</button>
+    <button data-screen="phone-disconnected">iPhone disconnected</button>
     <button data-screen="overlapping">Overlapping meetings</button>
     <button data-screen="long-title">Long title (tap to expand)</button>
     <button data-screen="overlap-and-long">Overlap + long title</button>
     <button data-screen="long-list">Scrollable list</button>
     <button data-screen="cached">Orion offline (synced state)</button>
   </div>
-  <div class="footer">Click any item to switch the screen. Long-press the profile photo for factory reset. Long-press the phone-disconnect icon to re-pair a phone.</div>
+  <div class="footer">Click any item to switch the screen. Long-press the profile photo for factory reset. Long-press the phone-disconnect icon to re-pair an iPhone.</div>
 </aside>
 <main class="stage">
   <div class="stage-meta">
@@ -380,7 +378,7 @@ html, body { background: var(--page-bg); color: var(--text-1); font-family: var(
         <div class="status-spacer"></div>
         <div class="ancs-row" id="ancs-row"></div>
         <div id="phone-disconnect-slot"></div>
-        <div id="mode-toggle-slot"></div>
+        <div id="mode-toggle-slot" style="margin-right:-10px"></div>
       </div>
       <div class="body" id="body">
         <div class="left-panel" id="left-panel"></div>

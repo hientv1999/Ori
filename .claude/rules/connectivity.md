@@ -6,7 +6,7 @@ Ori has **three logical channels** carrying distinct kinds of traffic:
 |---|---|---|
 | **USB CDC** (over USB-C, always-present power cable) | Orion → Ori | Firmware update only |
 | **BLE Ori Sync Service** (custom UUID, encrypted+bonded, v1.2 = 15 chars) | bidirectional | Profile, photo, meetings, PTO, time, backlight, factory reset, sync manifest, **Controls-mode commands**, **host volume state**, **media metadata**, **media album art** |
-| **Phone ANCS** (BLE, separate bond) | Phone → Ori | Notification-icon awareness (read-only, icons only — no content) |
+| **iPhone ANCS** (BLE, separate bond) | iPhone → Ori | Notification-icon awareness (read-only, icons only — no content) |
 
 There is no standard BLE HID Over GATT (HOGP) profile in v1.2 — all Controls-mode interactions ride the custom Ori Sync Service, with Orion bridging them into OS-level HID/volume/now-playing APIs at runtime. This is a hard dependency on Orion running, consistent with the existing same dependency for calendar/profile/PTO sync. The status-bar mode-toggle that lets the user enter Controls mode is **hidden whenever the BLE link to Orion is down**, so the user is never offered a mode that wouldn't work. See `ble-protocol.md` §12 for the bridging model and `keyboard-mode.md` for the offline-hide rule.
 
@@ -74,11 +74,13 @@ Orion exposes a "Factory reset Ori" button in its settings. The flow:
 
 The local long-press-photo factory reset on Ori produces identical behavior. Both paths converge in the same firmware routine.
 
-## 2. Phone ↔ Ori (ANCS)
+## 2. iPhone ↔ Ori (ANCS)
 
-- Phone connectivity is completely independent of PC connectivity.
+**Ori supports iPhone only for the phone link.** ANCS (Apple Notification Center Service) is an Apple-proprietary protocol — Android phones do not support it, and there is no equivalent standard that works without a custom companion app. Android is explicitly out of scope.
+
+- iPhone connectivity is completely independent of PC connectivity.
 - ANCS provides **notification icons** in the status bar. Tapping an icon opens a full-screen detail overlay showing the notification title and message body. Dismissed via the **Close** button only. No replying — ANCS is read-only.
 - Icons appear and disappear based on unread notification state.
-- When phone is not connected: show the phone-disconnect icon (phone + diagonal slash) in the status bar right area.
-- When phone is not connected: hide all ANCS notification icons.
-- Long-press the phone-disconnect icon for 3 seconds to re-initiate phone pairing from any runtime state.
+- When iPhone is not connected: show the phone-disconnect icon (phone + diagonal slash) in the status bar right area.
+- When iPhone is not connected: hide all ANCS notification icons.
+- Long-press the phone-disconnect icon for 3 seconds to re-initiate iPhone pairing from any runtime state.

@@ -49,7 +49,7 @@ Open [Ori_UI_Prototype.html](Ori_UI_Prototype.html) directly in any modern brows
 
 > Update checkboxes as work completes. Critical path: M1 → (M2–M5 ∥ M6) → M7 → M8.
 
-- [x] **M1 — Shared BLE contract** *(unblocks everything)* — locked 2026-05-15, current spec **v1.6 (2026-05-24)**
+- [x] **M1 — Shared BLE contract** *(unblocks everything)* — locked 2026-05-15, current spec **v1.7 (2026-05-30)**
   Spec lives in [.claude/rules/ble-protocol.md](.claude/rules/ble-protocol.md). Covers profile, photo, meetings, PTO, time sync, brightness (bidirectional), passkey bonding, hash-manifest delta reconnect, and remote factory reset. Changelog summary: v1.1 removed BLE OTA (USB CDC instead); v1.2 added keyboard-mode chars (Keyboard Command, Host Volume State, Media Metadata, Media Album Art); v1.3 added Presence Status char; v1.4 added `seek` op to KeyboardCommand; v1.5 added `can_seek` to MediaMetadata; v1.6 added optional `email`/`phone` fields to ProfileInfo. All post-v1.1 changes are additive. Companion UX rules in `ota.md`, `state-machine.md`, `connectivity.md`, `gestures.md`, `hardware.md`.
 
 - [x] **M2 — Firmware skeleton on hardware** — locked 2026-05-16

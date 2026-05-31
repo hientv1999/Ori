@@ -1,7 +1,7 @@
 # Ori — BLE GATT Protocol Specification
 
-**Protocol version:** 1.6
-**Date:** 2026-05-24
+**Protocol version:** 1.7
+**Date:** 2026-05-30
 **Status:** Authoritative — implementations of `esp32-connectivity` (peripheral, firmware) and `orion-sync` (central, PC) must conform to this spec.
 
 This document defines the single BLE GATT contract between the Ori device (peripheral) and the Orion PC companion app (central). Everything that crosses that link is specified here.
@@ -11,6 +11,7 @@ This document defines the single BLE GATT contract between the Ori device (perip
 - **Firmware updates** — Ori is USB-C wall-powered, so during normal operation the cable is physically connected to a host. Firmware updates run over **USB CDC**, not BLE. See `ota.md`.
 
 ### Changelog
+- **v1.7 (2026-05-30):** Clarified the advertising payload to always include the **ANCS service UUID** (`7905F431-B5CE-4E99-A40F-4B1E122D00D0`) in every public undirected advertisement. The Ori Sync Service UUID alone is insufficient for iOS to recognise Ori as an ANCS-capable peer during first-time phone pairing. Keeping it present after bonding is harmless — iOS reconnects via stored bond (LTK), ignores the UUID; Ori's one-phone bond cap prevents any second pairing. Omitted from directed advertisements only because directed adv PDUs carry no AD payload. No characteristic changes.
 - **v1.6 (2026-05-24):** Added `"email"` and `"phone"` to `ProfileInfo`. Both are optional CBOR fields (absent = empty string on Ori). Ori displays them in the profile detail overlay (tap the profile photo to open). Orion enforces ≤ 128 UTF-8 bytes for email and ≤ 32 UTF-8 bytes for phone at input time. No new characteristic — additive fields on `Profile Info` char (`0x0004`).
 - **v1.5 (2026-05-24):** Added `"can_seek": bool` to `MediaMetadata`. Orion reads the seek capability of the active media session per-app (`IsPlaybackPositionEnabled` on Windows SMTC; presence of `kMRMediaRemoteNowPlayingInfoElapsedTime` in the now-playing dict on macOS) and includes it in every `MediaMetadata` write. When absent or `false`, Ori hides the timeline scrubber entirely — no dead affordance for apps that lock seek. When `true`, the scrubber renders and drag-to-seek is enabled. Default assumption for a missing key: `false` (safe — suppresses the scrubber rather than showing a broken one). No new characteristic or encoding change — additive CBOR field on `MediaMetadata` (`0x000E`).
 - **v1.4 (2026-05-24):** Added `"seek"` op to `KeyboardCommand`. When the user drags the timeline scrubber on the Controls-mode screen, Ori emits `KeyboardCommand{op:"seek", arg:<position_s>}` (position in seconds, uint). Orion bridges this to the OS seek API: on Windows, `GlobalSystemMediaTransportControlsSession.TryChangePlaybackPositionAsync(position_s × 10_000_000)` (100-ns ticks); on macOS, `MRMediaRemoteSetElapsedTime(position_s)` (private but stable API). Works for apps that expose seek control via SMTC / MRMediaRemote (Spotify, YouTube Music, Windows Media Player, Apple Music, and most major players). No new characteristic — the existing `Keyboard Command` char (`0x000C`) carries the new op. No protocol surface-area change.
@@ -34,22 +35,63 @@ LE Secure Connections with Passkey Entry (6-digit numeric, **MITM-protected**) i
 
 ## 2. Advertising and bond policy
 
-Ori accepts **at most two bonded peers**: one PC (Orion) and one phone (ANCS). Once both slots are filled, Ori stops public advertising entirely and uses **directed advertising** to the bonded peer addresses only. Unknown devices cannot scan or connect.
+Ori accepts **at most two bonded peers**: one PC (Orion) and one iPhone (ANCS). Once both slots are filled, Ori stops public advertising entirely and uses **directed advertising** to the bonded peer addresses only. Unknown devices cannot scan or connect.
+
+### Bond slot enforcement
+
+The "1 Orion + 1 iPhone" constraint is enforced by three cooperating mechanisms — NimBLE alone cannot distinguish peer roles:
+
+1. **State-machine-gated pairing.** New bonds are only accepted during specific firmware states. All other connection attempts are rejected before bonding completes:
+
+   | Firmware state | Bond slot open |
+   |---|---|
+   | Setup Step 2 | Orion slot only |
+   | Setup Step 4 / Runtime re-pair-iPhone | iPhone slot only |
+   | All other states | Neither — new pairing rejected |
+
+2. **Typed NVS slots.** NimBLE persists bond crypto (LTK/IRK) in its own NVS namespace. The firmware additionally maintains two typed address entries in its own namespace:
+
+   ```
+   NVS namespace "bonds":
+     "orion_addr"  → 6-byte BLE address  (all-zero = slot empty)
+     "iphone_addr" → 6-byte BLE address  (all-zero = slot empty)
+   ```
+
+   When a bond forms at Step 2, the peer address is written to `orion_addr`. When a bond forms at Step 4 or re-pair-iPhone, it goes to `iphone_addr`. On reconnect, the firmware matches the incoming peer address against both entries to determine which role to apply (Orion sync logic vs. ANCS subscription logic).
+
+3. **Directed advertising once full.** When both slots are filled, Ori switches to directed advertising — the link layer only accepts connections from the two stored peer addresses. An unknown device cannot connect at all, regardless of application logic.
+
+Factory reset zeroes both NVS entries and clears both NimBLE bond records, returning Ori to the open-pairing state.
 
 ### Advertising state machine
 
 | Bond state | Advertising mode | Manufacturer-data flag |
 |---|---|---|
 | 0 bonded (fresh / post-factory-reset) | Public undirected | `0x01 SETUP` |
-| 1 bonded — PC only, phone slot empty | Public undirected | `0x02 RUNTIME` |
-| 1 bonded — phone only (defined for completeness; not normally reached) | Public undirected | `0x01 SETUP` |
-| 2 bonded — PC + phone | **Directed only**, alternating between the two bonded addresses | (no flag in directed adv) |
-| Runtime re-pair-phone in progress | Public undirected until phone re-bonds | `0x02 RUNTIME` |
+| 1 bonded — PC only, iPhone slot empty | Public undirected | `0x02 RUNTIME` |
+| 1 bonded — iPhone only (defined for completeness; not normally reached) | Public undirected | `0x01 SETUP` |
+| 2 bonded — PC + iPhone | **Directed only**, alternating between the two bonded addresses | (no flag in directed adv) |
+| Runtime re-pair-iPhone in progress | Public undirected until iPhone re-bonds | `0x02 RUNTIME` |
+
+### Advertising mode transitions
+
+The advertising mode must be updated immediately whenever the bond state changes. Critical transitions:
+
+| Event | Action required |
+|---|---|
+| iPhone bond formed (Step 4 / re-pair-iPhone) | If both slots now full → stop undirected adv, start directed adv alternating between `orion_addr` and `iphone_addr` |
+| iPhone unpaired (`on_unpair_phone`) | Delete iPhone NimBLE bond record + zero `iphone_addr` in NVS → stop directed adv, restart **public undirected** adv with flag `0x02 RUNTIME` and both service UUIDs (ANCS UUID must be present so a fresh iPhone can discover Ori for re-pairing) |
+| Orion bond formed (Step 2) | If iPhone slot still empty → remain public undirected, switch flag `0x01 SETUP` → `0x02 RUNTIME` |
+| Factory reset | Wipe both NimBLE bonds + both NVS addresses → restart public undirected adv with flag `0x01 SETUP` |
+
+**Why the iPhone-unpair transition matters:** without explicitly restarting undirected advertising, Ori keeps sending directed ads to the now-deleted iPhone address. A fresh iPhone can never discover Ori, and the re-pair screen becomes permanently stuck.
 
 ### Advertising payload
 
 - **Device name:** `Ori-XX-XX` (suffix is per-device, e.g. `Ori-XT-9F`)
-- **Service UUID:** Ori Sync Service (so Orion can scan-filter by service)
+- **Service UUIDs:**
+  - `Ori Sync Service` — always included in public undirected advertisements (so Orion can scan-filter by service)
+  - `ANCS Service` (`7905F431-B5CE-4E99-A40F-4B1E122D00D0`) — included in **every public undirected advertisement**, regardless of phone bond state. iOS requires this UUID to recognise Ori as an ANCS-capable peer during first-time phone pairing. Keeping it after bonding is harmless — a bonded iPhone reconnects via stored LTK and ignores the UUID; Ori's one-phone bond cap prevents any second pairing. Omitted from directed advertisements only because directed adv PDUs carry no AD payload.
 - **Manufacturer data (2 bytes):**
   - Byte 0: company ID prefix (use `0xFF FF` placeholder until a real Bluetooth SIG ID is assigned)
   - Byte 1: mode flag — `0x01 SETUP`, `0x02 RUNTIME`

@@ -20,18 +20,18 @@ Pixel dimensions: 800 × 480. Left panel: 528 px wide. Right panel: 269 px wide.
 
 ## Status Bar
 
-- **Always visible** in every runtime state. The only exception is the first-time setup flow and the runtime re-pair phone screen (hidden to match setup layout exactly).
+- **Always visible** in every runtime state. The only exception is the first-time setup flow and the runtime re-pair iPhone screen (hidden to match setup layout exactly).
 - Height: 84 px.
 - Contents left → right:
-  - Date and time (always current local time), **except** on the after-hours digital clock screen where it is hidden to avoid redundancy.
+  - **Date and time** (always current local time) — **tappable**: a single tap enters the Clock view. Hidden on the Clock screen itself because the clock face is the time.
   - ANCS notification icons — right-to-left order. Tap an icon to open a full-screen detail overlay (title + message body); dismissed via the **Close** button only. No replying — ANCS is read-only.
-  - Phone-disconnect icon — shown **only** when the phone is not connected over BLE.
-  - **Mode toggle button** — rightmost element at all times when visible. Switches the left panel between calendar mode (default) and Controls mode. **Hidden when Orion is offline** (no BLE link to PC) — Controls mode is useless without the Orion bridge, so the toggle simply disappears from the status bar. See `keyboard-mode.md`.
+  - Phone-disconnect icon — shown **only** when the iPhone is not connected over BLE.
+  - **Mode toggle button** — rightmost element. Cycles the left panel between **Calendar** and **Controls** (2-mode cycle). **Hidden when Orion is offline** — except in Clock view, where it is always visible and acts as a **return** button (calendar icon, neutral style) that exits Clock and restores the previous mode. Icon always shows the next action. See `keyboard-mode.md`.
 
 ## Right Panel — Profile Card
 
 Always visible (in both calendar and Controls modes). Contents:
-- Circular profile photo (or Ori brand mark if no photo yet) — **the border colour reflects the user's Microsoft Teams presence** (see below)
+- Circular profile photo, **228 × 228 px** (or Ori brand mark if no photo yet) — **the border colour reflects the user's Microsoft Teams presence** (see below)
 - Full name — **single line, ellipsis on overflow**
 - Job title — **single line, ellipsis on overflow**
 

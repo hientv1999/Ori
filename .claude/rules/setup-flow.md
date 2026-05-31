@@ -31,7 +31,7 @@ Both screens share the same brand-mark + title + description + primary-button st
 | Step 1 — Install Orion | Dot 0 active | Visit ori.app/orion on PC (Windows or macOS); user taps Next after install |
 | Step 2 — Orion pairing | Dot 1 active | Ori shows BLE name + spinning animation; passkey modal appears on top when Orion connects |
 | Step 3 — Orioning | Dot 2 active | Progress ring while Orion syncs data (profile, calendar, PTO, time) |
-| Step 4 — Phone pairing | Dot 3 active | Optional — user may skip; pairing can be done later via long-press |
+| Step 4 — iPhone pairing | Dot 3 active | Optional — user may skip; pairing can be done later via long-press |
 | Setup complete | Dots **hidden** | Brief acknowledgement before transitioning to normal state |
 
 ### Passkey Modal (Step 2)
@@ -43,7 +43,7 @@ Both screens share the same brand-mark + title + description + primary-button st
 - If PC pairing fails, stay on that step and allow retry.
 - The user cannot go backward through setup steps.
 - The only alternative exit is factory reset (long-press profile photo).
-- Phone pairing is optional; user may skip and pair later.
+- iPhone pairing is optional; user may skip and pair later.
 
 ## Factory Reset
 
@@ -52,7 +52,7 @@ Both screens share the same brand-mark + title + description + primary-button st
 - Reset erases: profile, meetings, PTO, pairing bonds, and saved brightness.
 - Device returns to first-boot setup state.
 
-## Runtime Re-Pair Phone
+## Runtime Re-Pair iPhone
 
 - **Trigger**: long-press the phone-disconnect icon in the status bar for 3 seconds.
 - Available from every runtime state (not during first-boot setup).

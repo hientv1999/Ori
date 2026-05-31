@@ -35,13 +35,14 @@
 
 ## Offline / Cached State
 
-| Condition | Left panel |
+The Calendar mode view (meeting list) has no work-hours restriction — it is the base Calendar view at all times. The Digital clock is now a user-entered view (tap the status-bar time) rather than an automatic after-hours switch.
+
+| Condition | Left panel (Calendar mode) |
 |---|---|
-| Work hours + Orion synced | Live meeting list |
-| Work hours + BLE only (not synced) | Cached meeting list + "SYNCED · X min ago" pill |
-| Work hours + fully offline + cache exists | Cached meeting list + "SYNCED · X min ago" pill |
-| Work hours + no cached data | "No meetings today" |
-| After hours | Digital clock |
-| Within PTO window | PTO destination visual |
+| Orion synced | Live meeting list |
+| BLE only (not synced) | Cached meeting list + "SYNCED · X min ago" pill |
+| Fully offline + cache exists | Cached meeting list + "SYNCED · X min ago" pill |
+| Fully offline + no cached data | "No meetings today" |
+| Within PTO window | PTO destination visual (overrides Calendar) |
 
 Local time is set by Orion on sync. It persists in flash and drives all time-based logic while offline.

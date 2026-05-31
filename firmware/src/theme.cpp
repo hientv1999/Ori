@@ -28,7 +28,6 @@ const lv_font_t* font_h2()      { return &ori_font_montserrat_28; }
 const lv_font_t* font_time()    { return &ori_font_montserrat_30; }
 const lv_font_t* font_display() { return &ori_font_montserrat_42; }
 const lv_font_t* font_large()   { return &ori_font_montserrat_48; }
-const lv_font_t* font_clock()   { return &ori_font_montserrat_48; }
 
 void apply_to_screen(lv_obj_t* screen) {
     lv_obj_set_style_bg_color(screen, color(COLOR_BG), LV_PART_MAIN);

@@ -1,6 +1,10 @@
 # Ori — Left Panel State Machine
 
-The priority list below applies in **calendar mode only**. Ori has a second top-level mode — **Controls mode** — selected by the user via the status-bar mode-toggle button (only available when Orion is connected). In Controls mode the left panel always shows the controller UI (see `keyboard-mode.md`) regardless of work-hours / PTO / countdown state, except that the 5-minute pre-meeting countdown modal still overlays Controls mode when it fires.
+The left panel has **two user-selectable modes** cycled by the status-bar mode-toggle button: **Calendar** (default) and **Controls** (requires Orion). The mode-toggle is always visible when Orion is connected; hidden when offline.
+
+**Clock** is a third view entered separately by **tapping the date/time in the status bar** — it is not part of the mode-toggle cycle. While in Clock, the mode-toggle button becomes a **return** button (calendar icon, neutral style) that goes back to whichever mode was active before the time tap.
+
+High-priority system states (OTA, PTO, countdown, reconnect) override the left panel. The 5-minute pre-meeting countdown modal overlays whichever mode is active when it fires.
 
 ## Priority Order (Highest → Lowest)
 
@@ -8,8 +12,10 @@ The priority list below applies in **calendar mode only**. Ori has a second top-
 2. **PTO active** — current local time falls within the cached PTO window.
 3. **5-minute pre-meeting countdown modal** — exactly 5 minutes before any meeting start.
 4. **Reconnect-Syncing overlay** — Orion reconnected and is running the hash-manifest sync. Overlays the left panel only; status bar and profile card remain visible. See §Reconnect-Syncing below.
-5. **Meeting list or No meetings** — during work hours (08:00–17:00 local).
-6. **Digital clock** — outside work hours when not PTO.
+5. **Mode-driven left panel content** (when no higher-priority state is active):
+   - **Calendar mode** — meeting list (or "No meetings today" when empty). No work-hours restriction; the meeting list is always the base Calendar view.
+   - **Clock view** — digital clock, entered by tapping the status-bar time (not via the mode-toggle cycle); status bar date/time hidden. See §Clock below.
+   - **Controls mode** — media-controller UI (see `keyboard-mode.md`). Only available when Orion is connected; auto-reverts to Calendar on PC disconnect.
 
 Higher-priority states override lower ones. The right panel (profile card) and status bar remain visible in all states **except OTA-Updating**.
 
@@ -30,16 +36,18 @@ Higher-priority states override lower ones. The right panel (profile card) and s
 - If the device reconnects after the 5-minute window has already started, show the alert immediately when the meeting is detected.
 - Not shown during active PTO.
 
-### Meeting List (Work Hours)
-- Shown during 08:00–17:00 local time.
+### Meeting List / No Meetings (Calendar Mode)
+- Always the Calendar mode view — no work-hours restriction.
 - If the meeting list is empty: show "No meetings today".
 - See `meeting-list.md` for full meeting list rules.
 
-### Digital Clock (After Hours)
-- Shown outside 08:00–17:00 when not in a PTO window.
-- Status bar date/time is **hidden** on this screen only (the clock itself provides the time).
-- No meeting list is shown.
+### Clock
+- **Entry:** user taps the date/time text in the status bar.
+- **Exit:** user taps the mode-toggle button (calendar icon, neutral style) → returns to the mode that was active before entering Clock (Calendar or Controls).
+- Status bar date/time is **hidden** (the clock itself provides the time). The mode-toggle button is always visible in this state, even when Orion is offline.
 - Profile card remains visible.
+- The countdown modal still fires on top of the clock when a meeting is 5 minutes away.
+- High-priority states (OTA-Updating, PTO active) override Clock; normal Calendar state changes (meeting list updates) do not exit Clock.
 
 ### Reconnect-Syncing Overlay
 - Trigger: BLE link to Orion re-established and Device Status transitions to `RUNTIME_RECONNECTING` (see `ble-protocol.md` §6.2).

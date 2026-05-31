@@ -1,20 +1,23 @@
 # Ori — Controls Mode
 
-Ori has two top-level modes selected by the user via the **status-bar mode-toggle button**:
+Ori has **two user-selectable modes** cycled by the **status-bar mode-toggle button**:
 
-- **Calendar mode** — the existing left-panel state machine (meetings / clock / PTO / countdown / reconnect overlay). See `state-machine.md`. The default mode and the only mode available when Orion is offline.
-- **Controls mode** — a secondary controller UI for the paired PC: a large album-art panel that doubles as the entire transport + volume interaction surface (tap = play/pause, horizontal swipe = prev/next, vertical swipe = volume with a momentary HUD), currently-playing metadata below it, and three user-assignable shortcut buttons. All commands travel as custom BLE messages to Orion, which bridges them into OS-level actions. See `ble-protocol.md` §12. Internally the firmware/source still refers to this as "keyboard mode" (`kbd-*` class names, `mode: 'keyboard'` enum) for historical reasons; user-facing copy says "Controls".
+- **Calendar mode** (default) — meeting list / "No meetings today." See `state-machine.md`. Available always, with or without Orion.
+- **Controls mode** — a secondary controller UI for the paired PC: a large album-art panel that doubles as the entire transport + volume interaction surface (tap = play/pause, horizontal swipe = prev/next, vertical swipe = volume with a momentary HUD), currently-playing metadata below it, and three user-assignable shortcut buttons. All commands travel as custom BLE messages to Orion, which bridges them into OS-level actions. See `ble-protocol.md` §12. Internally the firmware/source still refers to this as "keyboard mode" (`kbd-*` class names, `mode: 'keyboard'` enum) for historical reasons; user-facing copy says "Controls". **Only available when Orion is connected** — auto-reverts to Calendar on PC disconnect.
 
-The status bar and profile card are visible in **both** modes; only the left panel's content changes.
+**Clock** is a third view available by **tapping the date/time in the status bar** — it is not part of the mode-toggle cycle. While in Clock, the mode-toggle button becomes a **return** button (calendar icon, neutral style) that exits Clock and restores the mode that was active before the time tap. See `state-machine.md` §Clock.
+
+The status bar and profile card are visible in **all three** modes; only the left panel's content changes.
 
 ## Mode-toggle button (status bar)
 
-- **Position:** the rightmost element of the status bar at all times *when visible*. Element order in the right cluster, left to right: `[ANCS icons] [phone-disconnect icon (when applicable)] [mode-toggle]`. The toggle never moves — it's the right edge anchor regardless of phone-disconnect state.
-- **Hidden when Orion is offline.** When no BLE link to Orion is up, the mode-toggle button is removed from the status bar entirely (no greyed-out state, no inert tap target). Controls mode is useless without Orion bridging commands to the OS, so giving the user a button that does nothing would be misleading. If the user happens to be in Controls mode at the moment Orion drops, the firmware **auto-reverts to calendar mode** before hiding the toggle. When Orion reconnects, the toggle reappears (in calendar mode).
+- **Position:** the rightmost element of the status bar at all times. Element order in the right cluster, left to right: `[ANCS icons] [phone-disconnect icon (when applicable)] [mode-toggle]`. The toggle never moves — it's the right edge anchor.
+- **Hidden when Orion is offline** — except in Clock view, where it is always visible (acts as a return button). Calendar and Clock work offline; Controls requires Orion. If the user is in Controls mode when Orion drops, the firmware **auto-reverts to Calendar** and the toggle is hidden.
 - **Size:** 60 × 60 px, 12 px corner radius. Matches ANCS-icon visual weight without using a brand color.
-- **Icon contents:** the icon shows the mode you will **switch to**, not the current mode — so the user reads it as a destination, not a label.
-  - In calendar mode → **headphones** glyph on neutral `--screen-elev` background. Means "tap to enter Controls."
-  - In Controls mode → **calendar** glyph on accent-tinted `--accent-soft` background, border `--accent-line`, glyph `--accent`. Means "tap to return to calendar." The accent styling makes the active Controls state glanceable from across a desk; the glyph change removes any ambiguity about what a tap will do.
+- **Icon contents:** the icon shows the action you'll perform on tap — a destination, not a label.
+  - In Calendar mode → **headphones** glyph on neutral `--screen-elev` background. Means "tap to enter Controls."
+  - In Controls mode → **calendar** glyph on accent-tinted `--accent-soft` background, border `--accent-line`, glyph `--accent`. Means "tap to return to Calendar." The accent styling makes the active Controls state glanceable from across a desk.
+  - In Clock view → **calendar** glyph on neutral `--screen-elev` background. Means "tap to return to previous mode." (Same neutral style as Calendar, not accent-tinted, because Clock is not Controls.)
 - **Activation:** a single tap. Not a long-press. Long-press is reserved for factory-reset (profile photo) and re-pair-phone (phone-disconnect icon) — see `gestures.md`.
 - **Inert during firmware update:** the toggle does not respond while the OTA-Updating screen is showing.
 
