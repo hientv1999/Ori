@@ -13,9 +13,7 @@
 //
 // Rules applied in read_cb:
 //   - 0 touches            -> RELEASED
-//   - 1 touch              -> PRESSED at point[0], clamped to panel rect
-//   - >=2 touches          -> RELEASED (two-finger backlight swipe gesture
-//                                       owns the surface; single-touch suspended)
+//   - >=1 touch            -> PRESSED at point[0], clamped to panel rect
 
 namespace lvgl_input {
 

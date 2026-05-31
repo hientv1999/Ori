@@ -176,9 +176,9 @@
 /*==================
  *   FONT USAGE
  *===================*/
-/* All bundled Montserrat fonts are OFF — Ori ships its own extended versions
- * (ori_font_montserrat_*) from firmware/src/fonts/ that add U+B7 (middle dot),
- * U+2014 (em dash), U+2026 (ellipsis), U+B0 (degree), U+2022 (bullet). */
+/* All bundled Montserrat fonts are OFF — Ori ships Hanken Grotesk Medium fonts
+ * (ori_font_hanken_*) from firmware/src/fonts/ that cover ASCII + U+B0 (°),
+ * U+B7 (·), U+2013 (–), U+2014 (—), U+2022 (•), U+2026 (…). */
 #define LV_FONT_MONTSERRAT_8  0
 #define LV_FONT_MONTSERRAT_10 0
 #define LV_FONT_MONTSERRAT_12 0
@@ -206,20 +206,16 @@
 #define LV_FONT_UNSCII_8                 0
 #define LV_FONT_UNSCII_16                0
 
-/* Ori-branded Montserrat fonts declared here so symbols are in scope for
- * LV_FONT_DEFAULT and any lv_conf.h reference. */
 #define LV_FONT_CUSTOM_DECLARE \
-    LV_FONT_DECLARE(ori_font_montserrat_16) \
-    LV_FONT_DECLARE(ori_font_montserrat_20) \
-    LV_FONT_DECLARE(ori_font_montserrat_22) \
-    LV_FONT_DECLARE(ori_font_montserrat_24) \
-    LV_FONT_DECLARE(ori_font_montserrat_28) \
-    LV_FONT_DECLARE(ori_font_montserrat_30) \
-    LV_FONT_DECLARE(ori_font_montserrat_36) \
-    LV_FONT_DECLARE(ori_font_montserrat_42) \
-    LV_FONT_DECLARE(ori_font_montserrat_48)
+    LV_FONT_DECLARE(ori_font_hanken_20) \
+    LV_FONT_DECLARE(ori_font_hanken_24) \
+    LV_FONT_DECLARE(ori_font_hanken_26) \
+    LV_FONT_DECLARE(ori_font_hanken_28) \
+    LV_FONT_DECLARE(ori_font_hanken_30) \
+    LV_FONT_DECLARE(ori_font_hanken_42) \
+    LV_FONT_DECLARE(ori_font_hanken_48)
 
-#define LV_FONT_DEFAULT         &ori_font_montserrat_20
+#define LV_FONT_DEFAULT         &ori_font_hanken_20
 #define LV_FONT_FMT_TXT_LARGE   0
 #define LV_USE_FONT_COMPRESSED  0
 #define LV_USE_FONT_PLACEHOLDER 1

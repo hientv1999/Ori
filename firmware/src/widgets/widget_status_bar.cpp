@@ -48,20 +48,30 @@ struct StatusBarState {
     widget_status_bar::TimeTapCb    time_tap_cb;
 };
 
-// Solid-colour circle ANCS tile. Brand colours come from ancs_icons::color().
-// No text abbreviation — icon identity is purely the colour for now; raster
-// assets land in M8.
+// ANCS icon tile. Uses a compiled-in raster asset when available (12 px radius,
+// matching the HTML prototype); falls back to a solid brand-colour circle.
 lv_obj_t* make_ancs_tile(lv_obj_t* parent, const char* token) {
     lv_obj_t* tile = lv_obj_create(parent);
     lv_obj_set_size(tile, ICON_SIZE, ICON_SIZE);
-    lv_obj_set_style_bg_color(tile, theme::color(ancs_icons::color(token)), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_radius(tile, LV_RADIUS_CIRCLE, LV_PART_MAIN);
     lv_obj_set_style_border_width(tile, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(tile, 0, LV_PART_MAIN);
     lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_opa(tile, LV_OPA_60, LV_STATE_PRESSED);
+
+    const lv_image_dsc_t* img = ancs_icons::image(token);
+    if (img) {
+        lv_obj_set_style_bg_opa(tile, LV_OPA_TRANSP, LV_PART_MAIN);
+        lv_obj_set_style_radius(tile, 12, LV_PART_MAIN);
+        lv_obj_t* img_obj = lv_image_create(tile);
+        lv_image_set_src(img_obj, img);
+        lv_obj_center(img_obj);
+        lv_obj_clear_flag(img_obj, LV_OBJ_FLAG_CLICKABLE);
+    } else {
+        lv_obj_set_style_bg_color(tile, theme::color(ancs_icons::color(token)), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_radius(tile, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    }
 
     // Tap → open the ANCS notification detail modal.
     lv_obj_set_user_data(tile, const_cast<char*>(token));
@@ -309,9 +319,9 @@ constexpr int16_t MODE_TOGGLE_SIZE = 60;
 
 // Re-draw the mode-toggle visuals to reflect the current mode.
 // Icon always shows the action you'll perform on tap:
-//   Calendar mode → headphones glyph, neutral bg    ("tap to enter Controls")
+//   Calendar mode → headphones glyph, neutral bg    ("tap to enter Media")
 //   Clock mode    → calendar glyph,   neutral bg    ("tap to return to previous mode")
-//   Keyboard mode → calendar glyph,   accent-tinted ("tap to return to Calendar")
+//   Media mode    → calendar glyph,   accent-tinted ("tap to return to Calendar")
 void rebuild_mode_toggle_glyph(lv_obj_t* btn, widget_status_bar::Mode mode) {
     lv_obj_clean(btn);
     if (mode == widget_status_bar::Mode::Calendar) {
@@ -324,7 +334,7 @@ void rebuild_mode_toggle_glyph(lv_obj_t* btn, widget_status_bar::Mode mode) {
         lv_obj_set_style_border_color(btn, theme::color(theme::COLOR_DIVIDER), LV_PART_MAIN);
         make_calendar_glyph(btn, theme::COLOR_TEXT_PRIMARY);
     } else {
-        // Controls (Keyboard) mode active — show calendar icon, accent-tinted.
+        // Media mode active — show calendar icon, accent-tinted.
         lv_obj_set_style_bg_color(btn, theme::color(theme::COLOR_ACCENT_SOFT), LV_PART_MAIN);
         lv_obj_set_style_border_color(btn, theme::color(theme::COLOR_ACCENT_LINE), LV_PART_MAIN);
         make_calendar_glyph(btn, theme::COLOR_ACCENT);

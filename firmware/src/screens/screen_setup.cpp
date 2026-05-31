@@ -27,7 +27,7 @@ constexpr int16_t DOT_GAP   = 10;
 struct SetupState {
     lv_obj_t*    content;         // re-built per step
     lv_obj_t*    dots_row;        // dots
-    lv_obj_t*    dot_objs[4];
+    lv_obj_t*    dot_objs[3];
     lv_obj_t*    passkey_modal;
     lv_obj_t*    orioning_modal;  // Orioning sync modal (child of screen, not content)
     lv_obj_t*    pairing_spinner; // Step 2 spinner — hidden while passkey modal is up
@@ -37,7 +37,7 @@ struct SetupState {
 };
 
 void clear_dots(SetupState* s) {
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 3; ++i) {
         lv_obj_set_style_bg_color(s->dot_objs[i],
             theme::color(theme::COLOR_TEXT_TERTIARY), 0);
         lv_obj_set_style_opa(s->dot_objs[i], LV_OPA_COVER, 0);
@@ -45,7 +45,7 @@ void clear_dots(SetupState* s) {
 }
 
 void set_dots_active(SetupState* s, int active_index) {
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 3; ++i) {
         if (i == active_index) {
             lv_obj_set_style_bg_color(s->dot_objs[i],
                 theme::color(theme::COLOR_ACCENT), 0);
@@ -309,10 +309,10 @@ void build_welcome(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
     lv_obj_set_style_text_align(p2, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_top(p2, 10, 0);
 
-    ui::make_btn(content, "START",
+    ui::make_btn(content, "Start",
         ui::BtnStyle::Primary,
         on_start_clicked, screen,
-        30, 60, theme::font_time());
+        18, 36, theme::font_title());
 }
 
 void build_install(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
@@ -331,17 +331,17 @@ void build_install(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
     lv_obj_set_style_text_align(p1, LV_TEXT_ALIGN_CENTER, 0);
 
     lv_obj_t* p2 = lv_label_create(mid);
-    lv_label_set_text(p2, "Available on Windows and macOS");
+    lv_label_set_text(p2, "Available on Windows and MacOS");
     lv_obj_set_width(p2, lv_pct(100));
     lv_obj_set_style_text_color(p2, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
     lv_obj_set_style_text_font(p2, theme::font_title(), 0);
     lv_obj_set_style_text_align(p2, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_top(p2, 10, 0);
 
-    ui::make_btn(content, "NEXT",
+    ui::make_btn(content, "Next",
         ui::BtnStyle::Primary,
         on_next_clicked, screen,
-        30, 60, theme::font_time());
+        18, 36, theme::font_title());
 }
 
 void build_pairing(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
@@ -351,7 +351,7 @@ void build_pairing(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
     lv_obj_t* mid = make_mid(content);
 
     lv_obj_t* h = lv_label_create(mid);
-    lv_label_set_text(h, "Connect to this device on Orion");
+    lv_label_set_text(h, "Connect on Orion");
     lv_obj_set_style_text_color(h, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(h, theme::font_display(), 0);
     lv_obj_set_style_text_align(h, LV_TEXT_ALIGN_CENTER, 0);
@@ -364,64 +364,6 @@ void build_pairing(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
     s->pairing_spinner = spinner;
 }
 
-void build_orioning(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
-    // Build Step 2 Pairing as the background.
-    make_brand_mark(content);
-    lv_obj_t* mid = make_mid(content);
-
-    lv_obj_t* h = lv_label_create(mid);
-    lv_label_set_text(h, "Connect to this device on Orion");
-    lv_obj_set_style_text_color(h, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(h, theme::font_display(), 0);
-    lv_obj_set_style_text_align(h, LV_TEXT_ALIGN_CENTER, 0);
-
-    lv_obj_t* pill = make_ble_pill(mid, mock_data::ble_name());
-    lv_obj_set_style_pad_top(pill, 10, 0);
-
-    // Orioning modal card — same visual container as the passkey modal.
-    lv_obj_t* scrim = lv_obj_create(screen);
-    lv_obj_set_size(scrim, 800, 480);
-    lv_obj_set_pos(scrim, 0, 0);
-    lv_obj_set_style_bg_color(scrim, theme::color(theme::COLOR_SCRIM), 0);
-    lv_obj_set_style_bg_opa(scrim, theme::SCRIM_OPA, 0);
-    lv_obj_set_style_border_width(scrim, 0, 0);
-    lv_obj_set_style_pad_all(scrim, 0, 0);
-    lv_obj_clear_flag(scrim, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(scrim, LV_OBJ_FLAG_CLICKABLE);
-
-    lv_obj_t* card = lv_obj_create(scrim);
-    lv_obj_set_size(card, 540, LV_SIZE_CONTENT);
-    lv_obj_center(card);
-    lv_obj_set_style_bg_color(card, theme::color(theme::COLOR_CARD), 0);
-    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(card, theme::color(theme::COLOR_DIVIDER_STRONG), 0);
-    lv_obj_set_style_border_width(card, 1, 0);
-    lv_obj_set_style_radius(card, 18, 0);
-    lv_obj_set_style_pad_all(card, 36, 0);
-    lv_obj_set_style_shadow_color(card, theme::color(0x000000), 0);
-    lv_obj_set_style_shadow_width(card, 30, 0);
-    lv_obj_set_style_shadow_opa(card, LV_OPA_70, 0);
-    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(card,
-        LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-    lv_obj_t* heading = lv_label_create(card);
-    lv_label_set_text(heading, "A busy day ahead\xe2\x80\xa6");
-    lv_obj_set_style_text_color(heading, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(heading, theme::font_h2(), 0);
-    lv_obj_set_style_text_align(heading, LV_TEXT_ALIGN_CENTER, 0);
-
-    lv_obj_t* ring = widget_progress_ring::create(card, 140);
-    lv_obj_set_style_pad_top(ring, 24, 0);
-    widget_progress_ring::set_value(ring, 67);
-    widget_progress_ring::set_label_font(ring, theme::font_time());
-    widget_progress_ring::set_label_text_center(ring, "67%");
-
-    s->orioning_modal = scrim;
-    lv_obj_move_foreground(scrim);
-}
-
 void build_phone_pairing(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
     (void)s;
     lv_obj_set_style_pad_bottom(content, 54, 0);
@@ -430,7 +372,7 @@ void build_phone_pairing(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
     lv_obj_t* mid = make_mid(content);
 
     lv_obj_t* h = lv_label_create(mid);
-    lv_label_set_text(h, "Connect to this device on iPhone");
+    lv_label_set_text(h, "Connect on iPhone");
     lv_obj_set_style_text_color(h, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(h, theme::font_display(), 0);
     lv_obj_set_style_text_align(h, LV_TEXT_ALIGN_CENTER, 0);
@@ -562,7 +504,6 @@ void rebuild_for(lv_obj_t* screen, SetupState* s) {
         case Step::Welcome:      build_welcome(s->content, s, screen);       clear_dots(s);            break;
         case Step::Install:      build_install(s->content, s, screen);       set_dots_active(s, 0);    break;
         case Step::Pairing:      build_pairing(s->content, s, screen);       set_dots_active(s, 1);    break;
-        case Step::Orioning:     build_orioning(s->content, s, screen);      set_dots_active(s, 1);    break;
         case Step::PhonePairing: build_phone_pairing(s->content, s, screen); set_dots_active(s, 2);    break;
         case Step::Complete:     build_complete(s->content, s, screen);                                break;
     }
@@ -609,7 +550,7 @@ lv_obj_t* create(Step initial) {
 
     // Dot row — anchored at the fixed y so it never moves between pages.
     s->dots_row = lv_obj_create(screen);
-    int16_t dot_row_width = 4 * DOT_SIZE + 3 * DOT_GAP;
+    int16_t dot_row_width = 3 * DOT_SIZE + 2 * DOT_GAP;
     lv_obj_set_size(s->dots_row, dot_row_width, DOT_SIZE);
     lv_obj_set_pos(s->dots_row, (800 - dot_row_width) / 2, DOT_ROW_Y);
     lv_obj_set_style_bg_opa(s->dots_row, LV_OPA_TRANSP, 0);
@@ -622,7 +563,7 @@ lv_obj_t* create(Step initial) {
     lv_obj_set_flex_align(s->dots_row,
         LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 3; ++i) {
         lv_obj_t* dot = lv_obj_create(s->dots_row);
         lv_obj_set_size(dot, DOT_SIZE, DOT_SIZE);
         lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
@@ -691,7 +632,7 @@ lv_obj_t* show_passkey_modal(lv_obj_t* screen) {
         LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     lv_obj_t* h = lv_label_create(card);
-    lv_label_set_text(h, "Confirm this passkey on Orion");
+    lv_label_set_text(h, "Confirm on Orion");
     lv_obj_set_style_text_color(h, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(h, theme::font_h2(), 0);
     lv_obj_set_style_text_align(h, LV_TEXT_ALIGN_CENTER, 0);
@@ -714,6 +655,62 @@ void hide_passkey_modal(lv_obj_t* screen) {
     lv_obj_delete(s->passkey_modal);
     s->passkey_modal = nullptr;
     if (s->pairing_spinner) lv_obj_clear_flag(s->pairing_spinner, LV_OBJ_FLAG_HIDDEN);
+}
+
+lv_obj_t* show_orioning_modal(lv_obj_t* screen) {
+    auto* s = static_cast<SetupState*>(lv_obj_get_user_data(screen));
+    if (!s) return nullptr;
+    if (s->orioning_modal) return s->orioning_modal;
+
+    lv_obj_t* scrim = lv_obj_create(screen);
+    lv_obj_set_size(scrim, 800, 480);
+    lv_obj_set_pos(scrim, 0, 0);
+    lv_obj_set_style_bg_color(scrim, theme::color(theme::COLOR_SCRIM), 0);
+    lv_obj_set_style_bg_opa(scrim, theme::SCRIM_OPA, 0);
+    lv_obj_set_style_border_width(scrim, 0, 0);
+    lv_obj_set_style_pad_all(scrim, 0, 0);
+    lv_obj_clear_flag(scrim, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(scrim, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t* card = lv_obj_create(scrim);
+    lv_obj_set_size(card, 540, LV_SIZE_CONTENT);
+    lv_obj_center(card);
+    lv_obj_set_style_bg_color(card, theme::color(theme::COLOR_CARD), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(card, theme::color(theme::COLOR_DIVIDER_STRONG), 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_radius(card, 18, 0);
+    lv_obj_set_style_pad_all(card, 36, 0);
+    lv_obj_set_style_shadow_color(card, theme::color(0x000000), 0);
+    lv_obj_set_style_shadow_width(card, 30, 0);
+    lv_obj_set_style_shadow_opa(card, LV_OPA_70, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(card,
+        LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t* heading = lv_label_create(card);
+    lv_label_set_text(heading, "A busy day ahead\xe2\x80\xa6");
+    lv_obj_set_style_text_color(heading, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
+    lv_obj_set_style_text_font(heading, theme::font_title(), 0);
+    lv_obj_set_style_text_align(heading, LV_TEXT_ALIGN_CENTER, 0);
+
+    lv_obj_t* ring = widget_progress_ring::create(card, 140);
+    lv_obj_set_style_pad_top(ring, 24, 0);
+    widget_progress_ring::set_value(ring, 67);
+    widget_progress_ring::set_label_font(ring, theme::font_time());
+    widget_progress_ring::set_label_text_center(ring, "67%");
+
+    s->orioning_modal = scrim;
+    lv_obj_move_foreground(scrim);
+    return scrim;
+}
+
+void hide_orioning_modal(lv_obj_t* screen) {
+    auto* s = static_cast<SetupState*>(lv_obj_get_user_data(screen));
+    if (!s || !s->orioning_modal) return;
+    lv_obj_delete(s->orioning_modal);
+    s->orioning_modal = nullptr;
 }
 
 } // namespace screen_setup

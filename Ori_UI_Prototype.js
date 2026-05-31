@@ -142,11 +142,11 @@ const SCREENS = {
     modal: () => profileDetailHTML(),
   },
   'kbd-mode': {
-    label: 'Primary state', title: 'Controls (BLE bridge)',
+    label: 'Primary state', title: 'Media mode (BLE bridge)',
     desc: 'Touch surface acts as a secondary controller for the paired PC — large album art (tap = play/pause, swipe ↔ = prev/next, swipe ↕ = volume with momentary HUD), now-playing title + artist, three user-assignable shortcut buttons (default mock: mute audio, mute mic, screen capture). All commands travel as custom BLE messages to Orion which bridges to OS APIs. Tap the toggle in the status bar to switch back to calendar mode.',
     statusBar: { ancsApps: ['gmail', 'messenger', 'instagram'], phoneConnected: true },
-    mode: 'keyboard',
-    leftRender: () => keyboardModeHTML(),
+    mode: 'media',
+    leftRender: () => mediaModeHTML(),
   },
   'countdown': {
     label: 'Modal popup', title: '5-minute pre-meeting alert',
@@ -181,28 +181,28 @@ const SCREENS = {
     hideStatusBar: true,
     setup: () => setupInstallHTML(),
   },
-  'setup-pc': {
-    label: 'Setup flow', title: 'Step 2 — Orion pairing',
-    desc: 'Shows the BLE name so user picks the right Ori in Orion.',
+  'setup-link-orion': {
+    label: 'Setup flow', title: 'Step 2 — Link Orion',
+    desc: 'Waiting for Orion to connect. Shows the BLE device name so the user picks the right Ori.',
     hideStatusBar: true,
-    setup: () => setupOrionPairingHTML(),
+    setup: () => setupLinkOrionHTML(),
   },
   'setup-passkey': {
-    label: 'Setup flow', title: 'Step 2 — Passkey popup',
-    desc: '6-digit passkey for secure BLE bonding.',
+    label: 'Setup flow', title: 'Step 2 — Passkey',
+    desc: '6-digit passkey modal for secure BLE bonding — overlaid on the Link Orion base screen.',
     hideStatusBar: true,
-    setup: () => setupOrionPairingHTML(),
+    setup: () => setupLinkOrionHTML(),
     modal: () => passkeyHTML(PASSKEY),
   },
   'setup-orioning': {
     label: 'Setup flow', title: 'Step 2 — Orioning',
-    desc: 'First sync from Orion: profile, calendar, PTO, time.',
+    desc: 'First sync from Orion (profile, calendar, PTO, time) — overlaid on the Link Orion base screen.',
     hideStatusBar: true,
-    setup: () => setupOrionPairingHTML(),
+    setup: () => setupLinkOrionHTML(),
     modal: () => orioningModalHTML(67),
   },
   'setup-phone': {
-    label: 'Setup flow', title: 'Step 3 — iPhone pairing',
+    label: 'Setup flow', title: 'Step 3 — Pair iPhone ',
     desc: 'Optional. Skip; can re-pair later by long-press on phone-disconnect icon.',
     hideStatusBar: true,
     setup: () => setupPhoneHTML({ allowSkip: true }),
@@ -269,7 +269,7 @@ const SCREENS = {
   },
   'cached': {
     label: 'Edge case', title: 'Orion offline — using cached list',
-    desc: 'No BLE link to Orion. Cached meetings still render with a SYNCED pill. Note: the Controls mode-toggle button is hidden from the status bar — Controls is useless without Orion bridging commands to the OS. The profile-photo border also auto-falls to dark grey (presence-offline) because Ori can no longer verify the user\'s real Teams status.',
+    desc: 'No BLE link to Orion. Cached meetings still render with a SYNCED pill. Note: the Media mode-toggle button is hidden from the status bar — Media mode is useless without Orion bridging commands to the OS. The profile-photo border also auto-falls to dark grey (presence-offline) because Ori can no longer verify the user\'s real Teams status.',
     statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true, pcConnected: false },
     leftRender: () => meetingListHTML(TODAY_MEETINGS, true),
   },
@@ -430,7 +430,7 @@ function factoryResetHTML() {
 
 function passkeyHTML(passkey) {
   return '<div class="passkey-card">' +
-    '<h3>Confirm this passkey on Orion</h3>' +
+    '<h3>Confirm on Orion</h3>' +
     '<div class="passkey-digits">' + passkey + '</div>' +
     '</div>';
 }
@@ -440,20 +440,20 @@ function orioningModalHTML(pct) {
   return '<div class="passkey-card">' +
     '<h3>A busy day ahead…</h3>' +
     '<div class="orioning-ring" style="width:140px;height:140px;margin:24px auto 0">' +
-      '<svg viewBox="0 0 200 200">' +
-        '<circle class="track" cx="100" cy="100" r="' + R + '" fill="none" stroke-width="7"/>' +
-        '<circle class="progress" cx="100" cy="100" r="' + R + '" fill="none" stroke-width="7" stroke-dasharray="' + C.toFixed(1) + '" stroke-dashoffset="' + off.toFixed(1) + '"/>' +
-      '</svg>' +
-      '<div class="pct-label" style="font-size:30px">' + pct + '%</div>' +
+    '<svg viewBox="0 0 200 200">' +
+    '<circle class="track" cx="100" cy="100" r="' + R + '" fill="none" stroke-width="7"/>' +
+    '<circle class="progress" cx="100" cy="100" r="' + R + '" fill="none" stroke-width="7" stroke-dasharray="' + C.toFixed(1) + '" stroke-dashoffset="' + off.toFixed(1) + '"/>' +
+    '</svg>' +
+    '<div class="pct-label" style="font-size:30px">' + pct + '%</div>' +
     '</div>' +
-  '</div>';
+    '</div>';
 }
 
 function setupShell(stepIndex, body, extraStyle) {
   var styleAttr = extraStyle ? ' style="' + extraStyle + '"' : '';
   if (stepIndex === 'hide') return '<div class="setup"' + styleAttr + '>' + body + '</div>';
   let dots = '';
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 3; i++) {
     let cls = '';
     if (typeof stepIndex === 'number') {
       if (i === stepIndex) cls = 'active';
@@ -468,9 +468,9 @@ function brandMarkHTML(size, mtop) {
   if (mtop === undefined) mtop = 8;
   return '<div class="brand-mark" style="margin-top:' + mtop + 'px">' +
     '<div class="bm-namerow">' +
-      '<div class="bm-line"></div>' +
-      '<div class="word">o<span class="dot">r</span>i</div>' +
-      '<div class="bm-line bm-line-r"></div>' +
+    '<div class="bm-line"></div>' +
+    '<div class="word">o<span class="dot">r</span>i</div>' +
+    '<div class="bm-line bm-line-r"></div>' +
     '</div>' +
     '</div>';
 }
@@ -479,8 +479,8 @@ function setupWelcomeHTML() {
   return setupShell('pre',
     brandMarkHTML(132, -2) +
     '<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%">' +
-      '<p style="font-size:30px;color:var(--text-1);letter-spacing:0.3px;">A display for your day</p>' +
-      '<p style="margin-top:10px;font-size:16px;color:var(--text-2);">Your desk deserves better</p>' +
+    '<p style="font-size:42px;color:var(--text-1);letter-spacing:0.3px;">A display for your day</p>' +
+    '<p style="margin-top:10px;font-size:26px;color:var(--text-2);">Your desk deserves better</p>' +
     '</div>' +
     '<button class="btn btn-primary" onclick="setScreen(\'setup-install\')">Start</button>',
     'padding-bottom:80px'
@@ -491,35 +491,21 @@ function setupInstallHTML() {
   return setupShell(0,
     brandMarkHTML(132, -2) +
     '<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%">' +
-      '<p style="font-size:30px;color:var(--text-1);">Download Orion at <span style="color:var(--accent)">ori.app/orion</span></p>' +
-      '<p style="margin-top:10px;font-size:16px;color:var(--text-2);">Available on Windows and macOS</p>' +
+    '<p style="font-size:42px;color:var(--text-1);">Download Orion at <span style="color:var(--accent)">ori.app/orion</span></p>' +
+    '<p style="margin-top:10px;font-size:26px;color:var(--text-2);">Available on Windows and macOS</p>' +
     '</div>' +
-    '<button class="btn btn-primary" onclick="setScreen(\'setup-pc\')">Next</button>',
+    '<button class="btn btn-primary" onclick="setScreen(\'setup-link-orion\')">Next</button>',
     'padding-bottom:80px'
   );
 }
 
-function setupOrionPairingHTML() {
+function setupLinkOrionHTML() {
   return setupShell(1,
     brandMarkHTML(132, -2) +
     '<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%">' +
-      '<p style="font-size:30px;color:var(--text-1);">Connect to this device on Orion</p>' +
-      '<div class="ble-name" style="margin-top:10px">' + escapeHtml(BLE_NAME) + '</div>' +
-      '<div class="pairing-anim" style="margin-top:24px"></div>' +
-    '</div>'
-  );
-}
-
-function setupOrioningHTML(pct) {
-  const R = 90, C = 2 * Math.PI * R, off = C * (1 - pct / 100);
-  return setupShell(2,
-    brandMarkHTML(132, -2) +
-    '<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%">' +
-      '<p style="font-size:30px;color:var(--text-1);">Looks like a busy day ahead</p>' +
-      '<div class="orioning-ring" style="margin-top:24px"><svg viewBox="0 0 200 200">' +
-        '<circle class="track" cx="100" cy="100" r="' + R + '" fill="none" stroke-width="7"/>' +
-        '<circle class="progress" cx="100" cy="100" r="' + R + '" fill="none" stroke-width="7" stroke-dasharray="' + C.toFixed(1) + '" stroke-dashoffset="' + off.toFixed(1) + '"/>' +
-      '</svg><div class="pct-label">' + pct + '%</div></div>' +
+    '<p style="font-size:42px;color:var(--text-1);">Connect on Orion</p>' +
+    '<div class="ble-name" style="margin-top:10px">' + escapeHtml(BLE_NAME) + '</div>' +
+    '<div class="pairing-anim" style="margin-top:24px"></div>' +
     '</div>'
   );
 }
@@ -528,9 +514,9 @@ function setupPhoneHTML(opts) {
   return setupShell(2,
     brandMarkHTML(132, -2) +
     '<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%">' +
-      '<p style="font-size:30px;color:var(--text-1);">Connect to this device on iPhone</p>' +
-      '<div class="ble-name" style="margin-top:10px">' + escapeHtml(BLE_NAME) + '</div>' +
-      '<div class="pairing-anim" style="margin-top:24px"></div>' +
+    '<p style="font-size:42px;color:var(--text-1);">Connect on iPhone</p>' +
+    '<div class="ble-name" style="margin-top:10px">' + escapeHtml(BLE_NAME) + '</div>' +
+    '<div class="pairing-anim" style="margin-top:24px"></div>' +
     '</div>' +
     '<button class="btn btn-tertiary" onclick="setScreen(\'setup-done\')">Skip</button>',
     'padding-bottom:80px'
@@ -546,13 +532,13 @@ function setupDoneHTML() {
   return '<div class="setup" style="cursor:pointer" onclick="skipSetupDone()">' +
     brandMarkHTML(132, -2) +
     '<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%">' +
-      '<p style="font-size:30px;color:var(--text-1);">Welcome, ' + firstName + '</p>' +
-      '<p style="margin-top:10px;font-size:16px;color:var(--text-2);">Let\'s get to work</p>' +
-      '<div class="ok-check" style="margin-top:28px"><svg width="130" height="130" viewBox="0 0 100 100">' +
-        '<circle cx="50" cy="50" r="44" fill="none" stroke="rgba(127,180,138,0.15)" stroke-width="2.5"/>' +
-        '<circle cx="50" cy="50" r="44" fill="none" stroke="#7FB48A" stroke-width="2.5" stroke-linecap="round" class="ok-ring" transform="rotate(-90 50 50)"/>' +
-        '<path d="M29 51 L43 65 L71 35" fill="none" stroke="#7FB48A" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" class="ok-tick"/>' +
-      '</svg></div>' +
+    '<p style="font-size:42px;color:var(--text-1);">Welcome, ' + firstName + '</p>' +
+    '<p style="margin-top:10px;font-size:26px;color:var(--text-2);">Let\'s get to work</p>' +
+    '<div class="ok-check" style="margin-top:28px"><svg width="130" height="130" viewBox="0 0 100 100">' +
+    '<circle cx="50" cy="50" r="44" fill="none" stroke="rgba(127,180,138,0.15)" stroke-width="2.5"/>' +
+    '<circle cx="50" cy="50" r="44" fill="none" stroke="#7FB48A" stroke-width="2.5" stroke-linecap="round" class="ok-ring" transform="rotate(-90 50 50)"/>' +
+    '<path d="M29 51 L43 65 L71 35" fill="none" stroke="#7FB48A" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" class="ok-tick"/>' +
+    '</svg></div>' +
     '</div>' +
     '<div class="setup-done-bar"></div>' +
     '</div>';
@@ -569,7 +555,7 @@ function skipSetupDone() {
 function reconnectSyncingHTML() {
   return '<div class="reconnect-overlay">' +
     '<div class="reconnect-ring"></div>' +
-    '<p style="margin-top:22px;font-size:18px;color:var(--text-3)">Refreshing your day…</p>' +
+    '<p style="margin-top:22px;font-size:24px;color:var(--text-3)">Refreshing your day…</p>' +
     '</div>';
 }
 
@@ -598,9 +584,9 @@ function repairPhoneHTML() {
   return '<div class="setup" style="padding-bottom:80px">' +
     brandMarkHTML(132, -2) +
     '<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%">' +
-      '<p style="font-size:30px;color:var(--text-1);">Connect to this device on iPhone</p>' +
-      '<div class="ble-name" style="margin-top:20px">' + escapeHtml(BLE_NAME) + '</div>' +
-      '<div class="pairing-anim" style="margin-top:24px"></div>' +
+    '<p style="font-size:42px;color:var(--text-1);">Connect on iPhone</p>' +
+    '<div class="ble-name" style="margin-top:20px">' + escapeHtml(BLE_NAME) + '</div>' +
+    '<div class="pairing-anim" style="margin-top:24px"></div>' +
     '</div>' +
     '<button class="btn btn-tertiary" style="margin-top:20px" onclick="setScreen(\'meeting-list\')">Cancel</button>' +
     '</div>';
@@ -612,17 +598,17 @@ function repairPhoneHTML() {
 function unpairPhoneHTML() {
   return '<div class="setup" style="justify-content:center">' +
     '<div class="alert-card">' +
-      '<div class="icon-circle">' +
-        '<svg width="36" height="36" viewBox="0 0 24 24"><use href="#i-warn"/></svg>' +
-      '</div>' +
-      '<h3>Unpair iPhone?</h3>' +
-      '<p>Notification will stop showing until you re-pair</p>' +
-      '<div class="actions">' +
-        '<button class="btn btn-danger" onclick="setScreen(\'repair-phone\')">Unpair</button>' +
-        '<button class="btn btn-tertiary" onclick="setScreen(window._unpairPrev||\'phone-disconnected\')">Cancel</button>' +
-      '</div>' +
+    '<div class="icon-circle">' +
+    '<svg width="36" height="36" viewBox="0 0 24 24"><use href="#i-warn"/></svg>' +
     '</div>' +
-  '</div>';
+    '<h3>Unpair iPhone?</h3>' +
+    '<p>Notification will stop showing until you re-pair</p>' +
+    '<div class="actions">' +
+    '<button class="btn btn-danger" onclick="setScreen(\'repair-phone\')">Unpair</button>' +
+    '<button class="btn btn-tertiary" onclick="setScreen(window._unpairPrev||\'phone-disconnected\')">Cancel</button>' +
+    '</div>' +
+    '</div>' +
+    '</div>';
 }
 
 // ---- Keyboard mode (BLE-bridged secondary controller) ----
@@ -632,7 +618,7 @@ function unpairPhoneHTML() {
 // application. Orion is also the source of truth for the volume level
 // and the currently-playing media metadata, both of which it pushes
 // back to Ori so the HUD and the Now Playing card stay honest.
-// See `.claude/rules/keyboard-mode.md` and `.claude/rules/ble-protocol.md`
+// See `.claude/rules/media-mode.md` and `.claude/rules/ble-protocol.md`
 // §3 (Keyboard Command / Host Volume State / Media Metadata chars).
 
 // Prototype-only state, just for the visual preview.
@@ -656,7 +642,7 @@ const MOCK_MEDIA = {
   title: 'Industrial Symphony No. 1 — The Dream of the Brokenhearted Woman',
   artist: 'Angelo Badalamenti',
   can_seek: true,   // mirrors MediaMetadata.can_seek (ble-protocol.md v1.5)
-                    // set to false to preview the no-scrubber state (e.g. browser audio)
+  // set to false to preview the no-scrubber state (e.g. browser audio)
 };
 // To preview the empty state, swap to:
 // const MOCK_MEDIA = { title: '', artist: '' };
@@ -671,7 +657,7 @@ const KBD_SHORTCUTS = [
   { icon: 'i-screenshot' },  // Screen capture
 ];
 
-function keyboardModeHTML() {
+function mediaModeHTML() {
   const v = kbdVolume;
   const m = MOCK_MEDIA;
   const hasMedia = !!(m.title && m.title.trim());
@@ -702,19 +688,19 @@ function keyboardModeHTML() {
     '</div>' +
     // Timeline bar — only rendered when the app supports seeking (can_seek).
     // Absent or false → scrubber hidden entirely; no dead affordance.
-    (hasMedia && m.can_seek ? (function() {
+    (hasMedia && m.can_seek ? (function () {
       const pct = kbdDuration > 0 ? (kbdPosition / kbdDuration * 100).toFixed(1) : 0;
       return '<div class="kbd-timeline">' +
         '<div class="kbd-timeline-bar">' +
-          '<div class="kbd-timeline-fill" style="width:' + pct + '%">' +
-            '<div class="kbd-timeline-thumb"></div>' +
-          '</div>' +
+        '<div class="kbd-timeline-fill" style="width:' + pct + '%">' +
+        '<div class="kbd-timeline-thumb"></div>' +
+        '</div>' +
         '</div>' +
         '<div class="kbd-timeline-times">' +
-          '<span>' + fmtTime(kbdPosition) + '</span>' +
-          '<span>' + fmtTime(kbdDuration) + '</span>' +
+        '<span>' + fmtTime(kbdPosition) + '</span>' +
+        '<span>' + fmtTime(kbdDuration) + '</span>' +
         '</div>' +
-      '</div>';
+        '</div>';
     })() : '') +
     '</div>' +
     // Title + artist, centred below art
@@ -864,26 +850,26 @@ function bindSeekBar() {
   let seeking = false;
 
   function clientX(e) {
-    if (e.touches && e.touches[0])         return e.touches[0].clientX;
+    if (e.touches && e.touches[0]) return e.touches[0].clientX;
     if (e.changedTouches && e.changedTouches[0]) return e.changedTouches[0].clientX;
     return e.clientX;
   }
 
   function calcPos(cx) {
-    const bar  = timeline.querySelector('.kbd-timeline-bar');
+    const bar = timeline.querySelector('.kbd-timeline-bar');
     const rect = bar.getBoundingClientRect();
-    const rel  = Math.max(0, Math.min(cx - rect.left, rect.width));
-    const pct  = rect.width > 0 ? rel / rect.width * 100 : 0;
-    const pos  = Math.round(pct / 100 * kbdDuration);
+    const rel = Math.max(0, Math.min(cx - rect.left, rect.width));
+    const pct = rect.width > 0 ? rel / rect.width * 100 : 0;
+    const pos = Math.round(pct / 100 * kbdDuration);
     return { pct, pos };
   }
 
   function applySeek(cx) {
     const { pct, pos } = calcPos(cx);
     const fill = timeline.querySelector('.kbd-timeline-fill');
-    const cur  = timeline.querySelector('.kbd-timeline-times span:first-child');
+    const cur = timeline.querySelector('.kbd-timeline-times span:first-child');
     if (fill) fill.style.width = pct.toFixed(1) + '%';
-    if (cur)  cur.textContent  = fmtTime(pos);
+    if (cur) cur.textContent = fmtTime(pos);
   }
 
   function onDown(e) {
@@ -908,11 +894,11 @@ function bindSeekBar() {
   }
 
   timeline.addEventListener('mousedown', onDown);
-  window.addEventListener('mousemove',   onMove);
-  window.addEventListener('mouseup',     onUp);
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
   timeline.addEventListener('touchstart', onDown, { passive: false });
-  window.addEventListener('touchmove',   onMove, { passive: false });
-  window.addEventListener('touchend',    onUp,   { passive: true });
+  window.addEventListener('touchmove', onMove, { passive: false });
+  window.addEventListener('touchend', onUp, { passive: true });
 }
 
 function ancsIconHTML(app) {
@@ -972,19 +958,19 @@ function profileDetailHTML(photoColPadTop) {
 
   return '<div class="profile-box" onclick="event.stopPropagation()">' +
     '<div class="profile-body">' +
-      // Left half — scrollable info block, centred text.
-      '<div class="profile-info-col">' +
-        '<div class="po-name">' + escapeHtml(PROFILE.name) + '</div>' +
-        '<div class="po-job-title">' + escapeHtml(PROFILE.title) + '</div>' +
-        (PROFILE.email ? '<div class="po-email">' + escapeHtml(PROFILE.email) + '</div>' : '') +
-        (PROFILE.phone ? '<div class="po-phone">' + escapeHtml(PROFILE.phone) + '</div>' : '') +
-      '</div>' +
-      // Right half — photo at its exact calendar-mode position, with presence border.
-      '<div class="profile-photo-col"' + padStyle + '>' +
-        '<div class="profile-photo ' + presenceClass + '" style="cursor:default">' +
-          escapeHtml(initialsOf(PROFILE.name)) +
-        '</div>' +
-      '</div>' +
+    // Left half — scrollable info block, centred text.
+    '<div class="profile-info-col">' +
+    '<div class="po-name">' + escapeHtml(PROFILE.name) + '</div>' +
+    '<div class="po-job-title">' + escapeHtml(PROFILE.title) + '</div>' +
+    (PROFILE.email ? '<div class="po-email">' + escapeHtml(PROFILE.email) + '</div>' : '') +
+    (PROFILE.phone ? '<div class="po-phone">' + escapeHtml(PROFILE.phone) + '</div>' : '') +
+    '</div>' +
+    // Right half — photo at its exact calendar-mode position, with presence border.
+    '<div class="profile-photo-col"' + padStyle + '>' +
+    '<div class="profile-photo ' + presenceClass + '" style="cursor:default">' +
+    escapeHtml(initialsOf(PROFILE.name)) +
+    '</div>' +
+    '</div>' +
     '</div>' +
     '<div class="profile-close-row"><button class="btn btn-tertiary" onclick="closeProfileDetail()">Close</button></div>' +
     '</div>';
@@ -1048,31 +1034,31 @@ function renderStatusBar(cfg) {
 
   const pcConnected = cfg.pcConnected !== false;
   const screenMode = (SCREENS[currentScreenId] && SCREENS[currentScreenId].mode) || 'calendar';
-  const isControlsMode = screenMode === 'keyboard';
-  const isClockMode    = screenMode === 'clock';
+  const isMediaMode = screenMode === 'media';
+  const isClockMode = screenMode === 'clock';
 
   // Mode-toggle visibility:
-  //   • Hidden when PC offline (Controls is useless without Orion) — EXCEPT in
+  //   • Hidden when PC offline (Media mode is useless without Orion) — EXCEPT in
   //     Clock mode where the toggle acts as a "return" button and must stay visible.
   //   • In Clock mode: calendar icon, neutral bg — "return to previous mode".
-  //   • In Calendar mode: headphones icon — "tap to enter Controls".
-  //   • In Controls mode: calendar icon, accent-tinted — "tap to return to Calendar".
+  //   • In Calendar mode: headphones icon — "tap to enter Media".
+  //   • In Media mode: calendar icon, accent-tinted — "tap to return to Calendar".
   if (!pcConnected && !isClockMode) {
     modeSlot.innerHTML = '';
     // Real device auto-reverts to Calendar mode when Orion drops.
   } else {
     let toggleClass = 'mode-toggle';
-    let toggleIcon  = 'i-controls';
-    let toggleTitle = 'Enter Controls mode';
+    let toggleIcon = 'i-controls';
+    let toggleTitle = 'Enter Media mode';
     let toggleTarget = 'kbd-mode';
     if (isClockMode) {
-      toggleIcon  = 'i-cal';
+      toggleIcon = 'i-cal';
       toggleTitle = 'Return to previous mode';
       toggleTarget = previousScreenId || 'meeting-list';
-    } else if (isControlsMode) {
-      toggleClass += ' keyboard-mode';
-      toggleIcon   = 'i-cal';
-      toggleTitle  = 'Exit Controls mode';
+    } else if (isMediaMode) {
+      toggleClass += ' media-mode';
+      toggleIcon = 'i-cal';
+      toggleTitle = 'Exit Media mode';
       toggleTarget = 'meeting-list';
     }
     modeSlot.innerHTML =
@@ -1115,9 +1101,9 @@ function bindLongPress(el, action, ms) {
   ['mouseup', 'mouseleave', 'touchend', 'touchcancel'].forEach(ev => el.addEventListener(ev, stop));
 }
 
-let currentScreenId  = null;
+let currentScreenId = null;
 let previousScreenId = null;  // screen before entering Clock; used for the return tap
-let _setupDoneTimer  = null;
+let _setupDoneTimer = null;
 
 function setScreen(id) {
   const cfg = SCREENS[id];
@@ -1161,7 +1147,7 @@ function setScreen(id) {
     setupLayer.style.display = 'none';
     body.style.visibility = 'visible';
     left.innerHTML = cfg.leftRender ? cfg.leftRender() : '';
-    if (cfg.mode === 'keyboard') {
+    if (cfg.mode === 'media') {
       bindAlbumArtGestures();
       bindSeekBar();
     }

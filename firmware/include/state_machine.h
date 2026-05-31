@@ -15,7 +15,7 @@
 //   5. RECONNECT_SYNCING — Orion reconnected, hash-manifest in progress (M5)
 //   6+. Mode-driven (g_mode):
 //       MEETING_LIST / NO_MEETINGS — Calendar mode (mode=0, default)
-//       [Controls rendered via MEETING_LIST/NO_MEETINGS path — mode=1]
+//       [Media rendered via MEETING_LIST/NO_MEETINGS path — mode=1]
 //   7.  CLOCK — user-entered by tapping the status-bar time; not in the
 //       mode-toggle cycle; exits via the mode-toggle button (returns to the
 //       mode that was active before the tap).
@@ -85,7 +85,7 @@ AppState current_state();
 void on_clock_enter();
 
 // Query the current mode.
-// Returns 0 = Calendar (meeting list), 1 = Controls.
+// Returns 0 = Calendar (meeting list), 1 = Media.
 uint8_t current_mode();
 
 } // namespace state_machine

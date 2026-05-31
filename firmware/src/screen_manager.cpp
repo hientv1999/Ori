@@ -10,7 +10,7 @@
 #include "screens/modal_factory_reset.h"
 #include "screens/modal_unpair_phone.h"
 #include "screens/screen_clock.h"
-#include "screens/screen_keyboard_mode.h"
+#include "screens/screen_media_mode.h"
 #include "screens/screen_meeting_list.h"
 #include "screens/screen_no_meetings.h"
 #include "screens/screen_ota_updating.h"
@@ -107,7 +107,7 @@ void debug_apply_defaults() {
         debug_apply_defaults();
         if (g_status_mode == widget_status_bar::Mode::Keyboard) {
             mock_data::set_ancs_config(k_two);
-            debug_load(screen_keyboard_mode::create());
+            debug_load(screen_media_mode::create());
         } else {
             debug_load_meeting_default();
         }
@@ -127,20 +127,19 @@ void print_keymap() {
     Serial.println("  n   No meetings today");
     Serial.println("  c   Digital clock (entered via time tap)");
     Serial.println("  p   PTO scenic");
-    Serial.println("  k   Controls mode");
+    Serial.println("  k   Media mode");
     Serial.println("  C   5-minute countdown modal");
     Serial.println("  P   Cycle Teams presence");
     Serial.println("  X   Toggle PC link state");
     Serial.println("  f   Factory reset modal");
     Serial.println("  U   Unpair iPhone modal");
     Serial.println("  w   Setup — Welcome");
-    Serial.println("  i   Setup — Step 1 Install");
-    Serial.println("  b   Setup — Step 2 Pairing");
-    Serial.println("  B   Setup — Step 2 Pairing + Passkey");
-    Serial.println("  o   Setup — Step 3 Orioning");
-    Serial.println("  t   Setup — Step 4 iPhone pairing");
+    Serial.println("  i   Setup — Step 1 Install Orion");
+    Serial.println("  b   Setup — Step 2 Link Orion");
+    Serial.println("  B   Setup — Step 2 Passkey Modal");
+    Serial.println("  o   Setup — Step 2 Orioning Modal");
+    Serial.println("  t   Setup — Step 3 iPhone pairing");
     Serial.println("  e   Setup — Complete");
-    Serial.println("  r   Re-pair iPhone");
     Serial.println("  x   Reconnect-Syncing overlay");
     Serial.println("  u   OTA-Updating");
     Serial.println("  R   Re-run state machine evaluate() (real boot logic)");
@@ -206,7 +205,7 @@ void debug_handle_key(char c) {
             mock_data::set_ancs_config(k_two);
             g_status_mode = widget_status_bar::Mode::Keyboard;
             debug_apply_defaults();
-            debug_load(screen_keyboard_mode::create());
+            debug_load(screen_media_mode::create());
             break;
         }
         case 'P': {
@@ -246,7 +245,13 @@ void debug_handle_key(char c) {
         case 'i': debug_load_setup(screen_setup::Step::Install,      false); break;
         case 'b': debug_load_setup(screen_setup::Step::Pairing,      false); break;
         case 'B': debug_load_setup(screen_setup::Step::Pairing,      true);  break;
-        case 'o': debug_load_setup(screen_setup::Step::Orioning,     false); break;
+        case 'o': { // Link Orion + orioning modal
+            mock_data::set_ancs_config(k_default_ancs);
+            lv_obj_t* s = screen_setup::create(screen_setup::Step::Pairing);
+            debug_load(s);
+            screen_setup::show_orioning_modal(s);
+            break;
+        }
         case 't': debug_load_setup(screen_setup::Step::PhonePairing, false); break;
         case 'e': debug_load_setup(screen_setup::Step::Complete,     false); break;
         // case 'r': debug_load(screen_repair_phone::create()); // removed obsolete repair screen

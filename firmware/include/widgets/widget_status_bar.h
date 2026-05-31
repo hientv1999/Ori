@@ -8,7 +8,7 @@
 //   [date+time]    spacer    [ANCS icons]  [phone-disconnect?]  [mode-toggle]
 //
 // The date+time block is tappable — fires the TimeTapCb to enter Clock mode.
-// The mode-toggle cycles Calendar ↔ Controls (2-mode cycle). It is hidden
+// The mode-toggle cycles Calendar ↔ Media (2-mode cycle). It is hidden
 // when the PC link is down — except in Clock mode, where it acts as a
 // "return to previous mode" button and stays visible.
 // All elements pull from mock_data on refresh(). ANCS icons are colored
@@ -19,7 +19,7 @@ namespace widget_status_bar {
 constexpr int16_t HEIGHT = 84;
 
 enum class Mode : uint8_t {
-    Calendar = 0,  // toggle shows headphones glyph — "tap to enter Controls"
+    Calendar = 0,  // toggle shows headphones glyph — "tap to enter Media"
     Clock    = 1,  // toggle shows calendar glyph   — "tap to return to previous mode"
     Keyboard = 2,  // toggle shows calendar glyph, accent-tinted — "tap to return to Calendar"
 };

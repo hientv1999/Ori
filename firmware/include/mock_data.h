@@ -73,7 +73,7 @@ MeetingList meetings_long_list();    // LONG_LIST_MEETINGS
 // "SYNCED · 12 min ago" pill label for the cached-data variant.
 const char* synced_pill_text();
 
-// Now-playing media metadata for the Controls / keyboard-mode screen.
+// Now-playing media metadata for the Media mode screen.
 // On hardware these come from Orion via BLE Media Metadata / Media Album
 // Art characteristics. In M3 they're a static mock with a long title so
 // we exercise the ellipsis-on-overflow rendering. Set has_media=false to
@@ -93,7 +93,7 @@ void         set_media_playing(bool playing);   // toggles paused indicator
 bool         media_playing();
 void         set_media_volume(int v);
 
-// Three user-assignable Controls-mode shortcut slots. Each slot has an
+// Three user-assignable Media mode shortcut slots. Each slot has an
 // icon-token string (matching the HTML prototype's KBD_SHORTCUTS). Default
 // mock: mute audio, mute mic, screen capture.
 struct ShortcutSlot {

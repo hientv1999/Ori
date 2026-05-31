@@ -14,7 +14,7 @@
 #include "screens/modal_factory_reset.h"
 #include "screens/modal_unpair_phone.h"
 #include "screens/screen_clock.h"
-#include "screens/screen_keyboard_mode.h"
+#include "screens/screen_media_mode.h"
 #include "screens/screen_meeting_list.h"
 #include "screens/screen_no_meetings.h"
 #include "screens/screen_ota_updating.h"
@@ -29,7 +29,7 @@
 //
 // Left-panel priority logic per state-machine.md. 1 s tick drives the
 // 5-min countdown and meeting-list refresh. Two user-selectable modes:
-// Calendar (0, default) and Controls (1, requires PC link).
+// Calendar (0, default) and Media (1, requires PC link).
 // Clock is a separate state entered by tapping the status-bar time;
 // not part of the mode-toggle cycle; exits via the mode-toggle button.
 
@@ -43,7 +43,7 @@ constexpr uint32_t TICK_MS      = 1000;
 // ─── Module state ─────────────────────────────────────────────────────────
 
 AppState g_state           = AppState::NO_MEETINGS; // current rendered state
-uint8_t  g_mode            = 0;                     // 0=Calendar, 1=Controls
+uint8_t  g_mode            = 0;                     // 0=Calendar, 1=Media
 uint8_t  g_pre_clock_mode  = 0;                     // mode to restore when leaving Clock
 bool     g_pc_connected    = true;
 bool     g_phone_connected = false;
@@ -227,7 +227,7 @@ lv_obj_t* build_clock_screen() {
 }
 
 lv_obj_t* build_controls_screen() {
-    return screen_keyboard_mode::create();
+    return screen_media_mode::create();
 }
 
 lv_obj_t* build_reconnect_screen() {
@@ -434,16 +434,16 @@ void on_mode_toggle() {
         return;
     }
 
-    // Normal 2-mode cycle: Calendar (0) ↔ Controls (1).
+    // Normal 2-mode cycle: Calendar (0) ↔ Media (1).
     g_mode = (g_mode == 0) ? 1 : 0;
     nvs::set_mode(g_mode);
-    Serial.printf("[sm] mode toggle -> %s\n", g_mode ? "Controls" : "Calendar");
+    Serial.printf("[sm] mode toggle -> %s\n", g_mode ? "Media" : "Calendar");
 
-    // If switching to Controls but PC is offline, revert immediately.
+    // If switching to Media but PC is offline, revert immediately.
     if (g_mode == 1 && !g_pc_connected) {
         g_mode = 0;
         nvs::set_mode(0);
-        Serial.println("[sm] PC offline — Controls mode reverted to Calendar");
+        Serial.println("[sm] PC offline — Media mode reverted to Calendar");
     }
 
     g_force_rebuild = true;
@@ -491,7 +491,7 @@ void set_pc_connected(bool connected) {
         if (g_mode == 1) {
             g_mode = 0;
             nvs::set_mode(0);
-            Serial.println("[sm] PC disconnected — Controls mode reverted to Calendar");
+            Serial.println("[sm] PC disconnected — Media mode reverted to Calendar");
         }
         // If user was in Clock, ensure the return-to mode is also Calendar.
         if (g_pre_clock_mode == 1) {

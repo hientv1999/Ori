@@ -1,4 +1,4 @@
-#include "screens/screen_keyboard_mode.h"
+#include "screens/screen_media_mode.h"
 
 #include <lvgl.h>
 #include <cstdlib>
@@ -9,7 +9,7 @@
 #include "widgets/widget_profile_card.h"
 #include "widgets/widget_status_bar.h"
 
-// Controls mode (internal: kbd-mode). BLE commands wired in M5.
+// Media mode. BLE commands wired in M5.
 
 namespace {
 
@@ -522,7 +522,7 @@ lv_obj_t* make_shortcuts_row(lv_obj_t* parent) {
         char letter[2] = { (char) (token && token[0] ? (token[0] - 'a' + 'A') : '?'), 0 };
         lv_label_set_text(glyph, letter);
         lv_obj_set_style_text_color(glyph, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
-        lv_obj_set_style_text_font(glyph, theme::font_h2(), 0);
+        lv_obj_set_style_text_font(glyph, theme::font_display(), 0);
         lv_obj_center(glyph);
     }
     return row;
@@ -530,7 +530,7 @@ lv_obj_t* make_shortcuts_row(lv_obj_t* parent) {
 
 } // namespace
 
-namespace screen_keyboard_mode {
+namespace screen_media_mode {
 
 lv_obj_t* create() {
     lv_obj_t* screen = lv_obj_create(nullptr);
@@ -587,4 +587,4 @@ lv_obj_t* create() {
     return screen;
 }
 
-} // namespace screen_keyboard_mode
+} // namespace screen_media_mode

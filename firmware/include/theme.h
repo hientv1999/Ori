@@ -57,12 +57,11 @@ constexpr uint32_t COLOR_PRESENCE_BUSY      = 0xC4314B;  // Teams red
 constexpr uint32_t COLOR_PRESENCE_AWAY      = 0xFFAA44;  // Teams amber
 constexpr uint32_t COLOR_PRESENCE_OFFLINE   = 0x8A8884;  // Teams grey
 
-// Font getters — return pointers to LVGL's bundled Montserrat fonts.
+// Font getters — return pointers to Hanken Grotesk Medium fonts.
 // Sizes were selected to mirror the prototype's CSS scale.
-const lv_font_t* font_small();        // 16 px — pill, secondary meta
 const lv_font_t* font_body();         // 20 px — default text
-const lv_font_t* font_meta();         // 22 px — meeting meta line, status bar date/sep
-const lv_font_t* font_title();        // 24 px — meeting title, headings
+const lv_font_t* font_meta();         // 24 px — meeting meta line, status bar date/sep
+const lv_font_t* font_title();        // 26 px — meeting title, headings
 const lv_font_t* font_h2();           // 28 px — setup section headings
 const lv_font_t* font_time();         // 30 px — status bar time
 const lv_font_t* font_display();      // 36 px — empty state headline / setup welcome

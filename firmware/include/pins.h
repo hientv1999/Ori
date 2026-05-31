@@ -22,15 +22,10 @@
 //
 // The GPIOs you might intuitively expect to find these on (GPIO 2, GPIO 38)
 // are consumed by the RGB16 parallel panel as R4 and B4. There is no free
-// ESP32 GPIO wired to the backlight LED driver on the stock board — the
-// only path is through CH422G EXIO2 (digital-only). The product spec
-// (`gestures.md`) reflects this: backlight is binary on/off, controlled by
-// a discrete two-finger swipe (up = ON, down = OFF) and a matching ON/OFF
-// toggle in the Orion app. There is no dimming.
-//
-// If a future hardware revision (or a manual mod — see openHASP discussion
-// #602: cut R/C, jumper GPIO 6 to the AP3032 control pad) ever introduces
-// a real PWM line, only `backlight.cpp` needs to change.
+// ESP32 GPIO wired to the backlight LED driver — the only path is through
+// CH422G EXIO2 (digital-only). Backlight is always ON; no runtime control.
+// If a future hardware revision introduces a real PWM line, only backlight.cpp
+// needs to change.
 
 // ----- CH422G I/O expander (shared with GT911 on the touch I²C bus) -------
 #ifndef ORI_CH422G_I2C_ADDR

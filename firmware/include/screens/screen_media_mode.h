@@ -2,8 +2,7 @@
 
 #include <lvgl.h>
 
-// Ori — Controls mode screen (internal name retains "keyboard_mode" /
-// "kbd-mode" for historical reasons; user-facing copy says "Controls").
+// Ori — Media mode screen.
 //
 // Left-panel layout, 528 × 396 px area:
 //   1. Album-art image (240 × 240, centred horizontally)
@@ -20,8 +19,8 @@
 // Status bar + profile card are visible in this screen just like in
 // calendar mode — only the left panel differs.
 
-namespace screen_keyboard_mode {
+namespace screen_media_mode {
 
 lv_obj_t* create();
 
-} // namespace screen_keyboard_mode
+} // namespace screen_media_mode

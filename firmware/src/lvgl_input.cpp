@@ -30,15 +30,13 @@ static void read_cb(lv_indev_t* /*indev*/, lv_indev_data_t* data) {
     const int16_t maxX = (int16_t)lcd_panel::width()  - 1;
     const int16_t maxY = (int16_t)lcd_panel::height() - 1;
 
-    if (cached_n == 1 && cached_points[0].pressed) {
+    if (cached_n >= 1 && cached_points[0].pressed) {
         last_x = clamp_i16(cached_points[0].x, 0, maxX);
         last_y = clamp_i16(cached_points[0].y, 0, maxY);
         data->point.x = last_x;
         data->point.y = last_y;
         data->state   = LV_INDEV_STATE_PRESSED;
     } else {
-        // Two or more fingers => backlight swipe gesture owns the surface;
-        // single-touch UI is suspended. Same handling as "no touch".
         data->point.x = last_x;
         data->point.y = last_y;
         data->state   = LV_INDEV_STATE_RELEASED;
@@ -58,7 +56,7 @@ void init() {
     lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(indev, read_cb);
 
-    Serial.println("[lvgl] input registered (gt911 pointer, 2+ touches suspend)");
+    Serial.println("[lvgl] input registered (gt911 pointer)");
 }
 
 lv_indev_t* get() {
