@@ -34,7 +34,7 @@ DITHER      = False
 ICON_DIR    = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR  = os.path.abspath(os.path.join(ICON_DIR, "..", "src", "assets"))
 CROPPED_DIR = os.path.join(ICON_DIR, "cropped")   # originals never touched
-EXTS        = (".png", ".jpg", ".jpeg")
+EXTS        = (".png", ".jpg", ".jpeg", ".webp")
 
 DEFAULT_LVGL_SCRIPT = os.path.abspath(
     os.path.join(ICON_DIR, "..", ".pio", "libdeps", "ori", "lvgl", "scripts", "LVGLImage.py")

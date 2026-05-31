@@ -11,6 +11,7 @@ extern "C" {
     extern const lv_image_dsc_t screenshot;
     extern const lv_image_dsc_t lock_screen;
     extern const lv_image_dsc_t favorite;
+    extern const lv_image_dsc_t calculator;
 }
 
 namespace shortcut_icons {
@@ -22,7 +23,8 @@ static const Entry k_images[] = {
     { "mic-mute",   &mic_mute   },
     { "screenshot", &screenshot },
     { "lock-screen",&lock_screen},
-    { "favorite",  &favorite   },
+    { "favorite",    &favorite    },
+    { "calculator",  &calculator  },
 };
 } // namespace
 

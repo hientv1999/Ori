@@ -58,7 +58,7 @@ void apply_state_defaults() {
 #ifdef ORI_DEBUG_SERIAL
 
 const mock_data::AncsConfig k_default_ancs = {
-    { "gmail", "messenger", "instagram", nullptr, nullptr }, 3, true,
+    { "gmail", "slack", "whatsapp", "facetime", "messenger" }, 5, true,
 };
 const mock_data::AncsConfig k_phone_off = {
     { nullptr, nullptr, nullptr, nullptr, nullptr }, 0, false,
@@ -67,10 +67,10 @@ const mock_data::AncsConfig k_minimal = {
     { "gmail", nullptr, nullptr, nullptr, nullptr }, 1, true,
 };
 const mock_data::AncsConfig k_two = {
-    { "gmail", "messenger", nullptr, nullptr, nullptr }, 2, true,
+    { "messenger", "teams", nullptr, nullptr, nullptr }, 2, true,
 };
 const mock_data::AncsConfig k_clock_set = {
-    { "gmail", "facebook", nullptr, nullptr, nullptr }, 2, true,
+    { "instagram", "reddit", nullptr, nullptr, nullptr }, 2, true,
 };
 
 lv_obj_t* g_debug_screen = nullptr;

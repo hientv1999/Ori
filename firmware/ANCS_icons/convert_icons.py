@@ -35,7 +35,7 @@ RENAME_MAP = {
 ICON_DIR    = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR  = os.path.abspath(os.path.join(ICON_DIR, "..", "src", "assets"))
 CROPPED_DIR = os.path.join(ICON_DIR, "cropped")
-EXTS        = (".png", ".jpg", ".jpeg")
+EXTS        = (".png", ".jpg", ".jpeg", ".webp")
 
 # Default LVGLImage.py location inside PlatformIO libdeps.
 DEFAULT_LVGL_SCRIPT = os.path.abspath(

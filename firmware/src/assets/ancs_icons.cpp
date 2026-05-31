@@ -27,6 +27,14 @@ extern "C" {
     extern const lv_image_dsc_t outlook;
     extern const lv_image_dsc_t snapchat;
     extern const lv_image_dsc_t google_meet;
+    extern const lv_image_dsc_t facetime;
+    extern const lv_image_dsc_t linkedin;
+    extern const lv_image_dsc_t reddit;
+    extern const lv_image_dsc_t threads;
+    extern const lv_image_dsc_t twitch;
+    extern const lv_image_dsc_t uber;
+    extern const lv_image_dsc_t apple_music;
+    extern const lv_image_dsc_t amazon;
 }
 
 namespace ancs_icons {
@@ -59,6 +67,14 @@ static const Entry k_table[] = {
     { "outlook",     0x0078D4 },
     { "snapchat",    0xFFFC00 },
     { "google_meet", 0x00897B },
+    { "facetime",    0x59C974 },
+    { "linkedin",    0x0A66C2 },
+    { "reddit",      0xFF4500 },
+    { "threads",     0x000000 },
+    { "twitch",      0x9146FF },
+    { "uber",        0x000000 },
+    { "apple_music", 0xFC3C44 },
+    { "amazon",      0xFF9900 },
 };
 
 } // namespace
@@ -95,6 +111,14 @@ static const ImageEntry k_images[] = {
     { "outlook",     &outlook     },
     { "snapchat",    &snapchat    },
     { "google_meet", &google_meet },
+    { "facetime",    &facetime    },
+    { "linkedin",    &linkedin    },
+    { "reddit",      &reddit      },
+    { "threads",     &threads     },
+    { "twitch",      &twitch      },
+    { "uber",        &uber        },
+    { "apple_music", &apple_music },
+    { "amazon",      &amazon      },
 };
 } // namespace
 

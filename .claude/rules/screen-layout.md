@@ -24,7 +24,7 @@ Pixel dimensions: 800 × 480. Left panel: 528 px wide. Right panel: 269 px wide.
 - Height: 84 px.
 - Contents left → right:
   - **Date and time** — tappable: single tap enters Clock view. Hidden on the Clock screen itself.
-  - ANCS notification icons — right-to-left order. Tap opens a full-screen detail overlay (title + body); **Close** button only. No replying — read-only.
+  - ANCS notification icons — up to **5 visible** (layout hard cap; 6 would overflow the bar). Right-to-left order. Queue depth is 20 — notifications beyond the 5th are hidden but shift left as earlier ones are dismissed. Tap opens a full-screen detail overlay (title + body); **Close** button only. No replying — read-only.
   - Phone-disconnect icon — shown only when iPhone is not connected over BLE.
   - **Mode-toggle button** — rightmost element always. Cycles left panel between **Calendar** and **Controls**. **Hidden when Orion is offline** — except in Clock view, where it acts as a return button (calendar icon, neutral style). Icon always shows the destination. See `media-mode.md`.
 
