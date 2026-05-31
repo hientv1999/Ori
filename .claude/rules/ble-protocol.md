@@ -415,11 +415,11 @@ Ori uses chars 11–14 instead of HOGP. Orion bridges each `KeyboardCommand` not
 | Swipe right | `{op:"next"}` | `SendInput VK_MEDIA_NEXT_TRACK` | `NX_KEYTYPE_NEXT` |
 | Swipe left | `{op:"prev"}` | `SendInput VK_MEDIA_PREV_TRACK` | `NX_KEYTYPE_PREVIOUS` |
 | Vertical swipe release | `{op:"vol_set", arg:N}` | `IAudioEndpointVolume::SetMasterVolumeLevelScalar(N/100.0)` → write back `HostVolumeState` | `AudioObjectSetPropertyData kAudioHardwareServiceDeviceProperty_VirtualMainVolume` → write back |
-| Tap shortcut slot N | `{op:"shortcut", arg:N}` | Orion runs configured action (key combo, launch, macro) | same |
+| Tap shortcut slot N | `{op:"shortcut", arg:N}` | Orion runs configured action — see supported tokens below | same |
 
 ¹ Requires macOS Accessibility permission, granted on first launch.
 
-Mute is a user-configurable shortcut action; there is no dedicated `mute` op.
+Supported shortcut actions (configured per slot in Orion settings): `vol-mute`, `mic-mute`, `screenshot`, `lock-screen`, `favorite` (user-defined custom action). No dedicated `mute` op — mute is the `vol-mute` shortcut.
 
 ### State push flow — OS → Orion → Ori
 

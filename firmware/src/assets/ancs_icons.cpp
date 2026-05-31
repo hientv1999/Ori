@@ -16,6 +16,17 @@ extern "C" {
     extern const lv_image_dsc_t teams;
     extern const lv_image_dsc_t sms;
     extern const lv_image_dsc_t phone;
+    extern const lv_image_dsc_t discord;
+    extern const lv_image_dsc_t telegram;
+    extern const lv_image_dsc_t youtube;
+    extern const lv_image_dsc_t tiktok;
+    extern const lv_image_dsc_t spotify;
+    extern const lv_image_dsc_t wechat;
+    extern const lv_image_dsc_t line;
+    extern const lv_image_dsc_t zoom;
+    extern const lv_image_dsc_t outlook;
+    extern const lv_image_dsc_t snapchat;
+    extern const lv_image_dsc_t google_meet;
 }
 
 namespace ancs_icons {
@@ -27,16 +38,27 @@ struct Entry { const char* token; uint32_t rgb; };
 // Brand colours per app token. Approximate — will be refined in M8.
 // Entries cover every token in mock_data.cpp and ancs_client.cpp's bundle map.
 static const Entry k_table[] = {
-    { "gmail",     0xEA4335 },
-    { "messenger", 0x006AFF },
-    { "instagram", 0xE1306C },
-    { "facebook",  0x1877F2 },
-    { "whatsapp",  0x25D366 },
-    { "slack",     0x4A154B },
-    { "twitter",   0x1DA1F2 },
-    { "teams",     0x464EB8 },
-    { "sms",       0x3DC95E },
-    { "phone",     0x34C759 },
+    { "gmail",       0xEA4335 },
+    { "messenger",   0x006AFF },
+    { "instagram",   0xE1306C },
+    { "facebook",    0x1877F2 },
+    { "whatsapp",    0x25D366 },
+    { "slack",       0x4A154B },
+    { "twitter",     0x1DA1F2 },
+    { "teams",       0x464EB8 },
+    { "sms",         0x3DC95E },
+    { "phone",       0x34C759 },
+    { "discord",     0x5865F2 },
+    { "telegram",    0x26A5E4 },
+    { "youtube",     0xFF0000 },
+    { "tiktok",      0xFF0050 },
+    { "spotify",     0x1DB954 },
+    { "wechat",      0x07C160 },
+    { "line",        0x00B900 },
+    { "zoom",        0x2D8CFF },
+    { "outlook",     0x0078D4 },
+    { "snapchat",    0xFFFC00 },
+    { "google_meet", 0x00897B },
 };
 
 } // namespace
@@ -52,16 +74,27 @@ uint32_t color(const char* token) {
 namespace {
 struct ImageEntry { const char* token; const lv_image_dsc_t* dsc; };
 static const ImageEntry k_images[] = {
-    { "gmail",     &gmail     },
-    { "messenger", &messenger },
-    { "instagram", &instagram },
-    { "facebook",  &facebook  },
-    { "whatsapp",  &whatsapp  },
-    { "slack",     &slack     },
-    { "twitter",   &twitter   },
-    { "teams",     &teams     },
-    { "sms",       &sms       },
-    { "phone",     &phone     },
+    { "gmail",       &gmail       },
+    { "messenger",   &messenger   },
+    { "instagram",   &instagram   },
+    { "facebook",    &facebook    },
+    { "whatsapp",    &whatsapp    },
+    { "slack",       &slack       },
+    { "twitter",     &twitter     },
+    { "teams",       &teams       },
+    { "sms",         &sms         },
+    { "phone",       &phone       },
+    { "discord",     &discord     },
+    { "telegram",    &telegram    },
+    { "youtube",     &youtube     },
+    { "tiktok",      &tiktok      },
+    { "spotify",     &spotify     },
+    { "wechat",      &wechat      },
+    { "line",        &line        },
+    { "zoom",        &zoom        },
+    { "outlook",     &outlook     },
+    { "snapchat",    &snapchat    },
+    { "google_meet", &google_meet },
 };
 } // namespace
 

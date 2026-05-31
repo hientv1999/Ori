@@ -72,15 +72,17 @@ Three icon-only square buttons, 82 px tall, 14 px gap, full row width (~152 px w
 
 **Icon assets are compiled into firmware flash.** Ori ships with a fixed set of icon glyphs. Orion's settings UI lets the user pick one per slot from that set and communicates the selection to Ori as an icon ID. Adding new icon types to the available set requires a firmware update — there is no runtime asset delivery path.
 
-Default mock config (user-configurable in Orion settings):
+Supported icon tokens (5 total):
 
-| Slot | Mock action | Mock icon |
-|---|---|---|
-| 1 | Toggle OS master mute | speaker-with-X |
-| 2 | Toggle system microphone | mic-with-slash |
-| 3 | OS screenshot | screenshot frame |
+| Token | Action |
+|---|---|
+| `vol-mute` | Toggle OS master mute |
+| `mic-mute` | Toggle system microphone |
+| `screenshot` | Screenshot |
+| `lock-screen` | Lock screen |
+| `favorite` | User-configured custom action (set in Orion settings) |
 
-No dedicated mute button — mute is one assignable shortcut action among many.
+Default mock config: slot 1 = `vol-mute`, slot 2 = `mic-mute`, slot 3 = `screenshot`.
 
 ## Mode entry / exit
 

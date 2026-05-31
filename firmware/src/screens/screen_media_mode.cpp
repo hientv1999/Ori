@@ -3,6 +3,7 @@
 #include <lvgl.h>
 #include <cstdlib>
 
+#include "assets/shortcut_icons.h"
 #include "mock_data.h"
 #include "theme.h"
 #include "ui_helpers.h"
@@ -516,14 +517,22 @@ lv_obj_t* make_shortcuts_row(lv_obj_t* parent) {
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
 
-        // Placeholder glyph — capital letter from the icon token, centred.
-        lv_obj_t* glyph = lv_label_create(btn);
         const char* token = slots[i].icon_token;
-        char letter[2] = { (char) (token && token[0] ? (token[0] - 'a' + 'A') : '?'), 0 };
-        lv_label_set_text(glyph, letter);
-        lv_obj_set_style_text_color(glyph, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
-        lv_obj_set_style_text_font(glyph, theme::font_display(), 0);
-        lv_obj_center(glyph);
+        const lv_image_dsc_t* img = shortcut_icons::image(token);
+        if (img) {
+            lv_obj_t* img_obj = lv_image_create(btn);
+            lv_image_set_src(img_obj, img);
+lv_obj_center(img_obj);
+            lv_obj_clear_flag(img_obj, LV_OBJ_FLAG_CLICKABLE);
+        } else {
+            // Fallback: capital letter from token until image asset is added.
+            lv_obj_t* glyph = lv_label_create(btn);
+            char letter[2] = { (char)(token && token[0] ? (token[0] - 'a' + 'A') : '?'), 0 };
+            lv_label_set_text(glyph, letter);
+            lv_obj_set_style_text_color(glyph, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
+            lv_obj_set_style_text_font(glyph, theme::font_display(), 0);
+            lv_obj_center(glyph);
+        }
     }
     return row;
 }

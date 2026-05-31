@@ -40,7 +40,7 @@ When Orion is not running, Ori falls back to cached data. See `connectivity.md` 
 - **Controls-mode OS bridge**: subscribes to the `Keyboard Command` notify characteristic and translates each command to the appropriate OS action:
   - `play_pause` / `prev` / `next` → media-key injection (Windows: `SendInput VK_MEDIA_PLAY_PAUSE / _PREV_TRACK / _NEXT_TRACK`; macOS: `CGEventCreateMediaKeyEvent NX_KEYTYPE_PLAY / _PREVIOUS / _NEXT`)
   - `vol_set arg:N` → set OS master volume (Windows: `IAudioEndpointVolume::SetMasterVolumeLevelScalar(N/100.0)`; macOS: `AudioObjectSetPropertyData kAudioHardwareServiceDeviceProperty_VirtualMainVolume`)
-  - `shortcut arg:N` → look up slot N in the local config table and run the configured action (key combo, app launch, macro). Mute is one assignable action — no dedicated `mute` op exists.
+  - `shortcut arg:N` → look up slot N in the local config table and run the configured action. Supported actions: **mute audio** (`vol-mute`), **mute mic** (`mic-mute`), **screenshot** (`screenshot`), **launch app** (`app-launch`), **lock screen** (`lock-screen`).
   - macOS media-key + key-combo injection requires **Accessibility permission** — prompt during first launch; Controls-mode features are inert until granted.
 - **Controls-mode state push**: mirror OS state to Ori so the Controls UI stays accurate:
   - Volume changes: `IAudioEndpointVolumeCallback` (Win) / `AudioObjectAddPropertyListener` (macOS) → debounce ~100 ms → write `HostVolumeState { level, mute }`.
