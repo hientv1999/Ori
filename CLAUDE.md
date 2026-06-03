@@ -49,27 +49,26 @@ Open [Ori_UI_Prototype.html](Ori_UI_Prototype.html) directly in any modern brows
 
 > Update checkboxes as work completes. Critical path: M1 → (M2–M5 ∥ M6) → M7 → M8.
 
-- [x] **M1 — Shared BLE contract** *(unblocks everything)* — locked 2026-05-15, spec **v1.7 (2026-05-30)**
-  Spec in [.claude/rules/ble-protocol.md](.claude/rules/ble-protocol.md). 15 characteristics: profile, photo, meetings, PTO, time sync, factory reset, sync manifest, sync control, 4 media-mode chars (Keyboard Command, Host Volume State, Media Metadata, Media Album Art), Presence Status. Passkey bonding, hash-manifest delta reconnect. No BLE OTA (USB CDC instead). No HOGP.
+- [x] **M1 — Shared BLE contract** *(unblocks everything)* — locked 2026-05-15, spec v1.7 (2026-05-30)
+  15 characteristics, passkey bonding, hash-manifest delta reconnect. Full spec: [ble-protocol.md](.claude/rules/ble-protocol.md).
 
 - [x] **M2 — Firmware skeleton on hardware** — locked 2026-05-16
-  PlatformIO project (16 MB flash, 8 MB PSRAM, 3 MB OTA slots), GT911 touch driver (INT-driven), CH422G I/O expander driver, NVS scaffolding, Arduino_GFX RGB16 panel driver, LVGL 9.5.0 wired to a partial draw buffer, LVGL input adapter.
+  PlatformIO (16 MB flash, 8 MB PSRAM, 3 MB OTA slots), GT911 touch driver, CH422G expander, NVS, Arduino_GFX RGB panel, LVGL 9.5.0 partial-buffer renderer. `scripts/patch_lvgl_helium.py` stubs out ARM Helium assembly that the Xtensa toolchain can't assemble — runs automatically via `extra_scripts` before every build.
 
 - [x] **M3 — Firmware UI port (offline/mock data)** — locked 2026-05-22
-  All screens implemented: status bar, profile card, meeting list, digital clock, PTO visual, 5-min countdown modal, setup flow (3-step: Install → Link Orion → iPhone), factory reset confirm, media mode, OTA-updating, reconnect-syncing overlay, profile detail overlay, ANCS notification overlay. Key decisions locked: Close-button-only policy on all overlays; ANCS tap opens full-screen detail overlay (title + body). Build state: RAM 39.2%, Flash 24.1% (of 3 MB OTA slot).
+  All screens built with mock data: status bar, profile card, meeting list, clock, PTO, countdown modal, setup flow, factory reset, media mode, OTA screen, overlays (reconnect, profile detail, ANCS notification). Build state: RAM 39.2%, Flash 24.1% (of 3 MB OTA slot).
 
 - [x] **M4 — Firmware state machine + persistence** — locked 2026-05-23
-  Left-panel priority logic, 1 s tick (meeting-list refresh + pre-meeting countdown), 5-min one-shot alert per boot, mode toggle (Calendar ↔ Media) with NVS persistence, Media auto-revert on PC disconnect, `on_ota_begin` / `on_reconnect_begin` / `on_reconnect_end` hooks. Long-press handlers wired (profile photo → factory reset, phone-disconnect → re-pair). ANCS icon registry (`ancs_icons.h/cpp`) covering 23 apps. **Known unfixed bug:** factory reset calls `ESP.restart()` inside an LVGL callback → "Cache disabled but cached memory region accessed" on some runs when LCD DMA ISR fires during NVS sector erase. Fix deferred to M5. Build state: RAM 39.2%, Flash 24.1%.
+  Left-panel priority logic, 1 s tick, 5-min pre-meeting alert, Calendar ↔ Media mode toggle with NVS persistence, OTA/reconnect hooks, long-press handlers, ANCS icon registry (23 apps). Post-lock: LVGL 9.5.0 upgrade, Hanken Grotesk font, mode-toggle crash fix. Build state: RAM 51.1%, Flash 41.3% (of 3 MB OTA slot). **Deferred to M5:** factory reset `ESP.restart()` inside LVGL callback can trigger DMA ISR cache fault.
 
 - [ ] **M5 — Firmware BLE + USB CDC firmware update**
-  GATT server (15 chars, full v1.7 spec) + ANCS client, 6-digit passkey bonding, dual-connection management, phone-disconnect icon logic, status-bar mode-toggle visibility tied to BLE-PC link state, profile-photo border driven by Presence Status (falls to offline grey on link drop). JPEG-decoder integration for album art. Validate against M1 contract with mock central. Plus USB CDC firmware-update receiver (framed protocol per `ota.md`, feeds Arduino `Update.write`). **Stack note:** NimBLE-Arduino (`h2zero/NimBLE-Arduino@2.5.0`) required — uses ~40 KB SRAM vs ~80 KB for stock ESP32 BLE; add to `lib_deps` and `-I include/ble` to `build_flags` in `platformio.ini`. LVGL is already pinned at `9.5.0` in `platformio.ini`. Agent: `esp32-connectivity`.
+  GATT server (15 chars, v1.7) + ANCS client, passkey bonding, dual-connection, Presence Status border, album-art JPEG decode, USB CDC OTA receiver. Use `h2zero/NimBLE-Arduino@2.5.0` (saves ~40 KB SRAM vs stock BLE). Agent: `esp32-connectivity`.
 
 - [ ] **M6 — Orion PC app** *(parallel with M2–M5)*
-  Flutter: pairing wizard + passkey confirm, calendar source selection (Google/Outlook/macOS), profile editor, PTO entry, background BLE central service, settings, connection status, and the USB CDC firmware-update sender (`flutter_libserialport` or equivalent). Windows + macOS. Agents: `flutter-frontend`, `orion-sync`, `calendar-integration`.
+  Flutter desktop (Windows + macOS): pairing wizard, calendar source selection, profile editor, PTO entry, background BLE central, USB CDC OTA sender. Agents: `flutter-frontend`, `orion-sync`, `calendar-integration`.
 
 - [ ] **M7 — End-to-end integration**
-  Full loop: calendar provider → Orion → BLE → Ori → screen state. Cross-subsystem tests, offline-cache validation, factory-reset round-trip, re-pair phone from runtime. Agent: `integration-qa`.
+  Full loop: calendar → Orion → BLE → Ori → screen. Cross-subsystem tests, offline cache, factory-reset round-trip. Agent: `integration-qa`.
 
 - [ ] **M8 — Hardening & polish**
-  LVGL animation/memory tuning on real hardware, font/icon sizing review, ori.app/orion landing + app installers + signed builds, factory-provisioning procedure, user-facing setup docs. Orion-side media-mode bridge implementation (OS volume API, now-playing subscription, shortcut configuration UI — see `media-mode.md`, `pc-app.md`, `ble-protocol.md` §12). Carry-over:
-  - **Large clock font.** Currently renders at Montserrat 48. Target ~96 px digits-only font (`0`–`9` + `:`; estimated ~37 KB flash). Apply in [`firmware/src/screens/screen_clock.cpp`](firmware/src/screens/screen_clock.cpp) (see `// TODO(M8): large-digit clock font` marker) and expose from [`firmware/src/theme.cpp`](firmware/src/theme.cpp) as `font_clock_xl()`.
+  Memory/animation tuning, signed installers, ori.app landing, factory-provisioning docs, Orion media-mode OS bridge. Carry-over: large clock font (~96 px digits-only, `font_clock_xl()` in [theme.cpp](firmware/src/theme.cpp), applied in [screen_clock.cpp](firmware/src/screens/screen_clock.cpp)).
