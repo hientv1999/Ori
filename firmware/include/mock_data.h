@@ -135,6 +135,11 @@ struct AncsConfig {
 
 const AncsConfig& ancs_config();
 void              set_ancs_config(const AncsConfig& cfg);
+// Remove the first queue entry matching token, shift remaining left.
+// Called by the ANCS modal on "Read" so the status bar can reveal the next queued icon.
+// M5 note: replace this mock implementation with a call into the real ANCS client queue
+// so dismiss works identically on live BLE data.
+void              dismiss_ancs_notification(const char* token);
 
 // Per-app ANCS notification data. In firmware these fields come from
 // ANCS Notification Attribute commands (Title, Message, Date, DisplayName).

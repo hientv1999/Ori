@@ -5,6 +5,7 @@
 #include "mock_data.h"
 #include "theme.h"
 #include "ui_helpers.h"
+#include "widgets/widget_status_bar.h"
 
 // ANCS notification detail modal.
 //
@@ -22,12 +23,19 @@ namespace {
 
 struct ModalCtx {
     lv_obj_t*   scrim;
-    lv_obj_t*   ancs_tile;   // tile in the status bar — hidden on "Read"
+    lv_obj_t*   ancs_tile;   // tile in the status bar
+    const char* token;       // app token — used to remove from queue on "Read"
 };
 
 void on_read(lv_event_t* e) {
     auto* ctx = static_cast<ModalCtx*>(lv_event_get_user_data(e));
-    if (ctx->ancs_tile) lv_obj_add_flag(ctx->ancs_tile, LV_OBJ_FLAG_HIDDEN);
+    // Remove from queue and refresh — reveals the next queued icon if one exists.
+    mock_data::dismiss_ancs_notification(ctx->token);
+    if (ctx->ancs_tile) {
+        lv_obj_t* ancs_row = lv_obj_get_parent(ctx->ancs_tile);
+        lv_obj_t* bar      = ancs_row ? lv_obj_get_parent(ancs_row) : nullptr;
+        if (bar) widget_status_bar::refresh(bar);
+    }
     lv_obj_delete(ctx->scrim);
     // ctx is freed by the scrim's LV_EVENT_DELETE handler below.
 }
@@ -54,6 +62,7 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ancs_tile, const char* token) 
 
     ctx->scrim     = scrim;
     ctx->ancs_tile = ancs_tile;
+    ctx->token     = token;
     lv_obj_add_event_cb(scrim, [](lv_event_t* e) {
         delete static_cast<ModalCtx*>(lv_event_get_user_data(e));
     }, LV_EVENT_DELETE, ctx);

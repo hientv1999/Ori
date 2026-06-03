@@ -43,7 +43,7 @@ void mock_tick(lv_timer_t* t) {
 
     char buf[8];
     lv_snprintf(buf, sizeof(buf), "%d%%", pct);
-    widget_progress_ring::set_label_text(s->ring, buf);
+    widget_progress_ring::set_label_text_center(s->ring, buf, -8);
 }
 
 void on_screen_delete(lv_event_t* e) {
@@ -88,10 +88,10 @@ lv_obj_t* create() {
     lv_obj_set_style_text_font(state->heading_label, theme::font_display(), 0);
     lv_obj_set_style_text_align(state->heading_label, LV_TEXT_ALIGN_CENTER, 0);
 
-    state->ring = widget_progress_ring::create(root, 220);
+    state->ring = widget_progress_ring::create(root, 220, 8);
     lv_obj_set_style_pad_top(state->ring, 30, 0);
     widget_progress_ring::set_value(state->ring, 0);
-    widget_progress_ring::set_label_text(state->ring, "0%");
+    widget_progress_ring::set_label_text_center(state->ring, "0%", -8);
 
     lv_obj_t* sub = lv_label_create(root);
     lv_label_set_text_static(sub, "Do not power off Ori");

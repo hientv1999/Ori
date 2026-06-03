@@ -48,7 +48,8 @@ uint16_t stroke_width_for(uint16_t size_px) {
 
 namespace widget_progress_ring {
 
-lv_obj_t* create(lv_obj_t* parent, uint16_t size_px) {
+lv_obj_t* create(lv_obj_t* parent, uint16_t size_px,
+                 int16_t x_offset, int16_t y_offset) {
     lv_obj_t* arc = lv_arc_create(parent);
     lv_obj_set_size(arc, size_px, size_px);
     lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);
@@ -72,6 +73,8 @@ lv_obj_t* create(lv_obj_t* parent, uint16_t size_px) {
     lv_obj_set_style_bg_opa(arc, LV_OPA_TRANSP, LV_PART_MAIN);
     lv_obj_set_style_border_width(arc, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(arc, 0, LV_PART_MAIN);
+    lv_obj_set_style_translate_x(arc, x_offset, 0);
+    lv_obj_set_style_translate_y(arc, y_offset, 0);
 
     lv_arc_set_bg_angles(arc, 0, 360);
     lv_arc_set_rotation(arc, START_DEG_TOP);
@@ -139,25 +142,13 @@ void set_angle(lv_obj_t* ring, uint16_t degrees) {
     lv_arc_set_angles(ring, 0, degrees);
 }
 
-void set_label_text(lv_obj_t* ring, const char* s_text) {
+void set_label_text_center(lv_obj_t* ring, const char* s_text, int16_t x_offset) {
     auto* s = static_cast<RingState*>(lv_obj_get_user_data(ring));
     if (!s) return;
     if (s_text) {
         lv_label_set_text(s->big_label, s_text);
         lv_obj_clear_flag(s->big_label, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_align(s->big_label,   LV_ALIGN_CENTER, -8, 0);
-    } else {
-        lv_obj_add_flag(s->big_label, LV_OBJ_FLAG_HIDDEN);
-    }
-}
-
-void set_label_text_center(lv_obj_t* ring, const char* s_text) {
-    auto* s = static_cast<RingState*>(lv_obj_get_user_data(ring));
-    if (!s) return;
-    if (s_text) {
-        lv_label_set_text(s->big_label, s_text);
-        lv_obj_clear_flag(s->big_label, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_align(s->big_label,   LV_ALIGN_CENTER, 0, 0);
+        lv_obj_align(s->big_label,   LV_ALIGN_CENTER, x_offset, 0);
     } else {
         lv_obj_add_flag(s->big_label, LV_OBJ_FLAG_HIDDEN);
     }

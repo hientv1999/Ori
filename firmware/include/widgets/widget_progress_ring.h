@@ -11,12 +11,14 @@
 //   - OTA-Updating screen          — %
 //
 // The center label is a child of the ring container; callers can update it
-// (e.g. "67%", "3:07") via set_label_text().
+// (e.g. "67%", "3:07") via set_label_text_center().
 
 namespace widget_progress_ring {
 
 // `size_px` is the outer diameter. Track + progress stroke width auto-scales.
-lv_obj_t* create(lv_obj_t* parent, uint16_t size_px);
+// `x_offset` / `y_offset` are optional post-layout nudges for fine tuning.
+lv_obj_t* create(lv_obj_t* parent, uint16_t size_px,
+				 int16_t x_offset = 0, int16_t y_offset = 0);
 
 // Indeterminate mode: a fixed-length arc head rotates continuously. Used for
 // pre-progress "we're working" states.
@@ -29,9 +31,7 @@ void set_value(lv_obj_t* ring, uint8_t percent);
 void set_angle(lv_obj_t* ring, uint16_t degrees);
 
 // Replace the center label text. Pass nullptr to hide the label entirely.
-void set_label_text(lv_obj_t* ring, const char* s);
-
-void set_label_text_center(lv_obj_t* ring, const char* s);
+void set_label_text_center(lv_obj_t* ring, const char* s, int16_t x_offset = 0);
 
 // Optional sub-label below the main label (e.g. "UNTIL START").
 void set_sub_label_text(lv_obj_t* ring, const char* s);

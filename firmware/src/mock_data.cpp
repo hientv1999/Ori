@@ -1,5 +1,7 @@
 #include "mock_data.h"
 
+#include <string.h>
+
 namespace mock_data {
 
 namespace {
@@ -283,6 +285,18 @@ void set_ancs_config(const AncsConfig& cfg) {
     // passes a count larger than the icons[] array. The display cap
     // (MAX_ANCS_ICONS = 5) is enforced separately in widget_status_bar::refresh().
     if (k_ancs.count > MAX_ANCS_NOTIFICATIONS) k_ancs.count = MAX_ANCS_NOTIFICATIONS;
+}
+
+void dismiss_ancs_notification(const char* token) {
+    if (!token) return;
+    for (size_t i = 0; i < k_ancs.count; ++i) {
+        if (k_ancs.icons[i] && strcmp(k_ancs.icons[i], token) == 0) {
+            for (size_t j = i; j + 1 < k_ancs.count; ++j)
+                k_ancs.icons[j] = k_ancs.icons[j + 1];
+            k_ancs.icons[--k_ancs.count] = nullptr;
+            return;
+        }
+    }
 }
 
 const AncsNotification& ancs_notification(const char* token) {

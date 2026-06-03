@@ -42,7 +42,7 @@ lv_obj_t* create() {
     lv_obj_set_flex_align(left,
         LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    lv_obj_t* ring = widget_progress_ring::create(left, 160);
+    lv_obj_t* ring = widget_progress_ring::create(left, 160, 8);
     lv_obj_set_style_pad_top(ring, 18, 0);
     widget_progress_ring::set_indeterminate(ring, true);
 

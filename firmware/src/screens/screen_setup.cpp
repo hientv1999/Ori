@@ -169,6 +169,8 @@ struct SpinnerState {
     lv_timer_t* timer;
 };
 
+lv_obj_t* make_spinner(lv_obj_t* parent, int16_t size, int16_t x_offset = 0);
+
 static void spinner_timer_cb(lv_timer_t* t) {
     lv_obj_t* arc = static_cast<lv_obj_t*>(lv_timer_get_user_data(t));
     auto* s = static_cast<SpinnerState*>(lv_obj_get_user_data(arc));
@@ -177,7 +179,7 @@ static void spinner_timer_cb(lv_timer_t* t) {
 }
 
 // Big spinning ring — Step 2 & Step 4 pairing animation.
-lv_obj_t* make_spinner(lv_obj_t* parent, int16_t size) {
+lv_obj_t* make_spinner(lv_obj_t* parent, int16_t size, int16_t x_offset) {
     lv_obj_t* arc = lv_arc_create(parent);
     lv_obj_set_size(arc, size, size);
     lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);
@@ -186,6 +188,7 @@ lv_obj_t* make_spinner(lv_obj_t* parent, int16_t size) {
     lv_obj_set_style_bg_opa(arc, LV_OPA_TRANSP, LV_PART_MAIN);
     lv_obj_set_style_border_width(arc, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(arc, 0, LV_PART_MAIN);
+    lv_obj_set_style_translate_x(arc, x_offset, 0);
     lv_obj_set_style_arc_color(arc, theme::color(theme::COLOR_DIVIDER_STRONG), LV_PART_MAIN);
     lv_obj_set_style_arc_width(arc, 3, LV_PART_MAIN);
     lv_obj_set_style_arc_color(arc, theme::color(theme::COLOR_ACCENT), LV_PART_INDICATOR);
@@ -359,7 +362,7 @@ void build_pairing(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
     lv_obj_t* pill = make_ble_pill(mid, mock_data::ble_name());
     lv_obj_set_style_pad_top(pill, 20, 0);
 
-    lv_obj_t* spinner = make_spinner(mid, 100);
+    lv_obj_t* spinner = make_spinner(mid, 100, 8);
     lv_obj_set_style_pad_top(spinner, 24, 0);
     s->pairing_spinner = spinner;
 }
@@ -380,7 +383,7 @@ void build_phone_pairing(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
     lv_obj_t* pill = make_ble_pill(mid, mock_data::ble_name());
     lv_obj_set_style_pad_top(pill, 10, 0);
 
-    lv_obj_t* spinner = make_spinner(mid, 100);
+    lv_obj_t* spinner = make_spinner(mid, 100, 8);
     lv_obj_set_style_pad_top(spinner, 24, 0);
 
     ui::make_btn(content, "Skip",
@@ -695,11 +698,11 @@ lv_obj_t* show_orioning_modal(lv_obj_t* screen) {
     lv_obj_set_style_text_font(heading, theme::font_title(), 0);
     lv_obj_set_style_text_align(heading, LV_TEXT_ALIGN_CENTER, 0);
 
-    lv_obj_t* ring = widget_progress_ring::create(card, 140);
+    lv_obj_t* ring = widget_progress_ring::create(card, 140, 8);
     lv_obj_set_style_pad_top(ring, 24, 0);
     widget_progress_ring::set_value(ring, 67);
     widget_progress_ring::set_label_font(ring, theme::font_time());
-    widget_progress_ring::set_label_text_center(ring, "67%");
+    widget_progress_ring::set_label_text_center(ring, "67%", -8);
 
     s->orioning_modal = scrim;
     lv_obj_move_foreground(scrim);

@@ -58,19 +58,15 @@ void apply_state_defaults() {
 #ifdef ORI_DEBUG_SERIAL
 
 const mock_data::AncsConfig k_default_ancs = {
-    { "gmail", "slack", "whatsapp", "facetime", "messenger" }, 5, true,
+    {
+        "gmail", "slack", "whatsapp", "facetime", "messenger",
+        "instagram", "discord", "teams", "reddit", "uber",
+        "spotify", "youtube", "telegram", "amazon", "tiktok",
+    },
+    15, true,
 };
-const mock_data::AncsConfig k_phone_off = {
+const mock_data::AncsConfig k_no_phone = {
     { nullptr, nullptr, nullptr, nullptr, nullptr }, 0, false,
-};
-const mock_data::AncsConfig k_minimal = {
-    { "gmail", nullptr, nullptr, nullptr, nullptr }, 1, true,
-};
-const mock_data::AncsConfig k_two = {
-    { "messenger", "teams", nullptr, nullptr, nullptr }, 2, true,
-};
-const mock_data::AncsConfig k_clock_set = {
-    { "instagram", "reddit", nullptr, nullptr, nullptr }, 2, true,
 };
 
 lv_obj_t* g_debug_screen = nullptr;
@@ -106,7 +102,7 @@ void debug_apply_defaults() {
                       : widget_status_bar::Mode::Calendar;
         debug_apply_defaults();
         if (g_status_mode == widget_status_bar::Mode::Keyboard) {
-            mock_data::set_ancs_config(k_two);
+            mock_data::set_ancs_config(k_default_ancs);
             debug_load(screen_media_mode::create());
         } else {
             debug_load_meeting_default();
@@ -117,13 +113,7 @@ void debug_apply_defaults() {
 void print_keymap() {
     Serial.println();
     Serial.println("=== Ori screen cycler (ORI_DEBUG_SERIAL) ===");
-    Serial.println("  m   Meeting list (default)");
-    Serial.println("  1   Meeting list — overlapping");
-    Serial.println("  2   Meeting list — long titles");
-    Serial.println("  3   Meeting list — overlap + long titles");
-    Serial.println("  4   Meeting list — long scrollable list");
-    Serial.println("  5   Meeting list — cached state");
-    Serial.println("  d   Meeting list — iPhone disconnected");
+    Serial.println("  m   Meeting list");
     Serial.println("  n   No meetings today");
     Serial.println("  c   Digital clock (entered via time tap)");
     Serial.println("  p   PTO scenic");
@@ -155,46 +145,20 @@ void debug_handle_key(char c) {
             mock_data::set_ancs_config(k_default_ancs);
             debug_load(screen_meeting_list::create(mock_data::meetings(), false));
             break;
-        case '1':
-            mock_data::set_ancs_config(k_two);
-            debug_load(screen_meeting_list::create(mock_data::meetings_overlap(), false));
-            break;
-        case '2':
-            mock_data::set_ancs_config(k_minimal);
-            debug_load(screen_meeting_list::create(mock_data::meetings_long_title(), false));
-            break;
-        case '3':
-            mock_data::set_ancs_config(k_minimal);
-            debug_load(screen_meeting_list::create(mock_data::meetings_overlap_long(), false));
-            break;
-        case '4':
-            mock_data::set_ancs_config(k_two);
-            debug_load(screen_meeting_list::create(mock_data::meetings_long_list(), false));
-            break;
-        case '5':
-            mock_data::set_ancs_config(k_two);
-            debug_load(screen_meeting_list::create(mock_data::meetings(), true));
-            break;
-        case 'd':
-            mock_data::set_ancs_config(k_phone_off);
-            debug_load(screen_meeting_list::create(mock_data::meetings(), false));
-            break;
         case 'n':
-            mock_data::set_ancs_config(k_minimal);
+            mock_data::set_ancs_config(k_default_ancs);
             debug_load(screen_no_meetings::create());
             break;
         case 'c':
-            mock_data::set_ancs_config(k_clock_set);
+            mock_data::set_ancs_config(k_default_ancs);
             debug_load(screen_clock::create());
             break;
-        case 'p': {
-            mock_data::AncsConfig none = k_default_ancs; none.count = 0;
-            mock_data::set_ancs_config(none);
+        case 'p':
+            mock_data::set_ancs_config(k_default_ancs);
             debug_load(screen_pto::create());
             break;
-        }
         case 'C': {
-            mock_data::set_ancs_config(k_two);
+            mock_data::set_ancs_config(k_default_ancs);
             lv_obj_t* base = screen_meeting_list::create(mock_data::meetings(), false);
             debug_load(base);
             modal_countdown::create(base, "Industrial design review",
@@ -202,7 +166,7 @@ void debug_handle_key(char c) {
             break;
         }
         case 'k': {
-            mock_data::set_ancs_config(k_two);
+            mock_data::set_ancs_config(k_default_ancs);
             g_status_mode = widget_status_bar::Mode::Keyboard;
             debug_apply_defaults();
             debug_load(screen_media_mode::create());
@@ -228,14 +192,14 @@ void debug_handle_key(char c) {
             debug_load_meeting_default();
             break;
         case 'f': {
-            mock_data::set_ancs_config(k_two);
+            mock_data::set_ancs_config(k_default_ancs);
             lv_obj_t* base = screen_meeting_list::create(mock_data::meetings(), false);
             debug_load(base);
             modal_factory_reset::create(base);
             break;
         }
         case 'U': {
-            mock_data::set_ancs_config(k_two);
+            mock_data::set_ancs_config(k_default_ancs);
             lv_obj_t* base = screen_meeting_list::create(mock_data::meetings(), false);
             debug_load(base);
             modal_unpair_phone::create(base);
@@ -255,7 +219,7 @@ void debug_handle_key(char c) {
         case 't': debug_load_setup(screen_setup::Step::PhonePairing, false); break;
         case 'e': debug_load_setup(screen_setup::Step::Complete,     false); break;
         // case 'r': debug_load(screen_repair_phone::create()); // removed obsolete repair screen
-        case 'x': mock_data::set_ancs_config(k_two);
+        case 'x': mock_data::set_ancs_config(k_default_ancs);
                   debug_load(screen_reconnect_syncing::create());              break;
         case 'u': debug_load(screen_ota_updating::create());                  break;
         case 'R':
