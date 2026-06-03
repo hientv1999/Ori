@@ -93,7 +93,7 @@ static void show_meeting_detail(lv_obj_t* screen, const mock_data::Meeting& m) {
 
     // Title — full text, wrapping, state-colored.
     lv_obj_t* title = lv_label_create(scroll_area);
-    lv_label_set_long_mode(title, LV_LABEL_LONG_WRAP);
+    lv_label_set_long_mode(title, LV_LABEL_LONG_DOT); // single-line with ellipsis
     lv_label_set_text(title, m.title);
     lv_obj_set_width(title, lv_pct(100));
     lv_obj_set_style_text_font(title, theme::font_title(), 0);
@@ -102,7 +102,7 @@ static void show_meeting_detail(lv_obj_t* screen, const mock_data::Meeting& m) {
 
     // Location — full text, wrapping.
     lv_obj_t* loc = lv_label_create(scroll_area);
-    lv_label_set_long_mode(loc, LV_LABEL_LONG_WRAP);
+    lv_label_set_long_mode(loc, LV_LABEL_LONG_DOT);
     lv_label_set_text(loc, m.loc);
     lv_obj_set_width(loc, lv_pct(100));
     lv_obj_set_style_text_font(loc, theme::font_meta(), 0);
@@ -112,6 +112,7 @@ static void show_meeting_detail(lv_obj_t* screen, const mock_data::Meeting& m) {
 
     // Organizer.
     lv_obj_t* org = lv_label_create(scroll_area);
+    lv_label_set_long_mode(org, LV_LABEL_LONG_DOT);
     lv_label_set_text(org, m.org);
     lv_obj_set_style_text_font(org, theme::font_meta(), 0);
     lv_obj_set_style_text_color(org, theme::color(theme::COLOR_TEXT_TERTIARY), 0);
@@ -138,7 +139,7 @@ static void show_meeting_detail(lv_obj_t* screen, const mock_data::Meeting& m) {
     lv_obj_t* close_btn = ui::make_btn(box, "Close", ui::BtnStyle::Tertiary,
                                        nullptr, nullptr, 12, 26, theme::font_meta());
     lv_obj_add_event_cb(close_btn, [](lv_event_t* e) {
-        lv_obj_del(static_cast<lv_obj_t*>(lv_event_get_user_data(e)));
+        lv_obj_delete(static_cast<lv_obj_t*>(lv_event_get_user_data(e)));
     }, LV_EVENT_CLICKED, scrim);
 }
 
@@ -205,7 +206,7 @@ lv_obj_t* make_meeting_row(lv_obj_t* parent, const mock_data::Meeting& m) {
 
     // === Content block (column 1) ===
     lv_obj_t* content = lv_obj_create(row);
-    lv_obj_set_size(content, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_height(content, LV_SIZE_CONTENT); // width owned by grid STRETCH — do not set LV_SIZE_CONTENT here or lv_pct() children can't resolve against it in LVGL 9
     ui::clear_container(content);
     lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(content, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
@@ -214,13 +215,14 @@ lv_obj_t* make_meeting_row(lv_obj_t* parent, const mock_data::Meeting& m) {
     // Title — single-line with ellipsis. In-progress red wins over overlap gold.
     lv_obj_t* title = lv_label_create(content);
     lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(title, lv_pct(100));
+    lv_obj_set_height(title, theme::font_title()->line_height); // LVGL 9: LV_SIZE_CONTENT height lets text wrap freely; explicit 1-line height makes LONG_DOT clip instead
     lv_label_set_text(title, m.title);
     lv_obj_set_style_text_font(title, theme::font_title(), 0);
     lv_obj_set_style_text_color(title, theme::color(
         m.in_progress ? theme::COLOR_DANGER :
         m.overlap     ? theme::COLOR_ACCENT :
                         theme::COLOR_TEXT_PRIMARY), 0);
-    lv_obj_set_width(title, lv_pct(100));
 
     // Meta row: location · organizer.
     lv_obj_t* meta = lv_obj_create(content);
@@ -233,10 +235,11 @@ lv_obj_t* make_meeting_row(lv_obj_t* parent, const mock_data::Meeting& m) {
 
     lv_obj_t* loc = lv_label_create(meta);
     lv_label_set_long_mode(loc, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(loc, 220);
+    lv_obj_set_height(loc, theme::font_meta()->line_height);
     lv_label_set_text(loc, m.loc);
     lv_obj_set_style_text_font(loc, theme::font_meta(), 0);
     lv_obj_set_style_text_color(loc, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
-    lv_obj_set_style_max_width(loc, 220, 0);
 
     lv_obj_t* dot = lv_obj_create(meta);
     lv_obj_set_size(dot, 4, 4);
@@ -249,15 +252,16 @@ lv_obj_t* make_meeting_row(lv_obj_t* parent, const mock_data::Meeting& m) {
 
     lv_obj_t* org = lv_label_create(meta);
     lv_label_set_long_mode(org, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(org, 140);
+    lv_obj_set_height(org, theme::font_meta()->line_height);
     lv_label_set_text(org, m.org);
     lv_obj_set_style_text_font(org, theme::font_meta(), 0);
     lv_obj_set_style_text_color(org, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
-    lv_obj_set_style_max_width(org, 140, 0);
 
     // Row click → meeting detail modal.
     lv_obj_add_event_cb(row, [](lv_event_t* e) {
         const auto* mp = static_cast<const mock_data::Meeting*>(lv_event_get_user_data(e));
-        show_meeting_detail(lv_obj_get_screen(lv_event_get_target(e)), *mp);
+        show_meeting_detail(lv_obj_get_screen((lv_obj_t*)lv_event_get_target(e)), *mp);
     }, LV_EVENT_CLICKED, (void*)&m);
 
     return row;
@@ -307,14 +311,6 @@ lv_obj_t* create(mock_data::MeetingList list, bool cached) {
     lv_obj_set_style_pad_all(left, 0, 0);
     lv_obj_clear_flag(left, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Synced pill (cached state) overlays the top-right of the left panel.
-    if (cached) {
-        lv_obj_t* pill = make_synced_pill(left);
-        lv_obj_align(pill, LV_ALIGN_TOP_RIGHT, -18, 8);
-        // Keep it on top of the scrollable list.
-        lv_obj_move_foreground(pill);
-    }
-
     // Scrollable list inside the left panel.
     lv_obj_t* list_obj = lv_obj_create(left);
     lv_obj_set_size(list_obj, LEFT_PANEL_WIDTH, lv_pct(100));
@@ -340,6 +336,13 @@ lv_obj_t* create(mock_data::MeetingList list, bool cached) {
 
     for (size_t i = 0; i < list.count; ++i) {
         make_meeting_row(list_obj, list.items[i]);
+    }
+
+    // Synced pill (cached state) overlays the top-right of the left panel, after meeting rows.
+    if (cached) {
+        lv_obj_t* pill = make_synced_pill(left);
+        lv_obj_align(pill, LV_ALIGN_TOP_RIGHT, -18, 8);
+        lv_obj_move_foreground(pill);
     }
 
     ui::make_panel_divider(body);

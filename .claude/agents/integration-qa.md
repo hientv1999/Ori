@@ -19,8 +19,7 @@ Validate **system behaviors** — the end-to-end loops that no single subsystem 
 6. **Phone disconnect** surfaces the broken-link icon in the status bar; long-press triggers re-pair flow.
 7. **Factory reset** wipes everything and returns to first-boot setup; pairing again works cleanly.
 8. **Orion-offline behavior** — BLE-only state still shows cached data with the "SYNCED · X min ago" pill; fully offline behavior matches the offline rules.
-9. **Brightness gesture** — two-finger swipe persists; restored before display enables on boot.
-10. **Time drift** — local time on Ori stays in sync while Orion is connected; survives Orion disconnect.
+9. **Time drift** — local time on Ori stays in sync while Orion is connected; survives Orion disconnect.
 
 ### Drift detection
 

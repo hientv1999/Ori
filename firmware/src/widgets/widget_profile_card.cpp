@@ -14,6 +14,7 @@ struct CardState {
     lv_obj_t* photo;
     lv_obj_t* name_label;
     lv_obj_t* title_label;
+    bool suppress_click = false;
 };
 
 // Default presence applied to newly-created cards. screen_manager sets
@@ -102,11 +103,20 @@ lv_obj_t* create(lv_obj_t* parent) {
     // Tap opens the profile detail overlay; long-press (3 s) opens factory reset.
     lv_obj_add_flag(s->photo, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_opa(s->photo, LV_OPA_60, LV_STATE_PRESSED);
+    // Store CardState in user data for event handlers
+    lv_obj_set_user_data(s->photo, s);
     lv_obj_add_event_cb(s->photo, [](lv_event_t* e) {
-        modal_profile::create(lv_scr_act(), lv_event_get_target(e));
+        auto* s = static_cast<CardState*>(lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e)));
+        if (s && s->suppress_click) {
+            s->suppress_click = false;
+            return;
+        }
+        modal_profile::create(lv_screen_active(), (lv_obj_t*)lv_event_get_target(e));
     }, LV_EVENT_CLICKED, nullptr);
-    lv_obj_add_event_cb(s->photo, [](lv_event_t*) {
-        modal_factory_reset::create(lv_scr_act());
+    lv_obj_add_event_cb(s->photo, [](lv_event_t* e) {
+        auto* s = static_cast<CardState*>(lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e)));
+        if (s) s->suppress_click = true;
+        modal_factory_reset::create(lv_screen_active());
     }, LV_EVENT_LONG_PRESSED, nullptr);
 
     // Initials, large light-weight glyphs centered in the circle.

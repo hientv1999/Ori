@@ -5,17 +5,20 @@
 // Ori — State Machine (M4)
 //
 // Owns the left-panel priority logic, periodic ticks, 5-minute pre-meeting
-// alert, work-hours boundary, PTO window detection, and meeting expiry.
+// alert, PTO window detection, and meeting expiry.
 //
 // Priority order (highest → lowest):
-//   1. SETUP           — first-boot / factory-reset setup flow
-//   2. OTA_UPDATING    — firmware update in progress (future M5 trigger)
-//   3. PTO_ACTIVE      — current time within cached PTO window
-//   4. COUNTDOWN       — 5-min pre-meeting alert modal
+//   1. SETUP             — first-boot / factory-reset setup flow
+//   2. OTA_UPDATING      — firmware update in progress (future M5 trigger)
+//   3. PTO_ACTIVE        — current time within cached PTO window
+//   4. COUNTDOWN         — 5-min pre-meeting alert modal
 //   5. RECONNECT_SYNCING — Orion reconnected, hash-manifest in progress (M5)
-//   6. MEETING_LIST    — work hours (08:00–17:00) with meetings
-//   7. NO_MEETINGS     — work hours, no meetings
-//   8. CLOCK           — after hours
+//   6+. Mode-driven (g_mode):
+//       MEETING_LIST / NO_MEETINGS — Calendar mode (mode=0, default)
+//       [Media rendered via MEETING_LIST/NO_MEETINGS path — mode=1]
+//   7.  CLOCK — user-entered by tapping the status-bar time; not in the
+//       mode-toggle cycle; exits via the mode-toggle button (returns to the
+//       mode that was active before the tap).
 //
 // The state machine also owns the long-press handlers that fire on the profile
 // photo (factory reset) and phone-disconnect icon (re-pair phone).
@@ -77,8 +80,12 @@ void set_phone_connected(bool connected);
 // Query the current active AppState (for polling).
 AppState current_state();
 
-// Query the current mode (Calendar vs Controls).
-// Returns 0 for Calendar, 1 for Controls (matches NVS encoding).
+// User tapped the status-bar time — enter Clock mode.
+// Saves the current mode so on_mode_toggle() can return to it.
+void on_clock_enter();
+
+// Query the current mode.
+// Returns 0 = Calendar (meeting list), 1 = Media.
 uint8_t current_mode();
 
 } // namespace state_machine

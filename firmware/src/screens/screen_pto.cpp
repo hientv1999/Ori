@@ -147,7 +147,7 @@ static void show_pto_detail(lv_obj_t* screen) {
     lv_obj_t* close_btn = ui::make_btn(box, "Close", ui::BtnStyle::Tertiary,
                                        nullptr, nullptr, 12, 26, theme::font_meta());
     lv_obj_add_event_cb(close_btn, [](lv_event_t* e) {
-        lv_obj_del(static_cast<lv_obj_t*>(lv_event_get_user_data(e)));
+        lv_obj_delete(static_cast<lv_obj_t*>(lv_event_get_user_data(e)));
     }, LV_EVENT_CLICKED, scrim);
 }
 
@@ -253,7 +253,7 @@ lv_obj_t* create() {
 
     // Card click → full-screen detail modal.
     lv_obj_add_event_cb(card, [](lv_event_t* e) {
-        show_pto_detail(lv_obj_get_screen(lv_event_get_target(e)));
+        show_pto_detail(lv_obj_get_screen((lv_obj_t*)lv_event_get_target(e)));
     }, LV_EVENT_CLICKED, nullptr);
 
     ui::make_panel_divider(body);

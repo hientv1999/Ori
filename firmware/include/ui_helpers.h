@@ -22,11 +22,17 @@
 
 namespace ui {
 
+struct ModalLayout {
+    lv_obj_t* scrim;
+    lv_obj_t* card;
+    lv_obj_t* scroll_area;
+    lv_obj_t* actions;
+};
+
 // Shared ghost-button hierarchy used across setup screens and modals.
 enum class BtnStyle {
     Primary,    // accent border/text + stronger glow
     Danger,     // danger border/text + danger glow
-    Secondary,  // muted border/text + subtle glow
     Tertiary,   // faint border/text, no glow
 };
 
@@ -40,6 +46,9 @@ inline void clear_container(lv_obj_t* obj) {
 
 lv_obj_t* make_screen_body(lv_obj_t* screen);
 lv_obj_t* make_panel_divider(lv_obj_t* parent);
+ModalLayout make_modal_layout(lv_obj_t* base_screen,
+                              lv_coord_t card_w = 520,
+                              lv_coord_t card_h = 400);
 lv_obj_t* make_btn(lv_obj_t* parent, const char* text,
                    BtnStyle style,
                    lv_event_cb_t cb = nullptr, void* user = nullptr,

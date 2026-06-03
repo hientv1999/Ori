@@ -10,13 +10,13 @@
 #include "screens/modal_factory_reset.h"
 #include "screens/modal_unpair_phone.h"
 #include "screens/screen_clock.h"
-#include "screens/screen_keyboard_mode.h"
+#include "screens/screen_media_mode.h"
 #include "screens/screen_meeting_list.h"
 #include "screens/screen_no_meetings.h"
 #include "screens/screen_ota_updating.h"
 #include "screens/screen_pto.h"
 #include "screens/screen_reconnect_syncing.h"
-#include "screens/screen_repair_phone.h"
+// #include "screens/screen_repair_phone.h" // removed obsolete repair screen
 #include "screens/screen_setup.h"
 #include "widgets/widget_profile_card.h"
 #include "widgets/widget_status_bar.h"
@@ -58,19 +58,15 @@ void apply_state_defaults() {
 #ifdef ORI_DEBUG_SERIAL
 
 const mock_data::AncsConfig k_default_ancs = {
-    { "gmail", "messenger", "instagram", nullptr, nullptr, nullptr }, 3, true,
+    {
+        "gmail", "slack", "whatsapp", "facetime", "messenger",
+        "instagram", "discord", "teams", "reddit", "uber",
+        "spotify", "youtube", "telegram", "amazon", "tiktok",
+    },
+    15, true,
 };
-const mock_data::AncsConfig k_phone_off = {
-    { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr }, 0, false,
-};
-const mock_data::AncsConfig k_minimal = {
-    { "gmail", nullptr, nullptr, nullptr, nullptr, nullptr }, 1, true,
-};
-const mock_data::AncsConfig k_two = {
-    { "gmail", "messenger", nullptr, nullptr, nullptr, nullptr }, 2, true,
-};
-const mock_data::AncsConfig k_clock_set = {
-    { "gmail", "facebook", nullptr, nullptr, nullptr, nullptr }, 2, true,
+const mock_data::AncsConfig k_no_phone = {
+    { nullptr, nullptr, nullptr, nullptr, nullptr }, 0, false,
 };
 
 lv_obj_t* g_debug_screen = nullptr;
@@ -79,8 +75,8 @@ void debug_load(lv_obj_t* scr) {
     lv_obj_t* prev = g_debug_screen;
     g_debug_screen = scr;
     lv_scr_load(scr);
-    lv_refr_now(lv_disp_get_default());
-    if (prev && prev != scr) lv_obj_del(prev);
+    lv_refr_now(lv_display_get_default());
+    if (prev && prev != scr) lv_obj_delete(prev);
 }
 
 void debug_load_meeting_default() {
@@ -106,8 +102,8 @@ void debug_apply_defaults() {
                       : widget_status_bar::Mode::Calendar;
         debug_apply_defaults();
         if (g_status_mode == widget_status_bar::Mode::Keyboard) {
-            mock_data::set_ancs_config(k_two);
-            debug_load(screen_keyboard_mode::create());
+            mock_data::set_ancs_config(k_default_ancs);
+            debug_load(screen_media_mode::create());
         } else {
             debug_load_meeting_default();
         }
@@ -117,30 +113,23 @@ void debug_apply_defaults() {
 void print_keymap() {
     Serial.println();
     Serial.println("=== Ori screen cycler (ORI_DEBUG_SERIAL) ===");
-    Serial.println("  m   Meeting list (default)");
-    Serial.println("  1   Meeting list — overlapping");
-    Serial.println("  2   Meeting list — long titles");
-    Serial.println("  3   Meeting list — overlap + long titles");
-    Serial.println("  4   Meeting list — long scrollable list");
-    Serial.println("  5   Meeting list — cached state");
-    Serial.println("  d   Meeting list — phone disconnected");
+    Serial.println("  m   Meeting list");
     Serial.println("  n   No meetings today");
-    Serial.println("  c   After-hours digital clock");
+    Serial.println("  c   Digital clock (entered via time tap)");
     Serial.println("  p   PTO scenic");
-    Serial.println("  k   Controls mode");
+    Serial.println("  k   Media mode");
     Serial.println("  C   5-minute countdown modal");
     Serial.println("  P   Cycle Teams presence");
     Serial.println("  X   Toggle PC link state");
     Serial.println("  f   Factory reset modal");
-    Serial.println("  U   Unpair phone modal");
+    Serial.println("  U   Unpair iPhone modal");
     Serial.println("  w   Setup — Welcome");
-    Serial.println("  i   Setup — Step 1 Install");
-    Serial.println("  b   Setup — Step 2 Pairing");
-    Serial.println("  B   Setup — Step 2 Pairing + Passkey");
-    Serial.println("  o   Setup — Step 3 Orioning");
-    Serial.println("  t   Setup — Step 4 Phone pairing");
+    Serial.println("  i   Setup — Step 1 Install Orion");
+    Serial.println("  b   Setup — Step 2 Link Orion");
+    Serial.println("  B   Setup — Step 2 Passkey Modal");
+    Serial.println("  o   Setup — Step 2 Orioning Modal");
+    Serial.println("  t   Setup — Step 3 iPhone pairing");
     Serial.println("  e   Setup — Complete");
-    Serial.println("  r   Re-pair phone");
     Serial.println("  x   Reconnect-Syncing overlay");
     Serial.println("  u   OTA-Updating");
     Serial.println("  R   Re-run state machine evaluate() (real boot logic)");
@@ -156,46 +145,20 @@ void debug_handle_key(char c) {
             mock_data::set_ancs_config(k_default_ancs);
             debug_load(screen_meeting_list::create(mock_data::meetings(), false));
             break;
-        case '1':
-            mock_data::set_ancs_config(k_two);
-            debug_load(screen_meeting_list::create(mock_data::meetings_overlap(), false));
-            break;
-        case '2':
-            mock_data::set_ancs_config(k_minimal);
-            debug_load(screen_meeting_list::create(mock_data::meetings_long_title(), false));
-            break;
-        case '3':
-            mock_data::set_ancs_config(k_minimal);
-            debug_load(screen_meeting_list::create(mock_data::meetings_overlap_long(), false));
-            break;
-        case '4':
-            mock_data::set_ancs_config(k_two);
-            debug_load(screen_meeting_list::create(mock_data::meetings_long_list(), false));
-            break;
-        case '5':
-            mock_data::set_ancs_config(k_two);
-            debug_load(screen_meeting_list::create(mock_data::meetings(), true));
-            break;
-        case 'd':
-            mock_data::set_ancs_config(k_phone_off);
-            debug_load(screen_meeting_list::create(mock_data::meetings(), false));
-            break;
         case 'n':
-            mock_data::set_ancs_config(k_minimal);
+            mock_data::set_ancs_config(k_default_ancs);
             debug_load(screen_no_meetings::create());
             break;
         case 'c':
-            mock_data::set_ancs_config(k_clock_set);
+            mock_data::set_ancs_config(k_default_ancs);
             debug_load(screen_clock::create());
             break;
-        case 'p': {
-            mock_data::AncsConfig none = k_default_ancs; none.count = 0;
-            mock_data::set_ancs_config(none);
+        case 'p':
+            mock_data::set_ancs_config(k_default_ancs);
             debug_load(screen_pto::create());
             break;
-        }
         case 'C': {
-            mock_data::set_ancs_config(k_two);
+            mock_data::set_ancs_config(k_default_ancs);
             lv_obj_t* base = screen_meeting_list::create(mock_data::meetings(), false);
             debug_load(base);
             modal_countdown::create(base, "Industrial design review",
@@ -203,10 +166,10 @@ void debug_handle_key(char c) {
             break;
         }
         case 'k': {
-            mock_data::set_ancs_config(k_two);
+            mock_data::set_ancs_config(k_default_ancs);
             g_status_mode = widget_status_bar::Mode::Keyboard;
             debug_apply_defaults();
-            debug_load(screen_keyboard_mode::create());
+            debug_load(screen_media_mode::create());
             break;
         }
         case 'P': {
@@ -229,14 +192,14 @@ void debug_handle_key(char c) {
             debug_load_meeting_default();
             break;
         case 'f': {
-            mock_data::set_ancs_config(k_two);
+            mock_data::set_ancs_config(k_default_ancs);
             lv_obj_t* base = screen_meeting_list::create(mock_data::meetings(), false);
             debug_load(base);
             modal_factory_reset::create(base);
             break;
         }
         case 'U': {
-            mock_data::set_ancs_config(k_two);
+            mock_data::set_ancs_config(k_default_ancs);
             lv_obj_t* base = screen_meeting_list::create(mock_data::meetings(), false);
             debug_load(base);
             modal_unpair_phone::create(base);
@@ -246,11 +209,17 @@ void debug_handle_key(char c) {
         case 'i': debug_load_setup(screen_setup::Step::Install,      false); break;
         case 'b': debug_load_setup(screen_setup::Step::Pairing,      false); break;
         case 'B': debug_load_setup(screen_setup::Step::Pairing,      true);  break;
-        case 'o': debug_load_setup(screen_setup::Step::Orioning,     false); break;
+        case 'o': { // Link Orion + orioning modal
+            mock_data::set_ancs_config(k_default_ancs);
+            lv_obj_t* s = screen_setup::create(screen_setup::Step::Pairing);
+            debug_load(s);
+            screen_setup::show_orioning_modal(s);
+            break;
+        }
         case 't': debug_load_setup(screen_setup::Step::PhonePairing, false); break;
         case 'e': debug_load_setup(screen_setup::Step::Complete,     false); break;
-        case 'r': debug_load(screen_repair_phone::create());                  break;
-        case 'x': mock_data::set_ancs_config(k_two);
+        // case 'r': debug_load(screen_repair_phone::create()); // removed obsolete repair screen
+        case 'x': mock_data::set_ancs_config(k_default_ancs);
                   debug_load(screen_reconnect_syncing::create());              break;
         case 'u': debug_load(screen_ota_updating::create());                  break;
         case 'R':
@@ -279,7 +248,7 @@ void init() {
     state_machine::evaluate();
 
 #ifdef ORI_DEBUG_SERIAL
-    g_debug_screen = lv_scr_act();
+    g_debug_screen = lv_screen_active();
     print_keymap();
 #endif
 }

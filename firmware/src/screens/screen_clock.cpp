@@ -8,8 +8,9 @@
 #include "widgets/widget_profile_card.h"
 #include "widgets/widget_status_bar.h"
 
-// After-hours digital clock — left panel only. Status bar present, but the
-// status bar's date/time is hidden because the clock face IS the time.
+// Digital clock screen — left panel only, entered by tapping the status-bar
+// time. Status bar is present but its date/time is hidden because the clock
+// face IS the time. Mode-toggle acts as a return button (calendar glyph).
 //
 // TODO(M8): large-digit clock font — see CLAUDE.md M8 milestone for details.
 //
@@ -31,7 +32,7 @@ struct ColonState {
 };
 
 void colon_blink_timer_cb(lv_timer_t* t) {
-    auto* cs = static_cast<ColonState*>(t->user_data);
+    auto* cs = static_cast<ColonState*>(lv_timer_get_user_data(t));
     cs->tick = (uint16_t)((cs->tick + 1) % BLINK_TOTAL_TICKS);
     lv_opa_t opa;
     if (cs->tick < BLINK_HALF_TICKS) {
@@ -76,17 +77,17 @@ lv_obj_t* create() {
     lv_obj_t* hour = lv_label_create(time_row);
     lv_label_set_text(hour, t.hour_12);
     lv_obj_set_style_text_color(hour, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(hour, theme::font_clock(), 0);
+    lv_obj_set_style_text_font(hour, theme::font_large(), 0);
 
     lv_obj_t* colon = lv_label_create(time_row);
     lv_label_set_text(colon, ":");
     lv_obj_set_style_text_color(colon, theme::color(theme::COLOR_ACCENT), 0);
-    lv_obj_set_style_text_font(colon, theme::font_clock(), 0);
+    lv_obj_set_style_text_font(colon, theme::font_large(), 0);
 
     lv_obj_t* minute = lv_label_create(time_row);
     lv_label_set_text(minute, t.minute);
     lv_obj_set_style_text_color(minute, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(minute, theme::font_clock(), 0);
+    lv_obj_set_style_text_font(minute, theme::font_large(), 0);
 
     // Date strip below — "WEDNESDAY, MAY 14 · PM"
     char date_buf[64];
@@ -105,7 +106,7 @@ lv_obj_t* create() {
 
     lv_obj_add_event_cb(screen, [](lv_event_t* e) {
         auto* cs = static_cast<ColonState*>(lv_event_get_user_data(e));
-        if (cs) { lv_timer_del(cs->timer); delete cs; }
+        if (cs) { lv_timer_delete(cs->timer); delete cs; }
     }, LV_EVENT_DELETE, cs);
 
     ui::make_panel_divider(body);

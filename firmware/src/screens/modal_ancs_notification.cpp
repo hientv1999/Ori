@@ -2,10 +2,10 @@
 
 #include <lvgl.h>
 
-#include "assets/ancs_icons.h"
 #include "mock_data.h"
 #include "theme.h"
 #include "ui_helpers.h"
+#include "widgets/widget_status_bar.h"
 
 // ANCS notification detail modal.
 //
@@ -13,7 +13,6 @@
 // content sits directly on the dark scrim (no card box), centred, with the
 // same font-size and colour hierarchy:
 //
-//   [80×80 app icon circle]       ← solid-colour circle from ancs_icons
 //   notification title            ← font_title (24px), md-title equivalent
 //   message body                  ← font_meta  (22px), secondary, wrapping
 //   timestamp                     ← font_meta  (22px), tertiary (md-org)
@@ -24,19 +23,26 @@ namespace {
 
 struct ModalCtx {
     lv_obj_t*   scrim;
-    lv_obj_t*   ancs_tile;   // tile in the status bar — hidden on "Read"
+    lv_obj_t*   ancs_tile;   // tile in the status bar
+    const char* token;       // app token — used to remove from queue on "Read"
 };
 
 void on_read(lv_event_t* e) {
     auto* ctx = static_cast<ModalCtx*>(lv_event_get_user_data(e));
-    if (ctx->ancs_tile) lv_obj_add_flag(ctx->ancs_tile, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_del(ctx->scrim);
+    // Remove from queue and refresh — reveals the next queued icon if one exists.
+    mock_data::dismiss_ancs_notification(ctx->token);
+    if (ctx->ancs_tile) {
+        lv_obj_t* ancs_row = lv_obj_get_parent(ctx->ancs_tile);
+        lv_obj_t* bar      = ancs_row ? lv_obj_get_parent(ancs_row) : nullptr;
+        if (bar) widget_status_bar::refresh(bar);
+    }
+    lv_obj_delete(ctx->scrim);
     // ctx is freed by the scrim's LV_EVENT_DELETE handler below.
 }
 
 void on_close(lv_event_t* e) {
     auto* ctx = static_cast<ModalCtx*>(lv_event_get_user_data(e));
-    lv_obj_del(ctx->scrim);
+    lv_obj_delete(ctx->scrim);
 }
 
 } // namespace
@@ -48,69 +54,26 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ancs_tile, const char* token) 
 
     auto* ctx = new ModalCtx();
 
-    // Full-screen scrim — does NOT dismiss on tap (card has action buttons).
-    lv_obj_t* scrim = lv_obj_create(base_screen);
+    ui::ModalLayout layout = ui::make_modal_layout(base_screen, 660, 400);
+    lv_obj_t* scrim       = layout.scrim;
+    lv_obj_t* card        = layout.card;
+    lv_obj_t* scroll_area = layout.scroll_area;
+    lv_obj_t* actions     = layout.actions;
+
     ctx->scrim     = scrim;
     ctx->ancs_tile = ancs_tile;
-    lv_obj_set_size(scrim, 800, 480);
-    lv_obj_set_pos(scrim, 0, 0);
-    lv_obj_set_style_bg_color(scrim, theme::color(theme::COLOR_SCRIM), 0);
-    lv_obj_set_style_bg_opa(scrim, theme::SCRIM_OPA, 0);
-    lv_obj_set_style_radius(scrim, 0, 0);
-    lv_obj_set_style_border_width(scrim, 0, 0);
-    lv_obj_set_style_pad_all(scrim, 0, 0);
-    lv_obj_clear_flag(scrim, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(scrim, LV_OBJ_FLAG_CLICKABLE);  // absorbs taps outside box
+    ctx->token     = token;
     lv_obj_add_event_cb(scrim, [](lv_event_t* e) {
         delete static_cast<ModalCtx*>(lv_event_get_user_data(e));
     }, LV_EVENT_DELETE, ctx);
 
-    // Outer box — full screen. scroll_area grows to fill space above actions.
-    // OVERFLOW_VISIBLE lets button glow bleed beyond the box bounds.
-    lv_obj_t* box = lv_obj_create(scrim);
-    lv_obj_set_size(box, 800, 480);
-    lv_obj_set_pos(box, 0, 0);
-    ui::clear_container(box);
-    lv_obj_set_style_pad_left(box, 40, 0);
-    lv_obj_set_style_pad_right(box, 40, 0);
-    lv_obj_set_style_pad_top(box, 24, 0);
-    lv_obj_set_style_pad_bottom(box, 24, 0);
-    lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(box, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_add_flag(box, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
-    lv_obj_add_flag(box, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(box, [](lv_event_t*) {}, LV_EVENT_CLICKED, nullptr);
-
-    // Scrollable text area — grows to fill all vertical space above the
-    // action buttons via flex_grow(1). The action row stays outside this
-    // container so the button glow is not clipped by the scroll clip rect.
-    lv_obj_t* scroll_area = lv_obj_create(box);
-    lv_obj_set_width(scroll_area, lv_pct(100));
-    lv_obj_set_flex_grow(scroll_area, 1);
-    lv_obj_set_style_bg_opa(scroll_area, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(scroll_area, 0, 0);
-    lv_obj_set_style_pad_all(scroll_area, 0, 0);
-    lv_obj_add_flag(scroll_area, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(scroll_area, LV_OBJ_FLAG_SCROLL_MOMENTUM);
-    lv_obj_set_scroll_dir(scroll_area, LV_DIR_VER);
-    lv_obj_set_flex_flow(scroll_area, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(scroll_area, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(card, [](lv_event_t*) {}, LV_EVENT_CLICKED, nullptr);
     // Top spacer — centres content when it is shorter than scroll_area's height.
     lv_obj_t* sa_spacer_top = lv_obj_create(scroll_area);
     ui::clear_container(sa_spacer_top);
     lv_obj_set_size(sa_spacer_top, 0, 0);
     lv_obj_set_flex_grow(sa_spacer_top, 1);
-
-    // ── App icon circle (80×80, brand colour from ancs_icons) ──
-    lv_obj_t* icon = lv_obj_create(scroll_area);
-    lv_obj_set_size(icon, 80, 80);
-    lv_obj_set_style_bg_color(icon, theme::color(ancs_icons::color(token)), 0);
-    lv_obj_set_style_bg_opa(icon, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(icon, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_border_width(icon, 0, 0);
-    lv_obj_set_style_pad_all(icon, 0, 0);
-    lv_obj_clear_flag(icon, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(icon, LV_OBJ_FLAG_CLICKABLE);
 
     // ── Notification title (font_title = 24px, md-title equivalent) ──
     lv_obj_t* title = lv_label_create(scroll_area);
@@ -120,7 +83,7 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ancs_tile, const char* token) 
     lv_obj_set_style_text_font(title, theme::font_title(), 0);
     lv_obj_set_style_text_color(title, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_pad_top(title, 16, 0);
+    lv_obj_set_style_pad_top(title, 8, 0);
 
     // ── Message body (font_meta = 22px, secondary — md-loc equivalent) ──
     lv_obj_t* body = lv_label_create(scroll_area);
@@ -153,22 +116,6 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ancs_tile, const char* token) 
     ui::clear_container(sa_spacer_bot);
     lv_obj_set_size(sa_spacer_bot, 0, 0);
     lv_obj_set_flex_grow(sa_spacer_bot, 1);
-
-    // ── Action row — direct child of box, NOT inside scroll_area ──
-    // Keeping buttons outside the scroll clip rect preserves the full
-    // button glow (OVERFLOW_VISIBLE on both box and actions).
-    lv_obj_t* actions = lv_obj_create(box);
-    lv_obj_set_size(actions, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_style_bg_opa(actions, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(actions, 0, 0);
-    lv_obj_set_style_pad_all(actions, 0, 0);
-    lv_obj_set_style_pad_top(actions, 28, 0);
-    lv_obj_set_style_pad_column(actions, 14, 0);
-    lv_obj_clear_flag(actions, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(actions, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_flag(actions, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
-    lv_obj_set_flex_flow(actions, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(actions, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     lv_obj_t* read_btn = ui::make_btn(actions, "Read", ui::BtnStyle::Primary,
                                       nullptr, nullptr, 12, 26, theme::font_meta());

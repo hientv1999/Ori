@@ -29,7 +29,7 @@ namespace ch422g {
 // Initialise the driver. Requires `Wire.begin()` to have already been
 // called by touch::init(). Pushes a known-good default mask to the chip:
 //   - TP_RST   (EXIO1) HIGH (de-asserted)
-//   - LCD_BL   (EXIO2) LOW  (backlight off — backlight::init() will raise it)
+//   - LCD_BL   (EXIO2) LOW  (backlight off — raised to ON by backlight::init())
 //   - LCD_RST  (EXIO3) HIGH (de-asserted)
 //   - All other EXIOn pins LOW.
 //

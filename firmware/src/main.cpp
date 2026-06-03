@@ -6,13 +6,10 @@
 //   2. touch::init()       — brings up the shared Wire bus, then ch422g::init()
 //                            (which leaves EXIO2/LCD_BL low so the panel is
 //                            dark), then issues the GT911 reset over EXIO1.
-//   3. backlight::init()   — restores the saved on/off state over CH422G EXIO2.
-//                            This is the "no white flash" guarantee: the
-//                            backlight is brought from the deliberately-off
-//                            state ch422g::init() left it in, straight to the
-//                            user's saved state, before the panel framebuffer
-//                            has any content. (Backlight is binary on this
-//                            hardware — see backlight.cpp.)
+//   3. backlight::init()   — turns the backlight ON (always-on policy).
+//                            ch422g::init() leaves EXIO2 LOW so the panel is
+//                            dark until this call, preventing a white flash
+//                            before the framebuffer has any content.
 //   4. lcd_panel::init()   — pulses LCD_RST via EXIO3, then brings up the
 //                            RGB16 bus and clears the framebuffer to black.
 //   5. LVGL init + display driver + input adapter.
@@ -26,7 +23,6 @@
 #include <lvgl.h>
 
 #include "backlight.h"
-#include "gesture.h"
 #include "lcd_panel.h"
 #include "lvgl_display.h"
 #include "lvgl_input.h"
@@ -63,6 +59,9 @@ void setup() {
     mem_snapshot("after lcd_panel");
 
     lv_init();
+    // LVGL 9: provide the tick source via callback instead of LV_TICK_CUSTOM.
+    // millis() is uint32_t on ESP32, matching lv_tick_get_cb_t.
+    lv_tick_set_cb((uint32_t(*)(void))millis);
     mem_snapshot("after lv_init");
 
     lvgl_display::init();
@@ -71,20 +70,10 @@ void setup() {
     lvgl_input::init();
 
     // Long-press threshold — 3000 ms per memory.md (factory reset trigger,
-    // re-pair phone trigger). In LVGL 8.x the value lives on the driver struct:
-    //   indev->driver->long_press_time
-    // Set it on every registered input device before screen_manager::init()
-    // so all long-press callbacks fire at the right duration.
-    {
-        lv_indev_t* indev = lv_indev_get_next(nullptr);
-        while (indev) {
-            if (indev->driver) {
-                indev->driver->long_press_time = 3000;
-            }
-            indev = lv_indev_get_next(indev);
-        }
-        Serial.println("[ori] long press threshold set to 3000 ms");
-    }
+    // re-pair phone trigger). In LVGL 9 the value is set via API on the
+    // lv_indev_t object directly (the driver struct no longer exists).
+    lv_indev_set_long_press_time(lvgl_input::get(), 3000);
+    Serial.println("[ori] long press threshold set to 3000 ms");
 
     screen_manager::init();
     mem_snapshot("after screen_manager");
@@ -97,21 +86,13 @@ void loop() {
     TouchPoint points[5];
     uint8_t n = touch::poll(points);
 
-    gesture::update(points, n);
     nvs::tick();
 
     // ------------------------------------------------------------------
     // LVGL_TICK_HOOK
-    //   esp32-lvgl agent: call lv_timer_handler() and forward single-touch
-    //   into LVGL HERE. Suspend single-touch when n >= 2 (the backlight
-    //   swipe gesture is active). Use touch::poll output directly —
-    //   gesture has already consumed what it needs.
-    //
-    // Tick: LV_TICK_CUSTOM in lv_conf.h reads millis() directly, so we
-    // don't need lv_tick_inc(). The touch::poll() above is the single
-    // hardware read per loop — its result is forwarded to LVGL via feed(),
-    // which caches it for the input device's read_cb. The 2+ touch suspend
-    // rule is enforced inside lvgl_input.cpp.
+    //   esp32-lvgl agent: call lv_timer_handler() and forward touch into
+    //   LVGL HERE. touch::poll() is the single hardware read per loop —
+    //   its result is forwarded via feed() for the input device's read_cb.
     // ------------------------------------------------------------------
     lvgl_input::feed(points, n);
     screen_manager::poll_serial();  // before timer so a screen change renders this iteration

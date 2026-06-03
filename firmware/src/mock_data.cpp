@@ -1,5 +1,7 @@
 #include "mock_data.h"
 
+#include <string.h>
+
 namespace mock_data {
 
 namespace {
@@ -100,7 +102,6 @@ static const char* k_ancs_tokens[] = {
     "facebook",
     "whatsapp",
     "telegram",
-    "signal",
     "slack",
     "discord",
     "twitter",
@@ -115,98 +116,113 @@ static const char* k_ancs_tokens[] = {
     "youtube",
     "wechat",
     "phone",
-    "voicemail",
     "line",
+    "google_meet",
+    "facetime",
+    "reddit",
+    "threads",
+    "twitch",
+    "uber",
+    "apple_music",
+    "amazon",
 };
 
 const AncsNotification k_ancs_notifications[] = {
-    { "Gmail",      "Priya Nair",
+    { "Gmail",        "Priya Nair",
       "Hey, have you had a chance to review the firmware PR? "
       "The team is waiting on approval before they can merge and kick off the build.",
       "2 min ago" },
-    { "Messenger",  "Marcus Lee",
-      "Studio is booked for the design review. I'll send the invite now "
-      "\xe2\x80\x94 can you confirm you're free at 10:30? Also, Hannah said she "
-      "needs at least 20 minutes at the end to walk through the chassis tolerances "
-      "with the vendor rep, so I've blocked the room until 12:00 just in case.",
+    { "Messenger",    "Marcus Lee",
+      "Studio is booked for the design review. I\xe2\x80\x99ll send the invite now "
+      "\xe2\x80\x94 can you confirm you\xe2\x80\x99re free at 10:30?",
       "5 min ago" },
-    { "Instagram",  "New activity",
+    { "Instagram",    "New activity",
       "oridevice and 47 others liked your photo.",
       "18 min ago" },
-    { "Facebook",   "Hannah Kim commented",
-      "Great progress on the display calibration \xe2\x80\x94 the green channel fix looks solid. "
-      "Let\xe2\x80\x99s review the pin map again before M3.",
+    { "Facebook",     "Hannah Kim commented",
+      "Great progress on the display calibration \xe2\x80\x94 the green channel fix looks solid.",
       "1 hr ago" },
-    { "WhatsApp",   "Sam Rivera",
+    { "WhatsApp",     "Sam Rivera",
       "Just landed in Lisbon \xe2\x80\x94 the office address is on the calendar invite. "
       "See you at the venue at 18:30.",
       "3 min ago" },
-    { "Telegram",   "Ori Dev Channel",
+    { "Telegram",     "Ori Dev Channel",
       "New build pushed to staging: firmware v1.2.0-rc3. "
       "Please flash and run the BLE pairing smoke test before EOD.",
       "7 min ago" },
-    { "Signal",     "Dr. Vandenbrook",
-      "The NDA is signed. I\xe2\x80\x99ll send the full spec sheet over secure mail this afternoon.",
-      "12 min ago" },
-    { "Slack",      "#firmware \xe2\x80\x94 Hannah Kim",
-      "The GT911 checksum fix is in. Marking the touch driver ticket as done. "
-      "Heads up: the config write is only safe after Wire is up \xe2\x80\x94 see the comment in init().",
+    { "Slack",        "#firmware \xe2\x80\x94 Hannah Kim",
+      "The GT911 checksum fix is in. Marking the touch driver ticket as done.",
       "Just now" },
-    { "Discord",    "hardware-dev \xe2\x80\x94 Xander T.",
-      "I measured the backlight current at 180 mA. Should be fine on a 500 mA adapter "
-      "even with peak display load. Posting the scope capture in the thread.",
+    { "Discord",      "hardware-dev \xe2\x80\x94 Xander T.",
+      "I measured the backlight current at 180 mA. Should be fine on a 500 mA adapter.",
       "4 min ago" },
-    { "Twitter",    "New mention",
+    { "Twitter",      "New mention",
       "@oridevice The always-on desk display idea is really compelling. "
       "Any plans to make it open hardware?",
       "22 min ago" },
-    { "LinkedIn",   "You have a new connection",
-      "Marcus Lee accepted your connection request. "
-      "You now have 3 mutual connections.",
+    { "LinkedIn",     "You have a new connection",
+      "Marcus Lee accepted your connection request. You now have 3 mutual connections.",
       "45 min ago" },
-    { "TikTok",     "New follower",
+    { "TikTok",       "New follower",
       "oridevice_official gained 128 new followers today.",
       "1 hr ago" },
-    { "Snapchat",   "Priya Nair",
+    { "Snapchat",     "Priya Nair",
       "Priya sent you a snap.",
       "10 min ago" },
-    { "Zoom",       "Meeting starting soon",
-      "Your meeting \xe2\x80\x94 Q4 Investor Preview \xe2\x80\x94 starts in 5 minutes. "
-      "Join link is in the invite.",
+    { "Zoom",         "Meeting starting soon",
+      "Your meeting \xe2\x80\x94 Q4 Investor Preview \xe2\x80\x94 starts in 5 minutes.",
       "5 min ago" },
-    { "Teams",      "Hannah Kim",
-      "I\xe2\x80\x99ve shared the updated chassis render in the Design channel. "
-      "The new corner radius matches the prototype spec exactly.",
+    { "Teams",        "Hannah Kim",
+      "I\xe2\x80\x99ve shared the updated chassis render in the Design channel.",
       "8 min ago" },
-    { "Outlook",    "Vendor Invoice \xe2\x80\x94 Shenzhen Components",
-      "Invoice #SZX-2024-0412 is ready for review. "
-      "Amount due: $14,280. Payment terms: Net 30.",
+    { "Outlook",      "Vendor Invoice \xe2\x80\x94 Shenzhen",
+      "Invoice #SZX-2024-0412 ready for review. Amount due: $14,280. Net 30.",
       "2 hr ago" },
-    { "Messages",   "Xander T.",
+    { "Messages",     "Xander T.",
       "The enclosure samples arrived. Corner finish is perfect \xe2\x80\x94 "
       "bring them to the design review tomorrow.",
       "30 min ago" },
-    { "Spotify",    "New release",
-      "Angelo Badalamenti released a new track: "
-      "\xe2\x80\x9c" "Industrial Symphony No. 2\xe2\x80\x9d. Available now.",
+    { "Spotify",      "New release",
+      "Angelo Badalamenti \xe2\x80\x94 Industrial Symphony No. 2. Available now.",
       "1 hr ago" },
-    { "YouTube",    "New upload",
-      "Ori Device posted: \xe2\x80\x9c" "Building a Desk Status Display from Scratch"
-      "\xe2\x80\x9d \xe2\x80\x94 26 min",
+    { "YouTube",      "Ori Device",
+      "New upload: \xe2\x80\x9cBuilding a Desk Status Display from Scratch\xe2\x80\x9d \xe2\x80\x94 26 min",
       "3 hr ago" },
-    { "WeChat",     "Marcus Lee",
-      "\xe4\xb8\xad\xe6\x96\x87\xe6\xb5\x8b\xe8\xaf\x95 \xe2\x80\x94 "
-      "Translation: \xe2\x80\x9cSee you at the factory on Thursday.\xe2\x80\x9d",
+    { "WeChat",       "Marcus Lee",
+      "See you at the factory on Thursday.",
       "35 min ago" },
-    { "Phone",      "Incoming call",
+    { "Phone",        "Incoming call",
       "Priya Nair is calling.",
       "Just now" },
-    { "Voicemail",  "New voicemail",
-      "You have 1 new voicemail from +1 (415) 555 0199.",
-      "15 min ago" },
-    { "LINE",       "Sam Rivera",
+    { "LINE",         "Sam Rivera",
       "The venue confirmed the booking for Thursday evening.",
       "20 min ago" },
+    { "Google Meet",  "Meeting reminder",
+      "Weekly design sync starts in 10 minutes. "
+      "Click to join \xe2\x80\x94 link in the calendar invite.",
+      "10 min ago" },
+    { "FaceTime",     "Incoming video call",
+      "Hannah Kim is calling on FaceTime.",
+      "Just now" },
+    { "Reddit",       "r/esp32 \xe2\x80\x94 New reply",
+      "Someone replied to your post: \xe2\x80\x9cLVGL 9 on ESP32-S3 \xe2\x80\x94 "
+      "partial render buffer vs full\xe2\x80\x9d.",
+      "14 min ago" },
+    { "Threads",      "New activity",
+      "oridevice \xe2\x80\x94 3 people reposted your thread about the desk display prototype.",
+      "25 min ago" },
+    { "Twitch",       "oridevice is live",
+      "Building the Ori firmware live \xe2\x80\x94 BLE pairing deep dive. 142 viewers.",
+      "2 min ago" },
+    { "Uber",         "Your driver is arriving",
+      "Kwame is 2 minutes away in a white Toyota Camry \xe2\x80\x94 plate KWM 4821.",
+      "Just now" },
+    { "Apple Music",  "New release",
+      "Hans Zimmer \xe2\x80\x94 Interstellar (10th Anniversary Edition) is now available.",
+      "40 min ago" },
+    { "Amazon",       "Package delivered",
+      "Your order \xe2\x80\x94 ESP32-S3 dev boards (qty 5) \xe2\x80\x94 has been delivered to your front door.",
+      "1 hr ago" },
 };
 
 static_assert(
@@ -219,9 +235,11 @@ static const AncsNotification k_ancs_fallback = {
 };
 
 // Default ANCS state shown in the prototype meeting-list screen.
+// 7 queued notifications — only the first 5 are visible in the status bar.
+// Dismissing any of the first 5 shifts the queue left and reveals the next.
 AncsConfig k_ancs = {
-    { "gmail", "slack", "whatsapp", "teams", nullptr, nullptr, nullptr, nullptr },
-    4,
+    { "gmail", "slack", "whatsapp", "facetime", "messenger", "reddit", "uber" },
+    7,
     true,
 };
 
@@ -259,8 +277,27 @@ MeetingList meetings_long_title()   { return { k_long_title,   sizeof(k_long_tit
 MeetingList meetings_overlap_long() { return { k_overlap_long, sizeof(k_overlap_long) / sizeof(Meeting) }; }
 MeetingList meetings_long_list()    { return { k_long_list,    sizeof(k_long_list)    / sizeof(Meeting) }; }
 
-const AncsConfig& ancs_config()                 { return k_ancs; }
-void              set_ancs_config(const AncsConfig& cfg) { k_ancs = cfg; }
+const AncsConfig& ancs_config() { return k_ancs; }
+
+void set_ancs_config(const AncsConfig& cfg) {
+    k_ancs = cfg;
+    // Clamp to the queue depth — prevents out-of-bounds reads if the caller
+    // passes a count larger than the icons[] array. The display cap
+    // (MAX_ANCS_ICONS = 5) is enforced separately in widget_status_bar::refresh().
+    if (k_ancs.count > MAX_ANCS_NOTIFICATIONS) k_ancs.count = MAX_ANCS_NOTIFICATIONS;
+}
+
+void dismiss_ancs_notification(const char* token) {
+    if (!token) return;
+    for (size_t i = 0; i < k_ancs.count; ++i) {
+        if (k_ancs.icons[i] && strcmp(k_ancs.icons[i], token) == 0) {
+            for (size_t j = i; j + 1 < k_ancs.count; ++j)
+                k_ancs.icons[j] = k_ancs.icons[j + 1];
+            k_ancs.icons[--k_ancs.count] = nullptr;
+            return;
+        }
+    }
+}
 
 const AncsNotification& ancs_notification(const char* token) {
     if (token) {

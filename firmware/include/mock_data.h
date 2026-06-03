@@ -73,7 +73,7 @@ MeetingList meetings_long_list();    // LONG_LIST_MEETINGS
 // "SYNCED · 12 min ago" pill label for the cached-data variant.
 const char* synced_pill_text();
 
-// Now-playing media metadata for the Controls / keyboard-mode screen.
+// Now-playing media metadata for the Media mode screen.
 // On hardware these come from Orion via BLE Media Metadata / Media Album
 // Art characteristics. In M3 they're a static mock with a long title so
 // we exercise the ellipsis-on-overflow rendering. Set has_media=false to
@@ -93,7 +93,7 @@ void         set_media_playing(bool playing);   // toggles paused indicator
 bool         media_playing();
 void         set_media_volume(int v);
 
-// Three user-assignable Controls-mode shortcut slots. Each slot has an
+// Three user-assignable Media mode shortcut slots. Each slot has an
 // icon-token string (matching the HTML prototype's KBD_SHORTCUTS). Default
 // mock: mute audio, mute mic, screen capture.
 struct ShortcutSlot {
@@ -107,18 +107,39 @@ constexpr size_t SHORTCUT_COUNT = 3;
 //
 // Icons are referenced by string token. M3 renders them as colored
 // placeholders — real raster/vector assets land in M8.
-// MAX_ANCS_ICONS caps simultaneous status-bar icon slots (display width),
-// not the total number of supported app types.
-constexpr size_t MAX_ANCS_ICONS = 8;
+// Two-tier notification capacity:
+//
+// MAX_ANCS_NOTIFICATIONS — internal queue depth. The ANCS handler (M5) tracks
+//   up to this many live notifications. When a new one arrives and the queue is
+//   full, the oldest entry is displaced (FIFO). When the user reads one (taps
+//   the icon → detail modal → close), the entry is removed and the queue shifts
+//   left, bringing the next hidden notification into the visible window.
+//
+// MAX_ANCS_ICONS — display cap. Status-bar layout budget:
+//   bar inner width 776px minus datetime (~239px), mode-toggle (60px), and
+//   3×16px column gaps = 429px available for the ANCS row.
+//   Each slot costs 74px (60px tile + 14px gap), minus one trailing gap:
+//     5 icons → 5×74−14 = 356px  (73px spacer remains)   ← safe
+//     6 icons → 6×74−14 = 430px  (spacer negative, overflows) ← unsafe
+//   refresh() always renders min(count, MAX_ANCS_ICONS) icons, so notifications
+//   beyond the 5th are hidden but not lost — they become visible as earlier
+//   ones are dismissed.
+constexpr size_t MAX_ANCS_NOTIFICATIONS = 20;   // queue depth
+constexpr size_t MAX_ANCS_ICONS         = 5;    // display cap (layout constraint)
 
 struct AncsConfig {
-    const char* icons[MAX_ANCS_ICONS];
-    size_t      count;
+    const char* icons[MAX_ANCS_NOTIFICATIONS];  // full queue; only first MAX_ANCS_ICONS shown
+    size_t      count;                           // live entries (≤ MAX_ANCS_NOTIFICATIONS)
     bool        phone_connected;
 };
 
 const AncsConfig& ancs_config();
 void              set_ancs_config(const AncsConfig& cfg);
+// Remove the first queue entry matching token, shift remaining left.
+// Called by the ANCS modal on "Read" so the status bar can reveal the next queued icon.
+// M5 note: replace this mock implementation with a call into the real ANCS client queue
+// so dismiss works identically on live BLE data.
+void              dismiss_ancs_notification(const char* token);
 
 // Per-app ANCS notification data. In firmware these fields come from
 // ANCS Notification Attribute commands (Title, Message, Date, DisplayName).

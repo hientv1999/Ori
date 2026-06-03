@@ -7,7 +7,7 @@
 
 namespace {
 
-// Partial-render strategy:
+// Partial-render strategy (unchanged from LVGL 8):
 //
 // The full 800x480 RGB565 framebuffer lives in PSRAM (Arduino_GFX manages it).
 // LVGL renders into a small partial buffer in internal SRAM and we hand each
@@ -16,22 +16,18 @@ namespace {
 // out to the panel).
 //
 // Buffer height = 60 lines. 800 * 60 * 2 = 96,000 bytes in internal SRAM.
-// Halves the number of flush passes per full-screen render (8 vs 16).
-// BLE stack (M5) will consume ~40 KB; at 127 KB / 328 KB total static SRAM
-// there is still ~200 KB headroom for the stack and runtime allocations.
 constexpr uint16_t DRAW_BUF_LINES = 60;
 constexpr size_t   DRAW_BUF_PX    = 800 * DRAW_BUF_LINES;
 
-static lv_disp_draw_buf_t draw_buf_dsc;
-static lv_disp_drv_t      disp_drv;
-static lv_color_t         draw_buf[DRAW_BUF_PX];   // ~64 KB internal RAM
+static lv_display_t* disp;
+static lv_color_t    draw_buf[DRAW_BUF_PX];   // ~96 KB internal RAM (lv_color_t = uint16_t at depth 16)
 
-static void flush_cb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* color_p) {
-    // lv_color_t is RGB565 when LV_COLOR_DEPTH=16 and LV_COLOR_16_SWAP=0,
-    // so the in-memory layout is already a `uint16_t*` of native pixels.
-    const uint16_t* pixels = reinterpret_cast<const uint16_t*>(color_p);
+// LVGL 9 flush callback: px_map is raw bytes of the rendered region.
+static void flush_cb(lv_display_t* d, const lv_area_t* area, uint8_t* px_map) {
+    // lv_color_t is uint16_t (RGB565) when LV_COLOR_DEPTH=16.
+    const uint16_t* pixels = reinterpret_cast<const uint16_t*>(px_map);
     lcd_panel::flush_area(area->x1, area->y1, area->x2, area->y2, pixels);
-    lv_disp_flush_ready(drv);
+    lv_display_flush_ready(d);
 }
 
 } // namespace
@@ -39,21 +35,13 @@ static void flush_cb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* colo
 namespace lvgl_display {
 
 void init() {
-    lv_disp_draw_buf_init(&draw_buf_dsc, draw_buf, nullptr, DRAW_BUF_PX);
-
-    lv_disp_drv_init(&disp_drv);
-    disp_drv.hor_res  = lcd_panel::width();
-    disp_drv.ver_res  = lcd_panel::height();
-    disp_drv.flush_cb = flush_cb;
-    disp_drv.draw_buf = &draw_buf_dsc;
-    // Partial render mode: LVGL paints into the small buf, we flush rects.
-    disp_drv.full_refresh        = 0;
-    disp_drv.direct_mode         = 0;
-
-    lv_disp_drv_register(&disp_drv);
+    disp = lv_display_create(lcd_panel::width(), lcd_panel::height());
+    lv_display_set_buffers(disp, draw_buf, nullptr,
+                           sizeof(draw_buf), LV_DISPLAY_RENDER_MODE_PARTIAL);
+    lv_display_set_flush_cb(disp, flush_cb);
 
     Serial.printf("[lvgl] display registered %ux%u draw_buf=%uKB\n",
-                  disp_drv.hor_res, disp_drv.ver_res,
+                  lcd_panel::width(), lcd_panel::height(),
                   (unsigned)(sizeof(draw_buf) / 1024));
 }
 
