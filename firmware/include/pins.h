@@ -149,7 +149,7 @@
 // Pixel clock. 16 MHz is the Waveshare reference value. Going below ~12 MHz
 // caused a white screen on this board (likely below the panel's minimum
 // sampling clock).
-#define ORI_LCD_PCLK_HZ          16000000   // 16 MHz pixel clock
+#define ORI_LCD_PCLK_HZ          12000000   // 12 MHz pixel clock
 #endif
 
 // PSRAM bandwidth bounce-buffer size in pixels. The LCD_CAM peripheral DMA-

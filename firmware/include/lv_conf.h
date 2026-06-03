@@ -165,7 +165,7 @@
 #define LV_ATTRIBUTE_FLUSH_READY
 #define LV_ATTRIBUTE_MEM_ALIGN_SIZE 4
 #define LV_ATTRIBUTE_MEM_ALIGN
-#define LV_ATTRIBUTE_LARGE_CONST
+#define LV_ATTRIBUTE_LARGE_CONST  __attribute__((section(".rodata")))
 #define LV_ATTRIBUTE_LARGE_RAM_ARRAY
 /* Putting LVGL's hot paths in IRAM saves ~10-15% render time on ESP32. */
 #define LV_ATTRIBUTE_FAST_MEM       IRAM_ATTR

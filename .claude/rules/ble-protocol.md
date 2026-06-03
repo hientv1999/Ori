@@ -1,7 +1,7 @@
 # Ori — BLE GATT Protocol Specification
 
-**Protocol version:** 1.7
-**Date:** 2026-05-30
+**Protocol version:** 1.0
+**Date:** 2026-06-02
 **Status:** Authoritative — `esp32-connectivity` (peripheral) and `orion-sync` (central) must conform.
 
 This document defines the single BLE GATT contract between Ori (peripheral) and the Orion PC app (central).
@@ -367,7 +367,7 @@ Link-layer encryption failure (`BLE_HS_ENC_FAIL`) signals a stale bond — see �
 
 ## 9. Versioning
 
-- Protocol Version characteristic: `{ proto_major, proto_minor, fw_version }`. This spec = **v1.1**.
+- Protocol Version characteristic: `{ proto_major, proto_minor, fw_version }`. This spec = **v1.0**.
 - **Major bump** = breaking. Orion refuses sync, shows "Update Ori firmware".
 - **Minor bump** = additive. Unknown CBOR keys silently ignored.
 - `fw_version` (semver) used by Orion to detect available updates; update runs over USB CDC (`ota.md`).

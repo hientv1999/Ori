@@ -49,7 +49,7 @@ Open [Ori_UI_Prototype.html](Ori_UI_Prototype.html) directly in any modern brows
 
 > Update checkboxes as work completes. Critical path: M1 → (M2–M5 ∥ M6) → M7 → M8.
 
-- [x] **M1 — Shared BLE contract** *(unblocks everything)* — locked 2026-05-15, spec v1.7 (2026-05-30)
+- [x] **M1 — Shared BLE contract** *(unblocks everything)* — locked 2026-05-15, spec v1.0 (2026-06-02)
   15 characteristics, passkey bonding, hash-manifest delta reconnect. Full spec: [ble-protocol.md](.claude/rules/ble-protocol.md).
 
 - [x] **M2 — Firmware skeleton on hardware** — locked 2026-05-16
@@ -62,7 +62,7 @@ Open [Ori_UI_Prototype.html](Ori_UI_Prototype.html) directly in any modern brows
   Left-panel priority logic, 1 s tick, 5-min pre-meeting alert, Calendar ↔ Media mode toggle with NVS persistence, OTA/reconnect hooks, long-press handlers, ANCS icon registry (23 apps). Post-lock: LVGL 9.5.0 upgrade, Hanken Grotesk font, mode-toggle crash fix. Build state: RAM 51.1%, Flash 41.3% (of 3 MB OTA slot). **Deferred to M5:** factory reset `ESP.restart()` inside LVGL callback can trigger DMA ISR cache fault.
 
 - [ ] **M5 — Firmware BLE + USB CDC firmware update**
-  GATT server (15 chars, v1.7) + ANCS client, passkey bonding, dual-connection, Presence Status border, album-art JPEG decode, USB CDC OTA receiver. Use `h2zero/NimBLE-Arduino@2.5.0` (saves ~40 KB SRAM vs stock BLE). Agent: `esp32-connectivity`.
+  GATT server (15 chars, v1.0) + ANCS client, passkey bonding, dual-connection, Presence Status border, album-art JPEG decode, USB CDC OTA receiver. Use `h2zero/NimBLE-Arduino@2.5.0` (saves ~40 KB SRAM vs stock BLE). Agent: `esp32-connectivity`.
 
 - [ ] **M6 — Orion PC app** *(parallel with M2–M5)*
   Flutter desktop (Windows + macOS): pairing wizard, calendar source selection, profile editor, PTO entry, background BLE central, USB CDC OTA sender. Agents: `flutter-frontend`, `orion-sync`, `calendar-integration`.
