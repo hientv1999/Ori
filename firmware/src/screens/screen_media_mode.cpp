@@ -534,7 +534,9 @@ lv_obj_t* make_shortcuts_row(lv_obj_t* parent) {
         lv_obj_set_style_border_color(btn, theme::color(theme::COLOR_DIVIDER), LV_PART_MAIN);
         lv_obj_set_style_border_width(btn, 1, LV_PART_MAIN);
         lv_obj_set_style_pad_all(btn, 0, LV_PART_MAIN);
-        lv_obj_set_style_opa(btn, LV_OPA_60, LV_STATE_PRESSED);
+        lv_obj_set_style_bg_color(btn, theme::color(theme::COLOR_ACCENT_SOFT), LV_STATE_PRESSED);
+        lv_obj_set_style_border_color(btn, theme::color(theme::COLOR_ACCENT_LINE), LV_STATE_PRESSED);
+        lv_obj_set_style_opa(btn, LV_OPA_80, LV_STATE_PRESSED);
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
 
