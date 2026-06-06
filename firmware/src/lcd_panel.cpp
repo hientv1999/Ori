@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <Arduino_GFX_Library.h>
+#include <esp_cache.h>
 
 #include "io_expander_ch422g.h"
 #include "pins.h"
@@ -11,12 +12,14 @@ namespace {
 constexpr uint16_t LCD_W = 800;
 constexpr uint16_t LCD_H = 480;
 
-// Arduino_GFX maintains a full-frame RGB565 backbuffer in PSRAM when the
-// "auto_flush=false" path is used. We treat that as our visible framebuffer
-// and stream rectangles into it from LVGL via draw16bitRGBBitmap().
+// Arduino_GFX maintains a full-frame RGB565 framebuffer in PSRAM when
+// auto_flush=false. LVGL renders into a PSRAM partial buffer, then flush_area()
+// copies each finished rect into this framebuffer. LCD_CAM DMA reads physical
+// PSRAM directly (bypasses CPU cache), so after every copy we call
+// esp_cache_msync() to force write-back of the updated region from the CPU
+// data cache to physical PSRAM.
 //
-// Backbuffer size: 800 * 480 * 2 = 768,000 bytes (~750 KB) — comfortable
-// in the 8 MB PSRAM budget, leaves plenty for fonts/photos/PTO images.
+// Framebuffer size: 800 * 480 * 2 = 768,000 bytes (~750 KB).
 Arduino_ESP32RGBPanel* bus    = nullptr;
 Arduino_RGB_Display*   panel  = nullptr;
 
@@ -61,7 +64,7 @@ void init() {
         /* useBigEndian */    false,
         /* de_idle_high */    0,
         /* pclk_idle_high */  0,
-        /* bounce_buffer_size_px */ ORI_LCD_BOUNCE_BUF_PX  // ← PSRAM bandwidth fix
+        /* bounce_buffer_size_px */ 0
     );
 
     // --- Logical display ---------------------------------------------------
@@ -93,15 +96,29 @@ uint16_t height() { return LCD_H; }
 void flush_area(int16_t x1, int16_t y1, int16_t x2, int16_t y2,
                 const uint16_t* pixels) {
     if (!panel) return;
-    int16_t w = x2 - x1 + 1;
-    int16_t h = y2 - y1 + 1;
-    // Arduino_GFX writes directly into the PSRAM framebuffer when
-    // auto_flush=false; LCD_CAM DMA streams it to the panel.
-    //
-    // draw16bitRGBBitmap() takes a non-const pointer purely because the
-    // upstream signature was written before const-correctness; it doesn't
-    // mutate the buffer. Casting away const is safe here.
-    panel->draw16bitRGBBitmap(x1, y1, const_cast<uint16_t*>(pixels), w, h);
+    // draw16bitRGBBitmap() signature is non-const for historical reasons; it
+    // does not mutate the source buffer.
+    panel->draw16bitRGBBitmap(x1, y1, const_cast<uint16_t*>(pixels),
+                              x2 - x1 + 1, y2 - y1 + 1);
+
+    // Force CPU data-cache write-back to physical PSRAM for the updated region.
+    // LCD_CAM DMA reads physical PSRAM directly (bypasses CPU cache); without
+    // this sync it may read stale pixels, leaving old arc/spinner traces.
+    // esp_cache_msync requires both address and size aligned to the cache-line
+    // boundary (0x20 = 32 bytes), so we round down the start and round up the
+    // size to cover the full affected region.
+    {
+        constexpr uintptr_t LINE = 0x20;
+        uint16_t*  fb       = static_cast<uint16_t*>(panel->getFramebuffer());
+        uintptr_t  raw      = reinterpret_cast<uintptr_t>(fb)
+                              + (size_t)y1 * LCD_W * sizeof(uint16_t);
+        uintptr_t  aligned  = raw & ~(LINE - 1);
+        size_t     bytes    = (size_t)(y2 - y1 + 1) * LCD_W * sizeof(uint16_t)
+                              + (raw - aligned);
+        bytes = (bytes + LINE - 1) & ~(LINE - 1);
+        esp_cache_msync(reinterpret_cast<void*>(aligned), bytes,
+                        ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+    }
 }
 
 } // namespace lcd_panel

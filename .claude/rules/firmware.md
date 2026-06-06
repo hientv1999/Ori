@@ -28,3 +28,9 @@ paths:
 - **Setup flow**: first-boot sequence, factory reset — `setup-flow.md`
 - **5-minute alert timer**: countdown modal before each meeting — `state-machine.md`
 - **Firmware update receiver**: USB CDC framed OTA only — **not BLE**. Feeds Arduino `Update` library into the inactive OTA slot; SHA-256 verification; bootloader rollback on unhealthy first boot. Bricked-unit recovery: internal UART (service path only, enclosure required). Screen already implemented: `src/screens/screen_ota_updating.cpp` — `ota.md`
+
+## LVGL Rendering Rules
+
+- **All circular progress rings sweep clockwise** — countdown modal, OTA ring, reconnect-syncing overlay, setup spinners (Steps 2/3/4), re-pair phone spinner, and any future progress visual. In LVGL, ensure the arc end-angle increases in the direction of clock motion (LVGL 0° = 3 o'clock, angle increases clockwise). Counter-clockwise is banned.
+
+- **Pressed-state feedback: use `lv_obj_set_style_opa`, not style transitions** — animating `LV_STYLE_BG_OPA`, `LV_STYLE_SHADOW_WIDTH`, or `LV_STYLE_SHADOW_SPREAD` via `lv_style_transition_dsc_t` causes a brief black flash on label text mid-animation (LVGL composites the button interior against near-black before reblending children). Use `lv_obj_set_style_opa(widget, LV_OPA_60, LV_STATE_PRESSED)` — no transition, no animation. Applied globally in `ui_helpers.cpp::make_btn()` and all interactive widgets.

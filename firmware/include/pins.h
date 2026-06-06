@@ -152,15 +152,8 @@
 #define ORI_LCD_PCLK_HZ          12000000   // 12 MHz pixel clock
 #endif
 
-// PSRAM bandwidth bounce-buffer size in pixels. The LCD_CAM peripheral DMA-
-// streams the framebuffer from PSRAM at line rate; at 800x480x60Hzx2B that's
-// ~46 MB/s, right at the edge of what PSRAM sustains. When PSRAM starves,
-// random bits arrive stale → severe G-channel mid-tone loss and edge
-// artifacts. The bounce buffer is a small SRAM staging area the peripheral
-// can read at full speed while a refill DMA pulls the next chunk from PSRAM.
-//
 #ifndef ORI_LCD_BOUNCE_BUF_PX
-#define ORI_LCD_BOUNCE_BUF_PX    (800 * 20)
+#define ORI_LCD_BOUNCE_BUF_PX    0
 #endif
 #ifndef ORI_LCD_HSYNC_POLARITY
 #define ORI_LCD_HSYNC_POLARITY   0          // 0 = active low

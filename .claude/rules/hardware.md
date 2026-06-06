@@ -23,7 +23,16 @@ Hardware specs are in `memory.md`. Behavioral rules derived from hardware:
 | LCD `R3..R7` (5 bits, **LSB→MSB**) | GPIO 1, 2, 42, 41, 40 |
 | LCD `G2..G7` (6 bits, **LSB→MSB**) | GPIO 39, 0, 45, 48, 47, 21 |
 | LCD `B3..B7` (5 bits, **LSB→MSB**) | GPIO 14, 38, 18, 17, 10 |
-| Pixel clock | 16 MHz (Waveshare reference; <12 MHz → white screen) |
-| Bounce buffer | 800 × 20 px (32 KB) — **hardware artifact fix**, not a perf setting; removes G-channel speckle and left-edge pixel noise caused by PSRAM bandwidth |
+| Pixel clock | 12 MHz (`ORI_LCD_PCLK_HZ` in `pins.h`; Waveshare reference is 16 MHz but <12 MHz → white screen) |
+| Bounce buffer | **removed** — replaced by `esp_cache_msync` after each framebuffer write (see below) |
+
+## PSRAM + LCD_CAM cache coherency rule
+
+**After every CPU write to the PSRAM framebuffer, call `esp_cache_msync(region, bytes, ESP_CACHE_MSYNC_FLAG_DIR_C2M)`.** LCD_CAM DMA reads physical PSRAM directly, bypassing the CPU data cache. Without the flush, LCD_CAM reads stale pixels — the symptom is old widget positions persisting on screen (e.g. spinner arc traces). The bounce buffer previously masked this by routing LCD_CAM reads through SRAM; with it removed the explicit sync is mandatory.
+
+- Cache line size on this hardware: **32 bytes (0x20)**
+- Both start address and byte count must be 32-byte aligned — round down the start, round up the size
+- Reference implementation: `lcd_panel::flush_area()` in `firmware/src/lcd_panel.cpp`
+- NVS flash writes also disable ICache/DCache briefly; keeping the LVGL draw buffer in PSRAM (not static SRAM) avoids a "cache disabled but cached memory region accessed" crash during NVS operations
 
 **RGB channel pin order:** `Arduino_ESP32RGBPanel` expects **LSB→MSB** (R3/G2/B3 are the *lowest* bits of each channel, not the highest). Getting one channel reversed collapses its mid-tones — on the green channel this shows as mid-greys looking magenta. If you see single-channel color artifacts on hardware, check pin order in `pins.h` before anything else. Do not add per-channel software color correction — RGB565 quantization makes it unworkably sensitive. Use `COLOR_BG = #000000` and accept the panel's native gamma.

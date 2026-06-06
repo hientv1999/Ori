@@ -6,8 +6,8 @@
  *
  * Tuning notes:
  *  - Panel is 800x480 RGB565.
- *  - Framebuffer lives in PSRAM (lcd_panel.cpp). LVGL composes into a small
- *    partial buffer (~96 KB) in internal SRAM and we flush via Arduino_GFX.
+ *  - Framebuffer lives in PSRAM (lcd_panel.cpp). LVGL partial-renders into a
+ *    60-line PSRAM draw buffer and flushes completed rects via lcd_panel::flush_area().
  *  - Tick: lv_tick_set_cb(millis) called in main.cpp after lv_init().
  *  - Custom log: routed to Serial.
  */
