@@ -33,10 +33,15 @@ void      set_step(lv_obj_t* screen, Step s);
 
 // Pairing-step modal overlays. Both sit on top of the Pairing base screen.
 // show_* returns the modal object; callers may ignore it.
-lv_obj_t* show_passkey_modal(lv_obj_t* screen);
+// passkey must be 0..999999; it is formatted as a zero-padded 6-digit string.
+lv_obj_t* show_passkey_modal(lv_obj_t* screen, uint32_t passkey);
 void      hide_passkey_modal(lv_obj_t* screen);
 
 lv_obj_t* show_orioning_modal(lv_obj_t* screen);
 void      hide_orioning_modal(lv_obj_t* screen);
+
+// Update the progress ring inside the orioning modal (0–100).
+// No-op if the modal is not currently visible.
+void      update_orioning_progress(lv_obj_t* screen, uint8_t pct);
 
 } // namespace screen_setup

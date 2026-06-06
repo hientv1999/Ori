@@ -1,6 +1,7 @@
-#include "nvs_store.h"
+﻿#include "nvs_store.h"
 
 #include <Arduino.h>
+#include "ori_log.h"
 #include <Preferences.h>
 
 namespace {
@@ -21,11 +22,11 @@ void init() {
     // Open read-write so the namespace is created if it doesn't exist yet
     // (fresh flash, post-factory-reset).
     if (!prefs.begin(NAMESPACE, /*readOnly=*/false)) {
-        Serial.println("[nvs] ERROR: could not open namespace — NVS partition missing?");
+        LOG("[nvs] ERROR: could not open namespace — NVS partition missing?\n");
         return;
     }
     prefs.end();
-    Serial.println("[nvs] ready");
+    LOG("[nvs] ready\n");
 }
 
 void tick() {
@@ -48,7 +49,7 @@ void mark_setup_complete() {
         prefs.putBool(k_provisioned, true);
         prefs.end();
     }
-    Serial.println("[nvs] setup complete — provisioned flag set");
+    LOG("[nvs] setup complete — provisioned flag set\n");
 }
 
 // ── Mode toggle persistence ────────────────────────────────────────────────
@@ -67,7 +68,7 @@ void set_mode(uint8_t mode) {
         prefs.putUChar(k_mode, mode);
         prefs.end();
     }
-    Serial.printf("[nvs] mode=%d\n", (int)mode);
+    LOG("[nvs] mode=%d\n", (int)mode);
 }
 
 // ── Factory reset ──────────────────────────────────────────────────────────
@@ -77,7 +78,7 @@ void factory_reset() {
         prefs.clear();
         prefs.end();
     }
-    Serial.println("[nvs] factory reset wipe complete");
+    LOG("[nvs] factory reset wipe complete\n");
 }
 
 } // namespace nvs

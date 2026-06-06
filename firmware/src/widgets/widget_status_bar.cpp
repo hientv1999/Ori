@@ -1,4 +1,4 @@
-#include "widgets/widget_status_bar.h"
+﻿#include "widgets/widget_status_bar.h"
 
 #include <functional>
 

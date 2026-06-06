@@ -1,6 +1,7 @@
-#include "lcd_panel.h"
+﻿#include "lcd_panel.h"
 
 #include <Arduino.h>
+#include "ori_log.h"
 #include <Arduino_GFX_Library.h>
 #include <esp_cache.h>
 
@@ -76,13 +77,13 @@ void init() {
     panel = new Arduino_RGB_Display(LCD_W, LCD_H, bus, 0 /* rotation */, false /* auto_flush */);
 
     if (!panel->begin()) {
-        Serial.println("[lcd] panel begin() FAILED");
+        LOG("[lcd] panel begin() FAILED\n");
         return;
     }
 
     panel->fillScreen(0x0000);  // RGB565 black (Arduino_GFX 1.6 dropped the BLACK macro)
 
-    Serial.printf("[lcd] init %ux%u rgb565 fb=%p (psram)\n",
+    LOG("[lcd] init %ux%u rgb565 fb=%p (psram)\n",
                   (unsigned)LCD_W, (unsigned)LCD_H, panel->getFramebuffer());
 }
 

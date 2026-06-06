@@ -1,14 +1,18 @@
-#include "screens/screen_media_mode.h"
+﻿#include "screens/screen_media_mode.h"
 
 #include <lvgl.h>
 #include <cstdlib>
 
 #include "assets/shortcut_icons.h"
+#include "ble/gatt_server.h"
 #include "mock_data.h"
 #include "theme.h"
 #include "ui_helpers.h"
 #include "widgets/widget_profile_card.h"
 #include "widgets/widget_status_bar.h"
+
+// Declared in gatt_server.cpp — sets the vol-swipe override flag.
+extern "C" void gatt_server_set_vol_swipe_active(bool active);
 
 // Media mode. BLE commands wired in M5.
 
@@ -168,10 +172,11 @@ void on_seek_gesture(lv_event_t* e) {
         fmt_time(buf, sizeof(buf), new_pos);
         lv_label_set_text(s->tl_cur_label, buf);
     } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
-        // Finalise: M5 emits KeyboardCommand{op:"seek", arg:new_pos} over BLE.
+        // Finalise: emit KeyboardCommand{op:"seek", arg:new_pos} over BLE.
         char buf[8];
         fmt_time(buf, sizeof(buf), new_pos);
         lv_label_set_text(s->tl_cur_label, buf);
+        gatt_server::notify_keyboard_command("seek", new_pos);
     }
 }
 
@@ -197,6 +202,8 @@ void on_art_gesture(lv_event_t* e) {
         if (!s->vertical_engaged && abs(dy) > V_SWIPE_ENGAGE && abs(dy) > abs(dx)) {
             s->vertical_engaged = true;
             show_hud(s, true);
+            // Set drag-wins override: ignore incoming HostVolumeState pushes.
+            gatt_server_set_vol_swipe_active(true);
         }
         if (s->vertical_engaged) {
             // Negative dy (swipe up) = louder; positive dy = quieter.
@@ -212,10 +219,17 @@ void on_art_gesture(lv_event_t* e) {
         int abs_dy = abs(dy);
 
         if (s->vertical_engaged) {
-            // Hide HUD a beat after release. (In M5, fire vol_set command here.)
-            // For now hide immediately — M8 adds the fade animation.
+            // Release vertical swipe — emit KeyboardCommand{op:"vol_set", arg:N}.
+            int new_vol = s->start_volume + (-dy) * V_SENS_NUM / V_SENS_DEN;
+            if (new_vol < 0)   new_vol = 0;
+            if (new_vol > 100) new_vol = 100;
+            set_volume_visual(s, new_vol);
             show_hud(s, false);
             s->vertical_engaged = false;
+            // Clear the swipe-override so incoming HostVolumeState pushes resume
+            // after the 800 ms linger (ble-protocol.md §12 drag-wins rule).
+            gatt_server_set_vol_swipe_active(false);
+            gatt_server::notify_keyboard_command("vol_set", (uint32_t)new_vol);
             return;
         }
         if (abs_dx < TAP_MAX && abs_dy < TAP_MAX) {
@@ -223,8 +237,14 @@ void on_art_gesture(lv_event_t* e) {
             bool playing = !mock_data::media_playing();
             mock_data::set_media_playing(playing);
             apply_paused_visual(s, !playing);
+            gatt_server::notify_keyboard_command("play_pause", 0);
         } else if (abs_dx > H_SWIPE_MIN && abs_dx > abs_dy) {
-            // Horizontal swipe — prev (left) / next (right). M5 fires KeyboardCommand.
+            // Horizontal swipe — emit prev or next KeyboardCommand.
+            if (dx > 0) {
+                gatt_server::notify_keyboard_command("next", 0);
+            } else {
+                gatt_server::notify_keyboard_command("prev", 0);
+            }
         }
     }
 }
@@ -514,15 +534,26 @@ lv_obj_t* make_shortcuts_row(lv_obj_t* parent) {
         lv_obj_set_style_border_color(btn, theme::color(theme::COLOR_DIVIDER), LV_PART_MAIN);
         lv_obj_set_style_border_width(btn, 1, LV_PART_MAIN);
         lv_obj_set_style_pad_all(btn, 0, LV_PART_MAIN);
+        lv_obj_set_style_opa(btn, LV_OPA_60, LV_STATE_PRESSED);
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+
+        // M5: emit KeyboardCommand{op:"shortcut", arg:slot} on tap.
+        // slot is 1-indexed per ble-protocol.md. Store as user_data.
+        lv_obj_set_user_data(btn, reinterpret_cast<void*>((uintptr_t)(i + 1)));
+        lv_obj_add_event_cb(btn, [](lv_event_t* e) {
+            if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
+            uintptr_t slot = (uintptr_t)lv_obj_get_user_data(
+                static_cast<lv_obj_t*>(lv_event_get_current_target(e)));
+            gatt_server::notify_keyboard_command("shortcut", (uint32_t)slot);
+        }, LV_EVENT_CLICKED, nullptr);
 
         const char* token = slots[i].icon_token;
         const lv_image_dsc_t* img = shortcut_icons::image(token);
         if (img) {
             lv_obj_t* img_obj = lv_image_create(btn);
             lv_image_set_src(img_obj, img);
-lv_obj_center(img_obj);
+            lv_obj_center(img_obj);
             lv_obj_clear_flag(img_obj, LV_OBJ_FLAG_CLICKABLE);
         } else {
             // Fallback: capital letter from token until image asset is added.

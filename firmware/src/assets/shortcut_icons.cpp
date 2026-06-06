@@ -1,4 +1,4 @@
-#include "assets/shortcut_icons.h"
+﻿#include "assets/shortcut_icons.h"
 
 #include <string.h>
 

@@ -1,4 +1,4 @@
-#include "theme.h"
+﻿#include "theme.h"
 
 extern "C" {
 extern const lv_font_t ori_font_hanken_20;

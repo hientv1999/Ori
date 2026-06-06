@@ -1,4 +1,4 @@
-#include "ui_helpers.h"
+﻿#include "ui_helpers.h"
 
 #include "theme.h"
 #include "widgets/widget_status_bar.h"

@@ -1,4 +1,4 @@
-#include "widgets/widget_progress_ring.h"
+﻿#include "widgets/widget_progress_ring.h"
 
 #include "theme.h"
 

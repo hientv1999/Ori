@@ -1,6 +1,7 @@
-#include "screens/modal_unpair_phone.h"
+﻿#include "screens/modal_unpair_phone.h"
 
 #include <Arduino.h>
+#include "ori_log.h"
 #include <lvgl.h>
 
 // #include "screens/screen_repair_phone.h" // removed obsolete repair screen
@@ -26,7 +27,7 @@ void on_cancel(lv_event_t* e) {
 void on_unpair_confirm(lv_event_t* e) {
     lv_obj_t* scrim = static_cast<lv_obj_t*>(lv_event_get_user_data(e));
     lv_obj_delete(scrim);
-    Serial.println("[modal_unpair_phone] Unpair confirmed");
+    LOG("[modal_unpair_phone] Unpair confirmed\n");
     // Notify state machine (M5 wires BLE bond wipe here).
     state_machine::on_unpair_phone();
     // After unpairing, load the re-pair phone screen so the user can

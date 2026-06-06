@@ -1,4 +1,4 @@
-// Ori NVS Sync Data — M5
+﻿// Ori NVS Sync Data — M5
 //
 // SHA-256 hashes and profile strings for the hash-manifest delta reconnect.
 // All operations use the same "ori" Preferences namespace as nvs_store.cpp.
@@ -120,6 +120,29 @@ uint32_t load_epoch() {
         prefs.end();
     }
     return v;
+}
+
+// ── PTO metadata ──────────────────────────────────────────────────────────────
+
+void save_pto_meta(uint32_t start, uint32_t end, const char* destination) {
+    if (!prefs.begin(NS, /*readOnly=*/false)) return;
+    prefs.putUInt("pto_s",  start);
+    prefs.putUInt("pto_e",  end);
+    if (destination) prefs.putString("pto_d", destination);
+    prefs.end();
+}
+
+bool load_pto_meta(uint32_t* out_start, uint32_t* out_end,
+                   char* out_dest, size_t dest_sz) {
+    if (!prefs.begin(NS, /*readOnly=*/true)) return false;
+    uint32_t s = prefs.getUInt("pto_s", 0);
+    uint32_t e = prefs.getUInt("pto_e", 0);
+    String   d = prefs.getString("pto_d", "");
+    prefs.end();
+    if (out_start) *out_start = s;
+    if (out_end)   *out_end   = e;
+    if (out_dest && dest_sz > 0) strncpy(out_dest, d.c_str(), dest_sz - 1);
+    return s != 0;
 }
 
 } // namespace nvs_sync

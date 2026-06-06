@@ -1,4 +1,4 @@
-#include "screens/screen_ota_updating.h"
+﻿#include "screens/screen_ota_updating.h"
 
 #include <lvgl.h>
 
@@ -11,44 +11,25 @@
 // "Updating firmware… N%" page is visible per ota.md.
 //
 // All touch is inert (a transparent clickable layer covers the entire
-// screen and absorbs presses without doing anything). M5 will replace the
-// mock animation with the actual `OTA Control { op:"PROGRESS" }` stream
-// from Arduino's Update library.
+// screen and absorbs presses without doing anything).
 //
-// The mock animation ticks 0 → 100% over ~10 s, then loops.
+// M5: mock timer removed. Progress is driven by ota_receiver::poll()
+// calling screen_ota_updating::set_progress() on each PROGRESS frame.
 
 namespace {
-
-constexpr uint32_t MOCK_DURATION_MS = 10000;
 
 struct OtaState {
     lv_obj_t* ring;
     lv_obj_t* percent_label;
     lv_obj_t* heading_label;
-    lv_timer_t* tick_timer;
-    uint32_t start_ms;
 };
 
-void mock_tick(lv_timer_t* t) {
-    auto* s = static_cast<OtaState*>(lv_timer_get_user_data(t));
-    uint32_t elapsed = lv_tick_elaps(s->start_ms);
-    if (elapsed > MOCK_DURATION_MS) {
-        s->start_ms = lv_tick_get();
-        elapsed = 0;
-    }
-    uint8_t pct = (uint8_t)((100 * elapsed) / MOCK_DURATION_MS);
-    if (pct > 100) pct = 100;
-
-    widget_progress_ring::set_value(s->ring, pct);
-
-    char buf[8];
-    lv_snprintf(buf, sizeof(buf), "%d%%", pct);
-    widget_progress_ring::set_label_text_center(s->ring, buf, -8);
-}
+// Module-level pointer to the live OTA state, so set_progress() can reach it.
+OtaState* g_ota_ui = nullptr;
 
 void on_screen_delete(lv_event_t* e) {
     auto* s = static_cast<OtaState*>(lv_event_get_user_data(e));
-    if (s && s->tick_timer) lv_timer_delete(s->tick_timer);
+    if (s == g_ota_ui) g_ota_ui = nullptr;
     delete s;
 }
 
@@ -64,8 +45,7 @@ lv_obj_t* create() {
     state->ring = nullptr;
     state->percent_label = nullptr;
     state->heading_label = nullptr;
-    state->tick_timer = nullptr;
-    state->start_ms = lv_tick_get();
+    g_ota_ui = state;
 
     lv_obj_t* root = lv_obj_create(screen);
     lv_obj_set_size(root, 800, 480);
@@ -100,19 +80,22 @@ lv_obj_t* create() {
     lv_obj_set_style_text_align(sub, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_top(sub, 24, 0);
 
-    // Mock tick at 200 ms (5 fps). A firmware-update progress bar needs no
-    // more than ~5 fps — real PROGRESS frames from Orion arrive only every
-    // ~5 % of the image (~500 ms–1.5 s at USB CDC speeds). Keeping the
-    // redraw rate low here leaves the ESP32-S3 core free for Update.write()
-    // and USB interrupt handling during the actual M5 OTA path.
-    // M5 note: replace this timer entirely with a direct set_value() call
-    // driven by the USB CDC PROGRESS frame handler.
-    state->tick_timer = lv_timer_create(mock_tick, 200, state);
+    // M5: no mock timer — progress driven by ota_receiver::poll() calling
+    // screen_ota_updating::set_progress() on each USB CDC PROGRESS frame.
 
     lv_obj_set_user_data(screen, state);
     lv_obj_add_event_cb(screen, on_screen_delete, LV_EVENT_DELETE, state);
 
     return screen;
+}
+
+void set_progress(uint8_t pct) {
+    if (!g_ota_ui || !g_ota_ui->ring) return;
+    if (pct > 100) pct = 100;
+    widget_progress_ring::set_value(g_ota_ui->ring, pct);
+    char buf[8];
+    lv_snprintf(buf, sizeof(buf), "%d%%", pct);
+    widget_progress_ring::set_label_text_center(g_ota_ui->ring, buf, -8);
 }
 
 } // namespace screen_ota_updating

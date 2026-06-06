@@ -51,6 +51,12 @@ bool load_tz(char* out, size_t sz);
 void  save_epoch(uint32_t epoch_utc);
 uint32_t load_epoch();
 
+// PTO metadata (start/end epoch + destination string).
+// Returns true if a valid PTO entry exists (start != 0).
+void save_pto_meta(uint32_t start, uint32_t end, const char* destination);
+bool load_pto_meta(uint32_t* out_start, uint32_t* out_end,
+                   char* out_dest, size_t dest_sz);
+
 // Hash key constants — used by gatt_server for manifest comparison.
 extern const char* const HASH_KEY_PROFILE;
 extern const char* const HASH_KEY_PHOTO;

@@ -1,4 +1,4 @@
-#include "lv_mem_custom.h"
+﻿#include "lv_mem_custom.h"
 #include <lvgl.h>
 #include <esp_heap_caps.h>
 #include <string.h>

@@ -1,6 +1,7 @@
-#include "touch_gt911.h"
+﻿#include "touch_gt911.h"
 
 #include <Arduino.h>
+#include "ori_log.h"
 #include <Wire.h>
 
 #include "io_expander_ch422g.h"
@@ -108,9 +109,9 @@ void init() {
             write_reg16(0x80FF, &cksum, 1);
             uint8_t fresh = 0x01;
             write_reg16(0x8100, &fresh, 1);
-            Serial.println("[touch] GT911 resolution set to 800x480");
+            LOG("[touch] GT911 resolution set to 800x480\n");
         } else {
-            Serial.println("[touch] GT911 config read FAILED — resolution not set");
+            LOG("[touch] GT911 config read FAILED — resolution not set\n");
         }
     }
 
@@ -121,7 +122,7 @@ void init() {
     attachInterrupt(digitalPinToInterrupt(ORI_TOUCH_INT_PIN),
                     on_touch_int, FALLING);
 
-    Serial.printf("[touch] init addr=0x%02X sda=%d scl=%d int=%d rst=ch422g.EXIO%d expander=%s probe=%s\n",
+    LOG("[touch] init addr=0x%02X sda=%d scl=%d int=%d rst=ch422g.EXIO%d expander=%s probe=%s\n",
                   (int)ORI_TOUCH_I2C_ADDR,
                   (int)ORI_TOUCH_SDA_PIN, (int)ORI_TOUCH_SCL_PIN,
                   (int)ORI_TOUCH_INT_PIN,

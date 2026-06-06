@@ -1,6 +1,7 @@
-#include "screens/modal_factory_reset.h"
+﻿#include "screens/modal_factory_reset.h"
 
 #include <Arduino.h>
+#include "ori_log.h"
 #include <lvgl.h>
 
 #include "factory_reset.h"
@@ -36,7 +37,7 @@ static void factory_reset_timer_cb(lv_timer_t* t) {
 }
 
 void on_reset(lv_event_t* /*e*/) {
-    Serial.println("[modal_factory_reset] Reset confirmed — deferring execute");
+    LOG("[modal_factory_reset] Reset confirmed — deferring execute\n");
     lv_timer_create(factory_reset_timer_cb, 50, nullptr);
 }
 

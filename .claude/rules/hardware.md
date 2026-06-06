@@ -23,7 +23,7 @@ Hardware specs are in `memory.md`. Behavioral rules derived from hardware:
 | LCD `R3..R7` (5 bits, **LSB→MSB**) | GPIO 1, 2, 42, 41, 40 |
 | LCD `G2..G7` (6 bits, **LSB→MSB**) | GPIO 39, 0, 45, 48, 47, 21 |
 | LCD `B3..B7` (5 bits, **LSB→MSB**) | GPIO 14, 38, 18, 17, 10 |
-| Pixel clock | 12 MHz (`ORI_LCD_PCLK_HZ` in `pins.h`; Waveshare reference is 16 MHz but <12 MHz → white screen) |
+| Pixel clock | 12 MHz (`ORI_LCD_PCLK_HZ` in `pins.h`; most stable on this panel — 14/16 MHz tested and reverted) |
 | Bounce buffer | **removed** — replaced by `esp_cache_msync` after each framebuffer write (see below) |
 
 ## PSRAM + LCD_CAM cache coherency rule

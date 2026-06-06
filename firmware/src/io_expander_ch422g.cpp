@@ -1,6 +1,7 @@
-#include "io_expander_ch422g.h"
+﻿#include "io_expander_ch422g.h"
 
 #include <Arduino.h>
+#include "ori_log.h"
 #include <Wire.h>
 
 // CH422G I²C protocol — verified against the WCH datasheet and the ESPHome
@@ -55,7 +56,7 @@ bool init() {
     shadow_mask = (1u << 1) | (1u << 3);
     bool out_ok = i2c_write_byte(REG_OUT_LOWER, shadow_mask);
 
-    Serial.printf("[ch422g] init mode=%s out=%s mask=0x%02X\n",
+    LOG("[ch422g] init mode=%s out=%s mask=0x%02X\n",
                   mode_ok ? "ok" : "FAIL",
                   out_ok  ? "ok" : "FAIL",
                   shadow_mask);

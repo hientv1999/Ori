@@ -1,6 +1,7 @@
-#include "lvgl_input.h"
+﻿#include "lvgl_input.h"
 
 #include <Arduino.h>
+#include "ori_log.h"
 #include <lvgl.h>
 
 #include "lcd_panel.h"
@@ -56,7 +57,7 @@ void init() {
     lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
     lv_indev_set_read_cb(indev, read_cb);
 
-    Serial.println("[lvgl] input registered (gt911 pointer)");
+    LOG("[lvgl] input registered (gt911 pointer)\n");
 }
 
 lv_indev_t* get() {

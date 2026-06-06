@@ -1,6 +1,7 @@
-#include "lvgl_display.h"
+﻿#include "lvgl_display.h"
 
 #include <Arduino.h>
+#include "ori_log.h"
 #include <esp_heap_caps.h>
 #include <lvgl.h>
 
@@ -41,7 +42,7 @@ void init() {
                            DRAW_BUF_BYTES, LV_DISPLAY_RENDER_MODE_PARTIAL);
     lv_display_set_flush_cb(disp, flush_cb);
 
-    Serial.printf("[lvgl] display registered %ux%u draw_buf=%uKB (psram)\n",
+    LOG("[lvgl] display registered %ux%u draw_buf=%uKB (psram)\n",
                   lcd_panel::width(), lcd_panel::height(),
                   (unsigned)(DRAW_BUF_BYTES / 1024));
 }

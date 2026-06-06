@@ -1,4 +1,4 @@
-#include "screens/screen_reconnect_syncing.h"
+﻿#include "screens/screen_reconnect_syncing.h"
 
 #include <lvgl.h>
 

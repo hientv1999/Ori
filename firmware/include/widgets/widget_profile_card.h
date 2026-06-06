@@ -47,4 +47,16 @@ void set_default_presence(Presence p);
 // modal_profile to match the profile-card border colour.
 Presence get_default_presence();
 
+// Sets the profile photo on the currently active profile card.
+// Pass a decoded RGB565 lv_image_dsc_t (from photo_cache::get()) to show the
+// real photo; pass nullptr to revert to the Ori wordmark / initials placeholder.
+// Also stores the descriptor pointer as the new default so cards created after
+// this call (screen transitions) start with the correct photo.
+void set_photo(const lv_image_dsc_t* img_dsc);
+
+// Returns the cached photo descriptor set by the last set_photo() call, or
+// nullptr if no photo has been provided.  Called by create() so new screens
+// start with the photo already loaded without an explicit post-create call.
+const lv_image_dsc_t* get_photo();
+
 } // namespace widget_profile_card

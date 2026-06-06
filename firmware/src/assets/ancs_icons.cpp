@@ -1,4 +1,4 @@
-#include "assets/ancs_icons.h"
+﻿#include "assets/ancs_icons.h"
 
 #include <string.h>
 

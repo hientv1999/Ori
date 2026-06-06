@@ -1,4 +1,4 @@
-#include "widgets/widget_profile_card.h"
+﻿#include "widgets/widget_profile_card.h"
 
 #include "mock_data.h"
 #include "screens/modal_factory_reset.h"
@@ -11,7 +11,9 @@
 namespace {
 
 struct CardState {
-    lv_obj_t* photo;
+    lv_obj_t* photo;        // circular container (border / shadow / clip)
+    lv_obj_t* initials_lbl; // shown when no photo
+    lv_obj_t* photo_img;    // lv_image_t child, hidden when no photo
     lv_obj_t* name_label;
     lv_obj_t* title_label;
     bool suppress_click = false;
@@ -21,6 +23,15 @@ struct CardState {
 // this before each load() so the profile photo border colour stays consistent.
 widget_profile_card::Presence g_default_presence =
     widget_profile_card::Presence::Offline;
+
+// Cached photo descriptor — set by set_photo() so new cards created after a
+// photo arrives (e.g. screen transitions) start with the photo already loaded.
+const lv_image_dsc_t* g_default_photo = nullptr;
+
+// Weak reference to the most-recently-created card, used by set_photo() to
+// update the live screen without a screen rebuild.  Cleared when the card is
+// deleted (LV_EVENT_DELETE handler).
+lv_obj_t* g_active_card = nullptr;
 
 uint32_t color_for_presence(widget_profile_card::Presence p) {
     switch (p) {
@@ -70,6 +81,11 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     auto* s = new CardState();
+    s->initials_lbl = nullptr;
+    s->photo_img    = nullptr;
+
+    // Track the live card so set_photo() can update it without a screen rebuild.
+    g_active_card = card;
 
     // Photo container. The border colour reflects the user's current
     // Teams presence (set by call to set_presence() once the BLE Presence
@@ -119,12 +135,34 @@ lv_obj_t* create(lv_obj_t* parent) {
         modal_factory_reset::create(lv_screen_active());
     }, LV_EVENT_LONG_PRESSED, nullptr);
 
+    // Enable corner clipping on the photo container so an lv_image child is
+    // masked to the circle boundary.  The parent radius is already CIRCLE;
+    // this flag tells LVGL to clip children against it.
+    lv_obj_set_style_clip_corner(s->photo, true, LV_PART_MAIN);
+
+    // Photo image — hidden initially; shown when a decoded JPEG is available.
+    // Sized to fill the container so the circle clip masks it correctly.
+    s->photo_img = lv_image_create(s->photo);
+    lv_obj_set_size(s->photo_img, PHOTO_SIZE, PHOTO_SIZE);
+    lv_obj_align(s->photo_img, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_add_flag(s->photo_img, LV_OBJ_FLAG_HIDDEN);
+
     // Initials, large light-weight glyphs centered in the circle.
-    lv_obj_t* initials = lv_label_create(s->photo);
-    lv_label_set_text(initials, mock_data::profile().initials);
-    lv_obj_set_style_text_color(initials, theme::color(theme::COLOR_ACCENT), 0);
-    lv_obj_set_style_text_font(initials, theme::font_large(), 0);
-    lv_obj_center(initials);
+    // Stored in CardState so set_photo() can hide/show them.
+    s->initials_lbl = lv_label_create(s->photo);
+    lv_label_set_text(s->initials_lbl, mock_data::profile().initials);
+    lv_obj_set_style_text_color(s->initials_lbl, theme::color(theme::COLOR_ACCENT), 0);
+    lv_obj_set_style_text_font(s->initials_lbl, theme::font_large(), 0);
+    lv_obj_center(s->initials_lbl);
+
+    // Apply a cached photo immediately if one was already received before
+    // this card was created (e.g. boot with NVS photo, or screen transition
+    // after photo arrived).
+    if (g_default_photo) {
+        lv_image_set_src(s->photo_img, g_default_photo);
+        lv_obj_clear_flag(s->photo_img, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s->initials_lbl, LV_OBJ_FLAG_HIDDEN);
+    }
 
     // Name. Uses font_time() (30 px). Single line with ellipsis per
     // screen-layout.md ("Full name — single line, ellipsis on overflow").
@@ -152,6 +190,8 @@ lv_obj_t* create(lv_obj_t* parent) {
 
     lv_obj_set_user_data(card, s);
     lv_obj_add_event_cb(card, [](lv_event_t* e) {
+        lv_obj_t* c = static_cast<lv_obj_t*>(lv_event_get_target(e));
+        if (g_active_card == c) g_active_card = nullptr;
         delete static_cast<CardState*>(lv_event_get_user_data(e));
     }, LV_EVENT_DELETE, s);
     return card;
@@ -179,6 +219,29 @@ void set_default_presence(Presence p) {
 
 Presence get_default_presence() {
     return g_default_presence;
+}
+
+void set_photo(const lv_image_dsc_t* img_dsc) {
+    // Store as the new default so future screen creates start with the photo.
+    g_default_photo = img_dsc;
+
+    // Update the currently visible card if one exists.
+    if (!g_active_card) return;
+    auto* s = static_cast<CardState*>(lv_obj_get_user_data(g_active_card));
+    if (!s || !s->photo_img || !s->initials_lbl) return;
+
+    if (img_dsc) {
+        lv_image_set_src(s->photo_img, img_dsc);
+        lv_obj_clear_flag(s->photo_img, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s->initials_lbl, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s->photo_img, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s->initials_lbl, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+const lv_image_dsc_t* get_photo() {
+    return g_default_photo;
 }
 
 } // namespace widget_profile_card

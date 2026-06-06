@@ -1,12 +1,14 @@
-#include "state_machine.h"
+﻿#include "state_machine.h"
 
 #include <Arduino.h>
+#include "ori_log.h"
 #include <lvgl.h>
 #include <time.h>
 #include <string>
 #include <set>
 #include <vector>
 
+#include "ble/ble_manager.h"
 #include "factory_reset.h"
 #include "mock_data.h"
 #include "nvs_store.h"
@@ -291,7 +293,7 @@ static void tick_cb(lv_timer_t* /*t*/) {
 
         if (check_countdown(&title, &when, &diff_s, &key)) {
             g_alerted_meetings.insert(key);
-            Serial.printf("[sm] countdown alert for meeting key=%d\n", key);
+            LOG("[sm] countdown alert for meeting key=%d\n", key);
             fire_countdown(title, when, diff_s);
             return;  // screen already updated; skip re-evaluate below
         }
@@ -315,7 +317,7 @@ void init() {
     // Create the periodic evaluation timer (1 s cadence).
     g_tick_timer = lv_timer_create(tick_cb, TICK_MS, nullptr);
 
-    Serial.printf("[sm] init: mode=%d first_boot=%d\n",
+    LOG("[sm] init: mode=%d first_boot=%d\n",
                   (int)g_mode, (int)nvs::is_first_boot());
 }
 
@@ -394,14 +396,14 @@ AppState evaluate() {
 
     if (new_screen) {
         load_screen(new_screen);
-        Serial.printf("[sm] state -> %d  mode=%d\n", (int)g_state, (int)g_mode);
+        LOG("[sm] state -> %d  mode=%d\n", (int)g_state, (int)g_mode);
     }
 
     return g_state;
 }
 
 void on_setup_complete() {
-    Serial.println("[sm] on_setup_complete");
+    LOG("[sm] on_setup_complete\n");
     nvs::mark_setup_complete();
     // g_state is SETUP; compute_target_state() now returns something else
     // so evaluate() will naturally rebuild.
@@ -409,15 +411,17 @@ void on_setup_complete() {
 }
 
 void on_factory_reset() {
-    Serial.println("[sm] on_factory_reset");
+    LOG("[sm] on_factory_reset\n");
     // Delegate to the shared factory_reset::execute() so both the local
     // long-press path and the remote BLE path converge here.
     factory_reset::execute();
 }
 
 void on_unpair_phone() {
-    // Bond wipe wired in M5; for now dismiss the modal and return to runtime.
-    Serial.println("[sm] on_unpair_phone");
+    LOG("[sm] on_unpair_phone\n");
+    // M5: wipe the iPhone BLE bond and restart advertising for re-pair.
+    ble_manager::wipe_iphone_bond();
+    ble_manager::restart_advertising();
     g_force_rebuild = true;
     g_state = AppState::NO_MEETINGS;  // break out of any early-return guard
     evaluate();
@@ -427,7 +431,7 @@ void on_mode_toggle() {
     if (g_state == AppState::CLOCK) {
         // In Clock: return to the mode that was active before the time tap.
         g_mode = g_pre_clock_mode;
-        Serial.printf("[sm] clock exit -> mode=%d\n", (int)g_mode);
+        LOG("[sm] clock exit -> mode=%d\n", (int)g_mode);
         g_force_rebuild = true;
         g_state = AppState::NO_MEETINGS;  // break Clock protection in evaluate()
         evaluate();
@@ -437,13 +441,13 @@ void on_mode_toggle() {
     // Normal 2-mode cycle: Calendar (0) ↔ Media (1).
     g_mode = (g_mode == 0) ? 1 : 0;
     nvs::set_mode(g_mode);
-    Serial.printf("[sm] mode toggle -> %s\n", g_mode ? "Media" : "Calendar");
+    LOG("[sm] mode toggle -> %s\n", g_mode ? "Media" : "Calendar");
 
     // If switching to Media but PC is offline, revert immediately.
     if (g_mode == 1 && !g_pc_connected) {
         g_mode = 0;
         nvs::set_mode(0);
-        Serial.println("[sm] PC offline — Media mode reverted to Calendar");
+        LOG("[sm] PC offline — Media mode reverted to Calendar\n");
     }
 
     g_force_rebuild = true;
@@ -457,25 +461,25 @@ void on_clock_enter() {
     g_state = AppState::CLOCK;
     apply_widget_defaults();
     load_screen(build_clock_screen());
-    Serial.printf("[sm] clock enter (pre_mode=%d)\n", (int)g_pre_clock_mode);
+    LOG("[sm] clock enter (pre_mode=%d)\n", (int)g_pre_clock_mode);
 }
 
 void on_ota_begin() {
-    Serial.println("[sm] on_ota_begin");
+    LOG("[sm] on_ota_begin\n");
     g_state = AppState::OTA_UPDATING;
     apply_widget_defaults();
     load_screen(build_ota_screen());
 }
 
 void on_reconnect_begin() {
-    Serial.println("[sm] on_reconnect_begin");
+    LOG("[sm] on_reconnect_begin\n");
     g_state = AppState::RECONNECT_SYNCING;
     apply_widget_defaults();
     load_screen(build_reconnect_screen());
 }
 
 void on_reconnect_end() {
-    Serial.println("[sm] on_reconnect_end");
+    LOG("[sm] on_reconnect_end\n");
     // Clear the RECONNECT_SYNCING sentinel so compute_target_state() runs
     // the full logic (it early-returns RECONNECT_SYNCING when g_state matches).
     g_force_rebuild = true;
@@ -491,7 +495,7 @@ void set_pc_connected(bool connected) {
         if (g_mode == 1) {
             g_mode = 0;
             nvs::set_mode(0);
-            Serial.println("[sm] PC disconnected — Media mode reverted to Calendar");
+            LOG("[sm] PC disconnected — Media mode reverted to Calendar\n");
         }
         // If user was in Clock, ensure the return-to mode is also Calendar.
         if (g_pre_clock_mode == 1) {

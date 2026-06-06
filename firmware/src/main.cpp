@@ -1,4 +1,4 @@
-// Ori firmware entry point.
+﻿// Ori firmware entry point.
 //
 // Boot order is deliberate:
 //
@@ -18,21 +18,28 @@
 //                             long-press handlers fire at the right duration.
 //   7. screen_manager::init() — calls state_machine::init() then evaluate()
 //                               to pick the correct initial screen.
+//   8. ota_receiver::init()   — prepare USB CDC OTA framing state machine.
+//   9. ble_manager::init()    — NimBLE stack, GATT server, ANCS client, advertising.
+//                               Must be after screen_manager so passkey modal is ready.
 
 #include <Arduino.h>
+#include "ori_log.h"
 #include <lvgl.h>
 
 #include "backlight.h"
+#include "ble/ble_manager.h"
 #include "lcd_panel.h"
 #include "lvgl_display.h"
 #include "lvgl_input.h"
 #include "nvs_store.h"
+#include "ota_receiver.h"
+#include "photo_cache.h"
 #include "screen_manager.h"
 #include "touch_gt911.h"
 
 // Print a one-line memory snapshot to Serial.
 static void mem_snapshot(const char* tag) {
-    Serial0.printf("[mem] %-22s  SRAM free=%6u  SRAM min=%6u  PSRAM free=%7u\n",
+    LOG("[mem] %-22s  SRAM free=%6u  SRAM min=%6u  PSRAM free=%7u\n",
         tag,
         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
         (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
@@ -43,10 +50,10 @@ void setup() {
     // Serial  = USB CDC  (requires host to be listening — unreliable for boot logs)
     // Serial0 = UART0    (GPIO43 TX / GPIO44 RX, always transmits — use this)
     Serial.begin(115200);   // keep alive for USB CDC upload compatibility
-    Serial0.begin(115200);
+    Serial.begin(115200);
     delay(50);
-    Serial0.println();
-    Serial0.println("[ori] boot");
+    LOG("\n");
+    LOG("[ori] boot\n");
     mem_snapshot("boot");
 
     nvs::init();
@@ -73,13 +80,28 @@ void setup() {
     // re-pair phone trigger). In LVGL 9 the value is set via API on the
     // lv_indev_t object directly (the driver struct no longer exists).
     lv_indev_set_long_press_time(lvgl_input::get(), 3000);
-    Serial.println("[ori] long press threshold set to 3000 ms");
+    LOG("[ori] long press threshold set to 3000 ms\n");
 
     screen_manager::init();
     mem_snapshot("after screen_manager");
 
-    Serial0.println("[ori] setup complete");
-    Serial0.println("[mem] --- SRAM 'min' = watermark (lowest ever seen since boot) ---");
+    // Load cached photos from NVS and decode to PSRAM before first screen draw.
+    photo_cache::init();
+    photo_cache::init_pto();
+    mem_snapshot("after photo_cache");
+
+    // M5: OTA receiver + BLE stack.
+    // ota_receiver must be initialised before ble_manager because it sets up
+    // the USB CDC framing parser which runs independently of BLE.
+    ota_receiver::init();
+
+    // BLE must be last because ble_manager::init() starts advertising immediately,
+    // and passkey modal events need screen_manager to be running.
+    ble_manager::init();
+    mem_snapshot("after ble_manager");
+
+    LOG("[ori] setup complete\n");
+    LOG("[mem] --- SRAM 'min' = watermark (lowest ever seen since boot) ---\n");
 }
 
 void loop() {
@@ -87,6 +109,11 @@ void loop() {
     uint8_t n = touch::poll(points);
 
     nvs::tick();
+
+    // M5: drain BLE event queue before LVGL so BLE-driven state changes are
+    // reflected in the current frame. ota_receiver polls USB CDC for OTA frames.
+    ble_manager::poll();
+    ota_receiver::poll();
 
     // ------------------------------------------------------------------
     // LVGL_TICK_HOOK

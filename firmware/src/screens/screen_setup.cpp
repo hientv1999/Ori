@@ -1,6 +1,7 @@
-#include "screens/screen_setup.h"
+﻿#include "screens/screen_setup.h"
 
 #include <Arduino.h>
+#include "ori_log.h"
 #include <lvgl.h>
 
 #include "mock_data.h"
@@ -30,6 +31,7 @@ struct SetupState {
     lv_obj_t*    dot_objs[3];
     lv_obj_t*    passkey_modal;
     lv_obj_t*    orioning_modal;  // Orioning sync modal (child of screen, not content)
+    lv_obj_t*    orioning_ring;   // progress ring inside orioning_modal
     lv_obj_t*    pairing_spinner; // Step 2 spinner — hidden while passkey modal is up
     lv_obj_t*    countdown_bar;   // Setup complete countdown bar
     lv_timer_t*  complete_timer;  // 5 s auto-advance on the Complete step
@@ -396,7 +398,7 @@ void build_phone_pairing(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
 static void complete_timer_cb(lv_timer_t* t) {
     SetupState* s = static_cast<SetupState*>(lv_timer_get_user_data(t));
     if (s) s->complete_timer = nullptr;
-    Serial.println("[setup] Complete timer fired — transitioning to runtime");
+    LOG("[setup] Complete timer fired — transitioning to runtime\n");
     state_machine::on_setup_complete();
 }
 
@@ -547,6 +549,7 @@ lv_obj_t* create(Step initial) {
     s->content         = nullptr;
     s->passkey_modal   = nullptr;
     s->orioning_modal  = nullptr;
+    s->orioning_ring   = nullptr;
     s->pairing_spinner = nullptr;
     s->complete_timer  = nullptr;
     s->step           = initial;
@@ -599,7 +602,7 @@ void set_step(lv_obj_t* screen, Step st) {
     rebuild_for(screen, s);
 }
 
-lv_obj_t* show_passkey_modal(lv_obj_t* screen) {
+lv_obj_t* show_passkey_modal(lv_obj_t* screen, uint32_t passkey) {
     auto* s = static_cast<SetupState*>(lv_obj_get_user_data(screen));
     if (!s) return nullptr;
     if (s->passkey_modal) return s->passkey_modal;
@@ -640,8 +643,10 @@ lv_obj_t* show_passkey_modal(lv_obj_t* screen) {
     lv_obj_set_style_text_font(h, theme::font_h2(), 0);
     lv_obj_set_style_text_align(h, LV_TEXT_ALIGN_CENTER, 0);
 
+    char passkey_str[8];
+    snprintf(passkey_str, sizeof(passkey_str), "%06u", (unsigned)passkey);
     lv_obj_t* digits = lv_label_create(card);
-    lv_label_set_text(digits, mock_data::passkey());
+    lv_label_set_text(digits, passkey_str);
     lv_obj_set_style_text_color(digits, theme::color(theme::COLOR_ACCENT), 0);
     lv_obj_set_style_text_font(digits, theme::font_large(), 0);
     lv_obj_set_style_text_letter_space(digits, 12, 0);
@@ -700,10 +705,11 @@ lv_obj_t* show_orioning_modal(lv_obj_t* screen) {
 
     lv_obj_t* ring = widget_progress_ring::create(card, 140, 8);
     lv_obj_set_style_pad_top(ring, 24, 0);
-    widget_progress_ring::set_value(ring, 67);
+    widget_progress_ring::set_value(ring, 0);
     widget_progress_ring::set_label_font(ring, theme::font_time());
-    widget_progress_ring::set_label_text_center(ring, "67%", -8);
+    widget_progress_ring::set_label_text_center(ring, "0%", -8);
 
+    s->orioning_ring  = ring;
     s->orioning_modal = scrim;
     lv_obj_move_foreground(scrim);
     return scrim;
@@ -714,6 +720,17 @@ void hide_orioning_modal(lv_obj_t* screen) {
     if (!s || !s->orioning_modal) return;
     lv_obj_delete(s->orioning_modal);
     s->orioning_modal = nullptr;
+    s->orioning_ring  = nullptr;
+}
+
+void update_orioning_progress(lv_obj_t* screen, uint8_t pct) {
+    auto* s = static_cast<SetupState*>(lv_obj_get_user_data(screen));
+    if (!s || !s->orioning_ring) return;
+    if (pct > 100) pct = 100;
+    widget_progress_ring::set_value(s->orioning_ring, pct);
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%u%%", (unsigned)pct);
+    widget_progress_ring::set_label_text_center(s->orioning_ring, buf, -8);
 }
 
 } // namespace screen_setup

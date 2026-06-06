@@ -1,38 +1,32 @@
-#include "screens/screen_pto.h"
+﻿#include "screens/screen_pto.h"
 
 #include <lvgl.h>
+#include <time.h>
+#include <stdio.h>
+#include <string.h>
 
 #include "mock_data.h"
+#include "nvs_sync.h"
+#include "photo_cache.h"
 #include "theme.h"
 #include "ui_helpers.h"
 #include "widgets/widget_profile_card.h"
 #include "widgets/widget_status_bar.h"
 
-// PTO scenic.
+// PTO scenic screen.
 //
-// Prototype uses a stacked CSS gradient + SVG mountain silhouettes to evoke
-// a Lisbon-ish sunset. LVGL has neither SVG nor stacked gradients, but
-// solid color blocks with vertical gradients capture the same visual rhythm:
-//
-//   [0..40%]  sky:    deep blue   → cooler blue
-//   [40..70%] sun:    warm peach
-//   [70..85%] sand:   peach
-//   [85..100%] water: dark blue   → near-black
-//
-// Real scenic JPEG decode arrives in M8 (LV_USE_SJPG) — the BLE protocol
-// already carries the PtoEntry.image bytes.
-//
-// A light vignette (50% panel height, LV_OPA_30) preserves atmosphere
-// without obscuring the scene. The frosted card at the bottom (18 px inset
-// from all edges) shows "ON PTO", destination, and dates; tapping it opens
-// a full-screen detail modal.
+// Background: real destination JPEG from photo_cache::get_pto() if available,
+// otherwise the gradient placeholder bands.
+// Text: real PTO metadata from NVS (start/end/destination), falling back to
+// mock_data if NVS has no entry yet.
 
 namespace {
 
-// Stable pointers into mock_data::pto() strings — set before the card is
-// created so the card's click callback can read them without capturing.
-static const char* s_destination = nullptr;
-static const char* s_dates       = nullptr;
+// String storage for detail modal (set in create() before modal can open).
+static char s_destination[129] = {};
+static char s_dates[64]        = {};
+
+// ── Gradient fallback ─────────────────────────────────────────────────────────
 
 lv_obj_t* make_band(lv_obj_t* parent, int16_t y, int16_t h,
                     uint32_t top, uint32_t bottom) {
@@ -69,9 +63,17 @@ lv_obj_t* make_sun(lv_obj_t* parent) {
     return sun;
 }
 
-// Full-screen detail modal — closed only via the Close button.
+void build_gradient_bg(lv_obj_t* left, int16_t H) {
+    make_band(left, 0,           H * 35 / 100, 0x2A4565, 0x45617E);
+    make_band(left, H * 35 / 100, H * 30 / 100, 0x45617E, 0xC08868);
+    make_band(left, H * 65 / 100, H * 20 / 100, 0xC08868, 0xD9A47A);
+    make_band(left, H * 77 / 100, H - H * 77 / 100, 0x1F3A55, 0x0E1F30);
+    make_sun(left);
+}
+
+// ── Detail modal ──────────────────────────────────────────────────────────────
+
 static void show_pto_detail(lv_obj_t* screen) {
-    // Scrim — absorbs taps behind the dialog; no click-to-dismiss.
     lv_obj_t* scrim = lv_obj_create(screen);
     lv_obj_set_size(scrim, 800, 480);
     lv_obj_set_pos(scrim, 0, 0);
@@ -83,8 +85,6 @@ static void show_pto_detail(lv_obj_t* screen) {
     lv_obj_clear_flag(scrim, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(scrim, LV_OBJ_FLAG_CLICKABLE);
 
-    // Outer box — width 480, height wraps content, capped at 400 px so the
-    // box never runs off screen on small-text or large-font configurations.
     lv_obj_t* box = lv_obj_create(scrim);
     lv_obj_set_width(box, 480);
     lv_obj_set_height(box, LV_SIZE_CONTENT);
@@ -94,8 +94,6 @@ static void show_pto_detail(lv_obj_t* screen) {
     lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(box, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    // Scrollable content area — eyebrow, destination, dates.
-    // max_height = 400 (box cap) − 28 (gap) − 60 (close btn) = 312 px.
     lv_obj_t* scroll = lv_obj_create(box);
     lv_obj_set_width(scroll, lv_pct(100));
     lv_obj_set_height(scroll, LV_SIZE_CONTENT);
@@ -109,7 +107,6 @@ static void show_pto_detail(lv_obj_t* screen) {
     lv_obj_set_flex_flow(scroll, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(scroll, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    // "ON PTO" eyebrow.
     lv_obj_t* eyebrow = lv_label_create(scroll);
     lv_label_set_text_static(eyebrow, "ON PTO");
     lv_obj_set_style_text_font(eyebrow, theme::font_meta(), 0);
@@ -119,9 +116,8 @@ static void show_pto_detail(lv_obj_t* screen) {
     lv_obj_set_width(eyebrow, lv_pct(100));
     lv_label_set_long_mode(eyebrow, LV_LABEL_LONG_WRAP);
 
-    // Destination.
     lv_obj_t* dest = lv_label_create(scroll);
-    lv_label_set_text(dest, s_destination ? s_destination : "");
+    lv_label_set_text(dest, s_destination[0] ? s_destination : "");
     lv_label_set_long_mode(dest, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(dest, lv_pct(100));
     lv_obj_set_style_text_font(dest, theme::font_display(), 0);
@@ -129,9 +125,8 @@ static void show_pto_detail(lv_obj_t* screen) {
     lv_obj_set_style_text_align(dest, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_top(dest, 12, 0);
 
-    // Date range.
     lv_obj_t* dates = lv_label_create(scroll);
-    lv_label_set_text(dates, s_dates ? s_dates : "");
+    lv_label_set_text(dates, s_dates[0] ? s_dates : "");
     lv_label_set_long_mode(dates, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(dates, lv_pct(100));
     lv_obj_set_style_text_font(dates, theme::font_meta(), 0);
@@ -139,7 +134,6 @@ static void show_pto_detail(lv_obj_t* screen) {
     lv_obj_set_style_text_align(dates, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_top(dates, 8, 0);
 
-    // Gap between scroll area and close button (LVGL has no margin style).
     lv_obj_t* gap = lv_obj_create(box);
     ui::clear_container(gap);
     lv_obj_set_size(gap, lv_pct(100), 28);
@@ -149,6 +143,22 @@ static void show_pto_detail(lv_obj_t* screen) {
     lv_obj_add_event_cb(close_btn, [](lv_event_t* e) {
         lv_obj_delete(static_cast<lv_obj_t*>(lv_event_get_user_data(e)));
     }, LV_EVENT_CLICKED, scrim);
+}
+
+// ── Date range formatter ──────────────────────────────────────────────────────
+
+static void format_date_range(char* out, size_t out_sz,
+                               uint32_t start_epoch, uint32_t end_epoch) {
+    time_t st = (time_t)start_epoch;
+    time_t et = (time_t)end_epoch;
+    struct tm stm = {}, etm = {};
+    gmtime_r(&st, &stm);
+    gmtime_r(&et, &etm);
+    // "Jun 10 – Jul 5, 2026"
+    char s1[16] = {}, s2[24] = {};
+    strftime(s1, sizeof(s1), "%b %d", &stm);
+    strftime(s2, sizeof(s2), "%b %d, %Y", &etm);
+    snprintf(out, out_sz, "%s \xe2\x80\x93 %s", s1, s2); // UTF-8 en-dash
 }
 
 } // namespace
@@ -162,8 +172,6 @@ lv_obj_t* create() {
     widget_status_bar::create(screen);
 
     lv_obj_t* body = ui::make_screen_body(screen);
-
-    // Left panel — scenic. 528 x 396.
     lv_obj_t* left = lv_obj_create(body);
     lv_obj_set_size(left, 528, lv_pct(100));
     lv_obj_set_style_bg_color(left, theme::color(0x2A4565), 0);
@@ -173,20 +181,23 @@ lv_obj_t* create() {
     lv_obj_clear_flag(left, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(left, LV_OBJ_FLAG_CLICKABLE);
 
-    constexpr int16_t H = 480 - widget_status_bar::HEIGHT;  // 396
+    constexpr int16_t H = 480 - widget_status_bar::HEIGHT; // 396
 
-    // Sky.
-    make_band(left, 0, H * 35 / 100, 0x2A4565, 0x45617E);
-    // Warm strip.
-    make_band(left, H * 35 / 100, H * 30 / 100, 0x45617E, 0xC08868);
-    // Sand.
-    make_band(left, H * 65 / 100, H * 20 / 100, 0xC08868, 0xD9A47A);
-    // Water.
-    make_band(left, H * 77 / 100, H - H * 77 / 100, 0x1F3A55, 0x0E1F30);
+    // ── Background: real photo or gradient fallback ────────────────────────
+    const lv_image_dsc_t* pto_img = photo_cache::get_pto();
+    if (pto_img) {
+        // Scale 228×228 to fill the 528-wide panel (scale factor 593/256 ≈ 2.32×).
+        // Height becomes 228 × 2.32 ≈ 528 px; parent clips to H=396.
+        lv_obj_t* img = lv_image_create(left);
+        lv_image_set_src(img, pto_img);
+        lv_image_set_scale(img, 593);
+        lv_obj_set_pos(img, 0, 0);
+        lv_obj_clear_flag(img, LV_OBJ_FLAG_CLICKABLE);
+    } else {
+        build_gradient_bg(left, H);
+    }
 
-    make_sun(left);
-
-    // Light vignette — bottom 50% of the panel, LV_OPA_30 so the scene shows through.
+    // Vignette — bottom 50%, LV_OPA_30.
     lv_obj_t* vignette = lv_obj_create(left);
     lv_obj_set_size(vignette, lv_pct(100), H * 50 / 100);
     lv_obj_set_pos(vignette, 0, H * 50 / 100);
@@ -197,17 +208,21 @@ lv_obj_t* create() {
     lv_obj_clear_flag(vignette, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(vignette, LV_OBJ_FLAG_CLICKABLE);
 
-    // Stash string pointers for the detail modal before creating the card.
-    const auto& p = mock_data::pto();
-    s_destination = p.destination;
-    s_dates       = p.range_label;
+    // ── Load PTO text from NVS, fallback to mock ──────────────────────────
+    uint32_t pto_start = 0, pto_end = 0;
+    bool has_nvs = nvs_sync::load_pto_meta(&pto_start, &pto_end,
+                                            s_destination, sizeof(s_destination));
+    if (has_nvs && pto_start && pto_end) {
+        format_date_range(s_dates, sizeof(s_dates), pto_start, pto_end);
+    } else {
+        const auto& p = mock_data::pto();
+        strncpy(s_destination, p.destination,  sizeof(s_destination) - 1);
+        strncpy(s_dates,       p.range_label,  sizeof(s_dates)       - 1);
+    }
 
-    // Frosted dark card — anchored 18 px from the bottom and sides.
-    // Width = 528 - 36 = 492 px; height grows with content.
+    // ── Frosted info card ─────────────────────────────────────────────────
     lv_obj_t* card = lv_obj_create(left);
     lv_obj_set_size(card, 492, LV_SIZE_CONTENT);
-    lv_obj_set_pos(card, 18, H - 18);   // bottom edge at H-18; LVGL positions from top-left
-    // Re-anchor using alignment so the bottom of the card sits at H-18.
     lv_obj_align(card, LV_ALIGN_BOTTOM_LEFT, 18, -18);
     lv_obj_set_style_bg_color(card, theme::color(0x0A0C10), 0);
     lv_obj_set_style_bg_opa(card, LV_OPA_70, 0);
@@ -224,34 +239,28 @@ lv_obj_t* create() {
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    // Card children — flex column, centred horizontally.
-
-    // Eyebrow: "ON PTO"
     lv_obj_t* eyebrow = lv_label_create(card);
     lv_label_set_text_static(eyebrow, "ON PTO");
     lv_obj_set_style_text_font(eyebrow, theme::font_meta(), 0);
     lv_obj_set_style_text_color(eyebrow, theme::color(theme::COLOR_ACCENT), 0);
     lv_obj_set_style_text_letter_space(eyebrow, 4, 0);
 
-    // Destination — single line with ellipsis, full card width.
-    lv_obj_t* dest = lv_label_create(card);
-    lv_label_set_long_mode(dest, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(dest, lv_pct(100));
-    lv_label_set_text(dest, p.destination);
-    lv_obj_set_style_text_font(dest, theme::font_display(), 0);
-    lv_obj_set_style_text_color(dest, theme::color(0xFFFFFF), 0);
-    lv_obj_set_style_text_align(dest, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_pad_top(dest, 4, 0);
+    lv_obj_t* dest_lbl = lv_label_create(card);
+    lv_label_set_long_mode(dest_lbl, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(dest_lbl, lv_pct(100));
+    lv_label_set_text(dest_lbl, s_destination);
+    lv_obj_set_style_text_font(dest_lbl, theme::font_display(), 0);
+    lv_obj_set_style_text_color(dest_lbl, theme::color(0xFFFFFF), 0);
+    lv_obj_set_style_text_align(dest_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_pad_top(dest_lbl, 4, 0);
 
-    // Date range.
-    lv_obj_t* dates = lv_label_create(card);
-    lv_label_set_text(dates, p.range_label);
-    lv_obj_set_style_text_font(dates, theme::font_meta(), 0);
-    lv_obj_set_style_text_color(dates, theme::color(0xCCCCCC), 0);
-    lv_obj_set_style_text_align(dates, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_pad_top(dates, 4, 0);
+    lv_obj_t* dates_lbl = lv_label_create(card);
+    lv_label_set_text(dates_lbl, s_dates);
+    lv_obj_set_style_text_font(dates_lbl, theme::font_meta(), 0);
+    lv_obj_set_style_text_color(dates_lbl, theme::color(0xCCCCCC), 0);
+    lv_obj_set_style_text_align(dates_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_pad_top(dates_lbl, 4, 0);
 
-    // Card click → full-screen detail modal.
     lv_obj_add_event_cb(card, [](lv_event_t* e) {
         show_pto_detail(lv_obj_get_screen((lv_obj_t*)lv_event_get_target(e)));
     }, LV_EVENT_CLICKED, nullptr);

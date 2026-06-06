@@ -1,8 +1,9 @@
-#include "screens/modal_profile.h"
+﻿#include "screens/modal_profile.h"
 
 #include <lvgl.h>
 
 #include "mock_data.h"
+#include "photo_cache.h"
 #include "theme.h"
 #include "ui_helpers.h"
 #include "widgets/widget_profile_card.h"  // for WIDTH, PHOTO_SIZE, get_default_presence
@@ -169,12 +170,24 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
     lv_obj_set_style_pad_all(photo, 0, 0);
     lv_obj_clear_flag(photo, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(photo, LV_OBJ_FLAG_CLICKABLE);
+    // Clip children (photo image) to the circular boundary.
+    lv_obj_set_style_clip_corner(photo, true, 0);
 
-    lv_obj_t* initials_lbl = lv_label_create(photo);
-    lv_label_set_text(initials_lbl, p.initials);
-    lv_obj_set_style_text_color(initials_lbl, theme::color(theme::COLOR_ACCENT), 0);
-    lv_obj_set_style_text_font(initials_lbl, theme::font_large(), 0);
-    lv_obj_center(initials_lbl);
+    const lv_image_dsc_t* photo_dsc = photo_cache::get();
+    if (photo_dsc) {
+        // Real decoded photo — display as an image that fills the circle.
+        lv_obj_t* img = lv_image_create(photo);
+        lv_image_set_src(img, photo_dsc);
+        lv_obj_set_size(img, widget_profile_card::PHOTO_SIZE, widget_profile_card::PHOTO_SIZE);
+        lv_obj_align(img, LV_ALIGN_CENTER, 0, 0);
+    } else {
+        // Fallback — initials placeholder.
+        lv_obj_t* initials_lbl = lv_label_create(photo);
+        lv_label_set_text(initials_lbl, p.initials);
+        lv_obj_set_style_text_color(initials_lbl, theme::color(theme::COLOR_ACCENT), 0);
+        lv_obj_set_style_text_font(initials_lbl, theme::font_large(), 0);
+        lv_obj_center(initials_lbl);
+    }
 
     // 28 px gap between the body and the close button (LVGL has no margin style).
     lv_obj_t* gap = lv_obj_create(box);

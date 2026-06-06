@@ -1,6 +1,7 @@
-#include "backlight.h"
+﻿#include "backlight.h"
 
 #include <Arduino.h>
+#include "ori_log.h"
 
 #include "io_expander_ch422g.h"
 #include "pins.h"
@@ -11,7 +12,7 @@ namespace backlight {
 
 void init() {
     ch422g::write_output(ORI_CH422G_EXIO_LCD_BL, true);
-    Serial.println("[backlight] on");
+    LOG("[backlight] on\n");
 }
 
 } // namespace backlight
