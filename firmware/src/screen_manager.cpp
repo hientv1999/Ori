@@ -1,6 +1,7 @@
 #include "screen_manager.h"
 
 #include <Arduino.h>
+#include <esp_heap_caps.h>
 #include <lvgl.h>
 
 #include "mock_data.h"
@@ -110,6 +111,29 @@ void debug_apply_defaults() {
     });
 }
 
+void print_mem_stats() {
+    auto sram_free  = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    auto sram_total = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
+    auto sram_lfb   = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    auto sram_min   = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    auto psram_free  = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    auto psram_total = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+    auto psram_lfb   = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    auto psram_min   = heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM);
+    Serial.println();
+    Serial.println("=== Memory stats ===");
+    Serial.printf("  SRAM   free %6u KB  used %6u KB  total %6u KB\n",
+                  sram_free/1024, (sram_total-sram_free)/1024, sram_total/1024);
+    Serial.printf("         largest block %u KB   min free since boot %u KB\n",
+                  sram_lfb/1024, sram_min/1024);
+    Serial.printf("  PSRAM  free %6u KB  used %6u KB  total %6u KB\n",
+                  psram_free/1024, (psram_total-psram_free)/1024, psram_total/1024);
+    Serial.printf("         largest block %u KB   min free since boot %u KB\n",
+                  psram_lfb/1024, psram_min/1024);
+    Serial.println("====================");
+    Serial.println();
+}
+
 void print_keymap() {
     Serial.println();
     Serial.println("=== Ori screen cycler (ORI_DEBUG_SERIAL) ===");
@@ -133,6 +157,7 @@ void print_keymap() {
     Serial.println("  x   Reconnect-Syncing overlay");
     Serial.println("  u   OTA-Updating");
     Serial.println("  R   Re-run state machine evaluate() (real boot logic)");
+    Serial.println("  M   Print SRAM / PSRAM free stats");
     Serial.println("  ?   Print this map");
     Serial.println("===============================================");
     Serial.println();
@@ -227,6 +252,7 @@ void debug_handle_key(char c) {
             apply_state_defaults();
             state_machine::evaluate();
             break;
+        case 'M': print_mem_stats(); break;
         case '?': print_keymap(); break;
         default:
             if (c == '\r' || c == '\n' || c == ' ') return;

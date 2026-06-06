@@ -18,6 +18,14 @@ extern "C" {
 // ─── Core allocator hooks (macro-aliased in lv_conf.h) ────────────────────
 
 void* lv_psram_malloc(size_t size) {
+    // Layer-buffer-sized allocations (≤ LV_DRAW_LAYER_SIMPLE_BUF_SIZE = 24 KB) live
+    // in internal SRAM — they are accessed pixel-by-pixel during compositing and
+    // would otherwise add cache-miss pressure to the PSRAM bus alongside LCD_CAM DMA.
+    if (size <= LV_DRAW_LAYER_SIMPLE_BUF_SIZE) {
+        void* p = heap_caps_malloc(size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (p) return p;
+        // SRAM heap exhausted — fall through to PSRAM
+    }
     void* p = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!p) p = malloc(size);  // fallback to SRAM if PSRAM saturated
     return p;
