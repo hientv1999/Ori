@@ -38,8 +38,8 @@ def find_source() -> str:
         print("Place your destination photo here and re-run.")
         sys.exit(1)
     if len(images) > 1:
-        print(f"Found {len(images)} images — using first: {sorted(images)[0]}")
-    return os.path.join(HERE, sorted(images)[0])
+        print(f"Found {len(images)} images — using first: {sorted(images, key=str.lower)[0]}")
+    return os.path.join(HERE, sorted(images, key=str.lower)[0])
 
 
 def resize(src: str) -> bytes:

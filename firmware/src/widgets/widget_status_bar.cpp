@@ -542,12 +542,10 @@ lv_obj_t* create(lv_obj_t* parent) {
             modal_unpair_phone::create(screen);
         } else {
             // No bond — push iPhone pairing screen.
-            lv_obj_t* pairing = screen_setup::create(screen_setup::Step::PhonePairing);
-            // auto_del=true: LVGL deletes `screen` after firing unload events,
-            // avoiding a dangling d->prev_scr. lv_refr_now() omitted: fires
-            // inside lv_timer_handler(); re-entering the render pipeline mid-event
-            // is unsafe.
-            lv_scr_load_anim(pairing, LV_SCR_LOAD_ANIM_NONE, 0, 0, /*auto_del=*/true);
+            // Pass `screen` as prev_screen so Skip can return here.
+            // auto_del=false keeps this screen alive so Skip can navigate back to it.
+            lv_obj_t* pairing = screen_setup::create(screen_setup::Step::PhonePairing, screen);
+            lv_scr_load_anim(pairing, LV_SCR_LOAD_ANIM_NONE, 0, 0, /*auto_del=*/false);
         }
     };
     lv_obj_add_event_cb(state->phone_icon, phone_icon_cb, LV_EVENT_CLICKED, state);

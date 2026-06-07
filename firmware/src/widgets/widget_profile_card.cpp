@@ -52,8 +52,8 @@ char g_phone[33]  = {};
 
 // Returns g_name/g_title if set, otherwise an em-dash placeholder so the
 // profile card never renders blank before a first sync.
-static const char* display_name()  { return g_name[0]  ? g_name  : "\xe2\x80\x94"; }
-static const char* display_title() { return g_title[0] ? g_title : "\xe2\x80\x94"; }
+static const char* display_name()  { return g_name[0]  ? g_name  : "No name"; }
+static const char* display_title() { return g_title[0] ? g_title : "No position"; }
 
 uint32_t color_for_presence(widget_profile_card::Presence p) {
     switch (p) {
@@ -312,13 +312,13 @@ void set_profile(const char* name, const char* title,
 
     // Update the modal profile labels if the overlay is open.
     if (g_modal_labels.name_lbl)
-        lv_label_set_text(g_modal_labels.name_lbl,  g_name[0]  ? g_name  : "\xe2\x80\x94");
+        lv_label_set_text(g_modal_labels.name_lbl,  g_name[0]  ? g_name  : "No name");
     if (g_modal_labels.title_lbl)
-        lv_label_set_text(g_modal_labels.title_lbl, g_title[0] ? g_title : "\xe2\x80\x94");
+        lv_label_set_text(g_modal_labels.title_lbl, g_title[0] ? g_title : "No position");
     if (g_modal_labels.email_lbl)
-        lv_label_set_text(g_modal_labels.email_lbl, g_email);
+        lv_label_set_text(g_modal_labels.email_lbl, g_email[0] ? g_email : "No email");
     if (g_modal_labels.phone_lbl)
-        lv_label_set_text(g_modal_labels.phone_lbl, g_phone);
+        lv_label_set_text(g_modal_labels.phone_lbl, g_phone[0] ? g_phone : "No phone number");
 }
 
 const char* get_profile_name()  { return g_name; }

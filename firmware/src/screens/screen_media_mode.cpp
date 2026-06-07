@@ -475,7 +475,7 @@ lv_obj_t* make_meta_block(lv_obj_t* parent, ArtState* s) {
     s->artist_label = lv_label_create(meta);
     lv_obj_set_size(s->artist_label, META_W, 26);  // font_meta = 22 px → one-line box
     lv_label_set_long_mode(s->artist_label, LV_LABEL_LONG_DOT);
-    lv_label_set_text(s->artist_label, has ? m.artist : "—");
+    lv_label_set_text(s->artist_label, has ? m.artist : "No artist");
     lv_obj_set_style_text_color(s->artist_label, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
     lv_obj_set_style_text_font(s->artist_label, theme::font_meta(), 0);
     lv_obj_set_style_text_align(s->artist_label, LV_TEXT_ALIGN_CENTER, 0);
@@ -616,7 +616,7 @@ void update_meta(const char* title, const char* artist) {
     lv_obj_set_style_text_color(g_active_art->title_label,
         theme::color(has ? theme::COLOR_TEXT_PRIMARY : theme::COLOR_TEXT_TERTIARY), 0);
     lv_label_set_text(g_active_art->artist_label,
-        (has && artist && artist[0]) ? artist : "\xe2\x80\x94");
+        (has && artist && artist[0]) ? artist : "No artist");
 }
 
 void update_playing(bool playing) {

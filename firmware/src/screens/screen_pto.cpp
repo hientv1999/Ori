@@ -25,6 +25,7 @@ namespace {
 static char s_destination[129] = {};
 static char s_dates[64]        = {};
 
+
 // ── Gradient fallback ─────────────────────────────────────────────────────────
 
 lv_obj_t* make_band(lv_obj_t* parent, int16_t y, int16_t h,
@@ -84,19 +85,22 @@ static void show_pto_detail(lv_obj_t* screen) {
     lv_obj_clear_flag(scrim, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(scrim, LV_OBJ_FLAG_CLICKABLE);
 
+    // Full-screen layout — matches modal_profile.cpp: content in flex_grow=1 area,
+    // Close button pinned at fixed screen bottom (same Y as profile + ANCS overlays).
     lv_obj_t* box = lv_obj_create(scrim);
-    lv_obj_set_width(box, 480);
-    lv_obj_set_height(box, LV_SIZE_CONTENT);
-    lv_obj_set_style_max_height(box, 400, 0);
-    lv_obj_center(box);
+    lv_obj_set_size(box, 800, 480);
+    lv_obj_set_pos(box, 0, 0);
     ui::clear_container(box);
+    lv_obj_set_style_pad_top(box, widget_status_bar::HEIGHT, 0);
+    lv_obj_set_style_pad_bottom(box, 24, 0);
     lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(box, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
+    // 480 px wide content column — grows to fill all height above the close button.
+    // Spacers vertically centre the text block when it is shorter than the column.
     lv_obj_t* scroll = lv_obj_create(box);
-    lv_obj_set_width(scroll, lv_pct(100));
-    lv_obj_set_height(scroll, LV_SIZE_CONTENT);
-    lv_obj_set_style_max_height(scroll, 312, 0);
+    lv_obj_set_width(scroll, 480);
+    lv_obj_set_flex_grow(scroll, 1);
     lv_obj_set_style_bg_opa(scroll, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(scroll, 0, 0);
     lv_obj_set_style_pad_all(scroll, 0, 0);
@@ -105,6 +109,11 @@ static void show_pto_detail(lv_obj_t* screen) {
     lv_obj_set_scroll_dir(scroll, LV_DIR_VER);
     lv_obj_set_flex_flow(scroll, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(scroll, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t* spacer_top = lv_obj_create(scroll);
+    ui::clear_container(spacer_top);
+    lv_obj_set_size(spacer_top, 0, 0);
+    lv_obj_set_flex_grow(spacer_top, 1);
 
     lv_obj_t* eyebrow = lv_label_create(scroll);
     lv_label_set_text_static(eyebrow, "ON PTO");
@@ -116,7 +125,7 @@ static void show_pto_detail(lv_obj_t* screen) {
     lv_label_set_long_mode(eyebrow, LV_LABEL_LONG_WRAP);
 
     lv_obj_t* dest = lv_label_create(scroll);
-    lv_label_set_text(dest, s_destination[0] ? s_destination : "");
+    lv_label_set_text(dest, s_destination);
     lv_label_set_long_mode(dest, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(dest, lv_pct(100));
     lv_obj_set_style_text_font(dest, theme::font_display(), 0);
@@ -125,7 +134,7 @@ static void show_pto_detail(lv_obj_t* screen) {
     lv_obj_set_style_pad_top(dest, 12, 0);
 
     lv_obj_t* dates = lv_label_create(scroll);
-    lv_label_set_text(dates, s_dates[0] ? s_dates : "");
+    lv_label_set_text(dates, s_dates);
     lv_label_set_long_mode(dates, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(dates, lv_pct(100));
     lv_obj_set_style_text_font(dates, theme::font_meta(), 0);
@@ -133,6 +142,12 @@ static void show_pto_detail(lv_obj_t* screen) {
     lv_obj_set_style_text_align(dates, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_top(dates, 8, 0);
 
+    lv_obj_t* spacer_bot = lv_obj_create(scroll);
+    ui::clear_container(spacer_bot);
+    lv_obj_set_size(spacer_bot, 0, 0);
+    lv_obj_set_flex_grow(spacer_bot, 1);
+
+    // 28 px gap — matches modal_profile.cpp.
     lv_obj_t* gap = lv_obj_create(box);
     ui::clear_container(gap);
     lv_obj_set_size(gap, lv_pct(100), 28);
@@ -197,16 +212,6 @@ lv_obj_t* create() {
         build_gradient_bg(left, H);
     }
 
-    // Vignette — bottom 50%, LV_OPA_30.
-    lv_obj_t* vignette = lv_obj_create(left);
-    lv_obj_set_size(vignette, lv_pct(100), H * 50 / 100);
-    lv_obj_set_pos(vignette, 0, H * 50 / 100);
-    lv_obj_set_style_bg_color(vignette, theme::color(0x0E1116), 0);
-    lv_obj_set_style_bg_opa(vignette, LV_OPA_30, 0);
-    lv_obj_set_style_border_width(vignette, 0, 0);
-    lv_obj_set_style_pad_all(vignette, 0, 0);
-    lv_obj_clear_flag(vignette, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(vignette, LV_OBJ_FLAG_CLICKABLE);
 
     // ── Load PTO text from NVS ────────────────────────────────────────────
     uint32_t pto_start = 0, pto_end = 0;
@@ -215,8 +220,8 @@ lv_obj_t* create() {
     if (has_nvs && pto_start && pto_end) {
         format_date_range(s_dates, sizeof(s_dates), pto_start, pto_end);
     }
-    if (!s_destination[0]) strncpy(s_destination, "\xe2\x80\x94", sizeof(s_destination) - 1);
-    if (!s_dates[0])       strncpy(s_dates, "\xe2\x80\x93",  sizeof(s_dates) - 1);
+    if (!s_destination[0]) strncpy(s_destination, "Unknown destination", sizeof(s_destination) - 1);
+    if (!s_dates[0])       strncpy(s_dates,       "Unknown period",      sizeof(s_dates) - 1);
 
     // ── Frosted info card ─────────────────────────────────────────────────
     lv_obj_t* card = lv_obj_create(left);

@@ -35,6 +35,7 @@ struct SetupState {
     lv_obj_t*    pairing_spinner; // Step 2 spinner — hidden while passkey modal is up
     lv_obj_t*    countdown_bar;   // Setup complete countdown bar
     lv_timer_t*  complete_timer;  // 5 s auto-advance on the Complete step
+    lv_obj_t*    prev_screen;     // non-null during runtime re-pair: Skip goes back here
     screen_setup::Step step;
 };
 
@@ -534,14 +535,23 @@ void on_next_clicked(lv_event_t* e) {
 
 void on_skip_phone_clicked(lv_event_t* e) {
     lv_obj_t* screen = static_cast<lv_obj_t*>(lv_event_get_user_data(e));
-    screen_setup::set_step(screen, screen_setup::Step::Complete);
+    auto* s = static_cast<SetupState*>(lv_obj_get_user_data(screen));
+    if (s && s->prev_screen) {
+        // Runtime re-pair: return to the screen that launched this flow.
+        // auto_del=true deletes this PhonePairing screen; prev_screen stays (kept
+        // alive because the launch site used auto_del=false).
+        lv_scr_load_anim(s->prev_screen, LV_SCR_LOAD_ANIM_NONE, 0, 0, /*auto_del=*/true);
+    } else {
+        // Initial setup flow: advance to the Complete step.
+        screen_setup::set_step(screen, screen_setup::Step::Complete);
+    }
 }
 
 } // namespace
 
 namespace screen_setup {
 
-lv_obj_t* create(Step initial) {
+lv_obj_t* create(Step initial, lv_obj_t* prev_screen) {
     lv_obj_t* screen = lv_obj_create(nullptr);
     theme::apply_to_screen(screen);
 
@@ -552,7 +562,8 @@ lv_obj_t* create(Step initial) {
     s->orioning_ring   = nullptr;
     s->pairing_spinner = nullptr;
     s->complete_timer  = nullptr;
-    s->step           = initial;
+    s->prev_screen     = prev_screen;
+    s->step            = initial;
 
     // Dot row — anchored at the fixed y so it never moves between pages.
     s->dots_row = lv_obj_create(screen);

@@ -1,26 +1,22 @@
-﻿#include "screens/modal_profile.h"
+#include "screens/modal_profile.h"
 
 #include <lvgl.h>
 
 #include "photo_cache.h"
 #include "theme.h"
 #include "ui_helpers.h"
-#include "widgets/widget_profile_card.h"  // for WIDTH, PHOTO_SIZE, get_default_presence
+#include "widgets/widget_profile_card.h"
 
 namespace modal_profile {
 
-// Status-bar height — body row (and right panel) start at this Y offset.
-static constexpr lv_coord_t STATUS_BAR_H = 84;
-
 lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
     const char* p_name  = widget_profile_card::get_profile_name();
-    if (!p_name  || !p_name[0])  p_name  = "\xe2\x80\x94";
+    if (!p_name  || !p_name[0])  p_name  = "No name";
     const char* p_title = widget_profile_card::get_profile_title();
-    if (!p_title || !p_title[0]) p_title = "\xe2\x80\x94";
+    if (!p_title || !p_title[0]) p_title = "No position";
     const char* p_email = widget_profile_card::get_profile_email();
     const char* p_phone = widget_profile_card::get_profile_phone();
 
-    // Gradient ring colours — same as the live profile card ring.
     widget_profile_card::Presence pres = widget_profile_card::get_default_presence();
     uint32_t pres_color, pres_color_light, pres_color_dark;
     switch (pres) {
@@ -42,27 +38,22 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
             pres_color_dark  = theme::COLOR_PRESENCE_OFFLINE_DARK;    break;
     }
 
-    // Full-screen scrim — absorbs taps, no dismiss.
-    lv_obj_t* scrim = lv_obj_create(base_screen);
-    lv_obj_set_size(scrim, 800, 480);
-    lv_obj_set_pos(scrim, 0, 0);
-    lv_obj_set_style_bg_color(scrim, theme::color(theme::COLOR_SCRIM), 0);
-    lv_obj_set_style_bg_opa(scrim, theme::SCRIM_OPA, 0);
-    lv_obj_set_style_radius(scrim, 0, 0);
-    lv_obj_set_style_border_width(scrim, 0, 0);
-    lv_obj_set_style_pad_all(scrim, 0, 0);
-    lv_obj_clear_flag(scrim, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(scrim, LV_OBJ_FLAG_CLICKABLE);
+    // Independent screen — pure black background, no status bar.
+    // Tap the profile photo to return to base_screen.
+    lv_obj_t* screen = lv_obj_create(nullptr);
+    lv_obj_set_style_bg_color(screen, theme::color(0x000000), 0);
+    lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(screen, 0, 0);
+    lv_obj_set_style_pad_all(screen, 0, 0);
+    lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Outer box — full screen, flex column: [body row] + [close button].
-    // pad_top = STATUS_BAR_H so the body row is flush with where the right
-    // panel starts, making the photo Y coordinate directly computable.
-    lv_obj_t* box = lv_obj_create(scrim);
+    // Outer box — full 800×480 screen, no padding (this is a standalone screen
+    // with no status bar). body_row fills all 480 px so LV_FLEX_ALIGN_CENTER
+    // in left_col centres the text block exactly at screen midpoint (y=240).
+    lv_obj_t* box = lv_obj_create(screen);
     lv_obj_set_size(box, 800, 480);
     lv_obj_set_pos(box, 0, 0);
     ui::clear_container(box);
-    lv_obj_set_style_pad_top(box, STATUS_BAR_H, 0);
-    lv_obj_set_style_pad_bottom(box, 24, 0);
     lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(box, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_add_flag(box, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
@@ -75,29 +66,23 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
     lv_obj_set_flex_align(body_row, LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
-    // ── Left column — scrollable info block ──
-    // Centering spacers keep content vertically centred when it fits;
-    // they collapse when overflowing so scrolling starts from the top.
+    // ── Left column ───────────────────────────────────────────────────────────
+    // Explicit height = full screen height so LVGL doesn't need to resolve it
+    // through two layers of flex growth. LV_FLEX_ALIGN_CENTER on the main axis
+    // centres the content block at y=240 (screen midpoint).
     lv_obj_t* left_col = lv_obj_create(body_row);
     lv_obj_set_flex_grow(left_col, 1);
-    lv_obj_set_height(left_col, lv_pct(100));
+    lv_obj_set_height(left_col, 480);
     lv_obj_set_style_bg_opa(left_col, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(left_col, 0, 0);
     lv_obj_set_style_pad_left(left_col, 40, 0);
     lv_obj_set_style_pad_right(left_col, 20, 0);
     lv_obj_set_style_pad_top(left_col, 0, 0);
     lv_obj_set_style_pad_bottom(left_col, 0, 0);
-    lv_obj_add_flag(left_col, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(left_col, LV_OBJ_FLAG_SCROLL_MOMENTUM);
-    lv_obj_set_scroll_dir(left_col, LV_DIR_VER);
+    lv_obj_clear_flag(left_col, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(left_col, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(left_col, LV_FLEX_ALIGN_START,
+    lv_obj_set_flex_align(left_col, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-    lv_obj_t* spacer_top = lv_obj_create(left_col);
-    ui::clear_container(spacer_top);
-    lv_obj_set_size(spacer_top, 0, 0);
-    lv_obj_set_flex_grow(spacer_top, 1);
 
     lv_obj_t* name_lbl = lv_label_create(left_col);
     lv_label_set_long_mode(name_lbl, LV_LABEL_LONG_WRAP);
@@ -116,31 +101,24 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
     lv_obj_set_style_text_align(title_lbl, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_top(title_lbl, 6, 0);
 
-    lv_obj_t* email_lbl  = nullptr;
-    lv_obj_t* phone_lbl  = nullptr;
     lv_obj_t* status_lbl = nullptr;
 
-    if (p_email && p_email[0] != '\0') {
-        email_lbl = lv_label_create(left_col);
-        lv_label_set_long_mode(email_lbl, LV_LABEL_LONG_WRAP);
-        lv_label_set_text(email_lbl, p_email);
-        lv_obj_set_width(email_lbl, lv_pct(100));
-        lv_obj_set_style_text_font(email_lbl, theme::font_meta(), 0);
-        lv_obj_set_style_text_color(email_lbl, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
-        lv_obj_set_style_text_align(email_lbl, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_pad_top(email_lbl, 20, 0);
-    }
+    lv_obj_t* email_lbl = lv_label_create(left_col);
+    lv_label_set_long_mode(email_lbl, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(email_lbl, (p_email && p_email[0]) ? p_email : "No email");
+    lv_obj_set_width(email_lbl, lv_pct(100));
+    lv_obj_set_style_text_font(email_lbl, theme::font_meta(), 0);
+    lv_obj_set_style_text_color(email_lbl, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
+    lv_obj_set_style_text_align(email_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_pad_top(email_lbl, 20, 0);
 
-    if (p_phone && p_phone[0] != '\0') {
-        phone_lbl = lv_label_create(left_col);
-        lv_label_set_text(phone_lbl, p_phone);
-        lv_obj_set_style_text_font(phone_lbl, theme::font_meta(), 0);
-        lv_obj_set_style_text_color(phone_lbl, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
-        lv_obj_set_style_text_align(phone_lbl, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_pad_top(phone_lbl, 8, 0);
-    }
+    lv_obj_t* phone_lbl = lv_label_create(left_col);
+    lv_label_set_text(phone_lbl, (p_phone && p_phone[0]) ? p_phone : "No phone number");
+    lv_obj_set_style_text_font(phone_lbl, theme::font_meta(), 0);
+    lv_obj_set_style_text_color(phone_lbl, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
+    lv_obj_set_style_text_align(phone_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_pad_top(phone_lbl, 8, 0);
 
-    // Status line — presence colour matches the profile photo border.
     {
         const char* status_str;
         switch (pres) {
@@ -157,26 +135,14 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
         lv_obj_set_style_pad_top(status_lbl, 24, 0);
     }
 
-    lv_obj_t* spacer_bot = lv_obj_create(left_col);
-    ui::clear_container(spacer_bot);
-    lv_obj_set_size(spacer_bot, 0, 0);
-    lv_obj_set_flex_grow(spacer_bot, 1);
-
-    // ── Right column — photo, pinned to the same position as in calendar mode ──
-    // Width = widget_profile_card::WIDTH (269 px) and horizontal padding = 8 px
-    // each side match the right panel exactly, so the photo's visual centre
-    // lands at the same X as in calendar mode.
-    //
-    // Vertical: read the live photo's absolute Y from the LVGL layout engine
-    // (lv_obj_get_coords gives display-absolute coordinates). body_row and
-    // right_col both start at y = STATUS_BAR_H (box pad_top), so:
-    //   right_col pad_top = coords.y1 − STATUS_BAR_H
+    // ── Right column — photo pinned to the same absolute Y as in calendar mode ─
+    // body_row now starts at y=0 (box has no pad_top), so photo_pad_top = coords.y1
+    // places the ring at the same absolute screen position as the live card.
     lv_coord_t photo_pad_top = 0;
     if (ref_photo) {
         lv_area_t coords;
         lv_obj_get_coords(ref_photo, &coords);
-        lv_coord_t offset = coords.y1 - STATUS_BAR_H;
-        if (offset > 0) photo_pad_top = offset;
+        if (coords.y1 > 0) photo_pad_top = coords.y1;
     }
 
     lv_obj_t* right_col = lv_obj_create(body_row);
@@ -190,9 +156,6 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
     lv_obj_set_flex_align(right_col, LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    // Gradient presence ring — matches the profile-card ring structure exactly.
-    // Registered as g_modal_photo so set_default_presence() can push gradient
-    // updates to it live while the overlay is open.
     lv_obj_t* photo_ring = lv_obj_create(right_col);
     lv_obj_set_size(photo_ring,
         widget_profile_card::PHOTO_SIZE + 12,
@@ -205,10 +168,14 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
     lv_obj_set_style_border_width(photo_ring, 0, 0);
     lv_obj_set_style_pad_all(photo_ring, 0, 0);
     lv_obj_clear_flag(photo_ring, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(photo_ring, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(photo_ring, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_opa(photo_ring, LV_OPA_60, LV_STATE_PRESSED);
+    lv_obj_add_event_cb(photo_ring, [](lv_event_t* e) {
+        lv_obj_t* prev = static_cast<lv_obj_t*>(lv_event_get_user_data(e));
+        lv_scr_load_anim(prev, LV_SCR_LOAD_ANIM_NONE, 0, 0, /*auto_del=*/true);
+    }, LV_EVENT_CLICKED, base_screen);
     widget_profile_card::register_modal_photo(photo_ring);
 
-    // Inner photo circle — the ring peeks 6 px around all edges.
     lv_obj_t* photo = lv_obj_create(photo_ring);
     lv_obj_set_size(photo, widget_profile_card::PHOTO_SIZE, widget_profile_card::PHOTO_SIZE);
     lv_obj_center(photo);
@@ -240,22 +207,15 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
         lv_obj_align(img, LV_ALIGN_CENTER, 0, 0);
     }
 
-    // 28 px gap between the body and the close button (LVGL has no margin style).
-    lv_obj_t* gap = lv_obj_create(box);
-    ui::clear_container(gap);
-    lv_obj_set_size(gap, lv_pct(100), 28);
-
-    lv_obj_t* close_btn = ui::make_btn(box, "Close", ui::BtnStyle::Tertiary,
-                                       nullptr, nullptr, 12, 26, theme::font_meta());
-    lv_obj_add_event_cb(close_btn, [](lv_event_t* e) {
-        lv_obj_delete(static_cast<lv_obj_t*>(lv_event_get_user_data(e)));
-    }, LV_EVENT_CLICKED, scrim);
-    lv_obj_add_event_cb(scrim, [](lv_event_t*) {
+    lv_obj_add_event_cb(screen, [](lv_event_t*) {
         widget_profile_card::unregister_modal_photo();
         widget_profile_card::unregister_modal_labels();
     }, LV_EVENT_DELETE, nullptr);
 
-    return scrim;
+    // Load as independent screen; keep base_screen alive for the go-back tap.
+    lv_scr_load_anim(screen, LV_SCR_LOAD_ANIM_NONE, 0, 0, /*auto_del=*/false);
+
+    return screen;
 }
 
 } // namespace modal_profile

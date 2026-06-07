@@ -28,7 +28,11 @@ enum class Step {
     Complete,
 };
 
-lv_obj_t* create(Step initial);
+// prev_screen: the runtime screen to return to when Skip is tapped on the
+// PhonePairing step.  Pass nullptr during the initial setup flow (Skip → Complete).
+// Pass the live runtime screen during the runtime re-pair-iPhone flow (Skip → back).
+// The caller must load the new screen with auto_del=false so prev_screen stays alive.
+lv_obj_t* create(Step initial, lv_obj_t* prev_screen = nullptr);
 void      set_step(lv_obj_t* screen, Step s);
 
 // Pairing-step modal overlays. Both sit on top of the Pairing base screen.
