@@ -32,9 +32,14 @@
 #include "lvgl_display.h"
 #include "lvgl_input.h"
 #include "nvs_store.h"
+#include "nvs_sync.h"
 #include "ota_receiver.h"
+#include "assets/profile_placeholder.h"
+#include "assets/pto_placeholder.h"
 #include "photo_cache.h"
 #include "screen_manager.h"
+#include "state_machine.h"
+#include "widgets/widget_profile_card.h"
 #include "touch_gt911.h"
 
 // Print a one-line memory snapshot to Serial.
@@ -85,7 +90,30 @@ void setup() {
     screen_manager::init();
     mem_snapshot("after screen_manager");
 
-    // Load cached photos from NVS and decode to PSRAM before first screen draw.
+    // Load cached profile text and photos from NVS before first screen draw.
+    {
+        char name[65] = {}, title[65] = {}, email[129] = {}, phone[33] = {};
+        if (nvs_sync::load_profile(name, sizeof(name), title, sizeof(title),
+                                   email, sizeof(email), phone, sizeof(phone))) {
+            widget_profile_card::set_profile(name, title, email, phone);
+            LOG("[boot] profile loaded: name=%s title=%s\n", name, title);
+        }
+    }
+    {
+        static uint8_t meet_buf[4096];
+        size_t meet_len = nvs_sync::load_meetings_blob(meet_buf, sizeof(meet_buf));
+        if (meet_len > 0) {
+            state_machine::set_meetings_cbor(meet_buf, meet_len, /*save_to_nvs=*/false);
+            LOG("[boot] meetings blob loaded: %u bytes\n", (unsigned)meet_len);
+        }
+    }
+    // Mount LittleFS before any photo_cache call — user photos live there.
+    photo_cache::mount_fs();
+    // Placeholders (compiled into firmware flash) decoded first so init() can
+    // fall back to them immediately if no user photo exists on LittleFS yet.
+    photo_cache::init_profile_placeholder(profile_placeholder_jpg, profile_placeholder_jpg_len);
+    photo_cache::init_pto_placeholder(pto_placeholder_jpg, pto_placeholder_jpg_len);
+    // Load user photos from LittleFS (persists across firmware updates).
     photo_cache::init();
     photo_cache::init_pto();
     mem_snapshot("after photo_cache");
@@ -114,6 +142,7 @@ void loop() {
     // reflected in the current frame. ota_receiver polls USB CDC for OTA frames.
     ble_manager::poll();
     ota_receiver::poll();
+    state_machine::poll();  // drain deferred NVS writes before LVGL renders
 
     // ------------------------------------------------------------------
     // LVGL_TICK_HOOK

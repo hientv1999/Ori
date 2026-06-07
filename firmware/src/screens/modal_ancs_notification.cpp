@@ -2,7 +2,7 @@
 
 #include <lvgl.h>
 
-#include "mock_data.h"
+#include "app_state.h"
 #include "theme.h"
 #include "ui_helpers.h"
 #include "widgets/widget_status_bar.h"
@@ -30,7 +30,7 @@ struct ModalCtx {
 void on_read(lv_event_t* e) {
     auto* ctx = static_cast<ModalCtx*>(lv_event_get_user_data(e));
     // Remove from queue and refresh — reveals the next queued icon if one exists.
-    mock_data::dismiss_ancs_notification(ctx->token);
+    app_state::dismiss_ancs_notification(ctx->token);
     if (ctx->ancs_tile) {
         lv_obj_t* ancs_row = lv_obj_get_parent(ctx->ancs_tile);
         lv_obj_t* bar      = ancs_row ? lv_obj_get_parent(ancs_row) : nullptr;
@@ -50,7 +50,7 @@ void on_close(lv_event_t* e) {
 namespace modal_ancs_notification {
 
 lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ancs_tile, const char* token) {
-    const mock_data::AncsNotification& n = mock_data::ancs_notification(token);
+    const app_state::AncsNotification& n = app_state::ancs_notification(token);
 
     auto* ctx = new ModalCtx();
 

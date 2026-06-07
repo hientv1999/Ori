@@ -1,9 +1,11 @@
 ﻿#include "widgets/widget_status_bar.h"
 
+#include <cstdio>
 #include <functional>
+#include <time.h>
 
 #include "assets/ancs_icons.h"
-#include "mock_data.h"
+#include "app_state.h"
 #include "screens/modal_ancs_notification.h"
 #include "screens/modal_unpair_phone.h"
 // #include "screens/screen_repair_phone.h" // removed obsolete repair screen
@@ -31,12 +33,26 @@ constexpr int16_t ICON_GAP      = 14;
 constexpr int16_t PHONE_SIZE    = 64;
 constexpr int16_t DATETIME_GAP  = 12;
 
+// Format current local time into the two display strings.
+static void format_real_time(char* time_buf, size_t time_sz,
+                              char* date_buf, size_t date_sz) {
+    time_t t = time(nullptr);
+    struct tm tm;
+    localtime_r(&t, &tm);
+    snprintf(time_buf, time_sz, "%02d:%02d", tm.tm_hour, tm.tm_min);
+    char day[4], mon[4];
+    strftime(day, sizeof(day), "%a", &tm);
+    strftime(mon, sizeof(mon), "%b", &tm);
+    snprintf(date_buf, date_sz, "%s, %s %d", day, mon, tm.tm_mday);
+}
+
 struct StatusBarState {
-    lv_obj_t* datetime_row;
-    lv_obj_t* time_label;
-    lv_obj_t* sep_label;
-    lv_obj_t* date_label;
-    lv_obj_t* right_row;
+    lv_obj_t*   datetime_row;
+    lv_obj_t*   time_label;
+    lv_obj_t*   sep_label;
+    lv_obj_t*   date_label;
+    lv_obj_t*   right_row;
+    lv_timer_t* clock_timer;  // 1 s self-update timer
     lv_obj_t* ancs_row;
     lv_obj_t* phone_icon;
     lv_obj_t* mode_toggle;       // 60x60 button at the right edge
@@ -399,6 +415,11 @@ lv_obj_t* make_mode_toggle(lv_obj_t* parent, StatusBarState* state) {
 
 namespace widget_status_bar {
 
+// Weak reference to the most-recently-created bar — used by refresh_active()
+// so the ANCS client can push icon updates immediately without knowing which
+// screen owns the bar. Cleared to nullptr on LV_EVENT_DELETE.
+lv_obj_t* g_active_bar = nullptr;
+
 // Module-level defaults — set via set_default_* helpers. Newly-created status
 // bars read these so screen_manager can change state once per screen-switch.
 bool g_default_pc_connected   = true;
@@ -522,9 +543,11 @@ lv_obj_t* create(lv_obj_t* parent) {
         } else {
             // No bond — push iPhone pairing screen.
             lv_obj_t* pairing = screen_setup::create(screen_setup::Step::PhonePairing);
-            lv_scr_load(pairing);
-            lv_refr_now(lv_display_get_default());
-            lv_obj_delete(screen);
+            // auto_del=true: LVGL deletes `screen` after firing unload events,
+            // avoiding a dangling d->prev_scr. lv_refr_now() omitted: fires
+            // inside lv_timer_handler(); re-entering the render pipeline mid-event
+            // is unsafe.
+            lv_scr_load_anim(pairing, LV_SCR_LOAD_ANIM_NONE, 0, 0, /*auto_del=*/true);
         }
     };
     lv_obj_add_event_cb(state->phone_icon, phone_icon_cb, LV_EVENT_CLICKED, state);
@@ -541,9 +564,23 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_style_pad_column(bar, 16, 0);
 
     lv_obj_set_user_data(bar, state);
+
+    // 1-second timer keeps the clock live without needing the state machine
+    // to call refresh() externally. Deleted explicitly on LV_EVENT_DELETE
+    // because lv_timer_create() produces a free-standing timer, not a child.
+    state->clock_timer = lv_timer_create([](lv_timer_t* t) {
+        auto* b = static_cast<lv_obj_t*>(lv_timer_get_user_data(t));
+        widget_status_bar::refresh(b);
+    }, 1000, bar);
+
+    g_active_bar = bar;
     lv_obj_add_event_cb(bar, [](lv_event_t* e) {
-        delete static_cast<StatusBarState*>(lv_event_get_user_data(e));
+        auto* st = static_cast<StatusBarState*>(lv_event_get_user_data(e));
+        if (st->clock_timer) { lv_timer_delete(st->clock_timer); st->clock_timer = nullptr; }
+        if (g_active_bar == (lv_obj_t*)lv_event_get_target(e)) g_active_bar = nullptr;
+        delete st;
     }, LV_EVENT_DELETE, state);
+
     refresh(bar);
     return bar;
 }
@@ -609,22 +646,27 @@ void set_default_mode(Mode mode)                    { g_default_mode = mode; }
 void set_default_mode_toggle_cb(ModeToggleCb cb)    { g_default_mode_cb = cb; }
 void set_default_time_tap_cb(TimeTapCb cb)          { g_default_time_tap_cb = cb; }
 
+void refresh_active() {
+    if (g_active_bar) refresh(g_active_bar);
+}
+
 void refresh(lv_obj_t* bar) {
     auto* s = static_cast<StatusBarState*>(lv_obj_get_user_data(bar));
     if (!s) return;
 
-    const auto& t = mock_data::now();
-    lv_label_set_text(s->time_label, t.hh_mm);
-    lv_label_set_text(s->date_label, t.date_short);
+    char time_buf[8], date_buf[20];
+    format_real_time(time_buf, sizeof(time_buf), date_buf, sizeof(date_buf));
+    lv_label_set_text(s->time_label, time_buf);
+    lv_label_set_text(s->date_label, date_buf);
 
     // Rebuild ANCS row from current config.
-    const auto& cfg = mock_data::ancs_config();
+    const auto& cfg = app_state::ancs_config();
     lv_obj_clean(s->ancs_row);
     size_t visible_tiles = 0;
     if (cfg.phone_connected) {
         // i < MAX_ANCS_ICONS is a hard guard: even if cfg.count is somehow
         // corrupted above the array size, we never read past icons[MAX-1].
-        for (size_t i = 0; i < cfg.count && i < mock_data::MAX_ANCS_ICONS; ++i) {
+        for (size_t i = 0; i < cfg.count && i < app_state::MAX_ANCS_ICONS; ++i) {
             if (cfg.icons[i]) {
                 make_ancs_tile(s->ancs_row, cfg.icons[i]);
                 ++visible_tiles;

@@ -2,7 +2,7 @@
 
 #include <lvgl.h>
 
-#include "mock_data.h"
+#include "app_state.h"
 
 // Ori — Reconnect-Syncing overlay.
 //

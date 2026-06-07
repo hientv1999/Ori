@@ -10,8 +10,10 @@
 
 #include "ble/ble_manager.h"
 #include "factory_reset.h"
-#include "mock_data.h"
+#include "app_state.h"
 #include "nvs_store.h"
+#include "nvs_sync.h"
+#include <cbor.h>
 #include "screens/modal_countdown.h"
 #include "screens/modal_factory_reset.h"
 #include "screens/modal_unpair_phone.h"
@@ -65,14 +67,43 @@ lv_obj_t* g_countdown_base = nullptr;
 // Reference to the periodic tick timer created in state_machine::init().
 lv_timer_t* g_tick_timer = nullptr;
 
+// ─── Runtime meeting cache ────────────────────────────────────────────────
+// Populated from NVS blob at boot and updated on every BLE MeetingList write.
+// Uses static char storage so app_state::Meeting const-char* fields are valid.
+
+namespace {
+struct RtMeeting {
+    char     start_str[6];   // "HH:MM"
+    char     end_str[6];
+    char     title[129];
+    char     loc[65];
+    char     org[65];
+    uint32_t start_epoch;
+    uint32_t end_epoch;
+};
+RtMeeting         g_rt[32];
+size_t            g_rt_count = 0;
+app_state::Meeting g_rt_display[32];  // const-char* view into g_rt, rebuilt by set_meetings_cbor
+
+static void epoch_to_hhmm(uint32_t epoch, char* buf, size_t sz) {
+    time_t t = (time_t)epoch;
+    struct tm tm_buf;
+    localtime_r(&t, &tm_buf);
+    snprintf(buf, sz, "%02d:%02d", tm_buf.tm_hour, tm_buf.tm_min);
+}
+} // namespace
+
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
 bool is_pto_active() {
-    // Stubbed until M5 provides the NVS-cached PTO entry with epoch timestamps.
-    return false;
+    uint32_t s = 0, e = 0;
+    if (!nvs_sync::load_pto_meta(&s, &e, nullptr, 0)) return false;
+    if (!s || !e) return false;
+    uint32_t now = (uint32_t)time(nullptr);
+    return now >= s && now <= e;
 }
 
-// Convert a "HH:MM" string from mock_data to minutes-since-midnight.
+// Convert a "HH:MM" string from app_state to minutes-since-midnight.
 static int hhmm_to_mins(const char* s) {
     if (!s || s[0] == '\0') return -1;
     int h = 0, m = 0;
@@ -99,19 +130,26 @@ static long now_seconds() {
     return (long)tm_buf.tm_hour * 3600 + tm_buf.tm_min * 60 + tm_buf.tm_sec;
 }
 
-// Returns mock_data::meetings() with any meeting whose end time has already
-// passed (end_minutes < now_minutes) removed. Uses a static backing array —
-// safe in single-threaded LVGL context; callers must not hold the returned
-// pointer past the next call to this function.
-static mock_data::MeetingList filtered_meetings() {
-    static mock_data::Meeting buf[32];
-    mock_data::MeetingList all = mock_data::meetings();
+// Returns the live meeting list with past meetings removed and in_progress flag
+// set. Static backing array — safe in single-threaded LVGL context; do not
+// hold past the next call.
+static app_state::MeetingList filtered_meetings() {
+    static app_state::Meeting buf[32];
+    app_state::MeetingList all = { g_rt_display, g_rt_count };
     int now_m = now_mins();
+    uint32_t now_epoch = (uint32_t)time(nullptr);
     size_t n = 0;
     for (size_t i = 0; i < all.count && n < 32; ++i) {
-        int end_m = hhmm_to_mins(all.items[i].end);
+        const app_state::Meeting& m = all.items[i];
+        int end_m = hhmm_to_mins(m.end);
         if (end_m < 0 || end_m >= now_m) {
-            buf[n++] = all.items[i];
+            buf[n] = m;
+            // Recompute in_progress from epoch if available, else from string.
+            if (g_rt_count > 0) {
+                const RtMeeting& rt = g_rt[i];
+                buf[n].in_progress = (now_epoch >= rt.start_epoch && now_epoch <= rt.end_epoch);
+            }
+            ++n;
         }
     }
     return { buf, n };
@@ -125,10 +163,10 @@ static bool check_countdown(const char** out_title,
                              int*         out_diff_s,
                              int*         out_key) {
     long now_s = now_seconds();
-    mock_data::MeetingList list = mock_data::meetings();
+    app_state::MeetingList list = { g_rt_display, g_rt_count };
 
     for (size_t i = 0; i < list.count; ++i) {
-        const mock_data::Meeting& m = list.items[i];
+        const app_state::Meeting& m = list.items[i];
         int start_mins = hhmm_to_mins(m.start);
         if (start_mins < 0) continue;
         long start_s = (long)start_mins * 60;
@@ -192,14 +230,14 @@ void apply_widget_defaults() {
 }
 
 // Transition to a new LVGL screen, deleting the old one.
+// lv_refr_now() is intentionally absent — see debug_load() in screen_manager.cpp.
+// auto_del=true: LVGL fires screen-unload events then deletes d->prev_scr before
+// returning. Calling lv_obj_delete(prev) after lv_scr_load() instead leaves
+// d->prev_scr dangling — if LVGL touches it on the next lv_timer_handler() pass
+// (e.g. to fire LV_EVENT_SCREEN_UNLOADED) it reads freed memory and crashes.
 void load_screen(lv_obj_t* new_screen) {
-    lv_obj_t* prev = g_current_screen;
     g_current_screen = new_screen;
-    lv_scr_load(new_screen);
-    lv_refr_now(lv_display_get_default());
-    if (prev && prev != new_screen) {
-        lv_obj_delete(prev);
-    }
+    lv_scr_load_anim(new_screen, LV_SCR_LOAD_ANIM_NONE, 0, 0, /*auto_del=*/true);
 }
 
 // ─── State-specific screen builders ───────────────────────────────────────
@@ -245,7 +283,7 @@ void fire_countdown(const char* title, const char* when, int diff_s) {
     if (g_mode == 1 && g_pc_connected) {
         base = build_controls_screen();
     } else {
-        mock_data::MeetingList list = filtered_meetings();
+        app_state::MeetingList list = filtered_meetings();
         if (list.count > 0) {
             base = build_meeting_list_screen();
         } else {
@@ -272,7 +310,7 @@ AppState compute_target_state() {
     // on_clock_enter() (user taps the status-bar time) and protected in
     // evaluate() from being overwritten by normal Calendar state changes.
 
-    mock_data::MeetingList list = filtered_meetings();
+    app_state::MeetingList list = filtered_meetings();
     if (list.count > 0)              return AppState::MEETING_LIST;
     return AppState::NO_MEETINGS;
 }
@@ -311,6 +349,12 @@ static void tick_cb(lv_timer_t* /*t*/) {
 namespace state_machine {
 
 void init() {
+    // Pre-load PTO metadata into RAM cache while the heap is clean (before any
+    // screen is created). This prevents the NVS handle allocator from landing
+    // on SRAM that was previously used by the media screen's LVGL allocations,
+    // which would corrupt the NVSHandleSimple vtable pointer and crash.
+    nvs_sync::prime_pto_cache();
+
     // Restore mode from NVS.
     g_mode = nvs::get_mode();
 
@@ -402,12 +446,126 @@ AppState evaluate() {
     return g_state;
 }
 
+// Deferred work flags — set from LVGL timer callbacks, drained in poll()
+// which runs in the main loop before lv_timer_handler(). NVS flash writes
+// disable ICache/DCache system-wide; doing them inside an LVGL callback
+// while LCD_CAM DMA is active on Core 1 triggers the interrupt watchdog.
+static bool g_setup_complete_pending = false;
+
+void set_meetings_cbor(const uint8_t* buf, size_t len, bool save_to_nvs) {
+    if (!buf || !len) return;
+
+    if (save_to_nvs) nvs_sync::save_meetings_blob(buf, len);
+
+    // Parse CBOR: { "date": uint, "items": [ { "start": uint, "end": uint,
+    //   "title": text, "loc": text, "org": text }, ... ] }
+    CborParser parser;
+    CborValue  root;
+    if (cbor_parser_init(buf, len, 0, &parser, &root) != CborNoError) return;
+    if (!cbor_value_is_map(&root)) return;
+
+    CborValue map;
+    cbor_value_enter_container(&root, &map);
+
+    CborValue items_val;
+    bool found_items = false;
+
+    while (!cbor_value_at_end(&map)) {
+        char key[16] = {};
+        size_t key_len = sizeof(key) - 1;
+        if (!cbor_value_is_text_string(&map)) { cbor_value_advance(&map); continue; }
+        cbor_value_copy_text_string(&map, key, &key_len, &map);
+        if (cbor_value_at_end(&map)) break;
+
+        if (strcmp(key, "items") == 0 && cbor_value_is_array(&map)) {
+            items_val = map;
+            found_items = true;
+        }
+        cbor_value_advance(&map);
+    }
+
+    if (!found_items) return;
+
+    CborValue item;
+    cbor_value_enter_container(&items_val, &item);
+    size_t count = 0;
+
+    while (!cbor_value_at_end(&item) && count < 32) {
+        if (!cbor_value_is_map(&item)) { cbor_value_advance(&item); continue; }
+
+        RtMeeting& rt = g_rt[count];
+        memset(&rt, 0, sizeof(rt));
+
+        CborValue field;
+        cbor_value_enter_container(&item, &field);
+        while (!cbor_value_at_end(&field)) {
+            char fkey[16] = {};
+            size_t fkey_len = sizeof(fkey) - 1;
+            if (!cbor_value_is_text_string(&field)) { cbor_value_advance(&field); continue; }
+            cbor_value_copy_text_string(&field, fkey, &fkey_len, &field);
+            if (cbor_value_at_end(&field)) break;
+
+            if (strcmp(fkey, "start") == 0 && cbor_value_is_unsigned_integer(&field)) {
+                uint64_t v; cbor_value_get_uint64(&field, &v);
+                rt.start_epoch = (uint32_t)v;
+                epoch_to_hhmm(rt.start_epoch, rt.start_str, sizeof(rt.start_str));
+            } else if (strcmp(fkey, "end") == 0 && cbor_value_is_unsigned_integer(&field)) {
+                uint64_t v; cbor_value_get_uint64(&field, &v);
+                rt.end_epoch = (uint32_t)v;
+                epoch_to_hhmm(rt.end_epoch, rt.end_str, sizeof(rt.end_str));
+            } else if (strcmp(fkey, "title") == 0 && cbor_value_is_text_string(&field)) {
+                size_t sz = sizeof(rt.title) - 1;
+                cbor_value_copy_text_string(&field, rt.title, &sz, nullptr);
+            } else if (strcmp(fkey, "loc") == 0 && cbor_value_is_text_string(&field)) {
+                size_t sz = sizeof(rt.loc) - 1;
+                cbor_value_copy_text_string(&field, rt.loc, &sz, nullptr);
+            } else if (strcmp(fkey, "org") == 0 && cbor_value_is_text_string(&field)) {
+                size_t sz = sizeof(rt.org) - 1;
+                cbor_value_copy_text_string(&field, rt.org, &sz, nullptr);
+            }
+            if (!cbor_value_at_end(&field)) cbor_value_advance(&field);
+        }
+        cbor_value_leave_container(&item, &field);
+
+        // Build the app_state::Meeting view.
+        g_rt_display[count] = {
+            rt.start_str, rt.end_str,
+            rt.title, rt.loc, rt.org,
+            false,  // overlap — computed below
+            false   // in_progress — computed in filtered_meetings()
+        };
+        ++count;
+        cbor_value_advance(&item);
+    }
+
+    g_rt_count = count;
+
+    // Compute overlap: two meetings overlap when one starts before the other ends.
+    for (size_t i = 0; i < g_rt_count; ++i) {
+        for (size_t j = i + 1; j < g_rt_count; ++j) {
+            if (g_rt[i].start_epoch < g_rt[j].end_epoch &&
+                g_rt[j].start_epoch < g_rt[i].end_epoch) {
+                g_rt_display[i].overlap = true;
+                g_rt_display[j].overlap = true;
+            }
+        }
+    }
+
+    LOG("[sm] meetings parsed: %u items\n", (unsigned)g_rt_count);
+}
+
 void on_setup_complete() {
-    LOG("[sm] on_setup_complete\n");
-    nvs::mark_setup_complete();
-    // g_state is SETUP; compute_target_state() now returns something else
-    // so evaluate() will naturally rebuild.
-    evaluate();
+    LOG("[sm] on_setup_complete — deferring NVS write to poll()\n");
+    g_setup_complete_pending = true;
+}
+
+void poll() {
+    if (g_setup_complete_pending) {
+        g_setup_complete_pending = false;
+        LOG("[sm] poll: setup complete — writing NVS + evaluating\n");
+        nvs::mark_setup_complete();
+        evaluate();
+    }
 }
 
 void on_factory_reset() {

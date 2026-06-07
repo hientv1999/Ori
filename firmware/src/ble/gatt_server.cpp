@@ -56,7 +56,7 @@ void ble_post_pto_photo_event(uint8_t* buf, size_t len);
 #include "nvs_sync.h"
 #include "state_machine.h"
 #include "factory_reset.h"
-#include "mock_data.h"
+#include "app_state.h"
 #include "screens/screen_setup.h"
 #include "widgets/widget_profile_card.h"
 #include "screens/screen_media_mode.h"
@@ -401,6 +401,9 @@ private:
         sha256_of_buf(data, len, hash);
         nvs_sync::save_hash(nvs_sync::HASH_KEY_PROFILE, hash);
 
+        // Update the live profile card immediately.
+        widget_profile_card::set_profile(name, title, email, phone);
+
         LOG("[gatt] ProfileInfo: name=%s title=%s\n", name, title);
         ble_post_orioning_progress(15);
     }
@@ -446,7 +449,7 @@ private:
                 sha256_of_buf(buf, n, hash);
                 nvs_sync::save_hash(nvs_sync::HASH_KEY_MEETINGS, hash);
                 LOG("[gatt] Meetings received: %u bytes, hash stored\n", (unsigned)n);
-                // TODO: parse CBOR MeetingList, apply to live state machine.
+                state_machine::set_meetings_cbor(buf, n, /*save_to_nvs=*/true);
                 heap_caps_free(buf);
                 ble_post_orioning_progress(65);
             };
@@ -599,9 +602,9 @@ private:
 
         } else if (strcmp(op, "END") == 0) {
             g_sync_in_progress = false;
-            // Persist the epoch so "SYNCED · X min ago" works.
             time_t now = time(nullptr);
             nvs_sync::save_epoch((uint32_t)now);
+            app_state::set_last_sync_time(now);
 
             uint8_t new_status = (g_device_status == DS_SETUP_SYNCING ||
                                   g_device_status == DS_SETUP_BONDED_AWAITING_SYNC)
@@ -756,8 +759,8 @@ private:
         g_volume_level = (uint8_t)(level > 100 ? 100 : level);
         g_muted        = mute;
 
-        // Update mock_data so the media mode screen reflects it.
-        mock_data::set_media_volume((int)g_volume_level);
+        // Update app_state so the media mode screen reflects it.
+        app_state::set_media_volume((int)g_volume_level);
         LOG("[gatt] HostVolume: level=%u mute=%d\n",
                        (unsigned)g_volume_level, (int)g_muted);
     }
@@ -811,14 +814,9 @@ private:
             if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
         }
 
-        bool has_media = (title[0] != '\0');
-        LOG("[gatt] MediaMetadata: title='%s' artist='%s'\n", title, artist);
-
-        // Update the live media metadata via mock_data so the screen refreshes.
-        // In a full implementation this would call into a real media data store.
-        // For M5, we leverage the mock_data setters to propagate to the UI.
-        // The screen_media_mode reads mock_data::media() on each tick.
-        // TODO: replace mock_data with a real live_data module in M7.
+        LOG("[gatt] MediaMetadata: title='%s' artist='%s' can_seek=%d\n",
+                       title, artist, (int)can_seek);
+        app_state::set_media_meta(title, artist, can_seek);
     }
 
     // ── Media Album Art (char 000E) — chunked raw JPEG ─────────────────────
@@ -906,6 +904,13 @@ void init() {
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
     c_dev_status->setCallbacks(&s_char_cb);
     c_dev_status->setValue(&g_device_status, 1);
+
+    // SECURITY NOTE: All characteristics below use WRITE_ENC / READ_ENC (any
+    // encrypted link) instead of WRITE_AUTHEN / READ_AUTHEN (MITM-protected).
+    // This allows Just Works bonding so the Python mock tool can test M5 without
+    // implementing passkey entry. After M5 testing is complete, every _ENC flag
+    // below MUST be changed to _AUTHEN to close the Just Works bypass vulnerability.
+    // See: https://github.com/anthropics/... (tracked in M5 sign-off checklist)
 
     // 0003 Time Sync — Write with response, encrypted
     c_time_sync = svc->createCharacteristic(

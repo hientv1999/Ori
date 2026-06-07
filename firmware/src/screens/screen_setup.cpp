@@ -4,7 +4,7 @@
 #include "ori_log.h"
 #include <lvgl.h>
 
-#include "mock_data.h"
+#include "app_state.h"
 #include "state_machine.h"
 #include "theme.h"
 #include "ui_helpers.h"
@@ -361,7 +361,7 @@ void build_pairing(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
     lv_obj_set_style_text_font(h, theme::font_display(), 0);
     lv_obj_set_style_text_align(h, LV_TEXT_ALIGN_CENTER, 0);
 
-    lv_obj_t* pill = make_ble_pill(mid, mock_data::ble_name());
+    lv_obj_t* pill = make_ble_pill(mid, app_state::ble_name());
     lv_obj_set_style_pad_top(pill, 20, 0);
 
     lv_obj_t* spinner = make_spinner(mid, 100, 8);
@@ -382,7 +382,7 @@ void build_phone_pairing(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
     lv_obj_set_style_text_font(h, theme::font_display(), 0);
     lv_obj_set_style_text_align(h, LV_TEXT_ALIGN_CENTER, 0);
 
-    lv_obj_t* pill = make_ble_pill(mid, mock_data::ble_name());
+    lv_obj_t* pill = make_ble_pill(mid, app_state::ble_name());
     lv_obj_set_style_pad_top(pill, 10, 0);
 
     lv_obj_t* spinner = make_spinner(mid, 100, 8);

@@ -5,7 +5,7 @@
 
 #include "assets/shortcut_icons.h"
 #include "ble/gatt_server.h"
-#include "mock_data.h"
+#include "app_state.h"
 #include "theme.h"
 #include "ui_helpers.h"
 #include "widgets/widget_profile_card.h"
@@ -19,9 +19,8 @@ extern "C" void gatt_server_set_vol_swipe_active(bool active);
 namespace {
 
 constexpr int16_t LEFT_PANEL_WIDTH  = 528;
-// 16:9 art: 384 × 216. Width fills most of the 484 px usable panel (22 px pad each side).
-// Height stays 216 px so the vertical budget is identical to the previous 1:1 layout.
-constexpr int16_t ART_W             = 384;
+// Art: 484 × 216 — full usable panel width (528 − 22 pad each side), height unchanged.
+constexpr int16_t ART_W             = 484;
 constexpr int16_t ART_H             = 216;
 
 // Gesture thresholds — mirror the HTML prototype values.
@@ -73,6 +72,12 @@ struct ArtState {
     bool      vertical_engaged;
 };
 
+// Live pointer to the ArtState of the currently active media screen.
+// Accessed by the public update_* functions in namespace screen_media_mode
+// below. Anonymous-namespace scope keeps it TU-local (same as g_active_card
+// in widget_profile_card.cpp).
+ArtState* g_active_art = nullptr;
+
 // Build the paused-state play-triangle widget on top of the album art.
 // Matches the HTML #i-play SVG path `M7 5v14l12-7z` at viewBox 24x24,
 // scaled to PLAY_ICON_SIZE x PLAY_ICON_SIZE (~×2.67).
@@ -122,7 +127,7 @@ void set_volume_visual(ArtState* s, int volume) {
     if (!s) return;
     if (volume < 0)   volume = 0;
     if (volume > 100) volume = 100;
-    mock_data::set_media_volume(volume);
+    app_state::set_media_volume(volume);
     // HUD bar fill — height is a fraction of the bar container.
     if (s->hud_fill) lv_obj_set_height(s->hud_fill, lv_pct(volume));
     if (s->hud_pct_label) {
@@ -192,7 +197,7 @@ void on_art_gesture(lv_event_t* e) {
     if (code == LV_EVENT_PRESSED) {
         s->start_x = p.x;
         s->start_y = p.y;
-        s->start_volume = mock_data::media().volume;
+        s->start_volume = app_state::media().volume;
         s->tracking = true;
         s->vertical_engaged = false;
     } else if (code == LV_EVENT_PRESSING) {
@@ -234,8 +239,8 @@ void on_art_gesture(lv_event_t* e) {
         }
         if (abs_dx < TAP_MAX && abs_dy < TAP_MAX) {
             // Tap = play/pause toggle.
-            bool playing = !mock_data::media_playing();
-            mock_data::set_media_playing(playing);
+            bool playing = !app_state::media_playing();
+            app_state::set_media_playing(playing);
             apply_paused_visual(s, !playing);
             gatt_server::notify_keyboard_command("play_pause", 0);
         } else if (abs_dx > H_SWIPE_MIN && abs_dx > abs_dy) {
@@ -261,7 +266,7 @@ lv_obj_t* make_art_block(lv_obj_t* parent, ArtState* s) {
     lv_obj_clear_flag(wrap, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(wrap, LV_OBJ_FLAG_CLICKABLE);
 
-    const auto& m        = mock_data::media();
+    const auto& m        = app_state::media();
     const bool has_media = m.has_media;
 
     // Album art — a solid colored object styled with a gradient that
@@ -275,16 +280,11 @@ lv_obj_t* make_art_block(lv_obj_t* parent, ArtState* s) {
     lv_obj_set_style_pad_all(s->art, 0, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(s->art, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_bg_grad_dir(s->art, LV_GRAD_DIR_VER, LV_PART_MAIN);
-    if (has_media) {
-        // Mock "vibrant album cover" gradient — sunset palette mirroring
-        // the HTML prototype.
-        lv_obj_set_style_bg_color(s->art, theme::color(0x6E2456), LV_PART_MAIN);
-        lv_obj_set_style_bg_grad_color(s->art, theme::color(0xF5B042), LV_PART_MAIN);
-    } else {
-        // Empty state — muted dark gradient + brand mark drawn on top.
-        lv_obj_set_style_bg_color(s->art, theme::color(0x1A1F28), LV_PART_MAIN);
-        lv_obj_set_style_bg_grad_color(s->art, theme::color(0x0C0F14), LV_PART_MAIN);
-    }
+    // Vibrant gradient always — 2-stop vertical approximation of the HTML prototype's
+    // 4-stop 135° gradient: #2c1a4c → #6e2456 → #c44b3d → #f5b042. Shown regardless
+    // of BLE/media state; the brand mark overlays it in the empty (no-art) state.
+    lv_obj_set_style_bg_color(s->art, theme::color(0x2C1A4C), LV_PART_MAIN);
+    lv_obj_set_style_bg_grad_color(s->art, theme::color(0xF5B042), LV_PART_MAIN);
     lv_obj_set_style_shadow_color(s->art, lv_color_black(), LV_PART_MAIN);
     lv_obj_set_style_shadow_width(s->art, 32, LV_PART_MAIN);
     lv_obj_set_style_shadow_ofs_y(s->art, 12, LV_PART_MAIN);
@@ -292,30 +292,6 @@ lv_obj_t* make_art_block(lv_obj_t* parent, ArtState* s) {
     lv_obj_clear_flag(s->art, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(s->art, LV_OBJ_FLAG_CLICKABLE);
 
-    // Ori brand mark as the "Nothing playing" placeholder (drawn from
-    // primitives — outer ring + inner solid disc, accent gold).
-    if (!has_media) {
-        lv_obj_t* ring = lv_obj_create(s->art);
-        lv_obj_set_size(ring, 96, 96);
-        lv_obj_center(ring);
-        lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, LV_PART_MAIN);
-        lv_obj_set_style_border_color(ring, theme::color(theme::COLOR_ACCENT), LV_PART_MAIN);
-        lv_obj_set_style_border_width(ring, 3, LV_PART_MAIN);
-        lv_obj_set_style_pad_all(ring, 0, LV_PART_MAIN);
-        lv_obj_clear_flag(ring, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_clear_flag(ring, LV_OBJ_FLAG_SCROLLABLE);
-
-        lv_obj_t* dot = lv_obj_create(s->art);
-        lv_obj_set_size(dot, 30, 30);
-        lv_obj_center(dot);
-        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(dot, theme::color(theme::COLOR_ACCENT), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_border_width(dot, 0, LV_PART_MAIN);
-        lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
-    }
 
     // Centred play-triangle overlay shown while paused. Drawn via lv_canvas
     // because LV_SYMBOL_PLAY (FontAwesome U+F04B) is not present in our
@@ -343,7 +319,7 @@ lv_obj_t* make_art_block(lv_obj_t* parent, ArtState* s) {
 
     // HUD bar fill (anchored to bottom, height = volume %).
     s->hud_fill = lv_obj_create(bar_bg);
-    lv_obj_set_size(s->hud_fill, lv_pct(100), lv_pct(mock_data::media().volume));
+    lv_obj_set_size(s->hud_fill, lv_pct(100), lv_pct(app_state::media().volume));
     lv_obj_align(s->hud_fill, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_set_style_radius(s->hud_fill, 5, LV_PART_MAIN);
     lv_obj_set_style_bg_color(s->hud_fill, theme::color(theme::COLOR_ACCENT), LV_PART_MAIN);
@@ -356,7 +332,7 @@ lv_obj_t* make_art_block(lv_obj_t* parent, ArtState* s) {
     s->hud_pct_label = lv_label_create(s->hud);
     {
         char buf[8];
-        lv_snprintf(buf, sizeof(buf), "%d%%", mock_data::media().volume);
+        lv_snprintf(buf, sizeof(buf), "%d%%", app_state::media().volume);
         lv_label_set_text(s->hud_pct_label, buf);
     }
     lv_obj_set_style_text_color(s->hud_pct_label, lv_color_white(), 0);
@@ -462,7 +438,7 @@ lv_obj_t* make_art_block(lv_obj_t* parent, ArtState* s) {
     lv_obj_add_event_cb(wrap, on_art_gesture, LV_EVENT_PRESS_LOST,  s);
 
     // Apply initial paused-state visual.
-    apply_paused_visual(s, !mock_data::media_playing());
+    apply_paused_visual(s, !app_state::media_playing());
     return wrap;
 }
 
@@ -478,7 +454,7 @@ lv_obj_t* make_meta_block(lv_obj_t* parent, ArtState* s) {
     lv_obj_set_flex_flow(meta, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(meta, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    const auto& m = mock_data::media();
+    const auto& m = app_state::media();
     const bool has = m.has_media;
 
     // LV_LABEL_LONG_DOT in LVGL 8.x truncates only when the label's HEIGHT
@@ -523,8 +499,8 @@ lv_obj_t* make_shortcuts_row(lv_obj_t* parent) {
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(row, 14, 0);
 
-    const auto* slots = mock_data::shortcuts();
-    for (size_t i = 0; i < mock_data::SHORTCUT_COUNT; ++i) {
+    const auto* slots = app_state::shortcuts();
+    for (size_t i = 0; i < app_state::SHORTCUT_COUNT; ++i) {
         lv_obj_t* btn = lv_obj_create(row);
         // Width: (484px available − 2×14px gap) ÷ 3 = 152px fills the row.
         lv_obj_set_size(btn, 152, 82);
@@ -596,9 +572,8 @@ lv_obj_t* create() {
     //   10 (pad_top)  +  216 (art h)  +  10 (meta pad_top)  +  28 (title box)  +
     //   2 (artist pad_top)  +  26 (artist box)  +  8 (shortcuts pad_top)  +
     //   82 (shortcuts)  +  10 (pad_bottom)  =  392  ✓ (4 px headroom)
-    // Art is now 384 × 216 (16:9). The seek overlay is inside the art (zero
-    // extra vertical cost). Art width (384) < usable panel (484) — 50 px each side.
-    // pad_bottom = pad_top = 10 so the art's top gap mirrors the buttons' bottom gap.
+    // Art is 484 × 216 — fills the full usable panel width (528 − 22 pad each side).
+    // The seek overlay is inside the art (zero extra vertical cost).
     // pad_row is forced to 0 — LVGL's default theme adds inter-child spacing that
     // would push the shortcut buttons past the bottom of the screen.
     lv_obj_set_style_pad_top(left, 10, 0);
@@ -621,12 +596,53 @@ lv_obj_t* create() {
     // Right profile card.
     widget_profile_card::create(body);
 
+    // Register as the active media screen so update_* functions can reach live widgets.
+    g_active_art = state;
+
     // Store the ArtState pointer and free it when the screen is destroyed.
     lv_obj_set_user_data(screen, state);
     lv_obj_add_event_cb(screen, [](lv_event_t* e) {
+        g_active_art = nullptr;
         delete static_cast<ArtState*>(lv_event_get_user_data(e));
     }, LV_EVENT_DELETE, state);
     return screen;
+}
+
+void update_meta(const char* title, const char* artist) {
+    app_state::set_media_meta(title, artist, app_state::media().can_seek);
+    if (!g_active_art) return;
+    const bool has = title && title[0];
+    lv_label_set_text(g_active_art->title_label, has ? title : "Nothing playing");
+    lv_obj_set_style_text_color(g_active_art->title_label,
+        theme::color(has ? theme::COLOR_TEXT_PRIMARY : theme::COLOR_TEXT_TERTIARY), 0);
+    lv_label_set_text(g_active_art->artist_label,
+        (has && artist && artist[0]) ? artist : "\xe2\x80\x94");
+}
+
+void update_playing(bool playing) {
+    app_state::set_media_playing(playing);
+    if (!g_active_art) return;
+    apply_paused_visual(g_active_art, !playing);
+}
+
+void update_seek(uint32_t position_s, uint32_t duration_s) {
+    app_state::set_media_seek(position_s, duration_s);
+    if (!g_active_art || !g_active_art->tl_fill) return;
+    const uint32_t dur    = duration_s > 0 ? duration_s : 1;
+    const int16_t  bar_w  = ART_W - TL_BAR_PAD * 2;
+    const int16_t  fill_w = (int16_t)((int32_t)bar_w * (int32_t)position_s / (int32_t)dur);
+    lv_obj_set_width(g_active_art->tl_fill, fill_w);
+    if (g_active_art->tl_thumb) {
+        lv_obj_set_pos(g_active_art->tl_thumb,
+            TL_BAR_PAD + fill_w - TL_THUMB_SZ / 2,
+            8 - (TL_THUMB_SZ - TL_BAR_H) / 2);
+    }
+    if (g_active_art->tl_cur_label) {
+        char buf[8];
+        fmt_time(buf, sizeof(buf), position_s);
+        lv_label_set_text(g_active_art->tl_cur_label, buf);
+    }
+    g_active_art->tl_dur_s = dur;
 }
 
 } // namespace screen_media_mode

@@ -17,6 +17,9 @@
 
 namespace photo_cache {
 
+// Mount LittleFS. Call once from setup() before any other photo_cache function.
+void mount_fs();
+
 // Called from main setup() after nvs::init().
 // Loads the JPEG from NVS (if present) and decodes it to PSRAM so the
 // profile card shows the stored photo immediately on boot, before BLE
@@ -38,6 +41,12 @@ const lv_image_dsc_t* get();
 // Erases profile photo from NVS and frees PSRAM buffer.
 void clear();
 
+// Decode a compiled-in placeholder JPEG (228×228) into PSRAM.
+// Call once at boot with the raw bytes from profile_placeholder.c.
+// get_profile_placeholder() returns nullptr until called successfully.
+void init_profile_placeholder(const uint8_t* jpeg, size_t len);
+const lv_image_dsc_t* get_profile_placeholder();
+
 // ── PTO destination image ─────────────────────────────────────────────────
 // Same decode-once pattern. len == 0 means the user set no destination image
 // in Orion — store_pto(jpeg, 0) clears the cache and get_pto() returns nullptr.
@@ -46,5 +55,11 @@ void init_pto();
 void store_pto(uint8_t* jpeg, size_t len);  // takes ownership; frees jpeg internally
 const lv_image_dsc_t* get_pto();
 void clear_pto();
+
+// Decode a compiled-in JPEG (from flash) into PSRAM as the PTO placeholder.
+// Call once at boot with the raw bytes from pto_placeholder.c.
+// get_pto_placeholder() returns nullptr until this is called successfully.
+void init_pto_placeholder(const uint8_t* jpeg, size_t len);
+const lv_image_dsc_t* get_pto_placeholder();
 
 } // namespace photo_cache

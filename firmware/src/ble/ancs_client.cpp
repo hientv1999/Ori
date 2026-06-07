@@ -28,9 +28,10 @@
 #include <NimBLEClient.h>
 #include <string.h>
 
-#include "mock_data.h"
+#include "app_state.h"
 #include "state_machine.h"
 #include "assets/ancs_icons.h"
+#include "widgets/widget_status_bar.h"
 
 // ── ANCS UUIDs ────────────────────────────────────────────────────────────
 
@@ -94,7 +95,7 @@ namespace {
 
 // ── Live queue ────────────────────────────────────────────────────────────
 
-ancs_client::QueueEntry g_queue[mock_data::MAX_ANCS_NOTIFICATIONS];
+ancs_client::QueueEntry g_queue[app_state::MAX_ANCS_NOTIFICATIONS];
 size_t                  g_queue_count = 0;
 
 // ── Pending attributes ────────────────────────────────────────────────────
@@ -129,11 +130,11 @@ static void queue_add(uint32_t uid, const char* token) {
         if (g_queue[i].uid == uid) return;
     }
 
-    if (g_queue_count >= mock_data::MAX_ANCS_NOTIFICATIONS) {
+    if (g_queue_count >= app_state::MAX_ANCS_NOTIFICATIONS) {
         // Displace oldest (FIFO).
         memmove(&g_queue[0], &g_queue[1],
-                (mock_data::MAX_ANCS_NOTIFICATIONS - 1) * sizeof(ancs_client::QueueEntry));
-        g_queue_count = mock_data::MAX_ANCS_NOTIFICATIONS - 1;
+                (app_state::MAX_ANCS_NOTIFICATIONS - 1) * sizeof(ancs_client::QueueEntry));
+        g_queue_count = app_state::MAX_ANCS_NOTIFICATIONS - 1;
     }
 
     g_queue[g_queue_count].uid = uid;
@@ -143,14 +144,15 @@ static void queue_add(uint32_t uid, const char* token) {
     g_queue[g_queue_count].icon_token[sizeof(g_queue[g_queue_count].icon_token) - 1] = '\0';
     g_queue_count++;
 
-    // Sync icon state to mock_data so the status bar widget refreshes.
-    mock_data::AncsConfig cfg = {};
+    // Sync icon state to app_state so the status bar widget refreshes.
+    app_state::AncsConfig cfg = {};
     cfg.phone_connected = true;
     cfg.count = g_queue_count;
-    for (size_t i = 0; i < g_queue_count && i < mock_data::MAX_ANCS_NOTIFICATIONS; ++i) {
+    for (size_t i = 0; i < g_queue_count && i < app_state::MAX_ANCS_NOTIFICATIONS; ++i) {
         cfg.icons[i] = g_queue[i].icon_token;
     }
-    mock_data::set_ancs_config(cfg);
+    app_state::set_ancs_config(cfg);
+    widget_status_bar::refresh_active();
 
     state_machine::set_phone_connected(true);
     LOG("[ancs] queued uid=%u token=%s count=%u\n",
@@ -164,13 +166,14 @@ static void queue_remove(uint32_t uid) {
                     (g_queue_count - i - 1) * sizeof(ancs_client::QueueEntry));
             g_queue_count--;
 
-            mock_data::AncsConfig cfg = {};
+            app_state::AncsConfig cfg = {};
             cfg.phone_connected = true;
             cfg.count = g_queue_count;
             for (size_t j = 0; j < g_queue_count; ++j) {
                 cfg.icons[j] = g_queue[j].icon_token;
             }
-            mock_data::set_ancs_config(cfg);
+            app_state::set_ancs_config(cfg);
+    widget_status_bar::refresh_active();
 
             LOG("[ancs] removed uid=%u count=%u\n",
                            (unsigned)uid, (unsigned)g_queue_count);
@@ -258,10 +261,11 @@ void on_iphone_disconnected() {
 
     // Clear queue and update status bar.
     g_queue_count = 0;
-    mock_data::AncsConfig cfg = {};
+    app_state::AncsConfig cfg = {};
     cfg.phone_connected = false;
     cfg.count = 0;
-    mock_data::set_ancs_config(cfg);
+    app_state::set_ancs_config(cfg);
+    widget_status_bar::refresh_active();
 
     state_machine::set_phone_connected(false);
 }

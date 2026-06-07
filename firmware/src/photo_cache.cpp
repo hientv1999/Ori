@@ -1,20 +1,22 @@
-﻿// Ori — profile photo + PTO destination image decode-once PSRAM cache.
+// Ori — profile photo + PTO destination image decode-once PSRAM cache.
 //
-// Both images are 228×228 JPEG (≤40 KB profile, ≤64 KB PTO).
-// Raw JPEG persisted to NVS; decoded RGB565 held in PSRAM.
-// LVGL renders directly from PSRAM — zero re-decode per frame.
+// Profile photo: 228×228 JPEG (≤40 KB). PTO image: 528×396 JPEG (≤64 KB).
+// Raw JPEG persisted to LittleFS (/photos/ directory); decoded RGB565 held in
+// PSRAM. LVGL renders directly from PSRAM — zero re-decode per frame.
+//
+// LittleFS must be mounted (LittleFS.begin()) before any function in this
+// module is called. Call photo_cache::mount_fs() from main setup() first.
 //
 // Empty image (len == 0 in store_pto) means the user set no destination
-// photo in Orion; get_pto() returns nullptr and screen_pto uses the gradient.
+// photo in Orion; get_pto() returns nullptr and screen_pto uses the placeholder.
 
 #include "photo_cache.h"
 
 #include <Arduino.h>
 #include "ori_log.h"
-#include <Preferences.h>
+#include <LittleFS.h>
 #include <esp_heap_caps.h>
 #include <string.h>
-#include <time.h>
 
 #include "libs/tjpgd/tjpgd.h"
 
@@ -22,18 +24,22 @@
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-static constexpr uint16_t PHOTO_W     = 228;
-static constexpr uint16_t PHOTO_H     = 228;
-static constexpr size_t   RGB565_SIZE = PHOTO_W * PHOTO_H * 2; // 104,832 bytes
+static constexpr uint16_t PHOTO_W = 228;
+static constexpr uint16_t PHOTO_H = 228;
+
+static constexpr uint16_t PTO_W = 528;
+static constexpr uint16_t PTO_H = 396;
 
 static constexpr size_t PROFILE_MAX_JPEG = 40 * 1024;
 static constexpr size_t PTO_MAX_JPEG     = 64 * 1024;
+
+static constexpr const char* PATH_PROFILE = "/photos/profile.jpg";
+static constexpr const char* PATH_PTO     = "/photos/pto.jpg";
 
 // ── Shared tjpgd decode plumbing ──────────────────────────────────────────────
 
 namespace {
 
-// Context set before each jd_decomp call; the write callback reads from here.
 struct DecodeCtx {
     const uint8_t* jpeg;
     size_t         pos;
@@ -54,40 +60,30 @@ static size_t jpeg_read_cb(JDEC* jd, uint8_t* buf, size_t nb) {
     return nb;
 }
 
-// tjpgd emits RGB888 (JD_FORMAT=0 in tjpgdcnf.h: 3 bytes/pixel R,G,B).
-// Convert on the fly to RGB565 and write into g_dec.out_buf.
 static int jpeg_write_cb(JDEC* jd, void* bitmap, JRECT* rect) {
     (void)jd;
     if (!g_dec.out_buf) return 0;
-
     const uint8_t* src = static_cast<const uint8_t*>(bitmap);
     uint16_t bw = (uint16_t)(rect->right  - rect->left + 1);
     uint16_t bh = (uint16_t)(rect->bottom - rect->top  + 1);
-
     for (uint16_t row = 0; row < bh; ++row) {
         uint16_t y = rect->top + row;
         if (y >= g_dec.out_h) break;
         for (uint16_t col = 0; col < bw; ++col) {
             uint16_t x = rect->left + col;
             if (x >= g_dec.out_w) { src += 3; continue; }
-            uint8_t r = *src++;
-            uint8_t g = *src++;
-            uint8_t b = *src++;
-            uint16_t px = (uint16_t)(((r & 0xF8u) << 8) |
-                                     ((g & 0xFCu) << 3) |
-                                     ( b          >> 3));
-            g_dec.out_buf[y * g_dec.out_w + x] = px;
+            uint8_t b = *src++, g = *src++, r = *src++;  // tjpgd JD_FORMAT=0 outputs BGR, not RGB
+            g_dec.out_buf[y * g_dec.out_w + x] =
+                (uint16_t)(((r & 0xF8u) << 8) | ((g & 0xFCu) << 3) | (b >> 3));
         }
     }
     return 1;
 }
 
-// Decode jpeg into out_buf (pre-allocated, PHOTO_W × PHOTO_H × 2 bytes).
 static bool decode_jpeg_to(const uint8_t* jpeg, size_t len,
                             uint16_t* out_buf, uint16_t w, uint16_t h) {
     static uint8_t work[4096];
     g_dec = { jpeg, 0, len, out_buf, w, h };
-
     JDEC jd = {};
     JRESULT res = jd_prepare(&jd, jpeg_read_cb, work, sizeof(work), nullptr);
     if (res != JDR_OK) {
@@ -96,8 +92,7 @@ static bool decode_jpeg_to(const uint8_t* jpeg, size_t len,
     }
     if (jd.width > w || jd.height > h) {
         LOG("[photo_cache] JPEG too large: %ux%u (max %ux%u)\n",
-                      (unsigned)jd.width, (unsigned)jd.height,
-                      (unsigned)w, (unsigned)h);
+                      (unsigned)jd.width, (unsigned)jd.height, (unsigned)w, (unsigned)h);
         return false;
     }
     res = jd_decomp(&jd, jpeg_write_cb, 0);
@@ -108,9 +103,7 @@ static bool decode_jpeg_to(const uint8_t* jpeg, size_t len,
     return true;
 }
 
-// Build an lv_image_dsc_t pointing at a PSRAM pixel buffer.
-static void build_dsc(lv_image_dsc_t* dsc, const uint16_t* buf,
-                      uint16_t w, uint16_t h) {
+static void build_dsc(lv_image_dsc_t* dsc, const uint16_t* buf, uint16_t w, uint16_t h) {
     dsc->header.magic  = LV_IMAGE_HEADER_MAGIC;
     dsc->header.cf     = LV_COLOR_FORMAT_RGB565;
     dsc->header.flags  = 0;
@@ -121,29 +114,30 @@ static void build_dsc(lv_image_dsc_t* dsc, const uint16_t* buf,
     dsc->data          = reinterpret_cast<const uint8_t*>(buf);
 }
 
-// Load a JPEG blob from NVS, decode to a PSRAM buffer.
-// Returns the PSRAM buffer (caller must build_dsc + set ready), or nullptr on failure.
-// NVS namespace: ns, keys "jpg" (blob) and "jpg_sz" (uint32).
-static uint16_t* load_and_decode(const char* ns, size_t max_jpeg_bytes,
+// ── LittleFS helpers ──────────────────────────────────────────────────────────
+
+// Load JPEG from LittleFS path, decode to a new PSRAM buffer. Returns buffer or nullptr.
+static uint16_t* load_and_decode(const char* path, size_t max_jpeg_bytes,
                                   uint16_t w, uint16_t h) {
-    Preferences prefs;
-    if (!prefs.begin(ns, /*readOnly=*/false)) return nullptr;
-    uint32_t sz = prefs.getUInt("jpg_sz", 0);
+    File f = LittleFS.open(path, "r");
+    if (!f) return nullptr;
+
+    size_t sz = f.size();
     if (sz == 0 || sz > max_jpeg_bytes) {
-        prefs.end();
+        f.close();
         return nullptr;
     }
 
     uint8_t* jpeg_buf = static_cast<uint8_t*>(
         heap_caps_malloc(sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!jpeg_buf) jpeg_buf = static_cast<uint8_t*>(malloc(sz));
-    if (!jpeg_buf) { prefs.end(); return nullptr; }
+    if (!jpeg_buf) { f.close(); return nullptr; }
 
-    size_t got = prefs.getBytes("jpg", jpeg_buf, sz);
-    prefs.end();
+    size_t got = f.read(jpeg_buf, sz);
+    f.close();
 
     if (got != sz) {
-        LOG("[photo_cache] NVS read mismatch (got=%u want=%u)\n",
+        LOG("[photo_cache] LittleFS read mismatch: got=%u want=%u\n",
                       (unsigned)got, (unsigned)sz);
         free(jpeg_buf);
         return nullptr;
@@ -160,24 +154,25 @@ static uint16_t* load_and_decode(const char* ns, size_t max_jpeg_bytes,
     bool ok = decode_jpeg_to(jpeg_buf, sz, rgb_buf, w, h);
     free(jpeg_buf);
 
-    if (!ok) {
-        heap_caps_free(rgb_buf);
-        return nullptr;
-    }
+    if (!ok) { heap_caps_free(rgb_buf); return nullptr; }
     return rgb_buf;
 }
 
-// Persist a JPEG blob to NVS and decode to a PSRAM buffer.
-static uint16_t* save_and_decode(const char* ns, size_t max_jpeg_bytes,
-                                   const uint8_t* jpeg, size_t len,
-                                   uint16_t w, uint16_t h) {
-    {
-        Preferences prefs;
-        if (prefs.begin(ns, /*readOnly=*/false)) {
-            prefs.putUInt("jpg_sz", (uint32_t)len);
-            prefs.putBytes("jpg", jpeg, len);
-            prefs.end();
-        }
+// Save JPEG to LittleFS path, decode to a new PSRAM buffer. Returns buffer or nullptr.
+static uint16_t* save_and_decode(const char* path, size_t max_jpeg_bytes,
+                                  const uint8_t* jpeg, size_t len,
+                                  uint16_t w, uint16_t h) {
+    if (len > max_jpeg_bytes) return nullptr;
+
+    // Ensure /photos directory exists.
+    if (!LittleFS.exists("/photos")) LittleFS.mkdir("/photos");
+
+    File f = LittleFS.open(path, "w");
+    if (f) {
+        f.write(jpeg, len);
+        f.close();
+    } else {
+        LOG("[photo_cache] LittleFS open failed: %s\n", path);
     }
 
     uint16_t* rgb_buf = static_cast<uint16_t*>(
@@ -193,56 +188,61 @@ static uint16_t* save_and_decode(const char* ns, size_t max_jpeg_bytes,
     return rgb_buf;
 }
 
-static void erase_nvs(const char* ns) {
-    Preferences prefs;
-    if (prefs.begin(ns, /*readOnly=*/false)) {
-        prefs.remove("jpg");
-        prefs.remove("jpg_sz");
-        prefs.end();
-    }
+static void erase_file(const char* path) {
+    if (LittleFS.exists(path)) LittleFS.remove(path);
 }
 
-// ── Profile photo state ───────────────────────────────────────────────────────
+// ── Photo state ───────────────────────────────────────────────────────────────
 
-uint16_t*      g_profile_buf  = nullptr;
-lv_image_dsc_t g_profile_dsc  = {};
-bool           g_profile_ready = false;
+uint16_t*      g_profile_buf      = nullptr;
+lv_image_dsc_t g_profile_dsc      = {};
+bool           g_profile_ready    = false;
 
-// ── PTO image state ───────────────────────────────────────────────────────────
+uint16_t*      g_profile_ph_buf   = nullptr;
+lv_image_dsc_t g_profile_ph_dsc   = {};
+bool           g_profile_ph_ready  = false;
 
-uint16_t*      g_pto_buf   = nullptr;
-lv_image_dsc_t g_pto_dsc   = {};
-bool           g_pto_ready  = false;
+uint16_t*      g_pto_buf          = nullptr;
+lv_image_dsc_t g_pto_dsc          = {};
+bool           g_pto_ready         = false;
+
+uint16_t*      g_pto_ph_buf       = nullptr;
+lv_image_dsc_t g_pto_ph_dsc       = {};
+bool           g_pto_ph_ready      = false;
 
 } // namespace
 
-// ── Profile photo public API ──────────────────────────────────────────────────
+// ── Public API ────────────────────────────────────────────────────────────────
 
 namespace photo_cache {
 
+void mount_fs() {
+    if (!LittleFS.begin(/*formatOnFail=*/true)) {
+        LOG("[photo_cache] LittleFS mount failed\n");
+    } else {
+        LOG("[photo_cache] LittleFS mounted (%.1f KB free)\n",
+                      (float)LittleFS.totalBytes() / 1024.0f);
+    }
+}
+
+// ── Profile photo ─────────────────────────────────────────────────────────────
+
 void init() {
-    uint16_t* buf = load_and_decode("photo", PROFILE_MAX_JPEG, PHOTO_W, PHOTO_H);
+    uint16_t* buf = load_and_decode(PATH_PROFILE, PROFILE_MAX_JPEG, PHOTO_W, PHOTO_H);
     if (buf) {
         if (g_profile_buf) heap_caps_free(g_profile_buf);
         g_profile_buf   = buf;
         g_profile_ready = true;
         build_dsc(&g_profile_dsc, g_profile_buf, PHOTO_W, PHOTO_H);
-        // Register with the widget so any already-created profile card shows
-        // the photo immediately, and future cards start with it loaded.
         widget_profile_card::set_photo(&g_profile_dsc);
-        LOG("[photo_cache] profile photo loaded from NVS\n");
-    }
-    // No photo in NVS → ensure the widget shows the initials placeholder.
-    // (Covers the case where a previous call left g_default_photo set.)
-    else {
-        widget_profile_card::set_photo(nullptr);
+        LOG("[photo_cache] profile photo loaded from LittleFS\n");
+    } else {
+        widget_profile_card::set_photo(get_profile_placeholder());
     }
 }
 
 void store(uint8_t* jpeg, size_t len) {
     if (len == 0) {
-        // Orion sent an empty photo payload — user cleared their profile photo.
-        // Erase NVS + PSRAM and revert the widget to the initials placeholder.
         if (jpeg) heap_caps_free(jpeg);
         LOG("[photo_cache] store: empty — clearing profile photo\n");
         clear();
@@ -250,20 +250,18 @@ void store(uint8_t* jpeg, size_t len) {
     }
     if (!jpeg || len > PROFILE_MAX_JPEG) {
         if (jpeg) heap_caps_free(jpeg);
-        LOG("[photo_cache] store: invalid args (len=%u)\n", (unsigned)len);
+        LOG("[photo_cache] store: invalid (len=%u)\n", (unsigned)len);
         return;
     }
-
-    uint16_t* buf = save_and_decode("photo", PROFILE_MAX_JPEG, jpeg, len,
-                                     PHOTO_W, PHOTO_H);
+    uint16_t* buf = save_and_decode(PATH_PROFILE, PROFILE_MAX_JPEG,
+                                     jpeg, len, PHOTO_W, PHOTO_H);
     heap_caps_free(jpeg);
-
     if (buf) {
         if (g_profile_buf) heap_caps_free(g_profile_buf);
         g_profile_buf   = buf;
         g_profile_ready = true;
         build_dsc(&g_profile_dsc, g_profile_buf, PHOTO_W, PHOTO_H);
-        LOG("[photo_cache] profile photo stored (%u bytes)\n", (unsigned)len);
+        LOG("[photo_cache] profile photo stored to LittleFS (%u bytes)\n", (unsigned)len);
         widget_profile_card::set_photo(&g_profile_dsc);
     } else {
         LOG("[photo_cache] profile photo decode failed\n");
@@ -276,50 +274,67 @@ const lv_image_dsc_t* get() {
 
 void clear() {
     g_profile_ready = false;
-    erase_nvs("photo");
+    erase_file(PATH_PROFILE);
     if (g_profile_buf) { heap_caps_free(g_profile_buf); g_profile_buf = nullptr; }
     g_profile_dsc = {};
-    // Revert any live profile card to the initials placeholder.
-    widget_profile_card::set_photo(nullptr);
+    widget_profile_card::set_photo(get_profile_placeholder());
     LOG("[photo_cache] profile photo cleared\n");
 }
 
-// ── PTO destination image public API ─────────────────────────────────────────
+void init_profile_placeholder(const uint8_t* jpeg, size_t len) {
+    if (!jpeg || !len) return;
+    uint16_t* buf = static_cast<uint16_t*>(
+        heap_caps_malloc((size_t)PHOTO_W * PHOTO_H * 2, MALLOC_CAP_SPIRAM));
+    if (!buf) { LOG("[photo_cache] profile placeholder PSRAM alloc failed\n"); return; }
+    if (!decode_jpeg_to(jpeg, len, buf, PHOTO_W, PHOTO_H)) {
+        heap_caps_free(buf);
+        LOG("[photo_cache] profile placeholder decode failed\n");
+        return;
+    }
+    if (g_profile_ph_buf) heap_caps_free(g_profile_ph_buf);
+    g_profile_ph_buf   = buf;
+    g_profile_ph_ready = true;
+    build_dsc(&g_profile_ph_dsc, g_profile_ph_buf, PHOTO_W, PHOTO_H);
+    LOG("[photo_cache] profile placeholder ready (%u bytes)\n", (unsigned)len);
+}
+
+const lv_image_dsc_t* get_profile_placeholder() {
+    return g_profile_ph_ready ? &g_profile_ph_dsc : nullptr;
+}
+
+// ── PTO image ─────────────────────────────────────────────────────────────────
 
 void init_pto() {
-    uint16_t* buf = load_and_decode("pto_img", PTO_MAX_JPEG, PHOTO_W, PHOTO_H);
+    uint16_t* buf = load_and_decode(PATH_PTO, PTO_MAX_JPEG, PTO_W, PTO_H);
     if (buf) {
         if (g_pto_buf) heap_caps_free(g_pto_buf);
         g_pto_buf   = buf;
         g_pto_ready = true;
-        build_dsc(&g_pto_dsc, g_pto_buf, PHOTO_W, PHOTO_H);
-        LOG("[photo_cache] PTO image loaded from NVS\n");
+        build_dsc(&g_pto_dsc, g_pto_buf, PTO_W, PTO_H);
+        LOG("[photo_cache] PTO image loaded from LittleFS\n");
     }
 }
 
 void store_pto(uint8_t* jpeg, size_t len) {
-    // len == 0 means Orion sent no image (user didn't set one) — clear cache.
     if (len == 0) {
         if (jpeg) heap_caps_free(jpeg);
         clear_pto();
         return;
     }
     if (len > PTO_MAX_JPEG) {
-        LOG("[photo_cache] store_pto: JPEG too large (%u bytes)\n", (unsigned)len);
+        LOG("[photo_cache] store_pto: too large (%u bytes)\n", (unsigned)len);
         if (jpeg) heap_caps_free(jpeg);
         return;
     }
-
-    uint16_t* buf = save_and_decode("pto_img", PTO_MAX_JPEG, jpeg, len,
-                                     PHOTO_W, PHOTO_H);
+    uint16_t* buf = save_and_decode(PATH_PTO, PTO_MAX_JPEG,
+                                     jpeg, len, PTO_W, PTO_H);
     heap_caps_free(jpeg);
-
     if (buf) {
         if (g_pto_buf) heap_caps_free(g_pto_buf);
         g_pto_buf   = buf;
         g_pto_ready = true;
-        build_dsc(&g_pto_dsc, g_pto_buf, PHOTO_W, PHOTO_H);
-        LOG("[photo_cache] PTO image stored (%u bytes)\n", (unsigned)len);
+        build_dsc(&g_pto_dsc, g_pto_buf, PTO_W, PTO_H);
+        LOG("[photo_cache] PTO image stored to LittleFS (%u bytes)\n", (unsigned)len);
     } else {
         LOG("[photo_cache] PTO image decode failed\n");
     }
@@ -331,10 +346,31 @@ const lv_image_dsc_t* get_pto() {
 
 void clear_pto() {
     g_pto_ready = false;
-    erase_nvs("pto_img");
+    erase_file(PATH_PTO);
     if (g_pto_buf) { heap_caps_free(g_pto_buf); g_pto_buf = nullptr; }
     g_pto_dsc = {};
     LOG("[photo_cache] PTO image cleared\n");
+}
+
+void init_pto_placeholder(const uint8_t* jpeg, size_t len) {
+    if (!jpeg || !len) return;
+    uint16_t* buf = static_cast<uint16_t*>(
+        heap_caps_malloc((size_t)PTO_W * PTO_H * 2, MALLOC_CAP_SPIRAM));
+    if (!buf) { LOG("[photo_cache] PTO placeholder PSRAM alloc failed\n"); return; }
+    if (!decode_jpeg_to(jpeg, len, buf, PTO_W, PTO_H)) {
+        heap_caps_free(buf);
+        LOG("[photo_cache] PTO placeholder decode failed\n");
+        return;
+    }
+    if (g_pto_ph_buf) heap_caps_free(g_pto_ph_buf);
+    g_pto_ph_buf   = buf;
+    g_pto_ph_ready = true;
+    build_dsc(&g_pto_ph_dsc, g_pto_ph_buf, PTO_W, PTO_H);
+    LOG("[photo_cache] PTO placeholder ready (%u bytes)\n", (unsigned)len);
+}
+
+const lv_image_dsc_t* get_pto_placeholder() {
+    return g_pto_ph_ready ? &g_pto_ph_dsc : nullptr;
 }
 
 } // namespace photo_cache

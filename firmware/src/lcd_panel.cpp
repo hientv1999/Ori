@@ -94,6 +94,19 @@ void* framebuffer() {
 uint16_t width()  { return LCD_W; }
 uint16_t height() { return LCD_H; }
 
+void sync_area(int16_t x1, int16_t y1, int16_t x2, int16_t y2) {
+    constexpr uintptr_t LINE = 0x20;
+    uint16_t*  fb      = static_cast<uint16_t*>(panel->getFramebuffer());
+    uintptr_t  raw     = reinterpret_cast<uintptr_t>(fb)
+                         + (size_t)y1 * LCD_W * sizeof(uint16_t);
+    uintptr_t  aligned = raw & ~(LINE - 1);
+    size_t     bytes   = (size_t)(y2 - y1 + 1) * LCD_W * sizeof(uint16_t)
+                         + (raw - aligned);
+    bytes = (bytes + LINE - 1) & ~(LINE - 1);
+    esp_cache_msync(reinterpret_cast<void*>(aligned), bytes,
+                    ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+}
+
 void flush_area(int16_t x1, int16_t y1, int16_t x2, int16_t y2,
                 const uint16_t* pixels) {
     if (!panel) return;

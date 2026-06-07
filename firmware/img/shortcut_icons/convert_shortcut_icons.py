@@ -32,12 +32,13 @@ DITHER      = False
 # ─────────────────────────────────────────────────────────────────────────────
 
 ICON_DIR    = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR  = os.path.abspath(os.path.join(ICON_DIR, "..", "src", "assets"))
+FIRMWARE_DIR = os.path.abspath(os.path.join(ICON_DIR, "..", ".."))
+OUTPUT_DIR  = os.path.join(FIRMWARE_DIR, "src", "assets")
 CROPPED_DIR = os.path.join(ICON_DIR, "cropped")   # originals never touched
 EXTS        = (".png", ".jpg", ".jpeg", ".webp")
 
-DEFAULT_LVGL_SCRIPT = os.path.abspath(
-    os.path.join(ICON_DIR, "..", ".pio", "libdeps", "ori", "lvgl", "scripts", "LVGLImage.py")
+DEFAULT_LVGL_SCRIPT = os.path.join(
+    FIRMWARE_DIR, ".pio", "libdeps", "ori", "lvgl", "scripts", "LVGLImage.py"
 )
 
 # Map filename stem -> C variable name (hyphens are invalid in C identifiers).

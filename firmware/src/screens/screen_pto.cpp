@@ -5,7 +5,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "mock_data.h"
 #include "nvs_sync.h"
 #include "photo_cache.h"
 #include "theme.h"
@@ -17,8 +16,8 @@
 //
 // Background: real destination JPEG from photo_cache::get_pto() if available,
 // otherwise the gradient placeholder bands.
-// Text: real PTO metadata from NVS (start/end/destination), falling back to
-// mock_data if NVS has no entry yet.
+// Text: real PTO metadata from NVS (start/end/destination). Buffers stay empty
+// when no NVS entry exists — the state machine only enters PTO when the window is active.
 
 namespace {
 
@@ -183,14 +182,15 @@ lv_obj_t* create() {
 
     constexpr int16_t H = 480 - widget_status_bar::HEIGHT; // 396
 
-    // ── Background: real photo or gradient fallback ────────────────────────
+    // ── Background: BLE image → compiled-in placeholder → gradient ────────
+    // Priority: real BLE image (528×396 from Orion) > compiled-in placeholder
+    // > painted gradient bands. The placeholder is a JPEG baked into firmware
+    // flash at build time; see firmware/src/assets/pto_placeholder.c.
     const lv_image_dsc_t* pto_img = photo_cache::get_pto();
+    if (!pto_img) pto_img = photo_cache::get_pto_placeholder();
     if (pto_img) {
-        // Scale 228×228 to fill the 528-wide panel (scale factor 593/256 ≈ 2.32×).
-        // Height becomes 228 × 2.32 ≈ 528 px; parent clips to H=396.
         lv_obj_t* img = lv_image_create(left);
         lv_image_set_src(img, pto_img);
-        lv_image_set_scale(img, 593);
         lv_obj_set_pos(img, 0, 0);
         lv_obj_clear_flag(img, LV_OBJ_FLAG_CLICKABLE);
     } else {
@@ -208,17 +208,15 @@ lv_obj_t* create() {
     lv_obj_clear_flag(vignette, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(vignette, LV_OBJ_FLAG_CLICKABLE);
 
-    // ── Load PTO text from NVS, fallback to mock ──────────────────────────
+    // ── Load PTO text from NVS ────────────────────────────────────────────
     uint32_t pto_start = 0, pto_end = 0;
     bool has_nvs = nvs_sync::load_pto_meta(&pto_start, &pto_end,
                                             s_destination, sizeof(s_destination));
     if (has_nvs && pto_start && pto_end) {
         format_date_range(s_dates, sizeof(s_dates), pto_start, pto_end);
-    } else {
-        const auto& p = mock_data::pto();
-        strncpy(s_destination, p.destination,  sizeof(s_destination) - 1);
-        strncpy(s_dates,       p.range_label,  sizeof(s_dates)       - 1);
     }
+    if (!s_destination[0]) strncpy(s_destination, "\xe2\x80\x94", sizeof(s_destination) - 1);
+    if (!s_dates[0])       strncpy(s_dates, "\xe2\x80\x93",  sizeof(s_dates) - 1);
 
     // ── Frosted info card ─────────────────────────────────────────────────
     lv_obj_t* card = lv_obj_create(left);

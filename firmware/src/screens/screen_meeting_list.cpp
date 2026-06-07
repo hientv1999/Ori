@@ -2,7 +2,7 @@
 
 #include <lvgl.h>
 
-#include "mock_data.h"
+#include "app_state.h"
 #include "theme.h"
 #include "ui_helpers.h"
 #include "widgets/widget_profile_card.h"
@@ -38,7 +38,7 @@ constexpr int16_t ROW_GAP_X         = 16;
 constexpr int16_t ROW_PAD_Y         = 14;
 
 // Full-screen meeting detail modal — dismissed via the Close button only.
-static void show_meeting_detail(lv_obj_t* screen, const mock_data::Meeting& m) {
+static void show_meeting_detail(lv_obj_t* screen, const app_state::Meeting& m) {
     // Full-screen scrim — absorbs taps behind the dialog; no click-to-dismiss.
     lv_obj_t* scrim = lv_obj_create(screen);
     lv_obj_set_size(scrim, 800, 480);
@@ -143,7 +143,7 @@ static void show_meeting_detail(lv_obj_t* screen, const mock_data::Meeting& m) {
     }, LV_EVENT_CLICKED, scrim);
 }
 
-lv_obj_t* make_meeting_row(lv_obj_t* parent, const mock_data::Meeting& m) {
+lv_obj_t* make_meeting_row(lv_obj_t* parent, const app_state::Meeting& m) {
     lv_obj_t* row = lv_obj_create(parent);
     lv_obj_set_width(row, lv_pct(100));
     lv_obj_set_height(row, LV_SIZE_CONTENT);
@@ -260,7 +260,7 @@ lv_obj_t* make_meeting_row(lv_obj_t* parent, const mock_data::Meeting& m) {
 
     // Row click → meeting detail modal.
     lv_obj_add_event_cb(row, [](lv_event_t* e) {
-        const auto* mp = static_cast<const mock_data::Meeting*>(lv_event_get_user_data(e));
+        const auto* mp = static_cast<const app_state::Meeting*>(lv_event_get_user_data(e));
         show_meeting_detail(lv_obj_get_screen((lv_obj_t*)lv_event_get_target(e)), *mp);
     }, LV_EVENT_CLICKED, (void*)&m);
 
@@ -282,7 +282,7 @@ lv_obj_t* make_synced_pill(lv_obj_t* parent) {
     lv_obj_clear_flag(pill, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t* label = lv_label_create(pill);
-    lv_label_set_text(label, mock_data::synced_pill_text());
+    lv_label_set_text(label, app_state::synced_pill_text());
     lv_obj_set_style_text_font(label, theme::font_meta(), 0);
     lv_obj_set_style_text_color(label, theme::color(theme::COLOR_TEXT_TERTIARY), 0);
     lv_obj_center(label);
@@ -293,7 +293,7 @@ lv_obj_t* make_synced_pill(lv_obj_t* parent) {
 
 namespace screen_meeting_list {
 
-lv_obj_t* create(mock_data::MeetingList list, bool cached) {
+lv_obj_t* create(app_state::MeetingList list, bool cached) {
     lv_obj_t* screen = lv_obj_create(nullptr);
     theme::apply_to_screen(screen);
 

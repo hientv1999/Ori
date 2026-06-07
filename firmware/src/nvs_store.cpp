@@ -14,19 +14,25 @@ constexpr const char* k_mode        = "mode";  // uint8: 0=Calendar 1=Controls
 
 Preferences prefs;
 
+// Cached at init() so is_first_boot() never opens NVS from inside the
+// lv_timer_handler() call path (tick_cb → evaluate → compute_target_state).
+// Only mark_setup_complete() and factory_reset() mutate this.
+bool g_is_first_boot = true;
+
 } // namespace
 
 namespace nvs {
 
 void init() {
     // Open read-write so the namespace is created if it doesn't exist yet
-    // (fresh flash, post-factory-reset).
+    // (fresh flash, post-factory-reset), then read the provisioned flag once.
     if (!prefs.begin(NAMESPACE, /*readOnly=*/false)) {
         LOG("[nvs] ERROR: could not open namespace — NVS partition missing?\n");
         return;
     }
+    g_is_first_boot = !prefs.getBool(k_provisioned, false);
     prefs.end();
-    LOG("[nvs] ready\n");
+    LOG("[nvs] ready  first_boot=%d\n", (int)g_is_first_boot);
 }
 
 void tick() {
@@ -36,15 +42,13 @@ void tick() {
 // ── First-boot detection ───────────────────────────────────────────────────
 
 bool is_first_boot() {
-    bool provisioned = false;
-    if (prefs.begin(NAMESPACE, /*readOnly=*/true)) {
-        provisioned = prefs.getBool(k_provisioned, false);
-        prefs.end();
-    }
-    return !provisioned;
+    // Returns the value cached at init() — never reads NVS.
+    // Safe to call from any context, including lv_timer_handler().
+    return g_is_first_boot;
 }
 
 void mark_setup_complete() {
+    g_is_first_boot = false;
     if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
         prefs.putBool(k_provisioned, true);
         prefs.end();
@@ -74,6 +78,7 @@ void set_mode(uint8_t mode) {
 // ── Factory reset ──────────────────────────────────────────────────────────
 
 void factory_reset() {
+    g_is_first_boot = true;
     if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
         prefs.clear();
         prefs.end();

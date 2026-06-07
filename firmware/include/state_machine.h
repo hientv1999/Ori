@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 // Ori — State Machine (M4)
@@ -39,6 +40,16 @@ namespace state_machine {
 // Initialise the state machine and create the periodic evaluation timer.
 // Call once from setup() after nvs::init() and screen_manager::init().
 void init();
+
+// Drain pending deferred work (NVS writes, screen transitions) that must not
+// run inside an LVGL timer callback. Call every loop() iteration BEFORE
+// lv_timer_handler().
+void poll();
+
+// Parse a raw MeetingList CBOR blob (from BLE or NVS) into the runtime meeting
+// cache. Also saves the blob to NVS for persistence across reboots.
+// Call from the BLE MeetingList handler and from boot (with the NVS blob).
+void set_meetings_cbor(const uint8_t* buf, size_t len, bool save_to_nvs);
 
 // Re-evaluate priority and push a new LVGL screen if the state changed.
 // Called by the internal lv_timer; may also be called directly when data

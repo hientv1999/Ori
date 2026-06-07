@@ -52,10 +52,21 @@ constexpr lv_opa_t  SCRIM_OPA             = LV_OPA_90;  // opacity for every ove
 //   0x02 AWAY      → Teams amber  (COLOR_PRESENCE_AWAY)
 //   0x03 OFFLINE   → Teams grey   (COLOR_PRESENCE_OFFLINE) — also the device-
 //                                  side fallback when the PC link is down.
-constexpr uint32_t COLOR_PRESENCE_AVAILABLE = 0x92C353;  // Teams green
-constexpr uint32_t COLOR_PRESENCE_BUSY      = 0xC4314B;  // Teams red
-constexpr uint32_t COLOR_PRESENCE_AWAY      = 0xFFAA44;  // Teams amber
-constexpr uint32_t COLOR_PRESENCE_OFFLINE   = 0x8A8884;  // Teams grey
+constexpr uint32_t COLOR_PRESENCE_AVAILABLE      = 0x92C353;  // Teams green
+constexpr uint32_t COLOR_PRESENCE_BUSY           = 0xC4314B;  // Teams red
+constexpr uint32_t COLOR_PRESENCE_AWAY           = 0xFFAA44;  // Teams amber
+constexpr uint32_t COLOR_PRESENCE_OFFLINE        = 0x8A8884;  // Teams grey
+// Presence ring gradient: very light (top) → deep dark (bottom).
+// This maximises visible contrast across the full ring height.
+// Standard COLOR_PRESENCE_* are kept for UI text / status labels only.
+constexpr uint32_t COLOR_PRESENCE_AVAILABLE_LIGHT = 0xD4FFAA;  // near-white lime
+constexpr uint32_t COLOR_PRESENCE_BUSY_LIGHT      = 0xFFBBC8;  // near-white rose
+constexpr uint32_t COLOR_PRESENCE_AWAY_LIGHT      = 0xFFF2AA;  // near-white amber
+constexpr uint32_t COLOR_PRESENCE_OFFLINE_LIGHT   = 0xE8E8E8;  // near-white silver
+constexpr uint32_t COLOR_PRESENCE_AVAILABLE_DARK  = 0x2A5C08;  // deep forest green
+constexpr uint32_t COLOR_PRESENCE_BUSY_DARK       = 0x6E0E20;  // deep crimson
+constexpr uint32_t COLOR_PRESENCE_AWAY_DARK       = 0x8C4400;  // deep burnt amber
+constexpr uint32_t COLOR_PRESENCE_OFFLINE_DARK    = 0x282826;  // near-black charcoal
 
 // Font getters — return pointers to Hanken Grotesk Medium fonts.
 // Sizes were selected to mirror the prototype's CSS scale.
@@ -65,7 +76,7 @@ const lv_font_t* font_title();        // 26 px — meeting title, headings
 const lv_font_t* font_h2();           // 28 px — setup section headings
 const lv_font_t* font_time();         // 30 px — status bar time
 const lv_font_t* font_display();      // 36 px — empty state headline / setup welcome
-const lv_font_t* font_large();        // 48 px — passkey, profile photo initials
+const lv_font_t* font_large();        // 48 px — passkey modal
 const lv_font_t* font_clock();        // 48 px — base font for the clock; UI scales 2x
 
 // Apply default page styling (background color, no padding, no border) to

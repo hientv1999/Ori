@@ -9,8 +9,9 @@
 // raw esp_lcd_* / ESP-IDF calls.
 //
 // The library allocates the framebuffer in PSRAM (auto_flush=false). LVGL
-// renders into a PSRAM partial buffer and copies finished rectangles into the
-// framebuffer via flush_area(); the LCD_CAM peripheral DMA-scans it continuously.
+// renders into a PSRAM draw buffer, then flush_area() copies finished
+// rectangles into the framebuffer; the LCD_CAM peripheral DMA-scans it
+// continuously.
 
 namespace lcd_panel {
 
@@ -19,6 +20,12 @@ void*    framebuffer();  // raw pointer to RGB565 framebuffer (width*height*2 by
 uint16_t width();        // 800
 uint16_t height();       // 480
 
+// sync_area — flush CPU data-cache to physical PSRAM for the given rectangle
+// so LCD_CAM DMA sees the pixels LVGL just rendered.  No pixel copy occurs.
+void     sync_area(int16_t x1, int16_t y1, int16_t x2, int16_t y2);
+
+// flush_area — copy pixels from draw_buf into the framebuffer for the given
+// rectangle, then sync the CPU cache to physical PSRAM for LCD_CAM DMA.
 void     flush_area(int16_t x1, int16_t y1, int16_t x2, int16_t y2,
                     const uint16_t* pixels);
 

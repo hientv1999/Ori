@@ -5,7 +5,8 @@
 #include <esp_heap_caps.h>
 #include <lvgl.h>
 
-#include "mock_data.h"
+#include "factory_reset.h"
+#include "app_state.h"
 #include "nvs_store.h"
 #include "state_machine.h"
 #include "screens/modal_countdown.h"
@@ -59,36 +60,30 @@ void apply_state_defaults() {
 
 #ifdef ORI_DEBUG_SERIAL
 
-const mock_data::AncsConfig k_default_ancs = {
-    {
-        "gmail", "slack", "whatsapp", "facetime", "messenger",
-        "instagram", "discord", "teams", "reddit", "uber",
-        "spotify", "youtube", "telegram", "amazon", "tiktok",
-    },
-    15, true,
-};
-const mock_data::AncsConfig k_no_phone = {
-    { nullptr, nullptr, nullptr, nullptr, nullptr }, 0, false,
-};
-
 lv_obj_t* g_debug_screen = nullptr;
 
 void debug_load(lv_obj_t* scr) {
-    lv_obj_t* prev = g_debug_screen;
     g_debug_screen = scr;
-    lv_scr_load(scr);
-    lv_refr_now(lv_display_get_default());
-    if (prev && prev != scr) lv_obj_delete(prev);
+    // auto_del=true: LVGL fires screen-unload events then immediately deletes
+    // d->prev_scr and clears it to nullptr before lv_scr_load_anim() returns.
+    // Calling lv_obj_delete(prev) after lv_scr_load() instead leaves d->prev_scr
+    // dangling; on the next lv_timer_handler() LVGL dereferences it to fire
+    // LV_EVENT_SCREEN_UNLOADED → LoadProhibited crash.
+    //
+    // lv_refr_now() is intentionally absent: poll_serial() is called before
+    // lv_timer_handler() in loop(), so the new screen renders this iteration.
+    // Forcing a synchronous render from here runs esp_cache_msync() outside
+    // lv_timer_handler() (undefined LCD_CAM DMA ownership) and adds ~500 B of
+    // extra caller frames, overflowing the 8 KB loopTask stack on heavy screens.
+    lv_scr_load_anim(scr, LV_SCR_LOAD_ANIM_NONE, 0, 0, /*auto_del=*/true);
 }
 
 void debug_load_meeting_default() {
-    mock_data::set_ancs_config(k_default_ancs);
-    debug_load(screen_meeting_list::create(mock_data::meetings(), false));
+    debug_load(screen_no_meetings::create());
 }
 
 void debug_load_setup(screen_setup::Step st, bool with_passkey) {
-    mock_data::set_ancs_config(k_default_ancs);
-    lv_obj_t* s = screen_setup::create(st);
+lv_obj_t* s = screen_setup::create(st);
     debug_load(s);
     if (with_passkey) screen_setup::show_passkey_modal(s, 123456); // mock passkey for debug
 }
@@ -104,8 +99,7 @@ void debug_apply_defaults() {
                       : widget_status_bar::Mode::Calendar;
         debug_apply_defaults();
         if (g_status_mode == widget_status_bar::Mode::Keyboard) {
-            mock_data::set_ancs_config(k_default_ancs);
-            debug_load(screen_media_mode::create());
+                debug_load(screen_media_mode::create());
         } else {
             debug_load_meeting_default();
         }
@@ -147,6 +141,7 @@ void print_keymap() {
     LOG("  P   Cycle Teams presence\n");
     LOG("  X   Toggle PC link state\n");
     LOG("  f   Factory reset modal\n");
+    LOG("  F   FACTORY RESET — wipe NVS + BLE bonds + reboot (no confirmation)\n");
     LOG("  U   Unpair iPhone modal\n");
     LOG("  w   Setup — Welcome\n");
     LOG("  i   Setup — Step 1 Install Orion\n");
@@ -168,31 +163,25 @@ void debug_handle_key(char c) {
     debug_apply_defaults();
     switch (c) {
         case 'm':
-            mock_data::set_ancs_config(k_default_ancs);
-            debug_load(screen_meeting_list::create(mock_data::meetings(), false));
+            debug_load_meeting_default();
             break;
         case 'n':
-            mock_data::set_ancs_config(k_default_ancs);
-            debug_load(screen_no_meetings::create());
+                debug_load(screen_no_meetings::create());
             break;
         case 'c':
-            mock_data::set_ancs_config(k_default_ancs);
-            debug_load(screen_clock::create());
+                debug_load(screen_clock::create());
             break;
         case 'p':
-            mock_data::set_ancs_config(k_default_ancs);
-            debug_load(screen_pto::create());
+                debug_load(screen_pto::create());
             break;
         case 'C': {
-            mock_data::set_ancs_config(k_default_ancs);
-            lv_obj_t* base = screen_meeting_list::create(mock_data::meetings(), false);
+            lv_obj_t* base = screen_no_meetings::create();
             debug_load(base);
             modal_countdown::create(base, "Industrial design review",
                 "Starts at 10:30 \xc2\xb7 Studio", 187);
             break;
         }
         case 'k': {
-            mock_data::set_ancs_config(k_default_ancs);
             g_status_mode = widget_status_bar::Mode::Keyboard;
             debug_apply_defaults();
             debug_load(screen_media_mode::create());
@@ -206,8 +195,9 @@ void debug_handle_key(char c) {
                 case P::Away:      g_presence = P::Offline;   break;
                 default:           g_presence = P::Available; break;
             }
-            debug_apply_defaults();
-            debug_load_meeting_default();
+            auto eff = g_pc_connected ? g_presence : P::Offline;
+            widget_profile_card::set_default_presence(eff);
+            LOG("[scr] presence -> %d\n", (int)eff);
             break;
         }
         case 'X':
@@ -218,15 +208,17 @@ void debug_handle_key(char c) {
             debug_load_meeting_default();
             break;
         case 'f': {
-            mock_data::set_ancs_config(k_default_ancs);
-            lv_obj_t* base = screen_meeting_list::create(mock_data::meetings(), false);
+            lv_obj_t* base = screen_no_meetings::create();
             debug_load(base);
             modal_factory_reset::create(base);
             break;
         }
+        case 'F':
+            LOG("[scr] FACTORY RESET — wiping NVS + BLE bonds + rebooting\n");
+            factory_reset::execute();
+            break;
         case 'U': {
-            mock_data::set_ancs_config(k_default_ancs);
-            lv_obj_t* base = screen_meeting_list::create(mock_data::meetings(), false);
+            lv_obj_t* base = screen_no_meetings::create();
             debug_load(base);
             modal_unpair_phone::create(base);
             break;
@@ -236,8 +228,7 @@ void debug_handle_key(char c) {
         case 'b': debug_load_setup(screen_setup::Step::Pairing,      false); break;
         case 'B': debug_load_setup(screen_setup::Step::Pairing,      true);  break;
         case 'o': { // Link Orion + orioning modal
-            mock_data::set_ancs_config(k_default_ancs);
-            lv_obj_t* s = screen_setup::create(screen_setup::Step::Pairing);
+                lv_obj_t* s = screen_setup::create(screen_setup::Step::Pairing);
             debug_load(s);
             screen_setup::show_orioning_modal(s);
             break;
@@ -245,8 +236,7 @@ void debug_handle_key(char c) {
         case 't': debug_load_setup(screen_setup::Step::PhonePairing, false); break;
         case 'e': debug_load_setup(screen_setup::Step::Complete,     false); break;
         // case 'r': debug_load(screen_repair_phone::create()); // removed obsolete repair screen
-        case 'x': mock_data::set_ancs_config(k_default_ancs);
-                  debug_load(screen_reconnect_syncing::create());              break;
+        case 'x': debug_load(screen_reconnect_syncing::create());              break;
         case 'u': debug_load(screen_ota_updating::create());                  break;
         case 'R':
             LOG("[scr] Re-running state_machine::evaluate()\n");

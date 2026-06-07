@@ -11,7 +11,7 @@
 // The mode-toggle cycles Calendar ↔ Media (2-mode cycle). It is hidden
 // when the PC link is down — except in Clock mode, where it acts as a
 // "return to previous mode" button and stays visible.
-// All elements pull from mock_data on refresh(). ANCS icons are colored
+// All elements pull from app_state on refresh(). ANCS icons are colored
 // 60 x 60 placeholder tiles in M3 — real raster assets land in M8.
 
 namespace widget_status_bar {
@@ -69,7 +69,11 @@ void set_default_mode(Mode mode);
 void set_default_mode_toggle_cb(ModeToggleCb cb);
 void set_default_time_tap_cb(TimeTapCb cb);
 
-// Re-pull date / ANCS icons / phone state from mock_data.
+// Re-pull date / ANCS icons / phone state from app_state.
 void refresh(lv_obj_t* bar);
+
+// Refresh the currently visible bar immediately. Call this whenever ANCS data
+// changes so icons update without waiting for the 1-second clock timer.
+void refresh_active();
 
 } // namespace widget_status_bar

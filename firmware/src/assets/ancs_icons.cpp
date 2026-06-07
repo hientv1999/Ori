@@ -44,7 +44,7 @@ namespace {
 struct Entry { const char* token; uint32_t rgb; };
 
 // Brand colours per app token. Approximate — will be refined in M8.
-// Entries cover every token in mock_data.cpp and ancs_client.cpp's bundle map.
+// Entries cover every token in app_state.cpp and ancs_client.cpp's bundle map.
 static const Entry k_table[] = {
     { "gmail",       0xEA4335 },
     { "messenger",   0x006AFF },

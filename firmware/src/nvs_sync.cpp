@@ -29,6 +29,37 @@ constexpr const char* K_TZ     = "tz";
 constexpr const char* K_EPOCH  = "epoch";
 
 Preferences prefs;
+
+// PTO metadata RAM cache.
+//
+// ESP-IDF's NVS handle allocator uses SRAM heap. After the media screen
+// allocates and frees LVGL objects, the heap layout can place a new
+// NVSHandleSimple at an address whose vtable field overlaps a prior JFIF
+// buffer, producing a LoadProhibited crash inside load_pto_meta().
+//
+// Fix: populate once at startup (prime_pto_cache(), clean heap) so that
+// all later calls — including from screen_pto::create() — read from RAM.
+struct PtoCache {
+    uint32_t start;
+    uint32_t end;
+    char     dest[129];
+    bool     loaded;
+};
+static PtoCache g_pto_cache = {};
+
+static void load_pto_from_nvs() {
+    g_pto_cache = {};       // zero fields
+    g_pto_cache.loaded = true;  // mark done even if NVS fails
+    if (!prefs.begin(NS, /*readOnly=*/true)) return;
+    g_pto_cache.start = prefs.getUInt("pto_s", 0);
+    g_pto_cache.end   = prefs.getUInt("pto_e", 0);
+    String d = prefs.getString("pto_d", "");
+    prefs.end();
+    size_t dlen = d.length();
+    if (dlen >= sizeof(g_pto_cache.dest)) dlen = sizeof(g_pto_cache.dest) - 1;
+    memcpy(g_pto_cache.dest, d.c_str(), dlen);
+    g_pto_cache.dest[dlen] = '\0';
+}
 } // namespace
 
 // ── SHA-256 hash storage ───────────────────────────────────────────────────────
@@ -124,25 +155,58 @@ uint32_t load_epoch() {
 
 // ── PTO metadata ──────────────────────────────────────────────────────────────
 
+void prime_pto_cache() {
+    if (!g_pto_cache.loaded) load_pto_from_nvs();
+}
+
 void save_pto_meta(uint32_t start, uint32_t end, const char* destination) {
     if (!prefs.begin(NS, /*readOnly=*/false)) return;
     prefs.putUInt("pto_s",  start);
     prefs.putUInt("pto_e",  end);
     if (destination) prefs.putString("pto_d", destination);
     prefs.end();
+    // Keep cache in sync so load_pto_meta() doesn't re-read NVS.
+    g_pto_cache.start = start;
+    g_pto_cache.end   = end;
+    if (destination) {
+        strncpy(g_pto_cache.dest, destination, sizeof(g_pto_cache.dest) - 1);
+        g_pto_cache.dest[sizeof(g_pto_cache.dest) - 1] = '\0';
+    } else {
+        g_pto_cache.dest[0] = '\0';
+    }
+    g_pto_cache.loaded = true;
 }
 
 bool load_pto_meta(uint32_t* out_start, uint32_t* out_end,
                    char* out_dest, size_t dest_sz) {
-    if (!prefs.begin(NS, /*readOnly=*/true)) return false;
-    uint32_t s = prefs.getUInt("pto_s", 0);
-    uint32_t e = prefs.getUInt("pto_e", 0);
-    String   d = prefs.getString("pto_d", "");
+    if (!g_pto_cache.loaded) load_pto_from_nvs();
+    if (out_start) *out_start = g_pto_cache.start;
+    if (out_end)   *out_end   = g_pto_cache.end;
+    if (out_dest && dest_sz > 0) {
+        strncpy(out_dest, g_pto_cache.dest, dest_sz - 1);
+        out_dest[dest_sz - 1] = '\0';
+    }
+    return g_pto_cache.start != 0;
+}
+
+// ── Meeting list CBOR blob ─────────────────────────────────────────────────────
+
+bool save_meetings_blob(const uint8_t* buf, size_t len) {
+    if (!buf || !len) return false;
+    if (!prefs.begin(NS, /*readOnly=*/false)) return false;
+    size_t written = prefs.putBytes("m_cbor", buf, len);
     prefs.end();
-    if (out_start) *out_start = s;
-    if (out_end)   *out_end   = e;
-    if (out_dest && dest_sz > 0) strncpy(out_dest, d.c_str(), dest_sz - 1);
-    return s != 0;
+    return written == len;
+}
+
+size_t load_meetings_blob(uint8_t* out, size_t max_len) {
+    if (!out || !max_len) return 0;
+    if (!prefs.begin(NS, /*readOnly=*/true)) return 0;
+    size_t sz = prefs.getBytesLength("m_cbor");
+    if (!sz || sz > max_len) { prefs.end(); return 0; }
+    prefs.getBytes("m_cbor", out, sz);
+    prefs.end();
+    return sz;
 }
 
 } // namespace nvs_sync

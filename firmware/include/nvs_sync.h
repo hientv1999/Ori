@@ -53,9 +53,15 @@ uint32_t load_epoch();
 
 // PTO metadata (start/end epoch + destination string).
 // Returns true if a valid PTO entry exists (start != 0).
+void prime_pto_cache();   // call once at startup (clean heap) before any screen is created
 void save_pto_meta(uint32_t start, uint32_t end, const char* destination);
 bool load_pto_meta(uint32_t* out_start, uint32_t* out_end,
                    char* out_dest, size_t dest_sz);
+
+// Meeting list CBOR blob (raw bytes, ≤ ~4 KB).
+// save returns true on success; load returns actual bytes written (0 = not found).
+bool   save_meetings_blob(const uint8_t* buf, size_t len);
+size_t load_meetings_blob(uint8_t* out, size_t max_len);
 
 // Hash key constants — used by gatt_server for manifest comparison.
 extern const char* const HASH_KEY_PROFILE;

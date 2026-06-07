@@ -1,7 +1,7 @@
 # Ori — BLE GATT Protocol Specification
 
-**Protocol version:** 1.0
-**Date:** 2026-06-02
+**Protocol version:** 1.1
+**Date:** 2026-06-06
 **Status:** Authoritative — `esp32-connectivity` (peripheral) and `orion-sync` (central) must conform.
 
 This document defines the single BLE GATT contract between Ori (peripheral) and the Orion PC app (central).
@@ -149,7 +149,7 @@ PtoEntry = {
   "start":       uint,
   "end":         uint,
   "destination": text, // e.g. "Lisbon, Portugal"
-  "image":       bytes // JPEG (228×228 target); may be empty
+  "image":       bytes // JPEG (528×396 target); may be empty. Orion resizes to this before sending.
 }
 
 SyncControl = {
@@ -192,7 +192,7 @@ MediaMetadata = {                // central → peripheral, write+notify
   "can_seek": bool               // optional; absent = false. Ori hides scrubber when false.
 }
 
-// Media Album Art — raw JPEG bytes (not CBOR), via §5 chunking. Orion resizes to 180×180.
+// Media Album Art — raw JPEG bytes (not CBOR), via §5 chunking. Orion resizes to 484×216.
 
 // Presence Status — single byte (NOT CBOR):
 //   0x00  AVAILABLE   — Teams "Available"
@@ -386,10 +386,10 @@ Link-layer encryption failure (`BLE_HS_ENC_FAIL`) signals a stale bond — see �
 | Meeting `title` | no cap (chunking handles size) |
 | Meeting list total | ≤ 32 meetings/day |
 | `PtoEntry.destination` | ≤ 128 UTF-8 bytes |
-| PTO image (JPEG) | hard cap 64 KB |
+| PTO image (JPEG, 528×396) | target ≤ 40 KB; hard cap 64 KB — Orion resizes to 528×396 before sending |
 | `MediaMetadata.title` | ≤ 192 UTF-8 bytes |
 | `MediaMetadata.artist` | ≤ 96 UTF-8 bytes |
-| Media Album Art (JPEG, 180×180) | target 8–15 KB; hard cap 40 KB |
+| Media Album Art (JPEG, 484×216) | target 15–30 KB; hard cap 64 KB |
 | Presence Status | exactly 1 byte (0x00–0x03) |
 
 ---
@@ -424,7 +424,7 @@ Supported shortcut actions (configured per slot in Orion settings): `vol-mute`, 
 ### State push flow — OS → Orion → Ori
 
 - **Volume change:** `IAudioEndpointVolumeCallback` (Win) / `AudioObjectAddPropertyListener` (macOS) → debounce ~100 ms → write `HostVolumeState`
-- **Track change:** `GlobalSystemMediaTransportControlsSessionManager` (Win) / `MRMediaRemoteRegisterForNowPlayingNotifications` (macOS) → write `MediaMetadata` + resize art to 180×180 JPEG (target 8–15 KB) → chunk-write `MediaAlbumArt`
+- **Track change:** `GlobalSystemMediaTransportControlsSessionManager` (Win) / `MRMediaRemoteRegisterForNowPlayingNotifications` (macOS) → write `MediaMetadata` + resize art to 484×216 JPEG (target 15–30 KB) → chunk-write `MediaAlbumArt`
 
 ### Swipe-vs-push race (vertical volume swipe)
 

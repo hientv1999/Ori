@@ -9,16 +9,17 @@
 
 namespace {
 
-// Partial-render strategy with PSRAM draw buffer.
+// Full-frame draw buffer in PSRAM.
 //
-// LVGL renders dirty rectangles into draw_buf (PSRAM), then flush_cb copies
-// each finished rect into the Arduino_GFX framebuffer (also PSRAM).
-// LCD_CAM DMA-scans the framebuffer continuously. The intermediate copy means
-// the live framebuffer is updated only with fully-rendered rectangles.
+// LVGL renders dirty rectangles into draw_buf, then flush_cb copies each
+// finished rect into the Arduino_GFX framebuffer (also PSRAM). LCD_CAM DMA
+// scans the framebuffer continuously. The intermediate copy guarantees that
+// the live framebuffer is only ever updated with fully-rendered rectangles —
+// LCD_CAM never sees a partially-drawn frame.
 //
-// Buffer height = 60 lines. 800 * 60 * 2 = 96,000 bytes in PSRAM.
-constexpr uint16_t DRAW_BUF_LINES = 60;
-constexpr size_t   DRAW_BUF_BYTES = 800 * DRAW_BUF_LINES * sizeof(lv_color_t);
+// Buffer = full screen (800 × 480 × 2 = 750 KB) so any dirty region always
+// fits in one pass — no render-pass splits regardless of screen activity.
+constexpr size_t DRAW_BUF_BYTES = 800u * 480u * sizeof(lv_color_t);
 
 static lv_display_t* disp;
 static lv_color_t*   draw_buf;

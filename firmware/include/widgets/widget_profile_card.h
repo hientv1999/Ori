@@ -4,9 +4,8 @@
 
 // Ori — right panel profile card. 269 px wide, fills below the status bar.
 //
-// Visual: circular 228 x 228 photo placeholder (initials text — no JPEG
-// decoder in M3), full name, job title. Mirrors the prototype's
-// .right-panel + .profile-photo block.
+// Visual: circular 228 x 228 profile photo (decoded JPEG from photo_cache),
+// full name, job title. Mirrors the prototype's .right-panel + .profile-photo block.
 
 namespace widget_profile_card {
 
@@ -47,9 +46,30 @@ void set_default_presence(Presence p);
 // modal_profile to match the profile-card border colour.
 Presence get_default_presence();
 
+// Register a photo object (lv_obj_t circle) whose border colour should track
+// presence changes in real time. Intended for modal_profile — call on open,
+// unregister on the scrim's LV_EVENT_DELETE. Only one observer at a time.
+void register_modal_photo(lv_obj_t* photo_obj);
+void unregister_modal_photo();
+
+// Live-update handles for the modal_profile text labels. All fields may be
+// nullptr (email/phone labels are only created when data is non-empty).
+// register_modal_labels() is called after create() builds all labels so that
+// set_default_presence() and set_profile() can push updates to the overlay
+// without it being closed and re-opened. Unregister on scrim LV_EVENT_DELETE.
+struct ModalLabels {
+    lv_obj_t* status_lbl;  // "Status: Available" — updated by set_default_presence()
+    lv_obj_t* name_lbl;
+    lv_obj_t* title_lbl;
+    lv_obj_t* email_lbl;   // nullptr when email was empty at open time
+    lv_obj_t* phone_lbl;   // nullptr when phone was empty at open time
+};
+void register_modal_labels(const ModalLabels& labels);
+void unregister_modal_labels();
+
 // Sets the profile photo on the currently active profile card.
 // Pass a decoded RGB565 lv_image_dsc_t (from photo_cache::get()) to show the
-// real photo; pass nullptr to revert to the Ori wordmark / initials placeholder.
+// user photo; pass nullptr to hide the image (dark circle bg is shown).
 // Also stores the descriptor pointer as the new default so cards created after
 // this call (screen transitions) start with the correct photo.
 void set_photo(const lv_image_dsc_t* img_dsc);
@@ -58,5 +78,19 @@ void set_photo(const lv_image_dsc_t* img_dsc);
 // nullptr if no photo has been provided.  Called by create() so new screens
 // start with the photo already loaded without an explicit post-create call.
 const lv_image_dsc_t* get_photo();
+
+// Store the profile fields that create() and modal_profile use for newly built
+// cards, and update the live card's labels immediately (if one exists on screen).
+// Call at boot (from NVS) and on every BLE ProfileInfo write.
+// email and phone may be nullptr to leave those fields unchanged.
+void set_profile(const char* name, const char* title,
+                 const char* email = nullptr, const char* phone = nullptr);
+
+// Read back cached profile fields (populated by set_profile()).
+// Returns empty string if set_profile() has not been called yet.
+const char* get_profile_name();
+const char* get_profile_title();
+const char* get_profile_email();
+const char* get_profile_phone();
 
 } // namespace widget_profile_card

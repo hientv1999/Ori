@@ -63,9 +63,13 @@ All animated widgets use `lv_timer` (not `lv_anim`) for independent rate control
 
 | Buffer | Location | Size | Notes |
 |---|---|---|---|
-| LVGL draw buffer | PSRAM (`heap_caps_malloc`) | 96 KB (800 × 60 × 2) | `lvgl_display.cpp` |
+| LVGL draw buffer | PSRAM (`heap_caps_malloc`) | 750 KB (800 × 480 × 2) | `lvgl_display.cpp` — full-frame |
 | Framebuffer | PSRAM (Arduino_GFX `auto_flush=false`) | 750 KB (800 × 480 × 2) | LCD_CAM DMA-scans continuously |
 | Bounce buffer | — | removed | replaced by `esp_cache_msync` — see `hardware.md` |
+
+**Draw buffer = full frame (480 lines).** PSRAM is 8 MB; the extra ~650 KB vs the old 60-line buffer is negligible. Benefit: any dirty region LVGL renders always fits in one pass — no render-pass splits regardless of screen activity.
+
+**Draw buffer must stay separate from the framebuffer.** It acts as the protection layer: only fully-rendered rectangles are ever copied into the live framebuffer via `flush_area()`, so LCD_CAM DMA never sees a partially-drawn frame. Do not switch to `LV_DISPLAY_RENDER_MODE_DIRECT` (which would render straight into the framebuffer and eliminate this guarantee).
 
 Draw buffer is in PSRAM (not static SRAM) because NVS flash writes temporarily disable ICache/DCache — a static SRAM draw buffer causes a cache-fault crash when LVGL rendering and NVS writes overlap.
 

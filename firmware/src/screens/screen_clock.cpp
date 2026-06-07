@@ -1,8 +1,10 @@
 ﻿#include "screens/screen_clock.h"
 
 #include <lvgl.h>
+#include <stdio.h>
+#include <time.h>
 
-#include "mock_data.h"
+#include "app_state.h"
 #include "theme.h"
 #include "ui_helpers.h"
 #include "widgets/widget_profile_card.h"
@@ -24,6 +26,33 @@ namespace {
 constexpr uint32_t BLINK_INTERVAL_MS  = 42;
 constexpr uint16_t BLINK_HALF_TICKS   = 18;
 constexpr uint16_t BLINK_TOTAL_TICKS  = 36;
+
+struct ClockFaceState {
+    lv_obj_t*  hour_lbl;
+    lv_obj_t*  minute_lbl;
+    lv_obj_t*  date_lbl;
+    lv_timer_t* update_timer;
+};
+
+static void update_clock_labels(ClockFaceState* cf) {
+    time_t t = time(nullptr);
+    struct tm tm;
+    localtime_r(&t, &tm);
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%02d", tm.tm_hour);
+    lv_label_set_text(cf->hour_lbl, buf);
+    snprintf(buf, sizeof(buf), "%02d", tm.tm_min);
+    lv_label_set_text(cf->minute_lbl, buf);
+    char day[16], mon[8];
+    strftime(day, sizeof(day), "%A", &tm);
+    strftime(mon, sizeof(mon), "%B",  &tm);
+    char date_buf[48];
+    // Uppercase: ESP32 strftime may not support %^A/%^B, so do it manually.
+    for (char* p = day; *p; ++p) if (*p >= 'a' && *p <= 'z') *p -= 32;
+    for (char* p = mon; *p; ++p) if (*p >= 'a' && *p <= 'z') *p -= 32;
+    snprintf(date_buf, sizeof(date_buf), "%s, %s %d", day, mon, tm.tm_mday);
+    lv_label_set_text(cf->date_lbl, date_buf);
+}
 
 struct ColonState {
     lv_obj_t*   colon;
@@ -72,10 +101,7 @@ lv_obj_t* create() {
     lv_obj_set_flex_flow(time_row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(time_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    const auto& t = mock_data::now();
-
     lv_obj_t* hour = lv_label_create(time_row);
-    lv_label_set_text(hour, t.hour_12);
     lv_obj_set_style_text_color(hour, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(hour, theme::font_large(), 0);
 
@@ -85,25 +111,31 @@ lv_obj_t* create() {
     lv_obj_set_style_text_font(colon, theme::font_large(), 0);
 
     lv_obj_t* minute = lv_label_create(time_row);
-    lv_label_set_text(minute, t.minute);
     lv_obj_set_style_text_color(minute, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(minute, theme::font_large(), 0);
 
-    // Date strip below — "WEDNESDAY, MAY 14 · PM"
-    char date_buf[64];
-    lv_snprintf(date_buf, sizeof(date_buf), "%s · %s", t.date_long, t.ampm);
+    // Date strip below — "WEDNESDAY, MAY 14"
     lv_obj_t* date = lv_label_create(left);
-    lv_label_set_text(date, date_buf);
     lv_obj_set_style_text_color(date, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
-    // font_time() (30 px) matches the status-bar time and the profile name —
-    // the three "primary identity" type sizes across the device.
     lv_obj_set_style_text_font(date, theme::font_time(), 0);
     lv_obj_set_style_pad_top(date, 18, 0);
+
+    // Populate labels immediately with real time, then keep them live via a
+    // 1-second timer. The colon blink runs independently at 42 ms cadence.
+    auto* cf = new ClockFaceState{hour, minute, date, nullptr};
+    update_clock_labels(cf);
+    cf->update_timer = lv_timer_create([](lv_timer_t* t) {
+        update_clock_labels(static_cast<ClockFaceState*>(lv_timer_get_user_data(t)));
+    }, 1000, cf);
 
     // Colon blink — 24 fps timer, opacity 255 ↔ 64 over ~1512 ms.
     auto* cs = new ColonState{colon, 0, nullptr};
     cs->timer = lv_timer_create(colon_blink_timer_cb, BLINK_INTERVAL_MS, cs);
 
+    lv_obj_add_event_cb(screen, [](lv_event_t* e) {
+        auto* cf = static_cast<ClockFaceState*>(lv_event_get_user_data(e));
+        if (cf) { lv_timer_delete(cf->update_timer); delete cf; }
+    }, LV_EVENT_DELETE, cf);
     lv_obj_add_event_cb(screen, [](lv_event_t* e) {
         auto* cs = static_cast<ColonState*>(lv_event_get_user_data(e));
         if (cs) { lv_timer_delete(cs->timer); delete cs; }

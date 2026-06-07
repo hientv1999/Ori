@@ -2,7 +2,7 @@
 
 #include <lvgl.h>
 
-#include "mock_data.h"
+#include "app_state.h"
 
 // Ori — left-panel meeting list screen (work hours, with cached meetings).
 //
@@ -18,6 +18,6 @@
 namespace screen_meeting_list {
 
 // `cached` adds the "SYNCED · X min ago" pill at the top-right of the list.
-lv_obj_t* create(mock_data::MeetingList list, bool cached);
+lv_obj_t* create(app_state::MeetingList list, bool cached);
 
 } // namespace screen_meeting_list

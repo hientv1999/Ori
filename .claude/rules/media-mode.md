@@ -27,24 +27,24 @@ Three vertical sections, centred. No transport buttons; no persistent volume sli
 ```
 +---------------- 528 x 396 ----------------+
 |                                            |
-|         +----------------+                |  Album art 216x216 px
-|         |                |                |  tap     = play/pause
-|         |    ART         |                |  swipe h = prev / next
-|         |                |                |  swipe v = volume + HUD
-|         +----------------+                |
+| +--------------------------------------+  |  Album art 484×216 px
+| |                                      |  |  tap     = play/pause
+| |                  ART                 |  |  swipe h = prev / next
+| |                                      |  |  swipe v = volume + HUD
+| +--------------------------------------+  |
 |                                            |
 |   Industrial Symphony No. 1 - The Dream…  |  Title (24 px, ellipsis)
 |         Angelo Badalamenti                 |  Artist (22 px, secondary)
 |                                            |
-|    +-----+    +-----+    +-----+          |  3 user-assignable
-|    |  1  |    |  2  |    |  3  |          |  shortcuts
-|    +-----+    +-----+    +-----+          |
+|  +----------+  +----------+  +----------+ |  3 user-assignable
+|  |    1     |  |    2     |  |    3     | |  shortcuts
+|  +----------+  +----------+  +----------+ |
 +--------------------------------------------+
 ```
 
 ### 1. Album art — the interaction surface
 
-216 × 216 px, 14 px corner radius, centred, drop shadow. Vertical budget: 10 + 216 + ~66 + 90 + 10 = 392 px (4 px headroom in 396 px). Pushed by Orion via `Media Album Art` char on every track change — resized to 180 × 180, JPEG (~8–15 KB), chunked. Ori decodes and PSRAM-caches (not NVS; re-fetched on reconnect).
+484 × 216 px, 14 px corner radius, full usable left-panel width (528 − 22 px padding each side). Vertical budget: 10 + 216 + ~66 + 90 + 10 = 392 px (4 px headroom in 396 px). Pushed by Orion via `Media Album Art` char on every track change — resized to 484 × 216, JPEG (~15–30 KB), chunked. Ori decodes and PSRAM-caches (not NVS; re-fetched on reconnect).
 
 | Gesture | Action | Threshold | Feedback |
 |---|---|---|---|
