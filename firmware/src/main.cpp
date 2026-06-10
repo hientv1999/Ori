@@ -54,7 +54,15 @@ static void mem_snapshot(const char* tag) {
 void setup() {
     // Serial  = USB CDC  (requires host to be listening — unreliable for boot logs)
     // Serial0 = UART0    (GPIO43 TX / GPIO44 RX, always transmits — use this)
-    Serial.begin(115200);   // keep alive for USB CDC upload compatibility
+    //
+    // Enlarge the CDC RX ring BEFORE begin(). The default is 256 bytes, which
+    // overflows during a USB CDC OTA: the main loop only drains serial inside
+    // ota_receiver::poll() and there is a multi-ms gap each iteration (LVGL
+    // render + delay(10)) where incoming DATA piles up. A small ring drops
+    // bytes mid-frame → the OTA frame parser desyncs → transfer stalls. 16 KB
+    // absorbs the per-iteration burst; USB endpoint NAK back-pressures the host
+    // when even that fills, so no bytes are lost. (~16 KB SRAM; plenty free.)
+    Serial.setRxBufferSize(32768);
     Serial.begin(115200);
     delay(50);
     LOG("\n");

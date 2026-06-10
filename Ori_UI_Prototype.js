@@ -8,6 +8,7 @@
 const PROFILE = { name: 'Everstorm Dominion', title: 'Founder, Ori', email: 'everstorm@ori.app', phone: '+1 (415) 555 0192' };
 const BLE_NAME = 'Ori-XT-9F';
 const PASSKEY = '476 218';
+const FW_VERSION = '1.0.1'; // firmware version shown on the post-update ack screen
 
 // Mock ANCS notification data per app. In firmware, these fields come from
 // the ANCS Notification Attribute commands: Title, Subtitle, Message, Date,
@@ -220,10 +221,34 @@ const SCREENS = {
     leftRender: () => reconnectSyncingHTML(),
   },
   'ota-updating': {
-    label: 'Runtime', title: 'OTA — updating firmware',
-    desc: 'Full-screen takeover while Orion streams a firmware update over USB CDC. Status bar, profile card, and left panel are all hidden. Touch is inert. Non-dismissable. Progress ring sweeps clockwise; percentage is always centred inside the ring.',
+    label: 'OTA update', title: '1 · Downloading firmware',
+    desc: 'Full-screen takeover while Orion streams the firmware over USB CDC into a PSRAM staging buffer. No flash is written yet, so the LCD keeps refreshing and the progress ring is LIVE (0→100%). Status bar, profile card, and left panel hidden; touch inert. Sweeps clockwise; % centred in the ring.',
     hideStatusBar: true,
-    setup: () => otaUpdatingHTML(43),
+    setup: () => otaDownloadingHTML(62),
+  },
+  'ota-ready': {
+    label: 'OTA update', title: '2 · Ready to install',
+    desc: 'Shown once the image has fully downloaded into PSRAM and its SHA-256 verifies. Explains that the screen goes dark during install. The primary "Update now" button starts the PSRAM→flash copy — this is the user-driven gate before any flash is written. (A download-phase failure instead resumes runtime with the screen still live — no reboot.)',
+    hideStatusBar: true,
+    setup: () => otaReadyHTML(),
+  },
+  'ota-installing': {
+    label: 'OTA update', title: '3 · Installing (screen dark)',
+    desc: 'After tapping "Update now": the firmware halts the LCD and copies the staged image from PSRAM to the inactive flash slot. The panel is physically DARK here (the RGB panel\'s PSRAM-framebuffer DMA cannot run while flash is written — shared MSPI bus). Lasts a few seconds; install→reboot is atomic, so it goes straight to the post-reboot "Updated" ack (no separate "Update complete / Restart" step).',
+    hideStatusBar: true,
+    setup: () => otaInstallingHTML(),
+  },
+  'ota-updated-ack': {
+    label: 'OTA update', title: '4 · Updated (boot ack)',
+    desc: 'The FIRST screen shown after the post-update reboot: confirms the update succeeded and shows the new firmware version, with a "Close" button. The firmware persists an "update acknowledged" flag in NVS — so if the user restarts again without tapping Close, this screen reappears on every boot until acknowledged.',
+    hideStatusBar: true,
+    setup: () => otaUpdatedAckHTML(),
+  },
+  'ota-error': {
+    label: 'OTA update', title: '⚠ Update failed',
+    desc: 'Shown when the OTA cannot complete — corrupted download (hash/truncated), lost connection (timeout), no room (too large / out of memory), or a flash write error. The firmware maps each failure code to one plain-language reason. Close dismisses back to runtime (download-phase failures keep the display alive; a commit-phase failure reboots first). Edit otaErrorHTML(msg) to preview other messages.',
+    hideStatusBar: true,
+    setup: () => otaErrorHTML(),
   },
   'repair-phone': {
     label: 'Runtime', title: 'Re-pair iPhone',
@@ -559,13 +584,38 @@ function reconnectSyncingHTML() {
     '</div>';
 }
 
-// OTA firmware update — full-screen takeover.
-// pct: 0-100 snapshot to render (static in prototype; firmware drives live %).
-function otaUpdatingHTML(pct) {
+// ── OTA firmware update flow (PSRAM-staging model) ─────────────────────────
+//
+// Sequence on the device:
+//   1. ota-downloading  — image streams into PSRAM; progress bar is LIVE (no
+//                         flash written yet, so the screen keeps refreshing).
+//   2. ota-ready        — download done + verified; instruction that the screen
+//                         goes dark during install, with a primary "Update now".
+//   3. ota-installing   — user tapped Update; PSRAM→flash copy runs. The panel
+//                         is physically DARK here (LCD halted; PSRAM-DMA can't
+//                         run while flash is written). Shown black in the proto.
+//   4. ota-complete     — flash written; checkmark + primary "Restart".
+//   5. ota-updated-ack  — FIRST screen after the reboot: confirms the update and
+//                         shows the new version, with a "Close" button. Firmware
+//                         persists a flag in NVS so this screen reappears on
+//                         every boot until the user taps Close (acknowledges).
+
+// Reusable success check (same artwork as the Setup-complete screen).
+function okCheckHTML(size) {
+  size = size || 130;
+  return '<div class="ok-check"><svg width="' + size + '" height="' + size + '" viewBox="0 0 100 100">' +
+    '<circle cx="50" cy="50" r="44" fill="none" stroke="rgba(127,180,138,0.15)" stroke-width="2.5"/>' +
+    '<circle cx="50" cy="50" r="44" fill="none" stroke="#7FB48A" stroke-width="2.5" stroke-linecap="round" class="ok-ring" transform="rotate(-90 50 50)"/>' +
+    '<path d="M29 51 L43 65 L71 35" fill="none" stroke="#7FB48A" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" class="ok-tick"/>' +
+    '</svg></div>';
+}
+
+// 1. Downloading — live progress ring while the image streams into PSRAM.
+function otaDownloadingHTML(pct) {
   const R = 90, C = 2 * Math.PI * R, off = C * (1 - pct / 100);
   return setupShell('hide',
     '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;width:100%">' +
-    '<h2>Updating firmware…</h2>' +
+    '<h2>Downloading firmware…</h2>' +
     '<div class="orioning-ring" style="margin-top:30px">' +
     '<svg viewBox="0 0 200 200">' +
     '<circle class="track" cx="100" cy="100" r="' + R + '" fill="none" stroke-width="8"/>' +
@@ -574,8 +624,75 @@ function otaUpdatingHTML(pct) {
     '</svg>' +
     '<div class="pct-label">' + pct + '%</div>' +
     '</div>' +
-    '<p style="margin-top:24px;color:var(--text-3)">Do not power off Ori</p>' +
+    '<p style="margin-top:24px;color:var(--text-2)">Keep Ori plugged in</p>' +
     '</div>'
+  );
+}
+
+// 2. Firmware Install — mirrors the downloading layout (title / centre glyph /
+//    short instruction), plus a primary "Update now" at the Start-button spot.
+function otaReadyHTML() {
+  return setupShell('hide',
+    '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;width:100%">' +
+    '<h2>Firmware Install</h2>' +
+    '<div class="ota-install-glyph" style="margin-top:30px">' +
+    '<svg width="68" height="68" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M12 3 V14 M7 10 l5 4 5-4"/><path d="M4 17 v2 a1 1 0 0 0 1 1 h14 a1 1 0 0 0 1-1 v-2"/>' +
+    '</svg>' +
+    '</div>' +
+    '<p style="margin-top:24px;color:var(--text-2)">Screen will go dark for a few seconds</p>' +
+    '</div>' +
+    '<button class="btn btn-primary" onclick="setScreen(\'ota-installing\')">Update now</button>',
+    'padding-bottom:80px'
+  );
+}
+
+// 3. Installing — the panel is physically dark on the device while flash is
+//    written. Shown black here; auto-advances to the post-reboot ack.
+let _otaInstallTimer = null;
+function otaInstallingHTML() {
+  clearTimeout(_otaInstallTimer);
+  _otaInstallTimer = setTimeout(() => {
+    // Install → reboot is atomic on the device (no "Update complete / Restart"
+    // step); the post-reboot ack confirms completion.
+    if (currentScreenId === 'ota-installing') setScreen('ota-updated-ack');
+  }, 2400);
+  return '<div class="setup" style="background:#000;justify-content:center;align-items:center">' +
+    '<p style="color:#1c1c1c;font-size:20px;letter-spacing:0.5px">screen is dark while installing</p>' +
+    '</div>';
+}
+
+// 4. Post-reboot acknowledgement — persisted until Close (NVS flag in firmware).
+//    Title at top, then the version line, then the checkmark, then Close.
+function otaUpdatedAckHTML() {
+  return setupShell('hide',
+    '<div style="display:flex;flex-direction:column;align-items:center;flex:1;width:100%">' +
+    '<h2 style="margin-top:30px">Firmware updated</h2>' +
+    '<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%">' +
+    '<p style="color:var(--text-2)">Ori is now running version ' + escapeHtml(FW_VERSION) + '</p>' +
+    okCheckHTML(110) +
+    '</div>' +
+    '</div>' +
+    '<button class="btn btn-tertiary" onclick="setScreen(\'meeting-list\')">Close</button>',
+    'padding-bottom:80px'
+  );
+}
+
+// Error — shown if the OTA can't complete. Same title/glyph/instruction layout;
+// `msg` is the user-facing reason (firmware maps each failure code to one of a
+// few plain-language messages). Close dismisses back to runtime.
+function otaErrorHTML(msg) {
+  msg = msg || 'The update couldn’t be installed — try again from Orion';
+  return setupShell('hide',
+    '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;width:100%">' +
+    '<h2>Update failed</h2>' +
+    '<div class="ota-error-glyph" style="margin-top:30px">' +
+    '<svg width="62" height="62" viewBox="0 0 24 24"><use href="#i-warn"/></svg>' +
+    '</div>' +
+    '<p style="margin-top:24px;color:var(--text-2)">' + escapeHtml(msg) + '</p>' +
+    '</div>' +
+    '<button class="btn btn-tertiary" onclick="setScreen(\'meeting-list\')">Close</button>',
+    'padding-bottom:80px'
   );
 }
 

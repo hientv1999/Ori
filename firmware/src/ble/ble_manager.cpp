@@ -486,6 +486,16 @@ void poll() {
     }
 }
 
+void quiesce_for_commit() {
+    LOG("[ble] quiescing stack for OTA flash commit\n");
+    // Stop advertising first so no new connection/bond (and its NVS flash write)
+    // can begin, then tear down host + controller. deinit(false) leaves bonds in
+    // NVS untouched; the post-commit reboot re-inits BLE from scratch.
+    NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
+    if (adv) adv->stop();
+    NimBLEDevice::deinit(false);
+}
+
 void restart_advertising() {
     NimBLEServer* server = NimBLEDevice::getServer();
     if (!server) return;

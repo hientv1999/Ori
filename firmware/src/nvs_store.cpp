@@ -9,8 +9,9 @@ namespace {
 constexpr const char* NAMESPACE = "ori";
 
 // Key layout (see nvs_store.h for canonical table).
-constexpr const char* k_provisioned = "prov";  // bool: setup completed
-constexpr const char* k_mode        = "mode";  // uint8: 0=Calendar 1=Controls
+constexpr const char* k_provisioned = "prov";    // bool: setup completed
+constexpr const char* k_mode        = "mode";    // uint8: 0=Calendar 1=Controls
+constexpr const char* k_ota_ack     = "ota_ack"; // string: post-update version
 
 Preferences prefs;
 
@@ -84,6 +85,36 @@ void factory_reset() {
         prefs.end();
     }
     LOG("[nvs] factory reset wipe complete\n");
+}
+
+// ── Post-OTA acknowledgement ────────────────────────────────────────────────
+
+void set_ota_ack(const char* version) {
+    if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
+        prefs.putString(k_ota_ack, version ? version : "");
+        prefs.end();
+    }
+    LOG("[nvs] ota ack pending: %s\n", version ? version : "");
+}
+
+bool get_ota_ack(char* buf, uint32_t len) {
+    bool present = false;
+    if (prefs.begin(NAMESPACE, /*readOnly=*/true)) {
+        if (prefs.isKey(k_ota_ack)) {
+            prefs.getString(k_ota_ack, buf, len);
+            present = true;
+        }
+        prefs.end();
+    }
+    return present;
+}
+
+void clear_ota_ack() {
+    if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
+        prefs.remove(k_ota_ack);
+        prefs.end();
+    }
+    LOG("[nvs] ota ack cleared\n");
 }
 
 } // namespace nvs

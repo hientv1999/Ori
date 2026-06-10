@@ -45,6 +45,13 @@ void init();
 // (LVGL calls, factory reset, state machine transitions, etc.).
 void poll();
 
+// Fully tear down the NimBLE stack (host + controller) ahead of the OTA flash
+// commit, so nothing BLE-side can execute non-IRAM code or trigger a bond/NVS
+// flash write while Update.write() has the MSPI cache disabled. One-way: the
+// caller reboots immediately after the commit, which re-inits BLE from scratch.
+// Preserves bonds (they live in NVS and are reloaded on boot).
+void quiesce_for_commit();
+
 // ── Advertising state machine ──────────────────────────────────────────────
 
 // Restart advertising according to the current bond state.

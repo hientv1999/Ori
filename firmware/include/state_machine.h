@@ -3,6 +3,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// Forward declaration — avoids pulling all of lvgl.h into this widely-included
+// header just for the ota_show() screen-handoff parameter.
+typedef struct _lv_obj_t lv_obj_t;
+
 // Ori — State Machine (M4)
 //
 // Owns the left-panel priority logic, periodic ticks, 5-minute pre-meeting
@@ -27,6 +31,7 @@
 enum class AppState : uint8_t {
     SETUP,
     OTA_UPDATING,
+    OTA_ACK,          // post-update "Firmware updated" ack (persists until Close)
     PTO_ACTIVE,
     COUNTDOWN,
     RECONNECT_SYNCING,
@@ -73,6 +78,14 @@ void on_mode_toggle();
 
 // Orion began a firmware update over USB CDC (M5 will call this).
 void on_ota_begin();
+
+// Load a full-screen OTA takeover screen built by ota_receiver (Firmware
+// Install / Update failed). Keeps g_state = OTA_UPDATING so it stays sticky.
+void ota_show(lv_obj_t* screen);
+
+// User tapped Close on the post-update acknowledgement screen — clear the NVS
+// flag and return to normal runtime.
+void on_ota_ack_close();
 
 // BLE reconnect to Orion began — hash-manifest flow starting (M5).
 void on_reconnect_begin();

@@ -12,6 +12,7 @@
 #include "factory_reset.h"
 #include "app_state.h"
 #include "nvs_store.h"
+#include "ota_receiver.h"
 #include "nvs_sync.h"
 #include <cbor.h>
 #include "screens/modal_countdown.h"
@@ -52,6 +53,12 @@ uint8_t  g_pre_clock_mode  = 0;                     // mode to restore when leav
 bool     g_pc_connected    = true;
 bool     g_phone_connected = false;
 bool     g_force_rebuild   = false; // force evaluate() to rebuild even if state unchanged
+
+// Post-OTA acknowledgement (read from NVS at init). When pending, the boot
+// screen is the "Firmware updated" ack and stays sticky until the user taps
+// Close (which clears the NVS flag). g_ota_ack_version holds the new version.
+bool     g_has_ota_ack     = false;
+char     g_ota_ack_version[24] = {};
 
 // Set of meeting start-times (encoded as minutes since midnight) for which
 // the 5-minute alert has already fired this boot.  Cleared on reboot only.
@@ -250,6 +257,15 @@ lv_obj_t* build_ota_screen() {
     return screen_ota_updating::create();
 }
 
+// Close button on the post-update ack screen.
+void ota_ack_close_cb(lv_event_t*) {
+    state_machine::on_ota_ack_close();
+}
+
+lv_obj_t* build_ota_ack_screen() {
+    return screen_ota_updating::create_updated_ack(g_ota_ack_version, ota_ack_close_cb);
+}
+
 lv_obj_t* build_pto_screen() {
     return screen_pto::create();
 }
@@ -300,6 +316,14 @@ void fire_countdown(const char* title, const char* when, int diff_s) {
 // ─── Priority evaluator ───────────────────────────────────────────────────
 
 AppState compute_target_state() {
+    // OTA is the highest-priority, non-dismissable full-screen takeover. Pin it
+    // to the live transfer flag, not g_state — otherwise any BLE event / tick
+    // that resets g_state (set_pc_connected, etc.) yanks the screen away mid-
+    // update and the firmware stops servicing the USB stream.
+    if (ota_receiver::is_active())   return AppState::OTA_UPDATING;
+    // Post-update ack survives reboots until acknowledged — show it before
+    // anything else (a successful OTA implies the device is already provisioned).
+    if (g_has_ota_ack)               return AppState::OTA_ACK;
     if (nvs::is_first_boot())        return AppState::SETUP;
     if (g_state == AppState::OTA_UPDATING) return AppState::OTA_UPDATING;
     if (g_state == AppState::RECONNECT_SYNCING) return AppState::RECONNECT_SYNCING;
@@ -322,6 +346,7 @@ static void tick_cb(lv_timer_t* /*t*/) {
     if (g_state != AppState::COUNTDOWN   &&
         g_state != AppState::SETUP       &&
         g_state != AppState::OTA_UPDATING &&
+        !ota_receiver::is_active()       &&
         !is_pto_active()) {
 
         const char* title = nullptr;
@@ -357,6 +382,12 @@ void init() {
 
     // Restore mode from NVS.
     g_mode = nvs::get_mode();
+
+    // Pending post-OTA acknowledgement? If so the first screen this boot is the
+    // "Firmware updated" ack (sticky until the user taps Close).
+    g_has_ota_ack = nvs::get_ota_ack(g_ota_ack_version, sizeof(g_ota_ack_version));
+    if (g_has_ota_ack)
+        LOG("[sm] post-OTA ack pending (version %s)\n", g_ota_ack_version);
 
     // Create the periodic evaluation timer (1 s cadence).
     g_tick_timer = lv_timer_create(tick_cb, TICK_MS, nullptr);
@@ -401,6 +432,10 @@ AppState evaluate() {
 
         case AppState::OTA_UPDATING:
             new_screen = build_ota_screen();
+            break;
+
+        case AppState::OTA_ACK:
+            new_screen = build_ota_ack_screen();
             break;
 
         case AppState::PTO_ACTIVE:
@@ -624,12 +659,36 @@ void on_clock_enter() {
 
 void on_ota_begin() {
     LOG("[sm] on_ota_begin\n");
+    // Pause the 1 s meeting-check tick for the whole update: no meeting-expiry,
+    // 5-minute-alert, or evaluate() work should run (or touch state) while the
+    // OTA owns the device. Resumed in on_reconnect_end() if the update fails.
+    if (g_tick_timer) lv_timer_pause(g_tick_timer);
     g_state = AppState::OTA_UPDATING;
     apply_widget_defaults();
     load_screen(build_ota_screen());
 }
 
+void ota_show(lv_obj_t* screen) {
+    // ota_receiver built a flow screen (Update failed). Keep the meeting-check
+    // tick paused (a BEGIN-reject error screen can reach here without on_ota_begin).
+    if (g_tick_timer) lv_timer_pause(g_tick_timer);
+    g_state = AppState::OTA_UPDATING;   // is_active() keeps it sticky
+    apply_widget_defaults();
+    load_screen(screen);
+}
+
+void on_ota_ack_close() {
+    LOG("[sm] post-OTA ack acknowledged\n");
+    nvs::clear_ota_ack();
+    g_has_ota_ack = false;
+    g_force_rebuild = true;
+    g_state = AppState::NO_MEETINGS;
+    evaluate();
+}
+
 void on_reconnect_begin() {
+    // Never overlay the reconnect-syncing UI on top of an OTA takeover.
+    if (ota_receiver::is_active()) return;
     LOG("[sm] on_reconnect_begin\n");
     g_state = AppState::RECONNECT_SYNCING;
     apply_widget_defaults();
@@ -638,6 +697,10 @@ void on_reconnect_begin() {
 
 void on_reconnect_end() {
     LOG("[sm] on_reconnect_end\n");
+    // Resume the meeting-check tick if an OTA had paused it (no-op otherwise —
+    // this is also the normal BLE reconnect-overlay exit). dismiss_error() routes
+    // a failed/aborted OTA here.
+    if (g_tick_timer) lv_timer_resume(g_tick_timer);
     // Clear the RECONNECT_SYNCING sentinel so compute_target_state() runs
     // the full logic (it early-returns RECONNECT_SYNCING when g_state matches).
     g_force_rebuild = true;
@@ -661,7 +724,10 @@ void set_pc_connected(bool connected) {
         }
     }
 
-    if (changed) {
+    // Track the flag, but never rebuild the screen during an OTA takeover — a
+    // BLE connect/disconnect mid-update must not yank the OTA screen or starve
+    // the USB CDC poll. evaluate() runs (and resyncs) once the transfer ends.
+    if (changed && !ota_receiver::is_active()) {
         g_force_rebuild = true;
         g_state = AppState::NO_MEETINGS;  // ensure evaluate() does a full rebuild
         evaluate();

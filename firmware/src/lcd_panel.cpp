@@ -4,6 +4,8 @@
 #include "ori_log.h"
 #include <Arduino_GFX_Library.h>
 #include <esp_cache.h>
+#include <esp_private/periph_ctrl.h>
+#include <soc/periph_defs.h>
 
 #include "io_expander_ch422g.h"
 #include "pins.h"
@@ -89,6 +91,14 @@ void init() {
 
 void* framebuffer() {
     return panel ? (void*)panel->getFramebuffer() : nullptr;
+}
+
+void stop() {
+    // Halt the LCD_CAM peripheral (gates clock + asserts reset): stops the RGB
+    // DMA scan-out and, crucially, its VSYNC "restart transmission" interrupt,
+    // whose handler lives in flash and would panic during an OTA flash write.
+    periph_module_disable(PERIPH_LCD_CAM_MODULE);
+    LOG("[lcd] LCD_CAM stopped (OTA)\n");
 }
 
 uint16_t width()  { return LCD_W; }

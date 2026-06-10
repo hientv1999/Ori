@@ -1311,6 +1311,29 @@
       justify-content: center;
     }
 
+    /* Centre glyphs for the OTA "ready to install" and "failed" screens —
+       sized to sit where the downloading ring sits. */
+    .ota-install-glyph,
+    .ota-error-glyph {
+      width: 132px;
+      height: 132px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .ota-install-glyph {
+      background: var(--accent-soft, rgba(122, 162, 247, 0.14));
+      border: 1px solid var(--accent-line, rgba(122, 162, 247, 0.30));
+    }
+
+    .ota-error-glyph {
+      color: var(--danger);
+      background: rgba(216, 106, 106, 0.14);
+      border: 1px solid rgba(216, 106, 106, 0.30);
+    }
+
     .setup .ok-check svg {
       filter: drop-shadow(0 0 18px rgba(127, 180, 138, 0.55)) drop-shadow(0 0 5px rgba(127, 180, 138, 0.80));
     }
@@ -1836,9 +1859,16 @@
       <div class="group">
         <div class="group-title">Runtime</div>
         <button data-screen="reconnect-syncing">Reconnect-Syncing overlay</button>
-        <button data-screen="ota-updating">OTA — updating firmware</button>
         <button data-screen="unpair-phone">Unpair iPhone? (has bond)</button>
         <button data-screen="repair-phone">Re-pair iPhone (no bond)</button>
+      </div>
+      <div class="group">
+        <div class="group-title">OTA update</div>
+        <button data-screen="ota-updating">1 · Downloading firmware</button>
+        <button data-screen="ota-ready">2 · Firmware Install</button>
+        <button data-screen="ota-installing">3 · Installing (dark)</button>
+        <button data-screen="ota-updated-ack">4 · Updated (boot ack)</button>
+        <button data-screen="ota-error">⚠ Update failed</button>
       </div>
       <div class="group">
         <div class="group-title">Teams presence</div>

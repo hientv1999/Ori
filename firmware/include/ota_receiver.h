@@ -48,8 +48,17 @@ void init();
 //   - state_machine transitions on completion/failure
 void poll();
 
-// Returns true when an OTA update is currently in progress.
+// Returns true when an OTA update is currently in progress (BEGIN accepted,
+// END/abort not yet reached). Used to NACK BLE writes and to gate the debug
+// serial consumer off the shared USB CDC port.
 bool is_active();
+
+// Returns true when the frame parser is mid-frame (header or payload partially
+// received). poll() can return mid-frame on its time budget, so the debug
+// serial consumer must not read the port while this — or is_active() — is true,
+// or it would steal OTA bytes. Covers a BEGIN frame fragmented across polls,
+// before is_active() flips true.
+bool is_busy();
 
 // Update the OTA progress ring (0..100%). Called internally from poll()
 // when a PROGRESS frame is assembled; also callable externally for testing.
@@ -58,5 +67,10 @@ void set_progress(uint8_t pct);
 // Returns the current firmware version string (semver, e.g. "1.0.0").
 // Used by gatt_server to fill the Protocol Version characteristic.
 const char* firmware_version();
+
+// "Close" on the Update failed screen: drops the failed transfer and returns to
+// runtime. (The install has no user gate — after the download it auto-advances
+// to the Installing frame and commits after a short linger.)
+void dismiss_error();
 
 } // namespace ota_receiver

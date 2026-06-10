@@ -21,6 +21,7 @@
 #include "ble/gatt_server.h"
 #include "ble/ble_manager.h"
 #include "ble/chunked_transfer.h"
+#include "fw_version.h"
 
 // These functions are defined in ble_manager.cpp and called from the
 // GATT write callbacks to post events to the main-task event queue.
@@ -85,7 +86,8 @@ void ble_post_pto_photo_event(uint8_t* buf, size_t len);
 #define DS_ERROR_GENERIC               0xF0
 
 // Firmware version (for Protocol Version characteristic + OTA checks).
-#define FIRMWARE_VERSION "1.0.0"
+// Single source of truth in include/fw_version.h — shared with ota_receiver.
+#define FIRMWARE_VERSION ORI_FW_VERSION
 #define PROTO_MAJOR 1
 #define PROTO_MINOR 0
 

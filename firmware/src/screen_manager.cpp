@@ -8,6 +8,7 @@
 #include "factory_reset.h"
 #include "app_state.h"
 #include "nvs_store.h"
+#include "ota_receiver.h"
 #include "state_machine.h"
 #include "screens/modal_countdown.h"
 #include "screens/modal_factory_reset.h"
@@ -151,13 +152,21 @@ void print_keymap() {
     LOG("  t   Setup — Step 3 iPhone pairing\n");
     LOG("  e   Setup — Complete\n");
     LOG("  x   Reconnect-Syncing overlay\n");
-    LOG("  u   OTA-Updating\n");
+    LOG("  -- OTA update flow --\n");
+    LOG("  u   OTA · Downloading firmware (live ring)\n");
+    LOG("  1   OTA · Installing (screen goes dark)\n");
+    LOG("  2   OTA · Updated boot ack (Close)\n");
+    LOG("  3   OTA · Update failed (Close)\n");
     LOG("  R   Re-run state machine evaluate() (real boot logic)\n");
     LOG("  M   Print SRAM / PSRAM free stats\n");
     LOG("  ?   Print this map\n");
     LOG("===============================================\n");
     LOG("\n");
 }
+
+// OTA flow nav callbacks — wired to the screens' buttons so a serial-loaded
+// OTA screen can be clicked through by hand (does NOT touch the real OTA flow).
+void dbg_ota_close(lv_event_t*)  { debug_load_meeting_default(); }
 
 void debug_handle_key(char c) {
     debug_apply_defaults();
@@ -237,7 +246,20 @@ void debug_handle_key(char c) {
         case 'e': debug_load_setup(screen_setup::Step::Complete,     false); break;
         // case 'r': debug_load(screen_repair_phone::create()); // removed obsolete repair screen
         case 'x': debug_load(screen_reconnect_syncing::create());              break;
+        // ── OTA update flow (button callbacks walk the flow for visual test) ──
         case 'u': debug_load(screen_ota_updating::create());                  break;
+        case '1': {
+            // "Installing… / screen goes dark" — set_installing() switches the
+            // labels on the downloading screen, so build that first, then switch.
+            lv_obj_t* s = screen_ota_updating::create();
+            screen_ota_updating::set_installing();
+            debug_load(s);
+            break;
+        }
+        case '2': debug_load(screen_ota_updating::create_updated_ack("1.0.1", dbg_ota_close)); break;
+        case '3': debug_load(screen_ota_updating::create_error(
+                      "The update couldn't be installed — try again from Orion",
+                      dbg_ota_close)); break;
         case 'R':
             LOG("[scr] Re-running state_machine::evaluate()\n");
             apply_state_defaults();
@@ -272,7 +294,14 @@ void init() {
 
 void poll_serial() {
 #ifdef ORI_DEBUG_SERIAL
+    // OTA owns the USB CDC port while a transfer is in flight or the frame
+    // parser is mid-frame. Reading here would steal OTA bytes (ota_receiver::poll
+    // returns mid-frame on its time budget). Stay off the port until it's idle.
+    if (ota_receiver::is_active() || ota_receiver::is_busy()) return;
+
     while (Serial.available() > 0) {
+        // Don't consume the first byte of an inbound OTA frame either.
+        if ((uint8_t)Serial.peek() == 0x4F) break;
         int b = Serial.read();
         if (b > 0) debug_handle_key((char)b);
     }
