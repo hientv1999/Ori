@@ -9,16 +9,17 @@ namespace {
 constexpr const char* NAMESPACE = "ori";
 
 // Key layout (see nvs_store.h for canonical table).
-constexpr const char* k_provisioned = "prov";    // bool: setup completed
-constexpr const char* k_mode        = "mode";    // uint8: 0=Calendar 1=Controls
-constexpr const char* k_ota_ack     = "ota_ack"; // string: post-update version
+constexpr const char* k_provisioned = "prov";       // bool: setup completed
+constexpr const char* k_phone_step  = "phone_step"; // bool: Orion synced, awaiting iPhone pair
+constexpr const char* k_mode        = "mode";       // uint8: 0=Calendar 1=Controls
+constexpr const char* k_ota_ack     = "ota_ack";    // string: post-update version
 
 Preferences prefs;
 
-// Cached at init() so is_first_boot() never opens NVS from inside the
-// lv_timer_handler() call path (tick_cb → evaluate → compute_target_state).
-// Only mark_setup_complete() and factory_reset() mutate this.
-bool g_is_first_boot = true;
+// Both flags cached at init() so they are safe to read from any context
+// (tick_cb → evaluate → compute_target_state) without opening NVS.
+bool g_is_first_boot   = true;
+bool g_awaiting_phone  = false;
 
 } // namespace
 
@@ -31,9 +32,11 @@ void init() {
         LOG("[nvs] ERROR: could not open namespace — NVS partition missing?\n");
         return;
     }
-    g_is_first_boot = !prefs.getBool(k_provisioned, false);
+    g_is_first_boot  = !prefs.getBool(k_provisioned, false);
+    g_awaiting_phone =  prefs.getBool(k_phone_step,  false);
     prefs.end();
-    LOG("[nvs] ready  first_boot=%d\n", (int)g_is_first_boot);
+    LOG("[nvs] ready  first_boot=%d  awaiting_phone=%d\n",
+        (int)g_is_first_boot, (int)g_awaiting_phone);
 }
 
 void tick() {
@@ -49,12 +52,26 @@ bool is_first_boot() {
 }
 
 void mark_setup_complete() {
-    g_is_first_boot = false;
+    g_is_first_boot  = false;
+    g_awaiting_phone = false;
     if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
         prefs.putBool(k_provisioned, true);
         prefs.end();
     }
     LOG("[nvs] setup complete — provisioned flag set\n");
+}
+
+void mark_orion_synced() {
+    g_awaiting_phone = true;
+    if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
+        prefs.putBool(k_phone_step, true);
+        prefs.end();
+    }
+    LOG("[nvs] orion synced — phone pairing step persisted\n");
+}
+
+bool is_awaiting_phone_pairing() {
+    return g_awaiting_phone;
 }
 
 // ── Mode toggle persistence ────────────────────────────────────────────────
@@ -79,7 +96,8 @@ void set_mode(uint8_t mode) {
 // ── Factory reset ──────────────────────────────────────────────────────────
 
 void factory_reset() {
-    g_is_first_boot = true;
+    g_is_first_boot  = true;
+    g_awaiting_phone = false;
     if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
         prefs.clear();
         prefs.end();

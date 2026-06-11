@@ -544,8 +544,9 @@ static void do_commit() {
     // the LCD so nothing executes non-IRAM code or races a flash/NVS write while
     // Update.write() has the MSPI cache disabled. We reboot right after, so both
     // are one-way.
+    lcd_panel::blackout();        // fill framebuffer black — clean visual cut before stop
     ble_manager::quiesce_for_commit();
-    lcd_panel::stop();            // screen dark from here; we reboot afterwards
+    lcd_panel::stop();            // halt LCD_CAM hardware (stops PSRAM-DMA/flash bus contention)
 
     bool ok = Update.begin((size_t)g_total_size);
     if (ok) {

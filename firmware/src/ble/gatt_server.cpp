@@ -33,6 +33,7 @@ void ble_post_presence_event(widget_profile_card::Presence p);
 void ble_post_album_art_event(uint8_t* buf, size_t len);
 void ble_post_photo_event(uint8_t* buf, size_t len);
 void ble_post_sync_begin_event();
+void ble_post_sync_commit_event();
 void ble_post_sync_end_event();
 void ble_post_orioning_progress(uint8_t pct);
 void ble_post_pto_photo_event(uint8_t* buf, size_t len);
@@ -62,6 +63,7 @@ void ble_post_pto_photo_event(uint8_t* buf, size_t len);
 #include "widgets/widget_profile_card.h"
 #include "screens/screen_media_mode.h"
 #include "ota_receiver.h"
+#include "lcd_panel.h"
 
 // UUIDs ─────────────────────────────────────────────────────────────────────
 
@@ -89,7 +91,7 @@ void ble_post_pto_photo_event(uint8_t* buf, size_t len);
 // Single source of truth in include/fw_version.h — shared with ota_receiver.
 #define FIRMWARE_VERSION ORI_FW_VERSION
 #define PROTO_MAJOR 1
-#define PROTO_MINOR 0
+#define PROTO_MINOR 1
 
 namespace {
 
@@ -230,6 +232,116 @@ static void sha256_of_buf(const uint8_t* buf, size_t len, uint8_t out[32]) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// Sync staging (PSRAM) — ble-protocol.md §6.0
+//
+// Everything written between SyncControl{BEGIN} and {END} is held here
+// (small fields inline, blob items in PSRAM) instead of touching NVS or
+// live UI state. stage_commit() applies it all in one burst at END,
+// mirroring the OTA stage-then-flash pattern.
+// ─────────────────────────────────────────────────────────────────────────
+
+struct SyncStage {
+    bool     active         = false;
+    uint32_t total_bytes    = 0;
+    uint32_t received_bytes = 0;
+    uint8_t  last_pct_sent  = 0xFF; // sentinel so 0% is posted at least once
+
+    bool     have_time = false;
+    uint64_t epoch_utc = 0;
+    char     tz[64]    = {};
+
+    bool     have_profile = false;
+    uint8_t* profile_cbor = nullptr; // owned
+    size_t   profile_len  = 0;
+
+    bool     have_photo = false;
+    uint8_t* photo_jpeg = nullptr;   // owned (PSRAM, from chunked_transfer)
+    size_t   photo_len  = 0;
+
+    bool     have_meetings = false;
+    uint8_t* meetings_cbor = nullptr; // owned (PSRAM, from chunked_transfer)
+    size_t   meetings_len  = 0;
+
+    bool     have_pto = false;
+    uint8_t* pto_cbor = nullptr;     // owned (PSRAM, from chunked_transfer)
+    size_t   pto_len  = 0;
+};
+
+SyncStage g_stage;
+
+// Forward declarations — apply_* helpers are defined just below stage_commit
+// uses them, but stage_reset() needs to free their buffers first.
+static void apply_time_sync(uint64_t epoch_utc, const char* tz);
+static void apply_profile_cbor(const uint8_t* data, size_t len);
+static void apply_photo_jpeg(uint8_t* buf, size_t n);
+static void apply_meetings_cbor(uint8_t* buf, size_t n);
+static void apply_pto_cbor(uint8_t* buf, size_t n);
+
+// Free any owned staging buffers and zero the struct.
+static void stage_reset() {
+    if (g_stage.profile_cbor)  heap_caps_free(g_stage.profile_cbor);
+    if (g_stage.photo_jpeg)    heap_caps_free(g_stage.photo_jpeg);
+    if (g_stage.meetings_cbor) heap_caps_free(g_stage.meetings_cbor);
+    if (g_stage.pto_cbor)      heap_caps_free(g_stage.pto_cbor);
+    g_stage = SyncStage{};
+}
+
+// Begin a new staging session (called on SyncControl{BEGIN}).
+static void stage_begin(uint32_t total_bytes) {
+    stage_reset();
+    g_stage.active      = true;
+    g_stage.total_bytes = total_bytes;
+}
+
+// Account for `n` newly received application-payload bytes and, while the
+// setup orioning modal is on screen, post byte-accurate progress (capped at
+// 99% — 100% is posted only after stage_commit() finishes at END). Gating on
+// DS_SETUP_SYNCING avoids posting to update_orioning_progress() when the
+// active screen's user_data isn't a SetupState* (reconnect / media mode).
+static void stage_add_bytes(uint16_t n) {
+    if (!g_stage.active) return;
+    g_stage.received_bytes += n;
+    if (g_stage.total_bytes == 0) return;
+    if (g_device_status != DS_SETUP_SYNCING) return;
+
+    uint32_t pct = (uint32_t)((uint64_t)g_stage.received_bytes * 100u / g_stage.total_bytes);
+    if (pct > 99) pct = 99;
+    if ((uint8_t)pct != g_stage.last_pct_sent) {
+        g_stage.last_pct_sent = (uint8_t)pct;
+        ble_post_orioning_progress((uint8_t)pct);
+    }
+}
+
+// Apply every staged item to NVS / live state in one burst, then reset.
+// Called on SyncControl{END}.
+static void stage_commit() {
+    if (g_stage.have_time) {
+        apply_time_sync(g_stage.epoch_utc, g_stage.tz);
+    }
+    if (g_stage.have_profile) {
+        apply_profile_cbor(g_stage.profile_cbor, g_stage.profile_len);
+    }
+    if (g_stage.have_photo) {
+        apply_photo_jpeg(g_stage.photo_jpeg, g_stage.photo_len);
+        g_stage.photo_jpeg = nullptr; // ownership transferred
+    }
+    if (g_stage.have_meetings) {
+        apply_meetings_cbor(g_stage.meetings_cbor, g_stage.meetings_len);
+        g_stage.meetings_cbor = nullptr; // freed by apply_meetings_cbor
+    }
+    if (g_stage.have_pto) {
+        apply_pto_cbor(g_stage.pto_cbor, g_stage.pto_len);
+        g_stage.pto_cbor = nullptr; // freed by apply_pto_cbor
+    }
+
+    if (g_stage.total_bytes > 0 && g_device_status == DS_SETUP_SYNCING) {
+        ble_post_orioning_progress(100);
+    }
+
+    stage_reset();
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Characteristic write callbacks (NimBLE calls these from its own task)
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -301,8 +413,10 @@ public:
 private:
 
     // ── Time Sync (char 0003) ───────────────────────────────────────────────
+    // Staged — applied at SyncControl{END} via apply_time_sync() (§6.0).
     void handle_time_sync(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "TimeSync")) return;
+        stage_add_bytes(len);
 
         CborParser parser;
         CborValue  root, map_val;
@@ -335,82 +449,34 @@ private:
         }
 
         if (epoch_utc > 0) {
-            // Set the system clock.
-            struct timeval tv = { .tv_sec = (time_t)epoch_utc, .tv_usec = 0 };
-            settimeofday(&tv, nullptr);
-
-            // Set timezone.
-            if (tz[0]) {
-                // POSIX setenv + tzset for IANA timezone.
-                // On ESP-IDF / Arduino-ESP32, we set TZ env variable.
-                setenv("TZ", tz, 1);
-                tzset();
-                nvs_sync::save_tz(tz);
-            }
-
-            nvs_sync::save_epoch((uint32_t)epoch_utc);
-            LOG("[gatt] TimeSync: epoch=%llu tz=%s\n",
-                           (unsigned long long)epoch_utc, tz);
-            ble_post_orioning_progress(5);
+            g_stage.have_time = true;
+            g_stage.epoch_utc = epoch_utc;
+            strncpy(g_stage.tz, tz, sizeof(g_stage.tz) - 1);
         }
     }
 
     // ── Profile Info (char 0004) ────────────────────────────────────────────
+    // Staged — parsed and applied at SyncControl{END} via apply_profile_cbor() (§6.0).
     void handle_profile(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "ProfileInfo")) return;
 
-        CborParser parser;
-        CborValue  root, map_val;
-        if (cbor_parser_init(data, len, 0, &parser, &root) != CborNoError) return;
-        if (!cbor_value_is_map(&root)) return;
-
-        char name[65]  = {};
-        char title[65] = {};
-        char email[129]= {};
-        char phone[33] = {};
-
-        cbor_value_enter_container(&root, &map_val);
-        while (!cbor_value_at_end(&map_val)) {
-            char key[16] = {};
-            size_t key_len = sizeof(key) - 1;
-            if (cbor_value_is_text_string(&map_val)) {
-                cbor_value_copy_text_string(&map_val, key, &key_len, &map_val);
-            } else { cbor_value_advance(&map_val); continue; }
-
-            if (cbor_value_at_end(&map_val)) break;
-
-            if (strcmp(key, "name") == 0 && cbor_value_is_text_string(&map_val)) {
-                size_t sz = sizeof(name) - 1;
-                cbor_value_copy_text_string(&map_val, name, &sz, nullptr);
-            } else if (strcmp(key, "title") == 0 && cbor_value_is_text_string(&map_val)) {
-                size_t sz = sizeof(title) - 1;
-                cbor_value_copy_text_string(&map_val, title, &sz, nullptr);
-            } else if (strcmp(key, "email") == 0 && cbor_value_is_text_string(&map_val)) {
-                size_t sz = sizeof(email) - 1;
-                cbor_value_copy_text_string(&map_val, email, &sz, nullptr);
-            } else if (strcmp(key, "phone") == 0 && cbor_value_is_text_string(&map_val)) {
-                size_t sz = sizeof(phone) - 1;
-                cbor_value_copy_text_string(&map_val, phone, &sz, nullptr);
-            }
-            if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
+        if (g_stage.profile_cbor) {
+            heap_caps_free(g_stage.profile_cbor);
+            g_stage.profile_cbor = nullptr;
+        }
+        g_stage.profile_cbor = static_cast<uint8_t*>(
+            heap_caps_malloc(len > 0 ? len : 1, MALLOC_CAP_8BIT));
+        if (g_stage.profile_cbor) {
+            memcpy(g_stage.profile_cbor, data, len);
+            g_stage.profile_len  = len;
+            g_stage.have_profile = true;
         }
 
-        // Save to NVS.
-        nvs_sync::save_profile(name, title, email, phone);
-
-        // Compute SHA-256 of the raw CBOR bytes and store.
-        uint8_t hash[32];
-        sha256_of_buf(data, len, hash);
-        nvs_sync::save_hash(nvs_sync::HASH_KEY_PROFILE, hash);
-
-        // Update the live profile card immediately.
-        widget_profile_card::set_profile(name, title, email, phone);
-
-        LOG("[gatt] ProfileInfo: name=%s title=%s\n", name, title);
-        ble_post_orioning_progress(15);
+        stage_add_bytes(len);
     }
 
     // ── Profile Photo (char 0005) — chunked ────────────────────────────────
+    // Staged — hashed and posted at SyncControl{END} via apply_photo_jpeg() (§6.0).
     void handle_photo(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "ProfilePhoto")) return;
 
@@ -420,24 +486,19 @@ private:
                     LOG("[gatt] Photo NACK: %s\n", nack);
                     return;
                 }
-                uint8_t hash[32];
-                sha256_of_buf(buf, n, hash);
-                nvs_sync::save_hash(nvs_sync::HASH_KEY_PHOTO, hash);
-                LOG("[gatt] Photo received: %u bytes\n", (unsigned)n);
-                ble_post_photo_event(buf, n);
-                // Progress reaches 50% via on_fragment — no milestone call needed here.
+                g_stage.have_photo = true;
+                g_stage.photo_jpeg = buf; // ownership moves to SyncStage
+                g_stage.photo_len  = n;
             };
-            // Photo occupies progress range 15→50 (35 pts).
-            g_photo_ctx.on_fragment = [](uint16_t seq, uint16_t total) {
-                if (total == 0) return;
-                uint8_t pct = (uint8_t)(15u + (uint32_t)(seq + 1u) * 35u / total);
-                ble_post_orioning_progress(pct);
+            g_photo_ctx.on_fragment = [](uint16_t seq, uint16_t total, uint16_t plen) {
+                stage_add_bytes(plen);
             };
         }
         chunked_transfer::feed(&g_photo_ctx, data, len);
     }
 
     // ── Meeting List (char 0006) — chunked ─────────────────────────────────
+    // Staged — hashed and applied at SyncControl{END} via apply_meetings_cbor() (§6.0).
     void handle_meetings(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "MeetingList")) return;
 
@@ -447,19 +508,19 @@ private:
                     LOG("[gatt] Meetings NACK: %s\n", nack);
                     return;
                 }
-                uint8_t hash[32];
-                sha256_of_buf(buf, n, hash);
-                nvs_sync::save_hash(nvs_sync::HASH_KEY_MEETINGS, hash);
-                LOG("[gatt] Meetings received: %u bytes, hash stored\n", (unsigned)n);
-                state_machine::set_meetings_cbor(buf, n, /*save_to_nvs=*/true);
-                heap_caps_free(buf);
-                ble_post_orioning_progress(65);
+                g_stage.have_meetings  = true;
+                g_stage.meetings_cbor  = buf; // ownership moves to SyncStage
+                g_stage.meetings_len   = n;
+            };
+            g_meetings_ctx.on_fragment = [](uint16_t seq, uint16_t total, uint16_t plen) {
+                stage_add_bytes(plen);
             };
         }
         chunked_transfer::feed(&g_meetings_ctx, data, len);
     }
 
     // ── PTO Entry (char 0007) — chunked ────────────────────────────────────
+    // Staged — hashed, parsed, and applied at SyncControl{END} via apply_pto_cbor() (§6.0).
     void handle_pto(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "PtoEntry")) return;
 
@@ -469,92 +530,12 @@ private:
                     LOG("[gatt] PTO NACK: %s\n", nack);
                     return;
                 }
-
-                // Hash the full CBOR payload for delta-sync manifest.
-                uint8_t hash[32];
-                sha256_of_buf(buf, n, hash);
-                nvs_sync::save_hash(nvs_sync::HASH_KEY_PTO, hash);
-
-                // ── Parse PtoEntry CBOR ────────────────────────────────────
-                // Schema: { start:uint, end:uint, destination:text, image:bytes }
-                CborParser parser;
-                CborValue  root, map_val;
-                uint32_t   pto_start = 0, pto_end = 0;
-                char       dest[129] = {};
-                uint8_t*   img_buf   = nullptr;
-                size_t     img_len   = 0;
-
-                if (cbor_parser_init(buf, n, 0, &parser, &root) == CborNoError &&
-                    cbor_value_is_map(&root)) {
-
-                    cbor_value_enter_container(&root, &map_val);
-                    while (!cbor_value_at_end(&map_val)) {
-                        char key[16] = {};
-                        size_t ksz = sizeof(key) - 1;
-                        if (!cbor_value_is_text_string(&map_val)) {
-                            cbor_value_advance(&map_val);
-                            continue;
-                        }
-                        cbor_value_copy_text_string(&map_val, key, &ksz, &map_val);
-                        if (cbor_value_at_end(&map_val)) break;
-
-                        if (strcmp(key, "start") == 0 &&
-                            cbor_value_is_unsigned_integer(&map_val)) {
-                            uint64_t v = 0;
-                            cbor_value_get_uint64(&map_val, &v);
-                            pto_start = (uint32_t)v;
-
-                        } else if (strcmp(key, "end") == 0 &&
-                                   cbor_value_is_unsigned_integer(&map_val)) {
-                            uint64_t v = 0;
-                            cbor_value_get_uint64(&map_val, &v);
-                            pto_end = (uint32_t)v;
-
-                        } else if (strcmp(key, "destination") == 0 &&
-                                   cbor_value_is_text_string(&map_val)) {
-                            size_t dsz = sizeof(dest) - 1;
-                            cbor_value_copy_text_string(&map_val, dest, &dsz, nullptr);
-
-                        } else if (strcmp(key, "image") == 0 &&
-                                   cbor_value_is_byte_string(&map_val)) {
-                            size_t raw_len = 0;
-                            cbor_value_get_string_length(&map_val, &raw_len);
-                            if (raw_len > 0 && raw_len <= 64 * 1024) {
-                                img_buf = static_cast<uint8_t*>(
-                                    heap_caps_malloc(raw_len,
-                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-                                if (!img_buf)
-                                    img_buf = static_cast<uint8_t*>(malloc(raw_len));
-                                if (img_buf) {
-                                    img_len = raw_len;
-                                    cbor_value_copy_byte_string(
-                                        &map_val, img_buf, &img_len, nullptr);
-                                }
-                            }
-                            // raw_len == 0 → no image set; img_buf stays nullptr
-                        }
-
-                        if (!cbor_value_at_end(&map_val))
-                            cbor_value_advance(&map_val);
-                    }
-                }
-
-                heap_caps_free(buf); // free original CBOR blob
-
-                nvs_sync::save_pto_meta(pto_start, pto_end, dest);
-                LOG("[gatt] PTO: start=%u end=%u dest=%s img=%u bytes\n",
-                               (unsigned)pto_start, (unsigned)pto_end,
-                               dest, (unsigned)img_len);
-
-                // Post photo event (img_buf=nullptr, img_len=0 → clear cache).
-                ble_post_pto_photo_event(img_buf, img_len);
-                // Progress reaches 95% via on_fragment.
+                g_stage.have_pto = true;
+                g_stage.pto_cbor = buf; // ownership moves to SyncStage
+                g_stage.pto_len  = n;
             };
-            // PTO occupies progress range 65→95 (30 pts).
-            g_pto_ctx.on_fragment = [](uint16_t seq, uint16_t total) {
-                if (total == 0) return;
-                uint8_t pct = (uint8_t)(65u + (uint32_t)(seq + 1u) * 30u / total);
-                ble_post_orioning_progress(pct);
+            g_pto_ctx.on_fragment = [](uint16_t seq, uint16_t total, uint16_t plen) {
+                stage_add_bytes(plen);
             };
         }
         chunked_transfer::feed(&g_pto_ctx, data, len);
@@ -571,6 +552,7 @@ private:
 
         char     op[8]  = {};
         uint64_t seq    = 0;
+        uint64_t total  = 0;
 
         cbor_value_enter_container(&root, &map_val);
         while (!cbor_value_at_end(&map_val)) {
@@ -586,15 +568,18 @@ private:
                 cbor_value_copy_text_string(&map_val, op, &sz, nullptr);
             } else if (strcmp(key, "seq") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
                 cbor_value_get_uint64(&map_val, &seq);
+            } else if (strcmp(key, "total") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
+                cbor_value_get_uint64(&map_val, &total);
             }
             if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
         }
 
-        LOG("[gatt] SyncControl op=%s seq=%u\n", op, (unsigned)seq);
+        LOG("[gatt] SyncControl op=%s seq=%u total=%u\n", op, (unsigned)seq, (unsigned)total);
 
         if (strcmp(op, "BEGIN") == 0) {
             g_sync_seq         = (uint32_t)seq;
             g_sync_in_progress = true;
+            stage_begin((uint32_t)total);
             uint8_t new_status = (g_device_status <= DS_SETUP_SYNC_COMPLETE)
                                   ? DS_SETUP_SYNCING
                                   : DS_RUNTIME_SYNCING;
@@ -604,17 +589,12 @@ private:
 
         } else if (strcmp(op, "END") == 0) {
             g_sync_in_progress = false;
-            time_t now = time(nullptr);
-            nvs_sync::save_epoch((uint32_t)now);
-            app_state::set_last_sync_time(now);
-
-            uint8_t new_status = (g_device_status == DS_SETUP_SYNCING ||
-                                  g_device_status == DS_SETUP_BONDED_AWAITING_SYNC)
-                                  ? DS_SETUP_SYNC_COMPLETE
-                                  : DS_RUNTIME_READY;
-            gatt_server::set_device_status(new_status);
-            // Defer UI transition to main task — screen changes are not safe from NimBLE task.
-            ble_post_sync_end_event();
+            // stage_commit() does multiple NVS flash writes + LVGL profile-card
+            // updates — defer the whole burst to the main task (gatt_server::
+            // run_staged_commit(), called from ble_manager::poll() before
+            // lv_timer_handler()) so it can't collide with LCD_CAM DMA on the
+            // NimBLE host task and trip the interrupt watchdog (§6.0).
+            ble_post_sync_commit_event();
         }
     }
 
@@ -879,6 +859,176 @@ private:
 
 static OriCharacteristicCallbacks s_char_cb;
 
+// ─────────────────────────────────────────────────────────────────────────
+// Sync stage commit helpers — apply one staged item to NVS / live state.
+// Called only from stage_commit() at SyncControl{END} (§6.0).
+// ─────────────────────────────────────────────────────────────────────────
+
+static void apply_time_sync(uint64_t epoch_utc, const char* tz) {
+    if (epoch_utc == 0) return;
+
+    struct timeval tv = { .tv_sec = (time_t)epoch_utc, .tv_usec = 0 };
+    settimeofday(&tv, nullptr);
+
+    if (tz && tz[0]) {
+        setenv("TZ", tz, 1);
+        tzset();
+        nvs_sync::save_tz(tz);
+    }
+
+    LOG("[gatt] TimeSync: epoch=%llu tz=%s\n",
+                   (unsigned long long)epoch_utc, tz ? tz : "");
+}
+
+static void apply_profile_cbor(const uint8_t* data, size_t len) {
+    CborParser parser;
+    CborValue  root, map_val;
+    if (cbor_parser_init(data, len, 0, &parser, &root) != CborNoError) return;
+    if (!cbor_value_is_map(&root)) return;
+
+    char name[65]  = {};
+    char title[65] = {};
+    char email[129]= {};
+    char phone[33] = {};
+
+    cbor_value_enter_container(&root, &map_val);
+    while (!cbor_value_at_end(&map_val)) {
+        char key[16] = {};
+        size_t key_len = sizeof(key) - 1;
+        if (cbor_value_is_text_string(&map_val)) {
+            cbor_value_copy_text_string(&map_val, key, &key_len, &map_val);
+        } else { cbor_value_advance(&map_val); continue; }
+
+        if (cbor_value_at_end(&map_val)) break;
+
+        if (strcmp(key, "name") == 0 && cbor_value_is_text_string(&map_val)) {
+            size_t sz = sizeof(name) - 1;
+            cbor_value_copy_text_string(&map_val, name, &sz, nullptr);
+        } else if (strcmp(key, "title") == 0 && cbor_value_is_text_string(&map_val)) {
+            size_t sz = sizeof(title) - 1;
+            cbor_value_copy_text_string(&map_val, title, &sz, nullptr);
+        } else if (strcmp(key, "email") == 0 && cbor_value_is_text_string(&map_val)) {
+            size_t sz = sizeof(email) - 1;
+            cbor_value_copy_text_string(&map_val, email, &sz, nullptr);
+        } else if (strcmp(key, "phone") == 0 && cbor_value_is_text_string(&map_val)) {
+            size_t sz = sizeof(phone) - 1;
+            cbor_value_copy_text_string(&map_val, phone, &sz, nullptr);
+        }
+        if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
+    }
+
+    // Save to NVS.
+    nvs_sync::save_profile(name, title, email, phone);
+
+    // Compute SHA-256 of the raw CBOR bytes and store.
+    uint8_t hash[32];
+    sha256_of_buf(data, len, hash);
+    nvs_sync::save_hash(nvs_sync::HASH_KEY_PROFILE, hash);
+
+    // Update the live profile card.
+    widget_profile_card::set_profile(name, title, email, phone);
+
+    LOG("[gatt] ProfileInfo: name=%s title=%s\n", name, title);
+}
+
+static void apply_photo_jpeg(uint8_t* buf, size_t n) {
+    uint8_t hash[32];
+    sha256_of_buf(buf, n, hash);
+    nvs_sync::save_hash(nvs_sync::HASH_KEY_PHOTO, hash);
+    LOG("[gatt] Photo received: %u bytes\n", (unsigned)n);
+    ble_post_photo_event(buf, n); // ownership transferred to event handler
+}
+
+static void apply_meetings_cbor(uint8_t* buf, size_t n) {
+    uint8_t hash[32];
+    sha256_of_buf(buf, n, hash);
+    nvs_sync::save_hash(nvs_sync::HASH_KEY_MEETINGS, hash);
+    LOG("[gatt] Meetings received: %u bytes, hash stored\n", (unsigned)n);
+    state_machine::set_meetings_cbor(buf, n, /*save_to_nvs=*/true);
+    heap_caps_free(buf);
+}
+
+static void apply_pto_cbor(uint8_t* buf, size_t n) {
+    // Hash the full CBOR payload for delta-sync manifest.
+    uint8_t hash[32];
+    sha256_of_buf(buf, n, hash);
+    nvs_sync::save_hash(nvs_sync::HASH_KEY_PTO, hash);
+
+    // ── Parse PtoEntry CBOR ────────────────────────────────────
+    // Schema: { start:uint, end:uint, destination:text, image:bytes }
+    CborParser parser;
+    CborValue  root, map_val;
+    uint32_t   pto_start = 0, pto_end = 0;
+    char       dest[129] = {};
+    uint8_t*   img_buf   = nullptr;
+    size_t     img_len   = 0;
+
+    if (cbor_parser_init(buf, n, 0, &parser, &root) == CborNoError &&
+        cbor_value_is_map(&root)) {
+
+        cbor_value_enter_container(&root, &map_val);
+        while (!cbor_value_at_end(&map_val)) {
+            char key[16] = {};
+            size_t ksz = sizeof(key) - 1;
+            if (!cbor_value_is_text_string(&map_val)) {
+                cbor_value_advance(&map_val);
+                continue;
+            }
+            cbor_value_copy_text_string(&map_val, key, &ksz, &map_val);
+            if (cbor_value_at_end(&map_val)) break;
+
+            if (strcmp(key, "start") == 0 &&
+                cbor_value_is_unsigned_integer(&map_val)) {
+                uint64_t v = 0;
+                cbor_value_get_uint64(&map_val, &v);
+                pto_start = (uint32_t)v;
+
+            } else if (strcmp(key, "end") == 0 &&
+                       cbor_value_is_unsigned_integer(&map_val)) {
+                uint64_t v = 0;
+                cbor_value_get_uint64(&map_val, &v);
+                pto_end = (uint32_t)v;
+
+            } else if (strcmp(key, "destination") == 0 &&
+                       cbor_value_is_text_string(&map_val)) {
+                size_t dsz = sizeof(dest) - 1;
+                cbor_value_copy_text_string(&map_val, dest, &dsz, nullptr);
+
+            } else if (strcmp(key, "image") == 0 &&
+                       cbor_value_is_byte_string(&map_val)) {
+                size_t raw_len = 0;
+                cbor_value_get_string_length(&map_val, &raw_len);
+                if (raw_len > 0 && raw_len <= 512 * 1024) {
+                    img_buf = static_cast<uint8_t*>(
+                        heap_caps_malloc(raw_len,
+                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+                    if (!img_buf)
+                        img_buf = static_cast<uint8_t*>(malloc(raw_len));
+                    if (img_buf) {
+                        img_len = raw_len;
+                        cbor_value_copy_byte_string(
+                            &map_val, img_buf, &img_len, nullptr);
+                    }
+                }
+                // raw_len == 0 → no image set; img_buf stays nullptr
+            }
+
+            if (!cbor_value_at_end(&map_val))
+                cbor_value_advance(&map_val);
+        }
+    }
+
+    heap_caps_free(buf); // free staged CBOR blob
+
+    nvs_sync::save_pto_meta(pto_start, pto_end, dest);
+    LOG("[gatt] PTO: start=%u end=%u dest=%s img=%u bytes\n",
+                   (unsigned)pto_start, (unsigned)pto_end,
+                   dest, (unsigned)img_len);
+
+    // Post photo event (img_buf=nullptr, img_len=0 → clear cache).
+    ble_post_pto_photo_event(img_buf, img_len);
+}
+
 } // namespace
 
 namespace gatt_server {
@@ -1038,6 +1188,37 @@ void notify_keyboard_command(const char* op, uint32_t arg) {
     size_t n = cbor_encoder_get_buffer_size(&enc, buf);
     c_kbd_cmd->notify(buf, n);
     LOG("[gatt] KeyboardCommand: op=%s arg=%u\n", op, (unsigned)arg);
+}
+
+void abort_sync_stage() {
+    if (!g_stage.active && !g_sync_in_progress) return;
+    LOG("[gatt] Sync aborted (disconnect) — discarding staged data\n");
+    g_sync_in_progress = false;
+    stage_reset();
+}
+
+// Called from ble_manager::poll() (main task) in response to
+// SyncControl{op:"END"}. Applies all staged items to NVS/UI in one burst,
+// then transitions Device Status and signals SyncEnd for the UI advance.
+void run_staged_commit() {
+    // Blank the display immediately before the flash write burst. LCD_CAM DMA
+    // keeps scanning the (now black) framebuffer, so there are no rendering
+    // glitches during NVS / LittleFS writes. LVGL redraws the next screen
+    // automatically when it flushes after the state transition below.
+    lcd_panel::blackout();
+
+    stage_commit();
+
+    time_t now = time(nullptr);
+    nvs_sync::save_epoch((uint32_t)now);
+    app_state::set_last_sync_time(now);
+
+    uint8_t new_status = (g_device_status == DS_SETUP_SYNCING ||
+                          g_device_status == DS_SETUP_BONDED_AWAITING_SYNC)
+                          ? DS_SETUP_SYNC_COMPLETE
+                          : DS_RUNTIME_READY;
+    set_device_status(new_status);
+    ble_post_sync_end_event();
 }
 
 } // namespace gatt_server

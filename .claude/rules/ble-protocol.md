@@ -1,7 +1,7 @@
 # Ori — BLE GATT Protocol Specification
 
-**Protocol version:** 1.1
-**Date:** 2026-06-06
+**Protocol version:** 1.2
+**Date:** 2026-06-10
 **Status:** Authoritative — `esp32-connectivity` (peripheral) and `orion-sync` (central) must conform.
 
 This document defines the single BLE GATT contract between Ori (peripheral) and the Orion PC app (central).
@@ -155,7 +155,12 @@ PtoEntry = {
 SyncControl = {
   "op":     "BEGIN" | "END" | "ACK" | "NACK",
   "seq":    uint,
-  "reason": text       // optional, populated for NACK
+  "reason": text,      // optional, populated for NACK
+  "total":  uint       // optional, BEGIN only — total application-payload bytes the
+                        // central will write across Time Sync, Profile Info, Profile
+                        // Photo, Meeting List, PTO Entry for this sync session (only the
+                        // items actually being sent — e.g. just the `needed` subset on a
+                        // reconnect delta sync). Absent or 0 = progress is indeterminate.
 }
 
 SyncManifest_Write = {           // central → peripheral
@@ -256,6 +261,30 @@ Offset  Size  Field
 
 ## 6. Connection sequences
 
+### 6.0 Sync staging and progress
+
+For **every** sync session (initial pairing or reconnect delta), Ori stages incoming
+items in PSRAM as they arrive and commits them to NVS **atomically at `SyncControl{op:"END"}`**
+— mirroring the USB CDC OTA pathway (`ota.md`), which stages the firmware image in
+PSRAM before a single flash commit.
+
+- Between `BEGIN` and `END`, nothing is written to NVS and no cached state (profile
+  card, meeting list, PTO, hashes) changes. If the link drops mid-session, Ori discards
+  the staged data and keeps serving the previously cached data — a partial transfer
+  can never corrupt or partially overwrite NVS.
+- At `END`, Ori parses each staged item, computes its SHA-256, persists it to NVS, and
+  updates the live UI — in one batch.
+- **Progress.** If `BEGIN` includes `total` (> 0), Ori tracks cumulative bytes received
+  across Time Sync, Profile Info, Profile Photo, Meeting List, and PTO Entry writes —
+  for chunked characteristics, each fragment's `payload_len` (not the 6-byte frame
+  header) counts towards the total — and derives `pct = received * 100 / total`
+  (capped at 99 until `END` finishes the commit, then 100). This drives the **Step
+  2/3 "Orioning" progress ring** during first-time setup only (`setup-flow.md`). The
+  reconnect "Reconnecting…" overlay (`state-machine.md`) does not show a percentage
+  and ignores `total`.
+- If `total` is absent or 0, Ori still stages-then-commits as above, but the orioning
+  ring is not driven by byte progress (legacy/indeterminate).
+
 ### 6.1 First-time pairing
 
 ```
@@ -266,7 +295,9 @@ Orion connects → ATT MTU exchange → BLE bonding (LE SC, Passkey Entry)
   • User confirms on Orion → bond stored on both sides
 
 Ori notifies Device Status = SETUP_BONDED_AWAITING_SYNC
-Orion writes SyncControl{op:"BEGIN", seq:1}
+Orion computes total = byte-length of (Time Sync + Profile Info + Profile Photo
+                                        + Meeting List + PTO Entry) payloads
+Orion writes SyncControl{op:"BEGIN", seq:1, total:total}
 Orion writes Time Sync
 Orion writes Profile Info
 Orion writes Profile Photo (chunked)
@@ -274,7 +305,7 @@ Orion writes Meeting List (chunked)
 Orion writes PTO Entry (chunked)
 Orion writes SyncControl{op:"END", seq:1}
 
-Ori persists to NVS + computes per-item SHA-256 hashes.
+Ori commits all staged items to NVS + computes per-item SHA-256 hashes (§6.0).
 Ori notifies Device Status = SETUP_SYNC_COMPLETE
   → Ori UI advances to Step 4 (phone pairing, optional)
 ```
@@ -292,11 +323,12 @@ Orion writes Time Sync (always — ~20 bytes, clock may drift)
 Orion writes Sync Manifest: { profile_sha, photo_sha, meetings_sha, pto_sha }
 Ori compares against NVS hashes → notifies Sync Manifest: { needed: [...] }
 
-Orion writes SyncControl{op:"BEGIN", seq:N}
+Orion computes total = byte-length of (Time Sync + only the `needed` items)
+Orion writes SyncControl{op:"BEGIN", seq:N, total:total}
 Orion writes only requested items (profile → photo → meetings → pto)
 Orion writes SyncControl{op:"END", seq:N}
 
-Ori updates NVS items + hashes atomically.
+Ori commits all staged items to NVS + hashes atomically (§6.0).
 Ori notifies Device Status = RUNTIME_READY → overlay dismissed.
 ```
 
@@ -367,7 +399,7 @@ Link-layer encryption failure (`BLE_HS_ENC_FAIL`) signals a stale bond — see �
 
 ## 9. Versioning
 
-- Protocol Version characteristic: `{ proto_major, proto_minor, fw_version }`. This spec = **v1.0**.
+- Protocol Version characteristic: `{ proto_major, proto_minor, fw_version }`. This spec's wire version = **v1.1** (`PROTO_MAJOR=1, PROTO_MINOR=1` — `SyncControl.total` is the additive minor change).
 - **Major bump** = breaking. Orion refuses sync, shows "Update Ori firmware".
 - **Minor bump** = additive. Unknown CBOR keys silently ignored.
 - `fw_version` (semver) used by Orion to detect available updates; update runs over USB CDC (`ota.md`).
@@ -382,11 +414,11 @@ Link-layer encryption failure (`BLE_HS_ENC_FAIL`) signals a stale bond — see �
 | `ProfileInfo.title` | ≤ 64 UTF-8 bytes wire; Orion display cap 40 chars |
 | `ProfileInfo.email` | ≤ 128 UTF-8 bytes; optional |
 | `ProfileInfo.phone` | ≤ 32 UTF-8 bytes; optional |
-| Profile Photo (JPEG, 228×228) | target ≤ 25 KB; hard cap 40 KB |
+| Profile Photo (JPEG, 228×228) | hard cap 200 KB |
 | Meeting `title` | no cap (chunking handles size) |
 | Meeting list total | ≤ 32 meetings/day |
 | `PtoEntry.destination` | ≤ 128 UTF-8 bytes |
-| PTO image (JPEG, 528×396) | target ≤ 40 KB; hard cap 64 KB — Orion resizes to 528×396 before sending |
+| PTO image (JPEG, 528×396) | hard cap 512 KB — Orion resizes to 528×396 before sending |
 | `MediaMetadata.title` | ≤ 192 UTF-8 bytes |
 | `MediaMetadata.artist` | ≤ 96 UTF-8 bytes |
 | Media Album Art (JPEG, 484×216) | target 15–30 KB; hard cap 64 KB |

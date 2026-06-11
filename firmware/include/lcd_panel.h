@@ -18,15 +18,18 @@ namespace lcd_panel {
 void     init();         // brings up the panel; framebuffer in PSRAM
 void*    framebuffer();  // raw pointer to RGB565 framebuffer (width*height*2 bytes)
 
-// stop — gate + reset the LCD_CAM peripheral, halting the RGB DMA scan-out and
-// its (non-IRAM) "restart transmission" interrupt. Used during USB CDC OTA:
-// Update.write() disables the MSPI cache, and if that ISR fires in the cache-
-// off window it fetches its handler from now-uncached flash → "Cache disabled
-// but cached memory region accessed" panic. Quiescing LCD_CAM removes the ISR
-// source. The display freezes/blanks; the firmware reboots when OTA finishes,
-// which re-inits the panel. There is intentionally no resume() — recovering the
-// panel without a full re-init is unreliable, so every OTA outcome reboots.
+// stop — gate + reset the LCD_CAM peripheral, halting the RGB DMA scan-out.
+// Used during USB CDC OTA only. There is intentionally no resume() — every OTA
+// outcome reboots, which re-inits the panel.
 void     stop();
+
+// blackout — fill the entire framebuffer with black and flush the CPU cache so
+// LCD_CAM DMA picks up the solid-black frame immediately. LCD_CAM keeps running
+// (no hardware disruption). Call this before a flash write burst (NVS / LittleFS)
+// to prevent rendering glitches while the commit is in progress. The display
+// "comes back" automatically when LVGL's next flush_area() writes new pixels.
+void     blackout();
+
 uint16_t width();        // 800
 uint16_t height();       // 480
 

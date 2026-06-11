@@ -7,7 +7,7 @@ can run a setup sync or issue a factory reset whenever you like — without
 restarting the script.
 
 Requirements:
-    pip install bleak cbor2
+    pip install bleak cbor2 Pillow
 
 Usage:
     python tools/mock_orion_ble.py
@@ -35,7 +35,9 @@ Factory reset note:
 import asyncio
 import argparse
 import hashlib
+import io
 import logging
+import os
 import struct
 import time
 from datetime import datetime, timezone
@@ -44,6 +46,19 @@ from typing import Optional
 import cbor2
 from bleak import BleakClient, BleakScanner
 from bleak.backends.characteristic import BleakGATTCharacteristic
+
+try:
+    from PIL import Image as _PILImage
+    _PIL_AVAILABLE = True
+except ImportError:
+    _PILImage = None
+    _PIL_AVAILABLE = False
+
+# Paths to source images resolved relative to this script.
+_SCRIPT_DIR        = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT         = os.path.dirname(_SCRIPT_DIR)
+_PROFILE_PHOTO_SRC = os.path.join(_REPO_ROOT, "firmware", "img", "profile_photo", "profile_photo.png")
+_PTO_PHOTO_SRC     = os.path.join(_REPO_ROOT, "firmware", "img", "pto_photo",     "pto_photo.jpg")
 
 # ── UUIDs ────────────────────────────────────────────────────────────────────
 # Base: 6F726900-0000-4F72-9F00-000000000000
@@ -95,6 +110,60 @@ def make_frames(payload: bytes) -> list[bytes]:
     return [struct.pack("<HHH", seq, total, len(c)) + c
             for seq, c in enumerate(chunks)]
 
+# ── Photo builders ────────────────────────────────────────────────────────────
+
+def _jpeg_max_quality(img, hard_cap: int) -> bytes:
+    """Return the highest-quality JPEG of img that fits within hard_cap bytes."""
+    for q in range(95, 9, -1):
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=q, optimize=True)
+        data = buf.getvalue()
+        if len(data) <= hard_cap:
+            return data
+    # quality=10 still exceeds cap — shouldn't happen at these dimensions + caps
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=10)
+    return buf.getvalue()
+
+def build_profile_photo_jpeg() -> bytes:
+    """Center-crop and resize profile photo to 228×228, compress to ≤ 40 KB."""
+    if not _PIL_AVAILABLE:
+        print("  [warn] Pillow not installed — profile photo empty  (pip install Pillow)")
+        return b""
+    if not os.path.exists(_PROFILE_PHOTO_SRC):
+        print(f"  [warn] Profile photo not found: {_PROFILE_PHOTO_SRC}")
+        return b""
+    img = _PILImage.open(_PROFILE_PHOTO_SRC).convert("RGB")
+    w, h = img.size
+    s = min(w, h)
+    img = img.crop(((w - s) // 2, (h - s) // 2, (w + s) // 2, (h + s) // 2))
+    img = img.resize((228, 228), _PILImage.LANCZOS)
+    data = _jpeg_max_quality(img, hard_cap=200 * 1024)
+    print(f"  [info] profile photo: 228×228 JPEG, {len(data):,} B")
+    return data
+
+def build_pto_photo_jpeg() -> bytes:
+    """Crop PTO photo to 528:396 aspect ratio, resize to 528×396, compress to ≤ 64 KB."""
+    if not _PIL_AVAILABLE:
+        print("  [warn] Pillow not installed — PTO photo empty  (pip install Pillow)")
+        return b""
+    if not os.path.exists(_PTO_PHOTO_SRC):
+        print(f"  [warn] PTO photo not found: {_PTO_PHOTO_SRC}")
+        return b""
+    img = _PILImage.open(_PTO_PHOTO_SRC).convert("RGB")
+    w, h   = img.size
+    tw, th = 528, 396
+    if w / h > tw / th:                      # source too wide — crop sides
+        nw = int(h * tw / th)
+        img = img.crop(((w - nw) // 2, 0, (w + nw) // 2, h))
+    else:                                    # source too tall — crop top/bottom
+        nh = int(w * th / tw)
+        img = img.crop((0, (h - nh) // 2, w, (h + nh) // 2))
+    img  = img.resize((tw, th), _PILImage.LANCZOS)
+    data = _jpeg_max_quality(img, hard_cap=512 * 1024)
+    print(f"  [info] PTO photo: {tw}×{th} JPEG, {len(data):,} B")
+    return data
+
 # ── Mock data ─────────────────────────────────────────────────────────────────
 
 def build_time_sync() -> bytes:
@@ -103,46 +172,47 @@ def build_time_sync() -> bytes:
     return cbor2.dumps({"epoch_utc": now_utc, "tz": "America/Los_Angeles", "tx_ms": tx_ms})
 
 def build_profile() -> bytes:
+    # All fields maximized to their wire byte caps (ble-protocol.md §10).
     return cbor2.dumps({
-        "name":  "Alex Chen",
-        "title": "Software Engineer",
-        "email": "alex.chen@example.com",
-        "phone": "",
+        "name":  ("Stress-Test Name Padding " * 3)[:64],
+        "title": ("Stress-Test Title Padding " * 3)[:64],
+        "email": ("stress.test.email@very-long-corporate-domain.engineering.example.com" * 2)[:128],
+        "phone": ("+1-555-867-5309-ext-00001234" * 2)[:32],
     })
 
 def build_meetings() -> bytes:
+    # 32 meetings (protocol cap) with near-maximum field lengths.
+    # Per-meeting estimate ~122 B × 32 + 19 B wrapper ≈ 3,923 B — under the
+    # firmware boot buffer cap of 4,096 B (main.cpp: static uint8_t meet_buf[4096]).
     now      = int(datetime.now(timezone.utc).timestamp())
     midnight = now - (now % 86400)
-    return cbor2.dumps({
-        "date":  midnight,
-        "items": [
-            {
-                "id":    "evt-001",
-                "start": midnight + 9 * 3600,
-                "end":   midnight + 10 * 3600,
-                "title": "Morning Standup",
-                "loc":   "Conference Room A",
-                "org":   "Jane Smith",
-            },
-            {
-                "id":    "evt-002",
-                "start": midnight + 14 * 3600,
-                "end":   midnight + 15 * 3600,
-                "title": "Design Review",
-                "loc":   "Zoom",
-                "org":   "Bob Lee",
-            },
-        ],
-    })
+    items = []
+    for i in range(32):
+        start = midnight + (8 + i // 2) * 3600 + (i % 2) * 1800   # 08:00–23:30
+        items.append({
+            "id":    f"ev{i:02d}",
+            "start": start,
+            "end":   start + 3600,
+            "title": (f"Stress Meeting {i:02d}: " + "X" * 40)[:40],
+            "loc":   (f"Room-{i:02d}/Video "      + "X" * 20)[:20],
+            "org":   (f"Organizer{i:02d} "         + "X" * 15)[:15],
+        })
+    data = cbor2.dumps({"date": midnight, "items": items})
+    if len(data) >= 4096:
+        raise ValueError(
+            f"meetings CBOR too large: {len(data)} B (firmware boot buffer limit 4096 B)")
+    return data
 
-def build_pto() -> bytes:
-    now  = int(datetime.now(timezone.utc).timestamp())
-    week = 7 * 86400
+def build_pto(image: bytes = b"") -> bytes:
+    # destination maximized to its 128-byte wire cap (ble-protocol.md §10).
+    now         = int(datetime.now(timezone.utc).timestamp())
+    week        = 7 * 86400
+    destination = ("Tokyo, Japan — Cherry Blossom Season Adventure " * 3)[:128]
     return cbor2.dumps({
         "start":       now + week,
         "end":         now + 2 * week,
-        "destination": "Lisbon, Portugal",
-        "image":       b"",
+        "destination": destination,
+        "image":       image,
     })
 
 def sha256(data: bytes) -> bytes:
@@ -206,7 +276,7 @@ class MockOrion:
 
     async def write_chunked(self, uuid: str, payload: bytes, label: str):
         frames = make_frames(payload)
-        suffix = "empty" if not payload else f"{len(payload)} B → {len(frames)} frame(s)"
+        suffix = "empty" if not payload else f"{len(payload):,} B → {len(frames)} frame(s)"
         print(f"  [chunk]  {label}: {suffix}")
         for frame in frames:
             await self.client.write_gatt_char(uuid, bytearray(frame), response=True)
@@ -237,16 +307,31 @@ class MockOrion:
             print("  Is Ori in setup mode and bonded?")
             return
 
-        profile_bytes  = build_profile()
-        photo_bytes    = b""
-        meetings_bytes = build_meetings()
-        pto_bytes      = build_pto()
+        print("\n── Building payload ──")
+        time_sync_bytes = build_time_sync()
+        profile_bytes   = build_profile()
+        photo_bytes     = build_profile_photo_jpeg()
+        meetings_bytes  = build_meetings()
+        pto_image       = build_pto_photo_jpeg()
+        pto_bytes       = build_pto(image=pto_image)
+
+        total = (len(time_sync_bytes) + len(profile_bytes) + len(photo_bytes)
+                 + len(meetings_bytes) + len(pto_bytes))
+
+        print(f"  [info] byte breakdown:"
+              f"  time_sync={len(time_sync_bytes)}"
+              f"  profile={len(profile_bytes)}"
+              f"  photo={len(photo_bytes):,}"
+              f"  meetings={len(meetings_bytes)}"
+              f"  pto={len(pto_bytes):,}"
+              f"  → total={total:,}")
 
         print("\n── Writing sync data ──")
         seq = 1
         await self.write(UUID_SYNC_CTRL,
-            cbor2.dumps({"op": "BEGIN", "seq": seq}), f"SyncControl BEGIN seq={seq}")
-        await self.write(UUID_TIME_SYNC,  build_time_sync(), "TimeSync")
+            cbor2.dumps({"op": "BEGIN", "seq": seq, "total": total}),
+            f"SyncControl BEGIN seq={seq} total={total:,}")
+        await self.write(UUID_TIME_SYNC,  time_sync_bytes,   "TimeSync")
         await self.write(UUID_PROFILE,    profile_bytes,     "ProfileInfo")
         await self.write_chunked(UUID_PHOTO,    photo_bytes,    "ProfilePhoto")
         await self.write_chunked(UUID_MEETINGS, meetings_bytes, "MeetingList")
@@ -255,7 +340,7 @@ class MockOrion:
             cbor2.dumps({"op": "END", "seq": seq}), f"SyncControl END seq={seq}")
 
         print("\n── Waiting for SETUP_SYNC_COMPLETE ──")
-        if await self.wait_status(0x03, timeout=15.0):
+        if await self.wait_status(0x03, timeout=30.0):
             print("  [ok] Sync complete — Ori should advance to Step 4.\n")
         else:
             print(f"  [warn] SETUP_SYNC_COMPLETE not received "
@@ -272,13 +357,16 @@ class MockOrion:
             print(f"  [warn] Expected RUNTIME_RECONNECTING, got "
                   f"{DS.get(self.last_status, '?')} — proceeding anyway")
 
-        profile_bytes  = build_profile()
-        photo_bytes    = b""
-        meetings_bytes = build_meetings()
-        pto_bytes      = build_pto()
+        print("\n── Building payload ──")
+        time_sync_bytes = build_time_sync()
+        profile_bytes   = build_profile()
+        photo_bytes     = build_profile_photo_jpeg()
+        meetings_bytes  = build_meetings()
+        pto_image       = build_pto_photo_jpeg()
+        pto_bytes       = build_pto(image=pto_image)
 
         print("\n── Writing TimeSync (always) ──")
-        await self.write(UUID_TIME_SYNC, build_time_sync(), "TimeSync")
+        await self.write(UUID_TIME_SYNC, time_sync_bytes, "TimeSync")
 
         print("\n── Writing Sync Manifest ──")
         self._manifest_reply.clear()
@@ -299,9 +387,24 @@ class MockOrion:
         if not self.needed:
             print("  [ok] Nothing changed — skipping writes")
         else:
+            item_bytes = {
+                "profile":  profile_bytes,
+                "photo":    photo_bytes,
+                "meetings": meetings_bytes,
+                "pto":      pto_bytes,
+            }
+            total = len(time_sync_bytes) + sum(
+                len(item_bytes[k]) for k in self.needed if k in item_bytes)
+
+            print(f"  [info] byte breakdown:  time_sync={len(time_sync_bytes)}"
+                  + "".join(f"  {k}={len(item_bytes[k]):,}"
+                             for k in self.needed if k in item_bytes)
+                  + f"  → total={total:,}")
+
             seq = 2
             await self.write(UUID_SYNC_CTRL,
-                cbor2.dumps({"op": "BEGIN", "seq": seq}), f"SyncControl BEGIN seq={seq}")
+                cbor2.dumps({"op": "BEGIN", "seq": seq, "total": total}),
+                f"SyncControl BEGIN seq={seq} total={total:,}")
             if "profile"  in self.needed:
                 await self.write(UUID_PROFILE, profile_bytes, "ProfileInfo")
             if "photo"    in self.needed:
@@ -314,7 +417,7 @@ class MockOrion:
                 cbor2.dumps({"op": "END", "seq": seq}), f"SyncControl END seq={seq}")
 
         print("\n── Waiting for RUNTIME_READY ──")
-        if await self.wait_status(0x10, timeout=15.0):
+        if await self.wait_status(0x10, timeout=30.0):
             print("  [ok] Reconnect overlay dismissed — Ori is live.\n")
         else:
             print(f"  [warn] RUNTIME_READY not received "

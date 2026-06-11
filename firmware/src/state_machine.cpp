@@ -250,6 +250,11 @@ void load_screen(lv_obj_t* new_screen) {
 // ─── State-specific screen builders ───────────────────────────────────────
 
 lv_obj_t* build_setup_screen() {
+    // Resume at the iPhone pairing step if Orion has already synced this device
+    // but the user power-cycled before completing (or skipping) Step 3.
+    if (nvs::is_awaiting_phone_pairing()) {
+        return screen_setup::create(screen_setup::Step::PhonePairing);
+    }
     return screen_setup::create(screen_setup::Step::Welcome);
 }
 

@@ -101,6 +101,13 @@ void stop() {
     LOG("[lcd] LCD_CAM stopped (OTA)\n");
 }
 
+void blackout() {
+    if (!panel) return;
+    uint16_t* fb = static_cast<uint16_t*>(panel->getFramebuffer());
+    memset(fb, 0, (size_t)LCD_W * LCD_H * sizeof(uint16_t));
+    sync_area(0, 0, LCD_W - 1, LCD_H - 1);
+}
+
 uint16_t width()  { return LCD_W; }
 uint16_t height() { return LCD_H; }
 

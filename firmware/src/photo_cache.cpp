@@ -19,7 +19,6 @@
 #include <string.h>
 
 #include "libs/tjpgd/tjpgd.h"
-
 #include "widgets/widget_profile_card.h"
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -30,8 +29,8 @@ static constexpr uint16_t PHOTO_H = 228;
 static constexpr uint16_t PTO_W = 528;
 static constexpr uint16_t PTO_H = 396;
 
-static constexpr size_t PROFILE_MAX_JPEG = 40 * 1024;
-static constexpr size_t PTO_MAX_JPEG     = 64 * 1024;
+static constexpr size_t PROFILE_MAX_JPEG = 200 * 1024;
+static constexpr size_t PTO_MAX_JPEG     = 512 * 1024;
 
 static constexpr const char* PATH_PROFILE = "/photos/profile.jpg";
 static constexpr const char* PATH_PTO     = "/photos/pto.jpg";
@@ -189,7 +188,9 @@ static uint16_t* save_and_decode(const char* path, size_t max_jpeg_bytes,
 }
 
 static void erase_file(const char* path) {
-    if (LittleFS.exists(path)) LittleFS.remove(path);
+    if (LittleFS.exists(path)) {
+        LittleFS.remove(path);
+    }
 }
 
 // ── Photo state ───────────────────────────────────────────────────────────────

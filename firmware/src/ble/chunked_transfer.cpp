@@ -89,7 +89,7 @@ bool feed(Context* ctx, const uint8_t* data, uint16_t len) {
 
     // Per-fragment progress callback (fires before on_complete on the last frag).
     if (ctx->on_fragment) {
-        ctx->on_fragment(seq_num, total_frags);
+        ctx->on_fragment(seq_num, total_frags, payload_len);
     }
 
     // Last fragment?

@@ -17,6 +17,13 @@ void    tick();  // reserved for future debounced writes; currently a no-op
 bool    is_first_boot();
 void    mark_setup_complete();
 
+// iPhone-pairing resume.  Set after Orion sync completes during the setup
+// flow so a power cycle resumes at the iPhone pairing step (Step 3) rather
+// than restarting from Welcome.  Cleared when setup fully completes or on
+// factory reset.  Only meaningful when is_first_boot() is also true.
+void    mark_orion_synced();
+bool    is_awaiting_phone_pairing();
+
 // Mode toggle persistence (0 = Calendar, 1 = Media).
 uint8_t get_mode();
 void    set_mode(uint8_t mode);

@@ -52,7 +52,8 @@ enum class BleEventType : uint8_t {
     PasskeyDisplay,
     AuthFailed,        // pairing handshake failed — hide passkey modal
     SyncBegin,         // SyncControl{op:"BEGIN"} — show orioning modal
-    SyncEnd,           // SyncControl{op:"END"}   — advance setup / dismiss reconnect overlay
+    SyncCommit,        // SyncControl{op:"END"}   — apply staged data to NVS/UI (heavy; main task only)
+    SyncEnd,           // staged commit done       — advance setup / dismiss reconnect overlay
     OrioningProgress,  // sync milestone reached  — update progress ring (0–100)
     OrionConnected,
     OrionBonded,
@@ -431,9 +432,17 @@ void poll() {
                 screen_setup::show_orioning_modal(lv_scr_act());
                 break;
 
+            case BleEventType::SyncCommit:
+                LOG("[ble:poll] sync commit — applying staged data\n");
+                gatt_server::run_staged_commit();
+                break;
+
             case BleEventType::SyncEnd:
                 LOG("[ble:poll] sync end\n");
                 if (nvs::is_first_boot()) {
+                    // Persist "at phone pairing step" before advancing the UI so
+                    // a power cycle between now and setup completion resumes here.
+                    nvs::mark_orion_synced();
                     // Complete the progress ring before advancing.
                     screen_setup::update_orioning_progress(lv_scr_act(), 100);
                     screen_setup::hide_orioning_modal(lv_scr_act());
@@ -463,6 +472,8 @@ void poll() {
                 widget_profile_card::set_default_presence(
                     widget_profile_card::Presence::Offline);
                 gatt_server::set_device_status(0xF0); // ERROR_GENERIC until reconnect
+                // Discard any in-progress sync staging — link dropped before END.
+                gatt_server::abort_sync_stage();
                 break;
 
             case BleEventType::IphoneDisconnected:
@@ -727,7 +738,19 @@ void ble_post_sync_begin_event() {
     eq_push(ev);
 }
 
-// Deferred SyncControl END — advance setup step or dismiss reconnect overlay.
+// Deferred SyncControl END — apply staged sync data to NVS/UI on main task.
+// stage_commit() does multiple NVS flash writes + LVGL profile-card updates;
+// running it from the NimBLE host task risks colliding with LCD_CAM DMA and
+// tripping the interrupt watchdog (see state_machine.cpp's deferred-NVS-write
+// note). gatt_server::run_staged_commit() posts SyncEnd once it's done.
+void ble_post_sync_commit_event() {
+    BleEvent ev = {};
+    ev.type = BleEventType::SyncCommit;
+    eq_push(ev);
+}
+
+// Posted by gatt_server::run_staged_commit() — advance setup step or dismiss
+// reconnect overlay now that staged data has been committed.
 void ble_post_sync_end_event() {
     BleEvent ev = {};
     ev.type = BleEventType::SyncEnd;

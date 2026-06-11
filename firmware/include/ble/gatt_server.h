@@ -46,4 +46,15 @@ uint8_t get_device_status();
 // arg: volume level (0..100), shortcut slot (1..3), seek position (seconds)
 void notify_keyboard_command(const char* op, uint32_t arg);
 
+// Discard any in-progress sync staging (PSRAM buffers + byte counters) and
+// clear the sync-in-progress flag. Call on Orion disconnect so a sync
+// session aborted mid-transfer (no SyncControl{END}) doesn't leak PSRAM or
+// leave stale staged data for the next BEGIN. ble-protocol.md §6.0/§7.
+void abort_sync_stage();
+
+// Apply all staged sync data to NVS/UI in one burst (§6.0), then transition
+// Device Status and signal SyncEnd. Must run on the main task — call only
+// from ble_manager::poll() in response to a deferred SyncCommit event.
+void run_staged_commit();
+
 } // namespace gatt_server

@@ -31,9 +31,11 @@ namespace chunked_transfer {
 using CompleteCb = std::function<void(uint8_t* buf, size_t len, const char* nack_reason)>;
 
 // Per-fragment callback: called after every successfully received fragment,
-// including the last. seq is 0-based; total is total_frags.
-// Use this to post incremental progress events without waiting for completion.
-using FragmentCb = std::function<void(uint16_t seq, uint16_t total)>;
+// including the last. seq is 0-based; total is total_frags; payload_len is the
+// number of payload bytes carried by this fragment (excludes the 6-byte frame
+// header). Use this to post incremental progress events without waiting for
+// completion — payload_len is what counts towards SyncControl.total (ble-protocol.md §6.0).
+using FragmentCb = std::function<void(uint16_t seq, uint16_t total, uint16_t payload_len)>;
 
 // One reassembly context (one per characteristic that uses chunking).
 struct Context {
