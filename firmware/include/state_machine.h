@@ -98,8 +98,21 @@ void on_reconnect_end();
 // Update whether the BLE PC link is currently up.
 void set_pc_connected(bool connected);
 
+// Cache the most recent Teams presence pushed by Orion via the Presence
+// Status characteristic (0x00 Available .. 0x03 Offline — ble-protocol.md
+// §3). apply_widget_defaults() reflects this value (instead of a hardcoded
+// one) on every screen rebuild while the PC link is up, and falls back to
+// Offline while it's down.
+void set_presence(uint8_t presence_byte);
+
 // Update whether a phone BLE bond / link exists.
 void set_phone_connected(bool connected);
+
+// Wipe a stale iPhone bond (bonded but disconnected) so the re-pair screen
+// can actually pair: defers the NVS write + advertising restart to poll(),
+// without rebuilding the current screen. Called from the status-bar phone
+// icon before loading the re-pair screen.
+void request_phone_bond_wipe();
 
 // Query the current active AppState (for polling).
 AppState current_state();

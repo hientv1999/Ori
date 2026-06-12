@@ -50,9 +50,16 @@ constexpr uint32_t TICK_MS      = 1000;
 AppState g_state           = AppState::NO_MEETINGS; // current rendered state
 uint8_t  g_mode            = 0;                     // 0=Calendar, 1=Media
 uint8_t  g_pre_clock_mode  = 0;                     // mode to restore when leaving Clock
-bool     g_pc_connected    = true;
+bool     g_pc_connected    = false; // true only once Orion's BLE link is confirmed
 bool     g_phone_connected = false;
+bool     g_phone_bonded    = false; // true when an iPhone bond exists in NVS
 bool     g_force_rebuild   = false; // force evaluate() to rebuild even if state unchanged
+
+// Most recent Teams presence pushed by Orion via the Presence Status
+// characteristic (ble-protocol.md §3). 0x03 = Offline, matching the
+// gatt_server default and the "never show stale presence" rule — never
+// persisted to NVS (presence is ephemeral, §6.4).
+uint8_t  g_presence_byte   = 0x03;
 
 // Post-OTA acknowledgement (read from NVS at init). When pending, the boot
 // screen is the "Firmware updated" ack and stays sticky until the user taps
@@ -203,16 +210,22 @@ static bool check_countdown(const char** out_title,
 // screen is created, so each screen picks up the current runtime state
 // without requiring per-screen setup calls.
 void apply_widget_defaults() {
+    // Reflect the cached Presence Status value (pushed by Orion) while the PC
+    // link is up; force Offline while it's down. Do NOT hardcode "Available"
+    // here — this runs on every screen rebuild (mode toggle, meeting list
+    // refresh, clock enter/exit, etc.) and a hardcoded value would clobber a
+    // real Busy/Away presence back to Available on the next rebuild.
     widget_profile_card::set_default_presence(
         g_pc_connected
-            ? widget_profile_card::Presence::Available
+            ? static_cast<widget_profile_card::Presence>(g_presence_byte)
             : widget_profile_card::Presence::Offline);
 
     // Mode-toggle is shown when PC is connected OR when in Clock mode
     // (the toggle acts as a "return" button in Clock, works even offline).
     bool show_toggle = g_pc_connected || (g_state == AppState::CLOCK);
     widget_status_bar::set_default_pc_connected(show_toggle);
-    widget_status_bar::set_default_phone_bonded(false);
+    widget_status_bar::set_default_phone_bonded(g_phone_bonded);
+    widget_status_bar::set_default_phone_connected(g_phone_connected);
 
     // In Clock state the bar shows Mode::Clock so the toggle glyph reads
     // "return to previous mode"; otherwise reflect the current g_mode.
@@ -393,6 +406,13 @@ void init() {
     // Restore mode from NVS.
     g_mode = nvs::get_mode();
 
+    // Check if an iPhone bond already exists in NVS (survives reboots).
+    {
+        uint8_t iphone_addr[6] = {};
+        ble_manager::load_bond_addr(ble_manager::BOND_KEY_IPHONE, iphone_addr);
+        g_phone_bonded = !ble_manager::is_bond_slot_empty(iphone_addr);
+    }
+
     // Pending post-OTA acknowledgement? If so the first screen this boot is the
     // "Firmware updated" ack (sticky until the user taps Close).
     g_has_ota_ack = nvs::get_ota_ack(g_ota_ack_version, sizeof(g_ota_ack_version));
@@ -496,6 +516,9 @@ AppState evaluate() {
 // disable ICache/DCache system-wide; doing them inside an LVGL callback
 // while LCD_CAM DMA is active on Core 1 triggers the interrupt watchdog.
 static bool g_setup_complete_pending = false;
+static bool g_unpair_phone_pending   = false;
+static bool g_phone_wipe_pending     = false;  // stale-bond wipe before re-pair
+static bool g_mode_write_pending     = false;  // persist g_mode (set from on_mode_toggle)
 
 void set_meetings_cbor(const uint8_t* buf, size_t len, bool save_to_nvs) {
     if (!buf || !len) return;
@@ -611,6 +634,28 @@ void poll() {
         nvs::mark_setup_complete();
         evaluate();
     }
+    if (g_unpair_phone_pending) {
+        g_unpair_phone_pending = false;
+        LOG("[sm] poll: unpair phone — wiping bond + evaluating\n");
+        ble_manager::wipe_iphone_bond();
+        ble_manager::restart_advertising();
+        g_force_rebuild = true;
+        g_state = AppState::NO_MEETINGS;  // break out of any early-return guard
+        evaluate();
+    }
+    if (g_phone_wipe_pending) {
+        g_phone_wipe_pending = false;
+        LOG("[sm] poll: wiping stale iPhone bond for re-pair\n");
+        ble_manager::wipe_iphone_bond();
+        // No evaluate() — the re-pair screen the user just opened owns the
+        // display. Restart advertising so the now-empty iPhone slot plus the
+        // open pairing window put the ANCS solicitation on air.
+        ble_manager::restart_advertising();
+    }
+    if (g_mode_write_pending) {
+        g_mode_write_pending = false;
+        nvs::set_mode(g_mode);  // persist final mode off the LVGL timer stack
+    }
 }
 
 void on_factory_reset() {
@@ -621,13 +666,27 @@ void on_factory_reset() {
 }
 
 void on_unpair_phone() {
-    LOG("[sm] on_unpair_phone\n");
-    // M5: wipe the iPhone BLE bond and restart advertising for re-pair.
-    ble_manager::wipe_iphone_bond();
-    ble_manager::restart_advertising();
-    g_force_rebuild = true;
-    g_state = AppState::NO_MEETINGS;  // break out of any early-return guard
-    evaluate();
+    // Called from the unpair modal's LVGL button callback. Only RAM/UI flags
+    // are touched here; the bond wipe (NimBLE delete + NVS flash write) and
+    // screen rebuild are deferred to poll() — running them on the event-
+    // dispatch stack made the nvs_set_blob zeroing the iphone_addr slot fail
+    // (Preferences "OTHER"), leaving a ghost bond that blocked re-pairing.
+    LOG("[sm] on_unpair_phone — deferring bond wipe to poll()\n");
+    g_phone_bonded = false;
+    widget_status_bar::set_all_phone_bonded(false);
+    g_unpair_phone_pending = true;
+}
+
+void request_phone_bond_wipe() {
+    // Tapping the phone icon while the iPhone is bonded but disconnected
+    // opens the re-pair screen; the stale bond must go or the iPhone slot
+    // stays full and the ANCS solicitation never advertises. Same poll()
+    // deferral as on_unpair_phone (NVS write off the LVGL stack), but no
+    // screen rebuild — the re-pair screen is about to load.
+    LOG("[sm] request_phone_bond_wipe — deferring to poll()\n");
+    g_phone_bonded = false;
+    widget_status_bar::set_all_phone_bonded(false);
+    g_phone_wipe_pending = true;
 }
 
 void on_mode_toggle() {
@@ -643,15 +702,20 @@ void on_mode_toggle() {
 
     // Normal 2-mode cycle: Calendar (0) ↔ Media (1).
     g_mode = (g_mode == 0) ? 1 : 0;
-    nvs::set_mode(g_mode);
-    LOG("[sm] mode toggle -> %s\n", g_mode ? "Media" : "Calendar");
 
     // If switching to Media but PC is offline, revert immediately.
     if (g_mode == 1 && !g_pc_connected) {
         g_mode = 0;
-        nvs::set_mode(0);
         LOG("[sm] PC offline — Media mode reverted to Calendar\n");
     }
+    LOG("[sm] mode toggle -> %s\n", g_mode ? "Media" : "Calendar");
+
+    // Persist the final mode in poll(), NOT here. on_mode_toggle runs inside
+    // an LVGL timer callback (the deferred-toggle 1 ms timer); an NVS flash
+    // write in that context collides with LCD_CAM DMA / cache-disable and
+    // crashes deep in the NVS page walker (LoadProhibited). poll() drains the
+    // write on a clean main-loop stack — same rule as every other NVS write.
+    g_mode_write_pending = true;
 
     g_force_rebuild = true;
     g_state = AppState::NO_MEETINGS;  // ensure evaluate() rebuilds
@@ -718,11 +782,22 @@ void on_reconnect_end() {
     evaluate();
 }
 
+void set_presence(uint8_t presence_byte) {
+    g_presence_byte = presence_byte;
+    widget_profile_card::set_default_presence(
+        g_pc_connected
+            ? static_cast<widget_profile_card::Presence>(g_presence_byte)
+            : widget_profile_card::Presence::Offline);
+}
+
 void set_pc_connected(bool connected) {
     bool changed = (connected != g_pc_connected);
     g_pc_connected = connected;
 
     if (!connected) {
+        // Never show a stale presence after the link drops — reset so a
+        // future reconnect starts from Offline until Orion re-pushes.
+        g_presence_byte = 0x03;
         if (g_mode == 1) {
             g_mode = 0;
             nvs::set_mode(0);
@@ -746,9 +821,23 @@ void set_pc_connected(bool connected) {
 
 void set_phone_connected(bool connected) {
     g_phone_connected = connected;
-    widget_status_bar::set_default_phone_bonded(connected);
-    // No screen rebuild needed — the status bar widget handles phone icon
-    // visibility independently of the left-panel state machine.
+    // Drive the status-bar phone icon directly from the authoritative BLE link
+    // signal (this function is called from ble_manager on every iPhone
+    // connect/disconnect). Do NOT rely on the ANCS notification queue for this:
+    // it only reports "connected" once the first notification arrives, which
+    // left the icon red — and the tap on the disconnected path — during the
+    // window between connect and the first notification.
+    widget_status_bar::set_all_phone_connected(connected);
+    widget_status_bar::set_default_phone_connected(connected);
+    if (connected) {
+        // Connecting implies a bond now exists — persist the flag and update the
+        // active bar immediately so tapping the icon goes to the unpair modal
+        // rather than the pairing screen.
+        g_phone_bonded = true;
+        widget_status_bar::set_all_phone_bonded(true);
+    }
+    // On disconnect don't clear g_phone_bonded — the bond still exists in NVS.
+    // The flag is cleared only when the user explicitly unpairs (on_unpair_phone).
 }
 
 AppState current_state() {

@@ -45,8 +45,11 @@ widget_profile_card::ModalLabels g_modal_labels = {};
 // Cached name, title, email, phone — populated from NVS at boot and updated on
 // every BLE ProfileInfo write. create() reads these directly so the
 // real synced values appear after the first setup sync.
-char g_name[65]   = {};
-char g_title[65]  = {};
+// Field limits: name/title/email ≤ 32 chars, phone ≤ 16 chars (Orion enforces
+// at input). Buffers hold the worst-case UTF-8 byte length (3 bytes/char for
+// the scripts we ship, e.g. Vietnamese names) plus the NUL terminator.
+char g_name[97]   = {};
+char g_title[97]  = {};
 char g_email[129] = {};
 char g_phone[33]  = {};
 
@@ -195,23 +198,25 @@ lv_obj_t* create(lv_obj_t* parent) {
 
     // Name. Uses font_time() (30 px). Single line with ellipsis per
     // screen-layout.md ("Full name — single line, ellipsis on overflow").
-    // Orion enforces name ≤ 24 chars at input so truncation is rare.
+    // Orion enforces name ≤ 32 chars at input so truncation is rare.
     s->name_label = lv_label_create(card);
     lv_label_set_text(s->name_label, display_name());
     lv_label_set_long_mode(s->name_label, LV_LABEL_LONG_DOT);
     lv_obj_set_width(s->name_label, WIDTH - 16);
+    lv_obj_set_height(s->name_label, 2 * theme::font_time()->line_height);
     lv_obj_set_style_text_color(s->name_label, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(s->name_label, theme::font_time(), 0);
     lv_obj_set_style_text_align(s->name_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_top(s->name_label, 14, 0);
 
-    // Title. Same single-line / ellipsis treatment; Orion limit ≤40 chars.
+    // Title. Same single-line / ellipsis treatment; Orion limit ≤ 32 chars.
     // font_body() (20 px) matches the meeting-location and media-artist
     // sizes — the "secondary descriptor" tier across the device.
     s->title_label = lv_label_create(card);
     lv_label_set_text(s->title_label, display_title());
     lv_label_set_long_mode(s->title_label, LV_LABEL_LONG_DOT);
     lv_obj_set_width(s->title_label, WIDTH - 16);
+    lv_obj_set_height(s->title_label, theme::font_meta()->line_height);
     lv_obj_set_style_text_color(s->title_label, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
     lv_obj_set_style_text_font(s->title_label, theme::font_meta(), 0);
     lv_obj_set_style_text_align(s->title_label, LV_TEXT_ALIGN_CENTER, 0);

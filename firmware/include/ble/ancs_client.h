@@ -25,6 +25,12 @@ namespace ancs_client {
 // with NimBLE. Does not start connection (that happens in advertising callbacks).
 void init();
 
+// Drain queued NS/DS notifications on the MAIN task. The NimBLE notify
+// callbacks run on the host task and only enqueue raw bytes; this does the
+// actual work (attribute requests, queue + status-bar updates), where blocking
+// GATT writes and LVGL calls are safe. Call once per main-loop iteration.
+void poll();
+
 // Called when the iPhone BLE link is established and services are discovered.
 // Subscribes to NS and DS characteristics.
 void on_iphone_connected(uint16_t conn_handle);
@@ -74,5 +80,12 @@ struct QueueEntry {
 // Returns pointer to the internal queue array (do not free).
 // count_out is filled with the current live entry count.
 const QueueEntry* get_queue(size_t* count_out);
+
+// The connected iPhone's device name (GAP Device Name characteristic,
+// 0x1800/0x2A00 — e.g. "Xander's iPhone"). Read once per connection over
+// the encrypted link; iOS only reveals the personalised name to bonded
+// peers. Returns "" when not connected or the read failed. RAM only —
+// cleared on disconnect.
+const char* phone_name();
 
 } // namespace ancs_client

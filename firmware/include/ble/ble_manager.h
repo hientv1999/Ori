@@ -68,8 +68,16 @@ void set_iphone_pairing_window(bool active);
 
 // ── Bond address helpers ───────────────────────────────────────────────────
 
+// Read both bond-slot addresses from NVS into the RAM cache. MUST be called
+// once on the main task at boot, before state_machine::init() and before the
+// BLE stack starts (ble_manager::init()). After this, load_bond_addr() reads
+// the cache (no NVS), so the NimBLE host-task callbacks never open Preferences.
+void prime_bond_cache();
+
 // Load/save the 6-byte peer address for the Orion or iPhone slot.
-// All-zero address means the slot is empty.
+// All-zero address means the slot is empty. load_bond_addr() reads the RAM
+// cache (safe from any task); save_bond_addr() updates the cache + NVS and
+// must be called on the main task only.
 void load_bond_addr(const char* key, uint8_t out_addr[6]);
 void save_bond_addr(const char* key, const uint8_t addr[6]);
 bool is_bond_slot_empty(const uint8_t addr[6]);

@@ -11,7 +11,7 @@ Status bar and profile card are visible in all three modes.
 
 ## Mode-toggle button (status bar)
 
-- **Position:** rightmost status-bar element always. Right-cluster order: `[ANCS icons] [phone-disconnect (when applicable)] [mode-toggle]`.
+- **Position:** rightmost status-bar element always. Right-cluster order: `[ANCS icons] [phone icon (always visible)] [mode-toggle]`.
 - **Hidden when Orion is offline** — except in Clock, where it always shows as a return button. On PC disconnect while in Media mode: auto-revert to Calendar + hide toggle.
 - **Size:** 60 × 60 px, 12 px corner radius.
 - **Icon shows destination, not current state:**

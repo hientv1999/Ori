@@ -480,6 +480,9 @@ lv_obj_t* make_meta_block(lv_obj_t* parent, ArtState* s) {
     lv_obj_set_style_text_font(s->artist_label, theme::font_meta(), 0);
     lv_obj_set_style_text_align(s->artist_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_top(s->artist_label, 2, 0);
+    // Pull the artist line 8 px closer to the title (visual only — does not
+    // affect the flex layout of the shortcut row below).
+    lv_obj_set_style_translate_y(s->artist_label, -8, 0);
 
     return meta;
 }

@@ -70,6 +70,11 @@ void setup() {
     mem_snapshot("boot");
 
     nvs::init();
+    // Prime the BLE bond-address RAM cache now, before state_machine::init()
+    // (reads the iPhone slot) and ble_manager::init() (starts the BLE stack).
+    // After this, bond reads never open NVS — so the NimBLE host-task callbacks
+    // can't race the main task's NVS access (the power-cycle reconnect crash).
+    ble_manager::prime_bond_cache();
     touch::init();
     mem_snapshot("after touch+ch422g");
 
@@ -100,7 +105,9 @@ void setup() {
 
     // Load cached profile text and photos from NVS before first screen draw.
     {
-        char name[65] = {}, title[65] = {}, email[129] = {}, phone[33] = {};
+        // Buffers sized for the 32/32/32/16-char field limits at worst-case
+        // UTF-8 (3 bytes/char for the scripts we ship, e.g. Vietnamese).
+        char name[97] = {}, title[97] = {}, email[129] = {}, phone[33] = {};
         if (nvs_sync::load_profile(name, sizeof(name), title, sizeof(title),
                                    email, sizeof(email), phone, sizeof(phone))) {
             widget_profile_card::set_profile(name, title, email, phone);

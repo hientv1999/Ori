@@ -110,9 +110,13 @@ static void show_meeting_detail(lv_obj_t* screen, const app_state::Meeting& m) {
     lv_obj_set_style_text_align(loc, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_top(loc, 16, 0);
 
-    // Organizer.
+    // Organizer — single line with ellipsis. Without an explicit width the
+    // label auto-sizes to its text and a long name runs off the screen edge;
+    // the 1-line height makes LONG_DOT clip instead of wrapping (LVGL 9).
     lv_obj_t* org = lv_label_create(scroll_area);
     lv_label_set_long_mode(org, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(org, lv_pct(100));
+    lv_obj_set_height(org, theme::font_meta()->line_height);
     lv_label_set_text(org, m.org);
     lv_obj_set_style_text_font(org, theme::font_meta(), 0);
     lv_obj_set_style_text_color(org, theme::color(theme::COLOR_TEXT_TERTIARY), 0);

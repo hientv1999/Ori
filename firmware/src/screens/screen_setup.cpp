@@ -218,8 +218,16 @@ static void ring_anim_cb(void* obj, int32_t val) {
 }
 
 // One-shot timer: reveal the tick mark once the ring sweep is nearly done.
+// The 800 ms delay can outlive the screen that owns `tick` (e.g. the Setup
+// Complete screen's 5 s auto-advance fires in the same lv_timer_handler()
+// pass after a long gap between passes, deleting `tick` before this timer
+// runs). Guard against that with a matching LV_EVENT_DELETE handler on
+// `tick` (see make_ok_check) — clear its user_data here so that handler
+// becomes a no-op once this timer has already fired.
 static void reveal_tick_cb(lv_timer_t* t) {
-    lv_obj_clear_flag(static_cast<lv_obj_t*>(lv_timer_get_user_data(t)), LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t* tick = static_cast<lv_obj_t*>(lv_timer_get_user_data(t));
+    lv_obj_clear_flag(tick, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_user_data(tick, nullptr);
     lv_timer_delete(t);
 }
 
@@ -286,6 +294,16 @@ lv_obj_t* make_ok_check(lv_obj_t* parent) {
     // Reveal tick after 800 ms (ring is ~82% done — feels simultaneous to eye).
     lv_timer_t* t = lv_timer_create(reveal_tick_cb, 800, tick);
     lv_timer_set_repeat_count(t, 1);
+
+    // If `tick` is deleted before the timer fires (screen torn down early —
+    // see reveal_tick_cb), delete the pending timer too so it never runs
+    // against a freed object.
+    lv_obj_set_user_data(tick, t);
+    lv_obj_add_event_cb(tick, [](lv_event_t* e) {
+        auto* timer = static_cast<lv_timer_t*>(
+            lv_obj_get_user_data(static_cast<lv_obj_t*>(lv_event_get_target(e))));
+        if (timer) lv_timer_delete(timer);
+    }, LV_EVENT_DELETE, nullptr);
 
     return root;
 }

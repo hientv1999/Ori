@@ -19,7 +19,8 @@
 //   - 22 px horizontal padding
 //   - Time (30 px), separator dot, date (22 px) on the left
 //   - ANCS icons (48 x 48, gap 14 px) on the right
-//   - Phone-disconnect icon (52 x 52) rightmost, only when disconnected
+//   - Phone icon (64 x 64) always visible — neutral when iPhone connected,
+//     danger red when disconnected; tap → unpair / re-pair
 //   - 3 px bottom border in COLOR_DIVIDER
 //
 // ANCS icons are colored placeholders — the prototype's brand-tile look.
@@ -59,6 +60,8 @@ struct StatusBarState {
     bool      show_datetime;
     bool      pc_connected;      // controls mode_toggle visibility
     bool      phone_bonded;      // true if a phone BLE bond exists
+    bool      phone_connected;   // true if the iPhone BLE link is up
+    int8_t    phone_glyph_state; // -1 = not drawn yet; 0/1 = last drawn state
     widget_status_bar::Mode mode;
     widget_status_bar::ModeToggleCb mode_cb;
     widget_status_bar::TimeTapCb    time_tap_cb;
@@ -100,13 +103,11 @@ lv_obj_t* make_ancs_tile(lv_obj_t* parent, const char* token) {
     return tile;
 }
 
-// "Phone with diagonal slash" — drawn from primitives to mirror the
-// prototype's `#i-phone-broken` SVG. Includes the top mic strip and
-// the bottom home-button dot. The diagonal slash is an `lv_line` (NOT
-// a rotated rect) — rotating an opaque rect triggers a layer-transparency
-// requirement that produces this LVGL warning on every refresh:
-//   "lv_draw_sw_layer_create: Rendering this widget needs LV_COLOR_SCREEN_TRANSP 1"
-// `lv_line` renders the diagonal as a real line and avoids the warning.
+// Phone glyph — drawn from primitives. Includes the top mic strip and
+// the bottom home-button dot. Colour encodes the connection state:
+// neutral (secondary text colour) when the iPhone is connected, danger
+// red when disconnected. No diagonal slash — the icon is now a permanent
+// status-bar button (tap → unpair when connected / re-pair when not).
 //
 // Layout inside the 64 px square (centred to the right_row):
 //
@@ -114,23 +115,18 @@ lv_obj_t* make_ancs_tile(lv_obj_t* parent, const char* token) {
 //         ┌──────────┐
 //         │          │
 //         │          │
-//         │   slash  │   ← diagonal danger-red line crosses the whole box
 //         │          │
 //         │          │
 //         │    ·     │   home-button dot
 //         └──────────┘
 //
-lv_obj_t* make_phone_disconnect(lv_obj_t* parent) {
-    lv_obj_t* root = lv_obj_create(parent);
-    lv_obj_set_size(root, PHONE_SIZE, PHONE_SIZE);
-    lv_obj_set_style_bg_opa(root, LV_OPA_TRANSP, LV_PART_MAIN);
-    lv_obj_set_style_border_width(root, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(root, 0, LV_PART_MAIN);
-    lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(root, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_opa(root, LV_OPA_60, LV_STATE_PRESSED);
+// Rebuilds the glyph children inside `root` for the given connection state.
+// `root` keeps its size, flags, and event callbacks across rebuilds.
+void build_phone_glyph(lv_obj_t* root, bool connected) {
+    lv_obj_clean(root);
 
-    const lv_color_t color = theme::color(theme::COLOR_DANGER);
+    const lv_color_t color = theme::color(
+        connected ? theme::COLOR_TEXT_SECONDARY : theme::COLOR_DANGER);
 
     // Phone body outline. ~28×46 px centred in the 64 px box.
     lv_obj_t* body = lv_obj_create(root);
@@ -169,22 +165,19 @@ lv_obj_t* make_phone_disconnect(lv_obj_t* parent) {
     lv_obj_set_style_pad_all(home, 0, LV_PART_MAIN);
     lv_obj_clear_flag(home, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(home, LV_OBJ_FLAG_CLICKABLE);
+}
 
-    // Diagonal slash — bottom-left to top-right of the 64 px box. Drawn as
-    // an lv_line so LVGL renders it without needing a transparent layer.
-    // The points array must outlive the line widget; static storage is fine
-    // since the geometry never changes.
-    static lv_point_precise_t slash_pts[] = {
-        { 8, PHONE_SIZE - 8 },
-        { PHONE_SIZE - 8, 8 },
-    };
-    lv_obj_t* slash = lv_line_create(root);
-    lv_line_set_points(slash, slash_pts, 2);
-    lv_obj_set_style_line_color(slash, color, LV_PART_MAIN);
-    lv_obj_set_style_line_width(slash, 5, LV_PART_MAIN);
-    lv_obj_set_style_line_rounded(slash, true, LV_PART_MAIN);
-    lv_obj_clear_flag(slash, LV_OBJ_FLAG_CLICKABLE);
+lv_obj_t* make_phone_icon(lv_obj_t* parent) {
+    lv_obj_t* root = lv_obj_create(parent);
+    lv_obj_set_size(root, PHONE_SIZE, PHONE_SIZE);
+    lv_obj_set_style_bg_opa(root, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(root, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(root, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(root, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_opa(root, LV_OPA_60, LV_STATE_PRESSED);
 
+    build_phone_glyph(root, /*connected=*/false);
     return root;
 }
 
@@ -331,6 +324,45 @@ lv_obj_t* make_calendar_glyph(lv_obj_t* parent, uint32_t color) {
     return glyph;
 }
 
+// Deferred callback for the phone-disconnect icon tap. Calling state-machine
+// functions directly from within LVGL's event dispatch stack overflows the
+// loopTask stack (NVS flash write + full screen rebuild on top of the event
+// depth). Store the callback here and fire it from a 1 ms one-shot timer.
+static std::function<void()> s_deferred_phone_cb;
+
+void on_phone_icon_tap(lv_event_t* e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code != LV_EVENT_CLICKED && code != LV_EVENT_LONG_PRESSED) return;
+    auto* st = static_cast<StatusBarState*>(lv_event_get_user_data(e));
+    if (!st) return;
+    // Routing is by CONNECTION state, not bond state:
+    //   connected     → unpair modal (the phone is right here, offer to unpair)
+    //   not connected → re-pair screen; a stale bond (phone bonded but away)
+    //                   is wiped via the poll()-deferred path so the iPhone
+    //                   slot opens and the ANCS solicitation can advertise.
+    bool connected = st->phone_connected;
+    bool bonded    = st->phone_bonded;
+    lv_obj_t* screen = lv_screen_active();
+    s_deferred_phone_cb = [connected, bonded, screen]() {
+        if (connected) {
+            modal_unpair_phone::create(screen);
+        } else {
+            if (bonded) state_machine::request_phone_bond_wipe();
+            lv_obj_t* pairing = screen_setup::create(screen_setup::Step::PhonePairing, screen);
+            lv_scr_load_anim(pairing, LV_SCR_LOAD_ANIM_NONE, 0, 0, /*auto_del=*/false);
+        }
+    };
+    lv_timer_t* t = lv_timer_create([](lv_timer_t* t) {
+        lv_timer_delete(t);
+        if (s_deferred_phone_cb) {
+            auto cb = std::move(s_deferred_phone_cb);
+            s_deferred_phone_cb = nullptr;
+            cb();
+        }
+    }, 1, nullptr);
+    lv_timer_set_repeat_count(t, 1);
+}
+
 constexpr int16_t MODE_TOGGLE_SIZE = 60;
 
 // Re-draw the mode-toggle visuals to reflect the current mode.
@@ -424,6 +456,7 @@ lv_obj_t* g_active_bar = nullptr;
 // bars read these so screen_manager can change state once per screen-switch.
 bool g_default_pc_connected   = true;
 bool g_default_phone_bonded   = false;
+bool g_default_phone_connected = false;
 Mode g_default_mode           = Mode::Calendar;
 ModeToggleCb g_default_mode_cb  = nullptr;
 TimeTapCb    g_default_time_tap_cb = nullptr;
@@ -447,10 +480,12 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     auto* state = new StatusBarState();
-    state->show_datetime  = true;
-    state->pc_connected   = g_default_pc_connected;
-    state->phone_bonded   = g_default_phone_bonded;
-    state->mode           = g_default_mode;
+    state->show_datetime     = true;
+    state->pc_connected      = g_default_pc_connected;
+    state->phone_bonded      = g_default_phone_bonded;
+    state->phone_connected   = g_default_phone_connected;
+    state->phone_glyph_state = -1;  // unset → first set_phone_connected draws it
+    state->mode              = g_default_mode;
     state->mode_cb        = g_default_mode_cb;
     state->time_tap_cb    = g_default_time_tap_cb;
     state->mode_toggle    = nullptr;
@@ -526,30 +561,22 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_flex_align(state->ancs_row, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(state->ancs_row, ICON_GAP, 0);
 
-    // Phone-disconnect glyph — direct child of bar, between ANCS and
-    // mode-toggle. Initially hidden; shown by set_phone_connected(false).
-    state->phone_icon = make_phone_disconnect(bar);
-    lv_obj_add_flag(state->phone_icon, LV_OBJ_FLAG_HIDDEN);
+    // Phone icon — direct child of bar, between ANCS and mode-toggle.
+    // Always visible; set_phone_connected() recolours it (neutral when
+    // connected, danger red when disconnected).
+    state->phone_icon = make_phone_icon(bar);
 
 
-    // Tap or long-press on the phone-disconnect icon triggers repair flow.
-    auto phone_icon_cb = [](lv_event_t* e) {
-        auto* st = static_cast<StatusBarState*>(lv_event_get_user_data(e));
-        if (!st) return;
-        lv_obj_t* screen = lv_screen_active();
-        if (st->phone_bonded) {
-            // Phone already bonded — offer to unpair.
-            modal_unpair_phone::create(screen);
-        } else {
-            // No bond — push iPhone pairing screen.
-            // Pass `screen` as prev_screen so Skip can return here.
-            // auto_del=false keeps this screen alive so Skip can navigate back to it.
-            lv_obj_t* pairing = screen_setup::create(screen_setup::Step::PhonePairing, screen);
-            lv_scr_load_anim(pairing, LV_SCR_LOAD_ANIM_NONE, 0, 0, /*auto_del=*/false);
-        }
-    };
-    lv_obj_add_event_cb(state->phone_icon, phone_icon_cb, LV_EVENT_CLICKED, state);
-    lv_obj_add_event_cb(state->phone_icon, phone_icon_cb, LV_EVENT_LONG_PRESSED, state);
+    // Tap or long-press on the phone-disconnect icon. Deferred via 1ms timer —
+    // same pattern as on_mode_toggle_tap/on_time_tap: calling lv_scr_load_anim
+    // or creating a full screen from inside LVGL event dispatch overflows the
+    // loopTask stack and crashes.
+    lv_obj_add_event_cb(state->phone_icon, on_phone_icon_tap, LV_EVENT_CLICKED, state);
+    lv_obj_add_event_cb(state->phone_icon, on_phone_icon_tap, LV_EVENT_LONG_PRESSED, state);
+
+    // Paint the glyph colour + ANCS-row visibility for the inherited connection
+    // state (make_phone_icon only draws the disconnected glyph).
+    set_phone_connected(bar, state->phone_connected);
 
     // Mode-toggle — direct child of bar, rightmost when visible.
     state->mode_toggle = make_mode_toggle(bar, state);
@@ -595,12 +622,18 @@ void set_phone_connected(lv_obj_t* bar, bool connected) {
     auto* s = static_cast<StatusBarState*>(lv_obj_get_user_data(bar));
     if (!s) return;
 
-    if (connected) {
-        lv_obj_add_flag(s->phone_icon, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(s->ancs_row, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_obj_add_flag(s->ancs_row, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_clear_flag(s->phone_icon, LV_OBJ_FLAG_HIDDEN);
+    s->phone_connected = connected;
+
+    // ANCS icons only make sense while the phone link is up; the phone icon
+    // itself stays visible in both states and just changes colour.
+    if (connected) lv_obj_clear_flag(s->ancs_row, LV_OBJ_FLAG_HIDDEN);
+    else           lv_obj_add_flag(s->ancs_row, LV_OBJ_FLAG_HIDDEN);
+
+    // refresh() calls this every second — only rebuild the glyph when the
+    // state actually changed.
+    if (s->phone_glyph_state != (int8_t)connected) {
+        s->phone_glyph_state = (int8_t)connected;
+        build_phone_glyph(s->phone_icon, connected);
     }
 }
 
@@ -640,6 +673,21 @@ void set_phone_bonded(lv_obj_t* bar, bool bonded) {
 
 void set_default_pc_connected(bool connected)      { g_default_pc_connected = connected; }
 void set_default_phone_bonded(bool bonded)          { g_default_phone_bonded = bonded; }
+void set_default_phone_connected(bool connected)    { g_default_phone_connected = connected; }
+
+void set_all_phone_bonded(bool bonded) {
+    g_default_phone_bonded = bonded;
+    if (g_active_bar) {
+        auto* s = static_cast<StatusBarState*>(lv_obj_get_user_data(g_active_bar));
+        if (s) s->phone_bonded = bonded;
+    }
+}
+
+void set_all_phone_connected(bool connected) {
+    g_default_phone_connected = connected;
+    if (g_active_bar) set_phone_connected(g_active_bar, connected);
+}
+
 void set_default_mode(Mode mode)                    { g_default_mode = mode; }
 void set_default_mode_toggle_cb(ModeToggleCb cb)    { g_default_mode_cb = cb; }
 void set_default_time_tap_cb(TimeTapCb cb)          { g_default_time_tap_cb = cb; }
@@ -657,11 +705,16 @@ void refresh(lv_obj_t* bar) {
     lv_label_set_text(s->time_label, time_buf);
     lv_label_set_text(s->date_label, date_buf);
 
-    // Rebuild ANCS row from current config.
+    // Rebuild ANCS row from current config. Gate on the bar's own
+    // phone_connected field — the authoritative BLE link state set by
+    // set_all_phone_connected() — NOT cfg.phone_connected, which only goes
+    // true once a notification is queued. (Driving the icon from cfg caused
+    // the phone icon to read "disconnected" in the window between iPhone
+    // connect and the first notification, so a tap wiped a live bond.)
     const auto& cfg = app_state::ancs_config();
     lv_obj_clean(s->ancs_row);
     size_t visible_tiles = 0;
-    if (cfg.phone_connected) {
+    if (s->phone_connected) {
         // i < MAX_ANCS_ICONS is a hard guard: even if cfg.count is somehow
         // corrupted above the array size, we never read past icons[MAX-1].
         for (size_t i = 0; i < cfg.count && i < app_state::MAX_ANCS_ICONS; ++i) {
@@ -679,8 +732,6 @@ void refresh(lv_obj_t* bar) {
                  ? 0
                  : (int)visible_tiles * ICON_SIZE + ((int)visible_tiles - 1) * ICON_GAP;
     lv_obj_set_width(s->ancs_row, ancs_w);
-
-    set_phone_connected(bar, cfg.phone_connected);
 }
 
 } // namespace widget_status_bar

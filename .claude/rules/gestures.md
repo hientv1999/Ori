@@ -6,7 +6,7 @@
 |---|---|---|
 | **Tap status-bar date/time** | Enter Clock view — tap mode-toggle button to return | Every runtime state (status bar hidden during setup + OTA) |
 | Long-press profile photo (3 s) | Open factory reset confirmation | Every state |
-| Long-press phone-disconnect icon (3 s) | Open re-pair iPhone screen | Every runtime state (not during setup) |
+| **Tap phone icon** (always visible; neutral = connected, red = disconnected) | Connected → Unpair iPhone modal; disconnected → re-pair iPhone screen (stale bond auto-wiped) | Every runtime state (not during setup) |
 | **Tap mode-toggle button** (rightmost status-bar element) | Cycle calendar ↔ Controls mode | Runtime only — hidden when Orion offline, during setup, and during OTA |
 | Tap Close button on countdown modal | Dismiss countdown | Countdown modal only |
 | **Tap album art** (movement < 20 px in both axes) | `KeyboardCommand{op:"play_pause"}` | Controls mode — see `media-mode.md` |

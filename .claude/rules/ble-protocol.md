@@ -125,10 +125,10 @@ All structured payloads use CBOR (RFC 8949). Libraries: Arduino — `ArduinoCBOR
 
 ```cbor
 ProfileInfo = {
-  "name":  text,       // UTF-8, max 64 bytes
-  "title": text,       // UTF-8, max 64 bytes
-  "email": text,       // optional; UTF-8, max 128 bytes; absent or "" = not shown
-  "phone": text        // optional; UTF-8, max 32 bytes;  absent or "" = not shown
+  "name":  text,       // UTF-8, ≤ 32 chars (≤ 96 bytes wire)
+  "title": text,       // UTF-8, ≤ 32 chars (≤ 96 bytes wire)
+  "email": text,       // optional; UTF-8, ≤ 32 chars; absent or "" = not shown
+  "phone": text        // optional; UTF-8, ≤ 16 chars; absent or "" = not shown
 }
 
 TimeSync = {
@@ -423,10 +423,10 @@ Link-layer encryption failure (`BLE_HS_ENC_FAIL`) signals a stale bond — see �
 
 | Item | Limit |
 |---|---|
-| `ProfileInfo.name` | ≤ 64 UTF-8 bytes wire; Orion display cap 24 chars (`pc-app.md`) |
-| `ProfileInfo.title` | ≤ 64 UTF-8 bytes wire; Orion display cap 40 chars |
-| `ProfileInfo.email` | ≤ 128 UTF-8 bytes; optional |
-| `ProfileInfo.phone` | ≤ 32 UTF-8 bytes; optional |
+| `ProfileInfo.name` | ≤ 32 chars (Orion input cap, `pc-app.md`); ≤ 96 UTF-8 bytes wire |
+| `ProfileInfo.title` | ≤ 32 chars; ≤ 96 UTF-8 bytes wire |
+| `ProfileInfo.email` | ≤ 32 chars; optional |
+| `ProfileInfo.phone` | ≤ 16 chars; optional |
 | Profile Photo (JPEG, 228×228) | hard cap 200 KB |
 | Meeting `title` | no cap (chunking handles size) |
 | Meeting list total | ≤ 32 meetings/day |

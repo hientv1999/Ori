@@ -120,6 +120,75 @@ uint8_t  g_ds_buf[1024];
 size_t   g_ds_len = 0;
 uint32_t g_pending_uid = 0;
 
+// ── NS/DS deferral queue (host task → main task) ──────────────────────────
+//
+// NimBLE invokes the NS/DS notify callbacks on the HOST task. Processing them
+// there is unsafe: on_notification_source() does a blocking CP write-with-
+// response (request_attributes) — which deadlocks, since the host task that
+// must process the write response is the one stuck in the callback — and the
+// queue_add/remove path calls into LVGL (refresh_active), which must only run
+// on the main task. So the callbacks just copy the raw bytes into this single-
+// producer/single-consumer ring; ancs_client::poll() drains it on the main
+// task, where blocking GATT ops and LVGL are both safe.
+struct AncsRaw {
+    uint8_t  kind;      // 0 = Notification Source, 1 = Data Source
+    uint16_t len;
+    uint8_t  buf[256];  // ≥ one ATT_MTU (247) fragment
+};
+constexpr uint8_t ANCS_Q_SIZE = 8;
+AncsRaw          g_aq[ANCS_Q_SIZE];
+volatile uint8_t g_aq_head = 0;   // consumer (main task)
+volatile uint8_t g_aq_tail = 0;   // producer (host task)
+
+void aq_push(uint8_t kind, const uint8_t* data, size_t len) {
+    uint8_t next = (uint8_t)((g_aq_tail + 1) % ANCS_Q_SIZE);
+    if (next == g_aq_head) return;  // full → drop (next NS event re-adds it)
+    AncsRaw& e = g_aq[g_aq_tail];
+    e.kind = kind;
+    e.len  = (len > sizeof(e.buf)) ? (uint16_t)sizeof(e.buf) : (uint16_t)len;
+    memcpy(e.buf, data, e.len);
+    g_aq_tail = next;               // publish only after the slot is filled
+}
+
+bool aq_pop(AncsRaw& out) {
+    if (g_aq_head == g_aq_tail) return false;
+    out = g_aq[g_aq_head];
+    g_aq_head = (uint8_t)((g_aq_head + 1) % ANCS_Q_SIZE);
+    return true;
+}
+
+// ── Connected phone name (GAP Device Name) ───────────────────────────────
+
+char g_phone_name[64] = {};
+
+// Read the iPhone's GAP Device Name (service 0x1800, char 0x2A00) over the
+// encrypted link. iOS returns the personalised name ("Xander's iPhone") to
+// bonded peers; unbonded readers only get a generic "iPhone". Synchronous
+// GATT read — runs in the same loopTask context as the ANCS discovery.
+static void read_phone_name() {
+    g_phone_name[0] = '\0';
+    if (!g_client) return;
+
+    NimBLERemoteService* gap = g_client->getService(NimBLEUUID((uint16_t)0x1800));
+    if (!gap) {
+        LOG("[ancs] GAP service not found — phone name unavailable\n");
+        return;
+    }
+    NimBLERemoteCharacteristic* name_chr =
+        gap->getCharacteristic(NimBLEUUID((uint16_t)0x2A00));
+    if (!name_chr || !name_chr->canRead()) {
+        LOG("[ancs] GAP Device Name characteristic not readable\n");
+        return;
+    }
+
+    NimBLEAttValue val = name_chr->readValue();
+    size_t n = val.size();
+    if (n >= sizeof(g_phone_name)) n = sizeof(g_phone_name) - 1;
+    memcpy(g_phone_name, val.data(), n);
+    g_phone_name[n] = '\0';
+    LOG("[ancs] phone name: '%s'\n", g_phone_name);
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Queue helpers
 // ─────────────────────────────────────────────────────────────────────────
@@ -201,7 +270,23 @@ void init() {
     // NimBLE client profile registration happens in on_iphone_connected().
 }
 
+void poll() {
+    // Drain NS/DS notifications captured by the host-task callbacks. Runs on the
+    // main loop task, so on_notification_source()'s blocking CP write and the
+    // queue_add/remove LVGL refresh are both safe here.
+    AncsRaw e;
+    while (aq_pop(e)) {
+        if (e.kind == 0) on_notification_source(e.buf, e.len);
+        else             on_data_source(e.buf, e.len);
+    }
+}
+
 void on_iphone_connected(uint16_t conn_handle) {
+    // Idempotent: a second dispatch for the same live connection (e.g. both
+    // the fresh-bond and reconnect paths firing) must not re-run discovery
+    // or double-subscribe.
+    if (conn_handle == g_conn_handle && g_ns_char) return;
+
     LOG("[ancs] iPhone connected, handle=%u\n", (unsigned)conn_handle);
     g_conn_handle = conn_handle;
 
@@ -235,17 +320,28 @@ void on_iphone_connected(uint16_t conn_handle) {
         return;
     }
 
-    // Subscribe to Notification Source.
+    // Subscribe to Notification Source. Write-with-response (the subscribe()
+    // default) so a failed CCCD write — e.g. if the link somehow isn't yet
+    // encrypted — is reported instead of silently dropped. The previous code
+    // passed response=false and logged "subscribed" unconditionally, which hid
+    // failures. iOS only streams notifications once NS is actually subscribed.
     if (g_ns_char->canNotify()) {
-        g_ns_char->subscribe(true, notify_ns_cb, false);
-        LOG("[ancs] subscribed to NS\n");
+        bool ok = g_ns_char->subscribe(true, notify_ns_cb);
+        LOG("[ancs] subscribe NS: %s\n", ok ? "ok" : "FAILED");
+    } else {
+        LOG("[ancs] NS characteristic cannot notify\n");
     }
 
     // Subscribe to Data Source.
     if (g_ds_char->canNotify()) {
-        g_ds_char->subscribe(true, notify_ds_cb, false);
-        LOG("[ancs] subscribed to DS\n");
+        bool ok = g_ds_char->subscribe(true, notify_ds_cb);
+        LOG("[ancs] subscribe DS: %s\n", ok ? "ok" : "FAILED");
+    } else {
+        LOG("[ancs] DS characteristic cannot notify\n");
     }
+
+    // Fetch the phone's device name for display (unpair modal).
+    read_phone_name();
 
     state_machine::set_phone_connected(true);
 }
@@ -258,6 +354,7 @@ void on_iphone_disconnected() {
     g_ns_char     = nullptr;
     g_cp_char     = nullptr;
     g_ds_char     = nullptr;
+    g_phone_name[0] = '\0';
 
     // Clear queue and update status bar.
     g_queue_count = 0;
@@ -278,6 +375,12 @@ void on_notification_source(const uint8_t* data, uint16_t len) {
     // uint8_t  cat_id   = data[2];   // reserved for future filtering
     uint32_t uid      = (uint32_t)(data[4] | (data[5] << 8) |
                                     (data[6] << 16) | (data[7] << 24));
+
+    // Diagnostic: prove whether iOS is actually streaming NS events. If this
+    // never logs while the phone has notifications, the problem is iOS-side
+    // (notification access not granted / device not engaged), not the parser.
+    LOG("[ancs] NS event id=%u cat=%u uid=%u\n",
+        (unsigned)event_id, (unsigned)data[2], (unsigned)uid);
 
     if (event_id == 0) {
         // Added — request attributes to get bundle ID.
@@ -423,20 +526,27 @@ const QueueEntry* get_queue(size_t* count_out) {
     return g_queue;
 }
 
+const char* phone_name() {
+    return g_phone_name;
+}
+
 } // namespace ancs_client
 
 // ── NS / DS notify callbacks (NimBLE task context) ────────────────────────
 
 namespace {
 
+// Host-task context: ONLY copy the bytes into the ring. The actual work
+// (blocking CP write, LVGL refresh) is done later by ancs_client::poll() on
+// the main task — see the AncsRaw queue comment above.
 static void notify_ns_cb(NimBLERemoteCharacteristic* /*c*/,
                           uint8_t* data, size_t len, bool /*is_notify*/) {
-    ancs_client::on_notification_source(data, (uint16_t)len);
+    aq_push(0, data, len);
 }
 
 static void notify_ds_cb(NimBLERemoteCharacteristic* /*c*/,
                           uint8_t* data, size_t len, bool /*is_notify*/) {
-    ancs_client::on_data_source(data, (uint16_t)len);
+    aq_push(1, data, len);
 }
 
 } // namespace

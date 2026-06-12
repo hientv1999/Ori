@@ -37,7 +37,7 @@ Orion opens the serial port to the USB-C-connected Ori.
 
 Orion writes OTA frame: BEGIN { fw_version, total_size, sha256 }
 
-Ori validates: version != current; size <= inactive slot capacity; no countdown active.
+Ori validates: required fields present; size <= inactive slot capacity; PSRAM staging buffer allocates; no transfer already in progress.
    On reject: respond REJECT { reason }; return to normal runtime.
    On accept: Update.begin(inactive_slot, total_size);
               switch screen to OTA-Updating;
@@ -208,7 +208,7 @@ Every device→host response is a framed message (`§ Framing`): magic `0x4F54`,
 - Send `BEGIN { fw_version (from the binary), total_size, sha256 }`.
 - Wait up to ~10 s for a response:
   - `READY` → proceed to streaming.
-  - `REJECT { reason }` → stop; surface the reason (`countdown_active` → "A meeting is starting, try again after"; `too_large`; `missing_fields`).
+  - `REJECT { reason }` → stop; surface the reason — see the reason table in step 6. (There is **no** `countdown_active` reject — a pending meeting never blocks the update.)
   - timeout → comm error; close and prompt to retry.
 
 ### 4. Stream DATA with windowed flow control
@@ -234,11 +234,14 @@ The device RX buffer is 32 KB and it acks via `PROGRESS { bytes_received }` ever
 | no `READY` after `BEGIN` | comm/port issue, wrong device | Close, surface "couldn't talk to Ori", retry |
 | `REJECT { too_large }` | image > 3 MB OTA slot | Build/config error — block the update |
 | `REJECT { missing_fields }` | BEGIN missing fw_version/size/sha | Orion bug — fix the BEGIN payload |
+| `REJECT { cbor_decode }` / `REJECT { not_map }` | BEGIN payload isn't a valid CBOR map | Orion bug — fix the BEGIN encoding |
+| `REJECT { no_memory }` | device couldn't allocate a PSRAM staging buffer for `total_size` | Device also shows an on-screen error; surface "Ori is low on memory, try again" and retry |
+| `REJECT { busy }` | a second `BEGIN` arrived while a transfer is already in progress | Orion bug (one BEGIN per session) — wait for the active transfer to finish/fail, don't restart it |
 | `FAILED { version_mismatch }` | Orion's `fw_version` claim ≠ the version in the binary | Orion bug — send the version extracted from the .bin (step 0); or wrong file |
 | `FAILED { bad_image }` | not a valid ESP32 app (magic ≠ 0xE9) | Wrong/corrupt file — pick the right .bin |
 | `FAILED { hash_mismatch }` | bytes corrupted in transfer | Retry from `BEGIN` (no resume) |
 | `FAILED { truncated }` / `size_overflow` | byte-count mismatch | Streaming bug — retry from `BEGIN` |
 | `FAILED { flash_error }` | device flash write failed | Device reboots to old firmware; retry |
-| no `VALIDATED`, port goes quiet | cable pulled / host stalled mid-stream → device stall-aborts after 3 s and resumes runtime | Surface "connection lost during update"; retry from `BEGIN` |
+| `FAILED { usb_timeout }`, no `VALIDATED`, port goes quiet | cable pulled / host stalled mid-stream → device stall-aborts after 3 s and resumes runtime | Surface "connection lost during update"; retry from `BEGIN` |
 
 **General rules:** every failure is recoverable by restarting from `BEGIN` (there is no resume). Use timeouts on each phase (BEGIN→READY ~10 s; stream stall; END→VALIDATED ~45 s). Physical cable access is the only authority — no BLE bond required (`§ Transport`).

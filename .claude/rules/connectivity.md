@@ -47,5 +47,6 @@ iPhone only — ANCS is Apple-proprietary; Android is explicitly out of scope.
 - iPhone and PC connectivity are completely independent.
 - ANCS provides **notification icons** in the status bar. Tapping an icon opens a full-screen overlay (title + body); dismissed via **Close** button only. No replying — read-only.
 - Icons appear and disappear based on unread notification state.
-- When iPhone disconnected: show phone-disconnect icon in status bar; hide all ANCS notification icons.
-- Long-press phone-disconnect icon (3 s) to re-initiate iPhone pairing from any runtime state.
+- A **phone icon** is always visible in the status bar: neutral colour when the iPhone is connected, danger red when disconnected. ANCS notification icons are hidden while disconnected.
+- Tap (or long-press) the phone icon: **connected → Unpair iPhone modal; disconnected → re-pair iPhone screen** (a stale bond is wiped automatically so the iPhone slot opens). Available from any runtime state.
+- On connect, Ori reads the iPhone's GAP Device Name (0x2A00) over the encrypted link (e.g. "Xander's iPhone") and shows it in the Unpair modal. RAM only — cleared on disconnect.

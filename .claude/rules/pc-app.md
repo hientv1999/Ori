@@ -32,7 +32,7 @@ When Orion is not running, Ori falls back to cached data. See `connectivity.md` 
   - Push cadence: subscribe to Graph change notifications (`/subscriptions` on `/communications/presences/{id}`); fall back to polling every ~60 s. Only write to BLE when the mapped byte actually changes.
   - OAuth: user signs into Microsoft account during setup and grants `Presence.Read`. Cache the refresh token in OS keychain. On grant expiry/revocation: write `0x03 OFFLINE` to Ori, surface re-auth prompt in settings.
   - If Graph returns no presence data (non-corporate accounts, Teams not installed): write `0x03 OFFLINE` silently. The setup wizard makes the Teams-presence step skippable.
-- **Profile management**: capture name, job title, photo; push on initial pairing and on change. **Enforce input limits** — name ≤ 24 characters, job title ≤ 40 characters (live counter; field blocks at limit). Wire-level byte caps are in `ble-protocol.md` §10.
+- **Profile management**: capture name, job title, email, phone, photo; push on initial pairing and on change. **Enforce input limits** — name ≤ 32 characters, job title ≤ 32 characters, email ≤ 32 characters, phone ≤ 16 characters (live counter; field blocks at limit). Wire-level byte caps are in `ble-protocol.md` §10.
 - **Background operation**: stay running and synced without requiring a focused window.
 - **Passkey confirmation UI**: during setup, display the 6-digit code from Ori and ask the user to confirm it matches.
 - **Factory reset Ori**: settings button (confirm-dialog gated) that writes the Factory Reset Command over the bonded link, then drops Orion's local bond record. See `ble-protocol.md` §7.2.

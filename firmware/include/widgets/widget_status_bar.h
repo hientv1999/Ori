@@ -36,8 +36,8 @@ lv_obj_t* create(lv_obj_t* parent);
 // screen itself shows the time.
 void set_show_datetime(lv_obj_t* bar, bool show);
 
-// Override phone connectivity for this specific instance. The phone-
-// disconnect icon appears (and ANCS icons hide) when false.
+// Override phone connectivity for this specific instance. The phone icon
+// turns red (and ANCS icons hide) when false; neutral when true.
 void set_phone_connected(lv_obj_t* bar, bool connected);
 
 // Record whether a phone BLE bond exists. Drives the choice between the
@@ -65,6 +65,13 @@ void set_time_tap_cb(lv_obj_t* bar, TimeTapCb cb);
 // on every load.
 void set_default_pc_connected(bool connected);
 void set_default_phone_bonded(bool bonded);
+void set_default_phone_connected(bool connected);
+// Update both the default and the currently active bar's phone_bonded state.
+void set_all_phone_bonded(bool bonded);
+// Update both the default and the currently active bar's phone_connected
+// state (recolours the phone icon + toggles ANCS-icon visibility). Driven
+// by the authoritative BLE link signal, not the ANCS notification queue.
+void set_all_phone_connected(bool connected);
 void set_default_mode(Mode mode);
 void set_default_mode_toggle_cb(ModeToggleCb cb);
 void set_default_time_tap_cb(TimeTapCb cb);

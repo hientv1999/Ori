@@ -3,8 +3,10 @@
 #include <Arduino.h>
 #include "ori_log.h"
 #include <lvgl.h>
+#include <cstdio>
 
 // #include "screens/screen_repair_phone.h" // removed obsolete repair screen
+#include "ble/ancs_client.h"
 #include "state_machine.h"
 #include "theme.h"
 #include "ui_helpers.h"
@@ -81,10 +83,18 @@ lv_obj_t* create(lv_obj_t* base_screen) {
     lv_obj_set_style_text_align(heading, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_top(heading, 18, 0);
 
+    // Personalise with the connected phone's GAP device name when available
+    // ("Xander's iPhone"); fall back to the generic copy when not.
+    // lv_label_set_text copies the buffer, so stack storage is fine.
+    const char* pname = ancs_client::phone_name();
+    char body_buf[160];
+    snprintf(body_buf, sizeof(body_buf),
+             "Ori will no longer show notifications from %s",
+             (pname && pname[0]) ? pname : "your iPhone");
+
     lv_obj_t* body = lv_label_create(scroll_area);
     lv_label_set_long_mode(body, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(body,
-        "Ori will no longer show notification icons from your iPhone");
+    lv_label_set_text(body, body_buf);
     lv_obj_set_width(body, lv_pct(100));
     lv_obj_set_style_text_color(body, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
     lv_obj_set_style_text_font(body, theme::font_meta(), 0);

@@ -611,10 +611,10 @@ private:
         if (data[0] == 0xFA && data[1] == 0xC7 &&
             data[2] == 0x5E && data[3] == 0x5E) {
             LOG("[gatt] Remote factory reset triggered\n");
-            // IMPORTANT: do not call factory_reset::execute() directly from this
-            // BLE callback — deferred to main loop via ble_manager event queue.
-            ble_manager::wipe_all_bonds(); // wipe bonds immediately
-            // Post event to main loop for NVS wipe + restart.
+            // IMPORTANT: do not wipe or touch NVS from this BLE callback (host
+            // task). factory_reset::execute() on the main loop wipes both bonds
+            // + the NVS namespaces and reboots — opening Preferences here would
+            // race the main task's NVS access. Just post the event.
             ble_post_factory_reset_event();
         } else {
             LOG("[gatt] FactoryReset: bad magic\n");
@@ -890,8 +890,11 @@ static void apply_profile_cbor(const uint8_t* data, size_t len) {
     if (cbor_parser_init(data, len, 0, &parser, &root) != CborNoError) return;
     if (!cbor_value_is_map(&root)) return;
 
-    char name[65]  = {};
-    char title[65] = {};
+    // Field limits are 32/32/32/16 chars (Orion-enforced at input). Buffers
+    // hold the worst-case UTF-8 byte length (3 bytes/char, e.g. Vietnamese);
+    // cbor_value_copy_text_string truncates at sizeof-1 as a defensive cap.
+    char name[97]  = {};
+    char title[97] = {};
     char email[129]= {};
     char phone[33] = {};
 

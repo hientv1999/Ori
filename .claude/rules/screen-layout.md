@@ -5,7 +5,7 @@
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │ STATUS BAR  (always visible — hidden only during setup flow)     │
-│  14:30 · Wed, May 14   [gmail][msg]   [phone-broken?]  [toggle] │
+│  14:30 · Wed, May 14   [gmail][msg]   [phone]  [toggle]         │
 ├────────────────────────────────────────┬─────────────────────────┤
 │                                        │                         │
 │   LEFT PANEL  (dynamic, 2/3)           │  RIGHT PANEL (1/3)      │
@@ -25,15 +25,15 @@ Pixel dimensions: 800 × 480. Left panel: 528 px wide. Right panel: 269 px wide.
 - Contents left → right:
   - **Date and time** — tappable: single tap enters Clock view. Hidden on the Clock screen itself.
   - ANCS notification icons — up to **5 visible** (layout hard cap; 6 would overflow the bar). Right-to-left order. Queue depth is 20 — notifications beyond the 5th are hidden but shift left as earlier ones are dismissed. Tap opens a full-screen detail overlay (title + body); **Close** button only. No replying — read-only.
-  - Phone-disconnect icon — shown only when iPhone is not connected over BLE.
+  - **Phone icon** — always visible. Neutral colour when the iPhone is connected, danger red when disconnected (no slash glyph). Tap: connected → Unpair iPhone modal (shows the phone's GAP device name); disconnected → re-pair iPhone screen (stale bond wiped automatically).
   - **Mode-toggle button** — rightmost element always. Cycles left panel between **Calendar** and **Controls**. **Hidden when Orion is offline** — except in Clock view, where it acts as a return button (calendar icon, neutral style). Icon always shows the destination. See `media-mode.md`.
 
 ## Right Panel — Profile Card
 
 Always visible. Contents:
 - Circular profile photo, **228 × 228 px** (or Ori wordmark if no photo) — **border colour reflects Teams presence** (see below)
-- Full name — single line, ellipsis on overflow (Orion enforces ≤ 24 chars at input)
-- Job title — single line, ellipsis on overflow (Orion enforces ≤ 40 chars at input)
+- Full name — single line, ellipsis on overflow (Orion enforces ≤ 32 chars at input)
+- Job title — single line, ellipsis on overflow (Orion enforces ≤ 32 chars at input)
 
 Data pulled from Orion during initial pairing, stored in flash, persists across power cycles and connection loss.
 

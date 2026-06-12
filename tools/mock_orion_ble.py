@@ -60,6 +60,12 @@ _REPO_ROOT         = os.path.dirname(_SCRIPT_DIR)
 _PROFILE_PHOTO_SRC = os.path.join(_REPO_ROOT, "firmware", "img", "profile_photo", "profile_photo.png")
 _PTO_PHOTO_SRC     = os.path.join(_REPO_ROOT, "firmware", "img", "pto_photo",     "pto_photo.jpg")
 
+# Forced JPEG quality for the profile + PTO photos. None = pick the highest
+# quality that fits the hard cap (default). Set via --photo-quality to send
+# deliberately lower-quality (smaller) images — useful for exercising the
+# firmware JPEG decoder and shortening chunked transfers during testing.
+_FORCED_JPEG_QUALITY: Optional[int] = None
+
 # ── UUIDs ────────────────────────────────────────────────────────────────────
 # Base: 6F726900-0000-4F72-9F00-000000000000
 # Each char UUID replaces bytes 4-5 (second group) with its offset.
@@ -113,7 +119,19 @@ def make_frames(payload: bytes) -> list[bytes]:
 # ── Photo builders ────────────────────────────────────────────────────────────
 
 def _jpeg_max_quality(img, hard_cap: int) -> bytes:
-    """Return the highest-quality JPEG of img that fits within hard_cap bytes."""
+    """Encode img to JPEG.
+
+    With --photo-quality set (_FORCED_JPEG_QUALITY), encode once at exactly that
+    quality. Otherwise return the highest quality that fits within hard_cap.
+    """
+    if _FORCED_JPEG_QUALITY is not None:
+        buf = io.BytesIO()
+        img.save(buf, "JPEG", quality=_FORCED_JPEG_QUALITY, optimize=True)
+        data = buf.getvalue()
+        if len(data) > hard_cap:
+            print(f"  [warn] forced quality={_FORCED_JPEG_QUALITY} → {len(data):,} B "
+                  f"exceeds hard cap {hard_cap:,} B; sending anyway")
+        return data
     for q in range(95, 9, -1):
         buf = io.BytesIO()
         img.save(buf, "JPEG", quality=q, optimize=True)
@@ -172,12 +190,14 @@ def build_time_sync() -> bytes:
     return cbor2.dumps({"epoch_utc": now_utc, "tz": "America/Los_Angeles", "tx_ms": tx_ms})
 
 def build_profile() -> bytes:
-    # All fields maximized to their wire byte caps (ble-protocol.md §10).
+    # All fields maximized to their character limits (ble-protocol.md §10):
+    # name / title / email = 32 chars, phone = 16 chars. Slicing by characters
+    # (not bytes) mirrors the input cap Orion enforces.
     return cbor2.dumps({
-        "name":  ("Stress-Test Name Padding " * 3)[:64],
-        "title": ("Stress-Test Title Padding " * 3)[:64],
-        "email": ("stress.test.email@very-long-corporate-domain.engineering.example.com" * 2)[:128],
-        "phone": ("+1-555-867-5309-ext-00001234" * 2)[:32],
+        "name":  ("Stress-Test Name Padding " * 3)[:32],
+        "title": ("Stress-Test Title Padding " * 3)[:32],
+        "email": ("stress.test.email@example.com.org" * 2)[:32],
+        "phone": ("+1-555-867-5309-000" * 2)[:16],
     })
 
 def build_meetings() -> bytes:
@@ -541,4 +561,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--address", metavar="AA:BB:CC:DD:EE:FF",
                         help="BLE address of Ori (skips scan)")
-    asyncio.run(main(parser.parse_args()))
+    parser.add_argument("--photo-quality", type=int, metavar="1-95",
+                        help="force JPEG quality for the profile + PTO photos "
+                             "(lower = smaller/worse). Default: highest that fits the cap.")
+    args = parser.parse_args()
+    if args.photo_quality is not None:
+        if not 1 <= args.photo_quality <= 95:
+            parser.error("--photo-quality must be between 1 and 95")
+        _FORCED_JPEG_QUALITY = args.photo_quality
+    asyncio.run(main(args))

@@ -42,7 +42,7 @@ Both screens share the same wordmark + title + description + primary-button stac
 - If PC pairing fails, stay on Step 2 and allow retry.
 - No backward navigation through steps.
 - The only alternative exit is factory reset (long-press profile photo).
-- iPhone pairing is optional; user may skip and pair later via long-press.
+- iPhone pairing is optional; user may skip and pair later by tapping the status-bar phone icon.
 
 ## Factory Reset
 
@@ -53,7 +53,8 @@ Both screens share the same wordmark + title + description + primary-button stac
 
 ## Runtime Re-Pair iPhone
 
-- **Trigger**: long-press the phone-disconnect icon in the status bar for 3 seconds.
+- **Trigger**: tap the status-bar phone icon while the iPhone is disconnected (the icon is always visible; red = disconnected). If a stale bond exists it is wiped automatically so the iPhone slot reopens.
+- Tapping the phone icon while **connected** opens the **Unpair iPhone** modal instead (personalised with the phone's GAP device name).
 - Available from every runtime state (not during first-boot setup).
 - Status bar **hidden** during re-pair — layout identical to Step 3.
 - A Cancel button returns to the main screen.

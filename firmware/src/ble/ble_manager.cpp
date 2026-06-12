@@ -152,8 +152,20 @@ constexpr uint32_t CONNECT_ORION_MIN_MS = 700;
 uint32_t g_orion_bonded_ms   = 0;
 bool     g_orioning_pending  = false;
 
-// Preferences handle for bond address storage.
+// Preferences handle for bond address storage. ONLY touched on the main task
+// (prime_bond_cache at boot + save/wipe drained through poll()). The NimBLE
+// host-task callbacks never open it — see the RAM cache below.
 Preferences g_prefs;
+
+// RAM-cached bond addresses. Primed once at boot by prime_bond_cache() and kept
+// in sync by save_bond_addr()/wipe_*. ALL hot-path reads (onConnect,
+// onAuthenticationComplete, restart_advertising — which run on the NimBLE host
+// task) read these instead of opening NVS. Opening the shared Preferences
+// handle from the host task races the main task's NVS access and corrupts it,
+// crashing deep in the NVS partition manager (the LoadProhibited seen on a
+// power-cycle reconnect when both peers are bonded).
+uint8_t g_orion_addr_cache[6]  = {};
+uint8_t g_iphone_addr_cache[6] = {};
 
 // Current setup sub-state for bond slot gating.
 // Returns true when Orion bonding is allowed.
@@ -241,18 +253,33 @@ public:
             eq_push(ev);
         } else if (conn_matches(info, iphone_addr)) {
             // Known iPhone reconnecting (matched by identity address).
-            LOG("[ble] iPhone reconnected (bonded peer)\n");
+            // Track the link, but do NOT start ANCS here: the ANCS service is
+            // encrypted, so discovery + CCCD subscription must wait until the
+            // link re-encrypts. The IphoneConnected event (which starts ANCS) is
+            // posted from onAuthenticationComplete, after encryption is restored.
+            // Starting it here (pre-encryption) made the CCCD writes fail
+            // silently, so iOS never delivered notifications.
+            LOG("[ble] iPhone reconnected (bonded peer) — awaiting encryption\n");
             g_iphone_connected = true;
             g_iphone_conn      = handle;
-            BleEvent ev = {};
-            ev.type = BleEventType::IphoneConnected;
-            ev.data.conn_handle = handle;
-            eq_push(ev);
         } else {
             // Unknown peer — fresh connection, awaiting pairing.
             // Passkey modal is shown via onPassKeyDisplay() when NimBLE begins
             // the passkey exchange — not here on connect.
             LOG("[ble] unknown peer — awaiting bond\n");
+
+            // During the iPhone-pairing window (Setup Step 4 / runtime re-pair),
+            // request security immediately so the passkey prompt appears right
+            // away. Without this, a central that doesn't auto-initiate pairing
+            // on its own (e.g. nRF Connect standing in for an iPhone) sits
+            // connected-but-unencrypted until the user manually writes to an
+            // encrypted characteristic. Unlike the Orion case above, there is no
+            // central-driven pairing to race here — this window is mutually
+            // exclusive with Orion's Step 2 bonding window.
+            if (g_iphone_pairing_window && ble_manager::is_bond_slot_empty(iphone_addr)) {
+                LOG("[ble] iPhone pairing window open — requesting security\n");
+                NimBLEDevice::startSecurity(handle);
+            }
         }
 
         // BLE auto-stops advertising when a connection forms. Re-advertise after
@@ -341,9 +368,13 @@ public:
         }
         if (conn_matches(info, iphone_addr)) {
             LOG("[ble] iPhone bonded peer reconnected — encryption restored\n");
-            if (g_iphone_conn != handle) {
-                g_iphone_connected = true;
-                g_iphone_conn      = handle;
+            // Always (re)post here for the iPhone — onConnect intentionally does
+            // NOT post for it, so ANCS discovery + subscription run only now that
+            // the link is encrypted. on_iphone_connected() is idempotent if the
+            // event somehow arrives twice.
+            g_iphone_connected = true;
+            g_iphone_conn      = handle;
+            {
                 BleEvent ev = {};
                 ev.type = BleEventType::IphoneConnected;
                 ev.data.conn_handle = handle;
@@ -450,17 +481,11 @@ void poll() {
                 break;
 
             case BleEventType::PresenceUpdate: {
-                // Update the profile card widget on the current screen.
-                // widget_profile_card::set_default_presence already called; no-op needed
-                // unless we want to update a live screen's profile card directly.
-                widget_profile_card::set_default_presence(ev.data.presence);
-                // Trigger a state machine re-evaluate so the newly loaded screen
-                // (if any) picks up the new presence in apply_widget_defaults.
-                // We call g_force_rebuild-style: post a minimal state change that
-                // keeps the current state but refreshes the profile card.
-                // state_machine::evaluate() will call apply_widget_defaults() again.
-                // For a live already-loaded screen, we need the card reference.
-                // In M5 we keep it simple: the next screen load will use the new default.
+                // Cache the value in state_machine so apply_widget_defaults()
+                // reflects it on future screen rebuilds instead of clobbering it
+                // back to a hardcoded value. set_presence() also updates the
+                // active card immediately.
+                state_machine::set_presence(static_cast<uint8_t>(ev.data.presence));
                 break;
             }
 
@@ -588,9 +613,18 @@ void poll() {
 
             case BleEventType::IphoneBonded:
                 LOG("[ble:poll] iPhone bonded\n");
+                // Persist the iPhone bond slot here, on the main task. The host
+                // task already updated the RAM cache in on_iphone_bonded(); this
+                // commits it to NVS off the host-task stack.
+                save_bond_addr(BOND_KEY_IPHONE, ev.peer_addr);
                 g_iphone_connected = true;
                 g_iphone_conn      = ev.data.conn_handle;
                 state_machine::set_phone_connected(true);
+                // Start ANCS on the fresh-bond connection too. Without this,
+                // NS/DS were only subscribed on a bonded RECONNECT — after the
+                // very first pairing no notifications arrived until the iPhone
+                // dropped and re-connected. Idempotent if already subscribed.
+                ancs_client::on_iphone_connected(ev.data.conn_handle);
                 restart_advertising();
                 // First-boot setup: the iPhone bonding at Step 4 completes the
                 // optional phone-pairing step → advance to the Setup Complete
@@ -665,6 +699,11 @@ void poll() {
         delay(200);
         ESP.restart();
     }
+
+    // Drain ANCS notifications captured by the host-task notify callbacks. Done
+    // here (main task) so the attribute-request CP write and the status-bar
+    // LVGL refresh run off the host task — see ancs_client::poll().
+    ancs_client::poll();
 }
 
 void quiesce_for_commit() {
@@ -808,17 +847,45 @@ void set_iphone_pairing_window(bool active) {
     restart_advertising();
 }
 
-void load_bond_addr(const char* key, uint8_t out_addr[6]) {
-    memset(out_addr, 0, 6);
+// Map a bond-slot key to its RAM cache array. Returns nullptr for an unknown key.
+static uint8_t* cache_for_key(const char* key) {
+    if (strcmp(key, BOND_KEY_ORION)  == 0) return g_orion_addr_cache;
+    if (strcmp(key, BOND_KEY_IPHONE) == 0) return g_iphone_addr_cache;
+    return nullptr;
+}
+
+void prime_bond_cache() {
+    // One-time NVS read on the main task at boot, BEFORE the BLE stack starts
+    // accepting connections. After this every load_bond_addr() reads RAM, so the
+    // host-task callbacks never open NVS. Must run before state_machine::init()
+    // (which reads the iPhone slot) and before ble_manager::init().
+    memset(g_orion_addr_cache,  0, 6);
+    memset(g_iphone_addr_cache, 0, 6);
     // readOnly=false creates the namespace on first access; readOnly=true returns
     // NOT_FOUND on a fresh device and logs a spurious error.
     if (g_prefs.begin(BOND_NS, /*readOnly=*/false)) {
-        g_prefs.getBytes(key, out_addr, 6);
+        g_prefs.getBytes(BOND_KEY_ORION,  g_orion_addr_cache,  6);
+        g_prefs.getBytes(BOND_KEY_IPHONE, g_iphone_addr_cache, 6);
         g_prefs.end();
     }
+    LOG("[ble] bond cache primed: orion=%d iphone=%d\n",
+        (int)!is_bond_slot_empty(g_orion_addr_cache),
+        (int)!is_bond_slot_empty(g_iphone_addr_cache));
+}
+
+void load_bond_addr(const char* key, uint8_t out_addr[6]) {
+    // Reads the RAM cache (primed by prime_bond_cache()). Does NOT open NVS, so
+    // it is safe to call from the NimBLE host-task callbacks.
+    const uint8_t* src = cache_for_key(key);
+    if (src) memcpy(out_addr, src, 6);
+    else     memset(out_addr, 0, 6);
 }
 
 void save_bond_addr(const char* key, const uint8_t addr[6]) {
+    // MAIN-TASK ONLY. Update the RAM cache first (so subsequent reads — including
+    // host-task callbacks — see the new value immediately), then persist to NVS.
+    uint8_t* dst = cache_for_key(key);
+    if (dst) memcpy(dst, addr, 6);
     if (g_prefs.begin(BOND_NS, /*readOnly=*/false)) {
         g_prefs.putBytes(key, addr, 6);
         g_prefs.end();
@@ -910,7 +977,11 @@ void on_iphone_bonded(uint16_t conn_handle, const uint8_t peer_addr[6]) {
     LOG("[ble] iPhone bonded addr=%02X:%02X:%02X:%02X:%02X:%02X\n",
                    peer_addr[5], peer_addr[4], peer_addr[3],
                    peer_addr[2], peer_addr[1], peer_addr[0]);
-    save_bond_addr(BOND_KEY_IPHONE, peer_addr);
+    // Runs on the NimBLE host task: update the RAM cache now so onConnect/
+    // onAuthenticationComplete immediately recognise this peer as bonded, but
+    // do NOT write NVS here. The NVS persist is done on the main task in the
+    // IphoneBonded poll handler (never open Preferences from the host task).
+    memcpy(g_iphone_addr_cache, peer_addr, 6);
     g_iphone_connected = true;
     g_iphone_conn      = conn_handle;
 
