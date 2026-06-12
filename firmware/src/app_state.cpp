@@ -51,10 +51,15 @@ time_t g_last_sync_epoch = 0;
 } // namespace
 
 const char* ble_name() {
+    // Canonical Ori BLE name — single source of truth for both the advertised
+    // name (ble_manager) and the on-screen pairing pill. MUST use the BT MAC
+    // (ESP_MAC_BT): that's the address the BLE stack actually advertises, so it's
+    // what the iPhone/Orion see. The WiFi STA MAC differs (BT MAC = base + 2 on
+    // the last octet), which previously made the screen and the advert disagree.
     static char buf[12] = {};
     if (buf[0]) return buf;
     uint8_t mac[6];
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    esp_read_mac(mac, ESP_MAC_BT);
     snprintf(buf, sizeof(buf), "Ori-%02X-%02X", mac[4], mac[5]);
     return buf;
 }

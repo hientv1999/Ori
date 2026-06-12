@@ -10,15 +10,17 @@ constexpr const char* NAMESPACE = "ori";
 
 // Key layout (see nvs_store.h for canonical table).
 constexpr const char* k_provisioned = "prov";       // bool: setup completed
+constexpr const char* k_sync_step   = "sync_step";  // bool: Orion bonded, awaiting first sync
 constexpr const char* k_phone_step  = "phone_step"; // bool: Orion synced, awaiting iPhone pair
 constexpr const char* k_mode        = "mode";       // uint8: 0=Calendar 1=Controls
 constexpr const char* k_ota_ack     = "ota_ack";    // string: post-update version
 
 Preferences prefs;
 
-// Both flags cached at init() so they are safe to read from any context
+// Flags cached at init() so they are safe to read from any context
 // (tick_cb → evaluate → compute_target_state) without opening NVS.
 bool g_is_first_boot   = true;
+bool g_awaiting_sync   = false;
 bool g_awaiting_phone  = false;
 
 } // namespace
@@ -33,10 +35,11 @@ void init() {
         return;
     }
     g_is_first_boot  = !prefs.getBool(k_provisioned, false);
+    g_awaiting_sync  =  prefs.getBool(k_sync_step,   false);
     g_awaiting_phone =  prefs.getBool(k_phone_step,  false);
     prefs.end();
-    LOG("[nvs] ready  first_boot=%d  awaiting_phone=%d\n",
-        (int)g_is_first_boot, (int)g_awaiting_phone);
+    LOG("[nvs] ready  first_boot=%d  awaiting_sync=%d  awaiting_phone=%d\n",
+        (int)g_is_first_boot, (int)g_awaiting_sync, (int)g_awaiting_phone);
 }
 
 void tick() {
@@ -53,21 +56,43 @@ bool is_first_boot() {
 
 void mark_setup_complete() {
     g_is_first_boot  = false;
+    g_awaiting_sync  = false;
     g_awaiting_phone = false;
     if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
         prefs.putBool(k_provisioned, true);
+        // Clear both resume bookmarks so NVS matches the RAM flags. Harmless
+        // either way (the resume path only runs while first_boot is true), but
+        // keeps the persisted state honest.
+        prefs.putBool(k_sync_step,  false);
+        prefs.putBool(k_phone_step, false);
         prefs.end();
     }
     LOG("[nvs] setup complete — provisioned flag set\n");
 }
 
+void mark_orion_bonded() {
+    g_awaiting_sync = true;
+    if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
+        prefs.putBool(k_sync_step, true);
+        prefs.end();
+    }
+    LOG("[nvs] orion bonded — sync step persisted\n");
+}
+
 void mark_orion_synced() {
+    // Advanced past the sync step: clear the sync bookmark, set the phone one.
+    g_awaiting_sync  = false;
     g_awaiting_phone = true;
     if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
+        prefs.putBool(k_sync_step,  false);
         prefs.putBool(k_phone_step, true);
         prefs.end();
     }
     LOG("[nvs] orion synced — phone pairing step persisted\n");
+}
+
+bool is_awaiting_sync() {
+    return g_awaiting_sync;
 }
 
 bool is_awaiting_phone_pairing() {
@@ -97,6 +122,7 @@ void set_mode(uint8_t mode) {
 
 void factory_reset() {
     g_is_first_boot  = true;
+    g_awaiting_sync  = false;
     g_awaiting_phone = false;
     if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
         prefs.clear();

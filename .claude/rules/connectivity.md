@@ -16,7 +16,7 @@ The USB-C cable is always physically attached (wall power). When the other end i
 
 ## Bond policy
 
-Two bonded peer slots: one PC (Orion), one iPhone (ANCS). Both filled → directed advertising only; unknown devices cannot connect. Factory reset clears both slots. Full advertising state machine: `ble-protocol.md` §2.
+Two bonded peer slots: one PC (Orion), one iPhone (ANCS). New bonds only in state-gated pairing windows; outside them an unknown device can connect but can neither bond nor read/write encrypted data. When both are bonded and connected, advertising stops; if one drops, Ori advertises public undirected so it can reconnect. Factory reset clears both slots. Full advertising state machine: `ble-protocol.md` §2.
 
 ## 1. PC ↔ Ori (Orion app)
 

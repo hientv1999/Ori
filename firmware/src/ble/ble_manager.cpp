@@ -32,8 +32,9 @@
 #include "widgets/widget_profile_card.h"
 
 // ── BLE device name ────────────────────────────────────────────────────────
-// Format: Ori-XX-XX (last 2 bytes of BT MAC address, uppercase hex).
-// If the MAC cannot be read, fall back to app_state's ble_name().
+// Format: Ori-XX-XX (last 2 bytes of BT MAC, uppercase hex). The canonical
+// builder is app_state::ble_name(); init() copies it into g_ble_name so the
+// advertised name and the on-screen pairing pill share one source.
 #include "app_state.h"
 
 // ANCS service UUID (for advertising).
@@ -56,7 +57,8 @@ enum class BleEventType : uint8_t {
     SyncEnd,           // staged commit done       — advance setup / dismiss reconnect overlay
     OrioningProgress,  // sync milestone reached  — update progress ring (0–100)
     OrionConnected,
-    OrionBonded,
+    OrionBonded,         // provisional bond formed (passkey OK) — UI only, NOT persisted
+    OrionConfirmed,      // bonded peer proved it's Orion (valid SyncControl{BEGIN}) — persist
     OrionDisconnected,
     IphoneConnected,
     IphoneBonded,
@@ -116,6 +118,40 @@ uint32_t g_passkey = 0;
 // Flag for deferred restart (factory reset from BLE callback).
 volatile bool g_restart_pending = false;
 
+// Set true by quiesce_for_commit() right before the OTA flash commit tears the
+// BLE stack down. While set, onDisconnect() must NOT restart advertising or
+// touch NVS — we are seconds from reboot, and re-entering the stack (or racing
+// the flash write) is exactly what crashes the commit.
+volatile bool g_quiescing = false;
+
+// True while the iPhone-pairing UI is on screen (Setup Step 4 or runtime
+// re-pair). Gates whether the ANCS service UUID is included in public
+// undirected advertising — see set_iphone_pairing_window() / restart_advertising().
+bool g_iphone_pairing_window = false;
+
+// Orion-bond handshake gating. A peer that completes passkey bonding during
+// Step 2 is only PROVISIONALLY Orion: its address is held in RAM (not persisted
+// to the orion_addr slot) until it proves it speaks the Ori protocol by writing
+// a valid SyncControl{BEGIN} (confirm_orion_peer()). A peer that bonds but never
+// sends BEGIN within ORION_HANDSHAKE_TIMEOUT_MS — a stray phone or non-Orion PC
+// someone paired off Ori's passkey screen — is dropped, never saved as Orion.
+constexpr uint32_t ORION_HANDSHAKE_TIMEOUT_MS = 5000;
+volatile bool g_orion_provisional         = false;
+uint8_t       g_provisional_orion_addr[6] = {};
+uint16_t      g_provisional_orion_conn    = 0xFFFF; // BLE_HS_CONN_HANDLE_NONE
+uint32_t      g_orion_handshake_deadline  = 0;
+
+// "Connect on Orion" minimum-linger (setup only). When the passkey modal closes
+// on bonding, the "Connect on Orion" base screen (spinner) is revealed. Orion
+// can send SyncControl{BEGIN} almost immediately after, and poll() drains all
+// queued BLE events before rendering — so without this, the Orioning modal could
+// cover the base screen in the same frame and the user would never see it. We
+// stamp the bond time and defer the Orioning modal until CONNECT_ORION_MIN_MS
+// has elapsed, guaranteeing the "Connect on Orion" screen is visible for a beat.
+constexpr uint32_t CONNECT_ORION_MIN_MS = 700;
+uint32_t g_orion_bonded_ms   = 0;
+bool     g_orioning_pending  = false;
+
 // Preferences handle for bond address storage.
 Preferences g_prefs;
 
@@ -142,6 +178,31 @@ bool is_iphone_pairing_allowed() {
 
 } // namespace
 
+// ── Peer identity matching ─────────────────────────────────────────────────
+// Match a connection against a stored bond address by the RESOLVED IDENTITY
+// address (peer_id_addr), with the over-the-air address (peer_ota_addr) as a
+// fallback. A bonded peer that uses address privacy (notably iPhone, but also
+// many PCs) reconnects with a *different* OTA address each time while its
+// identity stays constant — so matching the OTA address fails on reconnect and
+// the peer looks "unknown". Matching the identity is what makes reconnection
+// reliable. (getIdAddress()/getAddress() return temporaries; only deref inline.)
+static bool conn_matches(NimBLEConnInfo& info, const uint8_t addr[6]) {
+    if (ble_manager::is_bond_slot_empty(addr)) return false;
+    return memcmp(info.getIdAddress().getVal(), addr, 6) == 0 ||
+           memcmp(info.getAddress().getVal(),   addr, 6) == 0;
+}
+
+// Address to persist for a NEW bond: the resolved identity (stable across
+// reconnects), falling back to the OTA address only if no identity was exchanged.
+static const uint8_t* bond_addr_to_store(NimBLEConnInfo& info) {
+    static uint8_t buf[6];
+    memcpy(buf, info.getIdAddress().getVal(), 6);  // temporary valid during memcpy
+    bool id_empty = true;
+    for (int i = 0; i < 6; ++i) if (buf[i]) { id_empty = false; break; }
+    if (id_empty) memcpy(buf, info.getAddress().getVal(), 6);
+    return buf;
+}
+
 // ── NimBLE Server callbacks ────────────────────────────────────────────────
 
 class OriServerCallbacks : public NimBLEServerCallbacks {
@@ -155,18 +216,22 @@ public:
         // Request maximum MTU.
         NimBLEDevice::setMTU(247);
 
+        // NOTE: do NOT call NimBLEDevice::startSecurity() here. Forcing a
+        // peripheral-initiated Security Request on connect races the central's
+        // own pairing procedure — the two SMP exchanges collide and pairing
+        // fails mid-passkey (auth complete bonded=0 → we disconnect, dropping
+        // the link while the user is still entering the code). Let the central
+        // drive pairing; it requests encryption right after connecting (it needs
+        // it to sync), so the passkey modal still appears promptly.
+
         // Determine which slot this connection belongs to by checking stored addresses.
         uint8_t orion_addr[6]  = {};
         uint8_t iphone_addr[6] = {};
         ble_manager::load_bond_addr(ble_manager::BOND_KEY_ORION,  orion_addr);
         ble_manager::load_bond_addr(ble_manager::BOND_KEY_IPHONE, iphone_addr);
 
-        // NimBLE 2.5: use getVal() to get the raw address bytes.
-        const uint8_t* peer_raw = info.getAddress().getVal();
-
-        if (!ble_manager::is_bond_slot_empty(orion_addr) &&
-            memcmp(peer_raw, orion_addr, 6) == 0) {
-            // Known Orion reconnecting.
+        if (conn_matches(info, orion_addr)) {
+            // Known Orion reconnecting (matched by identity address).
             LOG("[ble] Orion reconnected (bonded peer)\n");
             g_orion_connected = true;
             g_orion_conn      = handle;
@@ -174,9 +239,8 @@ public:
             ev.type = BleEventType::OrionConnected;
             ev.data.conn_handle = handle;
             eq_push(ev);
-        } else if (!ble_manager::is_bond_slot_empty(iphone_addr) &&
-                   memcmp(peer_raw, iphone_addr, 6) == 0) {
-            // Known iPhone reconnecting.
+        } else if (conn_matches(info, iphone_addr)) {
+            // Known iPhone reconnecting (matched by identity address).
             LOG("[ble] iPhone reconnected (bonded peer)\n");
             g_iphone_connected = true;
             g_iphone_conn      = handle;
@@ -190,6 +254,25 @@ public:
             // the passkey exchange — not here on connect.
             LOG("[ble] unknown peer — awaiting bond\n");
         }
+
+        // BLE auto-stops advertising when a connection forms. Re-advertise after
+        // a KNOWN peer (re)connects whenever Ori still needs to be discoverable:
+        //   • both peers bonded → the other bonded peer can still reconnect;
+        //   • iPhone-pairing window open + iPhone slot empty → the ANCS advert
+        //     must survive an Orion (re)connect, or the iPhone can never see Ori
+        //     (this is the "advertising disappears at the pairing screen" bug).
+        // We skip this for an UNKNOWN peer — that's a fresh pairing in progress,
+        // and re-advertising mid-bond would invite a second connection.
+        // restart_advertising() stops again on its own once both are connected.
+        bool known_peer = conn_matches(info, orion_addr) ||
+                           conn_matches(info, iphone_addr);
+        bool both_bonded = !ble_manager::is_bond_slot_empty(orion_addr) &&
+                           !ble_manager::is_bond_slot_empty(iphone_addr);
+        bool ancs_window = g_iphone_pairing_window &&
+                           ble_manager::is_bond_slot_empty(iphone_addr);
+        if (known_peer && (both_bonded || ancs_window)) {
+            ble_manager::restart_advertising();
+        }
     }
 
     void onDisconnect(NimBLEServer* server,
@@ -197,6 +280,11 @@ public:
         uint16_t handle = info.getConnHandle();
         LOG("[ble] peer disconnected handle=%u reason=%d\n",
                        (unsigned)handle, reason);
+
+        // OTA flash commit is tearing the stack down — these disconnects are us
+        // closing peers in quiesce_for_commit(). Do not restart advertising or
+        // post events; the device reboots in a moment.
+        if (g_quiescing) return;
 
         if (handle == g_orion_conn) {
             g_orion_connected = false;
@@ -230,24 +318,51 @@ public:
             return;
         }
 
-        // NimBLE 2.5: use getVal() to get the raw address bytes.
-        const uint8_t* peer_raw = info.getAddress().getVal();
-
-        // Determine which slot to assign.
         uint8_t orion_addr[6]  = {};
         uint8_t iphone_addr[6] = {};
         ble_manager::load_bond_addr(ble_manager::BOND_KEY_ORION,  orion_addr);
         ble_manager::load_bond_addr(ble_manager::BOND_KEY_IPHONE, iphone_addr);
 
+        // RECONNECT of an already-bonded peer: its identity matches a filled slot
+        // and the link just re-encrypted with the stored LTK. This fires on every
+        // bonded reconnect (encryption restart), so it must NOT be treated as a
+        // new bond — previously it hit the reject branch and disconnected Orion.
+        if (conn_matches(info, orion_addr)) {
+            LOG("[ble] Orion bonded peer reconnected — encryption restored\n");
+            if (g_orion_conn != handle) {  // onConnect couldn't resolve identity yet
+                g_orion_connected = true;
+                g_orion_conn      = handle;
+                BleEvent ev = {};
+                ev.type = BleEventType::OrionConnected;
+                ev.data.conn_handle = handle;
+                eq_push(ev);
+            }
+            return;
+        }
+        if (conn_matches(info, iphone_addr)) {
+            LOG("[ble] iPhone bonded peer reconnected — encryption restored\n");
+            if (g_iphone_conn != handle) {
+                g_iphone_connected = true;
+                g_iphone_conn      = handle;
+                BleEvent ev = {};
+                ev.type = BleEventType::IphoneConnected;
+                ev.data.conn_handle = handle;
+                eq_push(ev);
+            }
+            return;
+        }
+
+        // NEW bond — assign to an open slot if the current state permits pairing.
+        // Store the resolved IDENTITY address so future reconnects match.
         bool orion_empty  = ble_manager::is_bond_slot_empty(orion_addr);
         bool iphone_empty = ble_manager::is_bond_slot_empty(iphone_addr);
 
         if (orion_empty && is_orion_pairing_allowed()) {
             // New Orion bond — Step 2.
-            ble_manager::on_orion_bonded(handle, peer_raw);
+            ble_manager::on_orion_bonded(handle, bond_addr_to_store(info));
         } else if (iphone_empty && is_iphone_pairing_allowed()) {
             // New iPhone bond — Step 4 / re-pair.
-            ble_manager::on_iphone_bonded(handle, peer_raw);
+            ble_manager::on_iphone_bonded(handle, bond_addr_to_store(info));
         } else {
             // Bond slots full or state doesn't allow bonding.
             LOG("[ble] bond rejected: slots full or wrong state\n");
@@ -279,21 +394,6 @@ static OriServerCallbacks s_server_cb;
 
 // ── Advertising helpers ────────────────────────────────────────────────────
 
-namespace {
-
-static std::string make_ble_name() {
-    // Read BT MAC via IDF — safe to call before NimBLEDevice::init().
-    // esp_read_mac returns bytes MSB-first: mac[0]=MSB, mac[5]=LSB.
-    uint8_t mac[6] = {};
-    esp_read_mac(mac, ESP_MAC_BT);
-    char name[16];
-    snprintf(name, sizeof(name), "Ori-%02X-%02X",
-             (unsigned)mac[4], (unsigned)mac[5]);
-    return std::string(name);
-}
-
-} // namespace
-
 // ── ble_manager public API ─────────────────────────────────────────────────
 
 namespace ble_manager {
@@ -304,7 +404,9 @@ void init() {
     // g_passkey starts at 0; regenerated fresh in onPassKeyDisplay() on each
     // bonding attempt so every attempt shows a unique code.
 
-    g_ble_name = make_ble_name();
+    // Single source of truth for the device name (BT-MAC-derived) so the
+    // advertised name and the on-screen pairing pill can never disagree.
+    g_ble_name = app_state::ble_name();
     NimBLEDevice::init(g_ble_name);
     NimBLEDevice::setMTU(247);
 
@@ -417,19 +519,46 @@ void poll() {
                 break;
 
             case BleEventType::OrionBonded:
-                LOG("[ble:poll] Orion bonded\n");
+                LOG("[ble:poll] Orion bonded (provisional — awaiting handshake)\n");
                 g_orion_connected = true;
                 g_orion_conn      = ev.data.conn_handle;
                 state_machine::set_pc_connected(true);
                 gatt_server::set_device_status(0x01); // SETUP_BONDED_AWAITING_SYNC
-                // Bonding complete — hide passkey modal, return to Pairing base screen
-                // (BLE name + spinner). Orioning modal appears on SyncBegin below.
+                // NOTE: bond is provisional — not persisted, and no resume bookmark
+                // yet. Both happen on OrionConfirmed (valid SyncControl{BEGIN}).
+                // Bonding complete — hide passkey modal, revealing the "Connect on
+                // Orion" base screen (BLE name + spinner). Stamp the time so the
+                // Orioning modal (on SyncBegin) lingers behind a guaranteed-visible
+                // beat of this screen.
                 screen_setup::hide_passkey_modal(lv_scr_act());
+                g_orion_bonded_ms  = millis();
+                g_orioning_pending = false;
+                break;
+
+            case BleEventType::OrionConfirmed:
+                if (g_orion_provisional) {
+                    LOG("[ble:poll] Orion confirmed — persisting bond\n");
+                    save_bond_addr(BOND_KEY_ORION, g_provisional_orion_addr);
+                    g_orion_provisional = false;
+                    // Now safe to set the "bonded, awaiting first sync" resume
+                    // bookmark (first boot only): a power cycle mid-Orioning
+                    // resumes on the Link-Orion screen, and Orion reconnects via
+                    // the now-persisted bond. Cleared at SyncEnd.
+                    if (nvs::is_first_boot()) {
+                        nvs::mark_orion_bonded();
+                    }
+                }
                 break;
 
             case BleEventType::SyncBegin:
-                LOG("[ble:poll] sync begin — showing orioning modal\n");
-                screen_setup::show_orioning_modal(lv_scr_act());
+                LOG("[ble:poll] sync begin\n");
+                // Setup only: defer the Orioning modal so the "Connect on Orion"
+                // screen gets its guaranteed beat (poll() shows it once
+                // CONNECT_ORION_MIN_MS has elapsed since bonding). The runtime
+                // reconnect path uses the reconnect overlay, not this modal.
+                if (nvs::is_first_boot()) {
+                    g_orioning_pending = true;
+                }
                 break;
 
             case BleEventType::SyncCommit:
@@ -439,6 +568,7 @@ void poll() {
 
             case BleEventType::SyncEnd:
                 LOG("[ble:poll] sync end\n");
+                g_orioning_pending = false;  // don't pop the modal after we advance
                 if (nvs::is_first_boot()) {
                     // Persist "at phone pairing step" before advancing the UI so
                     // a power cycle between now and setup completion resumes here.
@@ -461,13 +591,25 @@ void poll() {
                 g_iphone_connected = true;
                 g_iphone_conn      = ev.data.conn_handle;
                 state_machine::set_phone_connected(true);
-                // Restart advertising as directed-only now that both slots are filled.
                 restart_advertising();
+                // First-boot setup: the iPhone bonding at Step 4 completes the
+                // optional phone-pairing step → advance to the Setup Complete
+                // screen (its 5 s timer then transitions to runtime). Without
+                // this, only the "Skip" button advanced, so a successful pair
+                // left the UI stuck on the Connect-on-iPhone screen.
+                if (nvs::is_first_boot()) {
+                    screen_setup::set_step(lv_scr_act(), screen_setup::Step::Complete);
+                }
                 break;
 
             case BleEventType::OrionDisconnected:
                 LOG("[ble:poll] Orion disconnected\n");
                 state_machine::set_pc_connected(false);
+                // A provisional (unconfirmed) peer that drops was never Orion —
+                // clear the handshake state so the timeout path doesn't fire on a
+                // stale handle. Nothing was persisted, so there's nothing to undo.
+                g_orion_provisional = false;
+                g_orioning_pending  = false;  // cancel any pending Orioning modal
                 // Force presence to Offline immediately (never show stale presence).
                 widget_profile_card::set_default_presence(
                     widget_profile_card::Presence::Offline);
@@ -486,6 +628,34 @@ void poll() {
         }
     }
 
+    // Deferred Orioning modal: SyncControl{BEGIN} arrived, but hold the modal
+    // back until the "Connect on Orion" screen has been visible for at least
+    // CONNECT_ORION_MIN_MS since bonding (see g_orioning_pending). is_first_boot
+    // guards it to setup; show_orioning_modal must only run on the setup screen.
+    if (g_orioning_pending &&
+        (int32_t)(millis() - g_orion_bonded_ms) >= (int32_t)CONNECT_ORION_MIN_MS) {
+        g_orioning_pending = false;
+        screen_setup::show_orioning_modal(lv_scr_act());
+    }
+
+    // Orion handshake timeout: a peer bonded (passkey OK) but never sent a valid
+    // SyncControl{BEGIN} — it isn't Orion. Drop it (disconnect + delete its LTK
+    // bond) so it's never saved as the Orion slot, and keep advertising for the
+    // real Orion. onDisconnect() handles re-advertising and connection cleanup.
+    if (g_orion_provisional &&
+        (int32_t)(millis() - g_orion_handshake_deadline) >= 0) {
+        LOG("[ble] Orion handshake timeout — dropping unconfirmed peer\n");
+        g_orion_provisional = false;
+        NimBLEServer* server = NimBLEDevice::getServer();
+        if (server && g_provisional_orion_conn != BLE_HS_CONN_HANDLE_NONE) {
+            server->disconnect(g_provisional_orion_conn);
+        }
+        NimBLEAddress addr(g_provisional_orion_addr, BLE_ADDR_PUBLIC);
+        NimBLEDevice::deleteBond(addr);
+        // onDisconnect() (fired by the disconnect above) resets connection state
+        // and restarts advertising for the real Orion.
+    }
+
     // Factory-reset deferred restart (from remote BLE factory-reset command
     // or from the local long-press path if it posted to the event queue).
     if (g_restart_pending) {
@@ -499,11 +669,38 @@ void poll() {
 
 void quiesce_for_commit() {
     LOG("[ble] quiescing stack for OTA flash commit\n");
+
+    // Make disconnect handling inert for the rest of this routine: the
+    // disconnects we issue below must not restart advertising or open NVS
+    // (onDisconnect checks g_quiescing and bails).
+    g_quiescing = true;
+
     // Stop advertising first so no new connection/bond (and its NVS flash write)
-    // can begin, then tear down host + controller. deinit(false) leaves bonds in
-    // NVS untouched; the post-commit reboot re-inits BLE from scratch.
+    // can begin.
     NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
     if (adv) adv->stop();
+
+    // Close every active connection WHILE the host is still fully initialised.
+    // deinit() with a live link aborts any in-flight GATT operation — e.g. the
+    // ANCS client's service discovery — and on this NimBLE build that abort
+    // callback (NimBLEClient::serviceDiscoveredCB → taskRelease) runs against
+    // host/task state deinit() has already freed, dereferencing a null pointer
+    // (InstrFetchProhibited, PC=0). Disconnecting here lets those callbacks run
+    // against a live stack, then we wait for the links to actually close so
+    // deinit() has nothing left to tear down.
+    NimBLEServer* server = NimBLEDevice::getServer();
+    if (server) {
+        for (uint16_t h : server->getPeerDevices()) {
+            server->disconnect(h);
+        }
+        uint32_t t0 = millis();
+        while (server->getConnectedCount() > 0 && (millis() - t0) < 600) {
+            delay(10);
+        }
+    }
+
+    // Tear down host + controller. deinit(false) leaves bonds in NVS untouched;
+    // the post-commit reboot re-inits BLE from scratch.
     NimBLEDevice::deinit(false);
 }
 
@@ -523,55 +720,92 @@ void restart_advertising() {
     bool orion_bonded  = !is_bond_slot_empty(orion_addr);
     bool iphone_bonded = !is_bond_slot_empty(iphone_addr);
 
-    if (orion_bonded && iphone_bonded) {
-        // Both slots full — directed advertising to Orion (primary sync peer).
-        // NimBLE 2.5 directed advertising: setConnectableMode(DIR) + pass address to start().
-        // We prioritise Orion; iPhone re-bonds on its own reconnect timer.
-        LOG("[ble] adv: directed (both bonded)\n");
-        adv->reset();
-        adv->setConnectableMode(BLE_GAP_CONN_MODE_DIR);
-        // Determine the address type from stored bond — use PUBLIC as stored.
-        NimBLEAddress orion_ble_addr(orion_addr, BLE_ADDR_PUBLIC);
-        adv->start(0, &orion_ble_addr);
+    if (orion_bonded && iphone_bonded &&
+        g_orion_connected && g_iphone_connected) {
+        // Both bonded peers are already connected — nothing to advertise for.
+        // Re-armed by onDisconnect when either drops (so the missing peer can
+        // reconnect), and by onConnect after the first of the two reconnects.
+        LOG("[ble] adv: stopped (both bonded peers connected)\n");
+        adv->stop();
         return;
     }
+    // NOTE: when both peers are bonded but one (or both) is disconnected — e.g.
+    // after a power cycle — we fall through to UNDIRECTED connectable advertising
+    // below, NOT directed. Undirected lets EITHER central reconnect on its own:
+    // the iPhone auto-reconnects off the advert, and Orion reconnects via its own
+    // scan (matching the Ori Sync UUID). A directed advert can only target one
+    // address, which previously left the iPhone unable to reconnect. No accept-
+    // list: bonding is state-gated and every data characteristic is encrypted, so
+    // a stranger that connects can neither bond nor read/write anything — and an
+    // accept-list keyed on the iPhone's rotating private address is fragile.
 
-    // Public undirected advertising.
-    // 31-byte adv packet budget:
-    //   Flags (auto)   3 B
-    //   Ori Sync UUID 18 B  (128-bit)
-    //   Mfr data       5 B  (type + 0xFF 0xFF + flag)
-    //   Total         26 B  ✓
+    // Public undirected advertising, in one of two flavours (two 128-bit UUIDs
+    // don't fit one 31-byte packet, so they're mutually exclusive):
     //
-    // 31-byte scan-response budget:
-    //   Device name   11 B  ("Ori-XX-XX" = 9 chars + 2 overhead)
-    //   ANCS UUID     18 B  (128-bit)
-    //   Total         29 B  ✓
+    //  • iPhone-pairing advert — pairing window open + iPhone slot empty. iOS
+    //    engages an accessory that SOLICITS its ANCS service: the ANCS UUID must
+    //    be in the primary advert as a "list of 128-bit Service Solicitation
+    //    UUIDs" (AD type 0x15) — meaning "I want a device that PROVIDES ANCS" —
+    //    NOT as a provided-service list (0x06/0x07). Advertising it as a provided
+    //    service is why the device showed in nRF ("Services: ANCS") but iOS never
+    //    listed/engaged it. Built by hand since NimBLE has no solicitation setter.
+    //      adv: Flags 3 + ANCS solicitation 18 + Appearance 4 = 25 B ✓ (name in scan resp)
     //
-    // Both Orion (active scan) and iPhone (active scan for ANCS) read scan responses.
+    //  • Orion-discovery advert (default) — Ori Sync UUID + manufacturer mode
+    //    flag so Orion can discover and classify Ori.
+    //      adv: Flags 3 + Ori Sync UUID 18 + Mfr 5 = 26 B ✓ (name in scan resp)
+    bool advertise_ancs = !iphone_bonded && g_iphone_pairing_window;
+    uint8_t mfr_flag = (orion_bonded) ? ADV_FLAG_RUNTIME : ADV_FLAG_SETUP;
+
     adv->reset();
     adv->setConnectableMode(BLE_GAP_CONN_MODE_UND);
 
-    // Adv packet: Ori Sync UUID + manufacturer mode flag.
-    adv->addServiceUUID(ORI_SVC_UUID);
-    uint8_t mfr_flag = (orion_bonded) ? ADV_FLAG_RUNTIME : ADV_FLAG_SETUP;
-    uint8_t mfr_data[3] = { 0xFF, 0xFF, mfr_flag };
-    adv->setManufacturerData(std::string((char*)mfr_data, 3));
+    if (advertise_ancs) {
+        // ANCS Service Solicitation (AD type 0x15). getValue() yields the 16-byte
+        // UUID little-endian, exactly the on-air order for the AD field.
+        NimBLEUUID ancs(ANCS_SVC_UUID);
+        uint8_t sol[18];
+        sol[0] = 0x11;  // length = 1 (AD type) + 16 (UUID)
+        sol[1] = 0x15;  // AD type: list of 128-bit Service Solicitation UUIDs
+        memcpy(&sol[2], ancs.getValue(), 16);
 
-    // Scan response: device name + ANCS UUID.
+        NimBLEAdvertisementData advData;
+        advData.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
+        advData.addData(sol, sizeof(sol));
+        advData.setAppearance(0x0180);       // generic — helps iOS surface Ori
+        adv->setAdvertisementData(advData);
+    } else {
+        adv->addServiceUUID(ORI_SVC_UUID);
+        uint8_t mfr_data[3] = { 0xFF, 0xFF, mfr_flag };
+        adv->setManufacturerData(std::string((char*)mfr_data, 3));
+    }
+
+    // Scan response: device name (iOS reads it via active scan).
     NimBLEAdvertisementData scanData;
     scanData.setName(g_ble_name.c_str());
-    scanData.addServiceUUID(ANCS_SVC_UUID);
     adv->setScanResponseData(scanData);
 
-    // Advertising interval.
-    uint32_t interval_ms = orion_bonded ? 1000 : 100;
+    // Advertising interval. All public undirected advertising runs at 100 ms:
+    // it only happens when a bond slot is still open (Orion unbonded, or Orion
+    // bonded but iPhone slot empty), so keeping it fast means iPhone (ANCS)
+    // discovery stays snappy in every case the user might be pairing. Once both
+    // peers are bonded we switch to directed advertising (early-return above)
+    // and this path is never reached.
+    uint32_t interval_ms = 100;
     adv->setMinInterval((uint16_t)(interval_ms * 1000 / 625));
     adv->setMaxInterval((uint16_t)(interval_ms * 1000 / 625));
 
     adv->start();
-    LOG("[ble] adv: public undirected, flag=0x%02X interval=%u ms\n",
+    LOG("[ble] adv: public undirected %s flag=0x%02X interval=%u ms\n",
+                   advertise_ancs ? "(ANCS pairing)" : "(Orion)",
                    (unsigned)mfr_flag, (unsigned)interval_ms);
+}
+
+void set_iphone_pairing_window(bool active) {
+    if (g_iphone_pairing_window == active) return;  // no change → no adv churn
+    g_iphone_pairing_window = active;
+    LOG("[ble] iPhone pairing window %s\n", active ? "OPEN" : "closed");
+    restart_advertising();
 }
 
 void load_bond_addr(const char* key, uint8_t out_addr[6]) {
@@ -637,17 +871,38 @@ bool is_iphone_connected() { return g_iphone_connected; }
 uint16_t orion_conn_handle() { return g_orion_conn; }
 
 void on_orion_bonded(uint16_t conn_handle, const uint8_t peer_addr[6]) {
-    LOG("[ble] Orion bonded addr=%02X:%02X:%02X:%02X:%02X:%02X\n",
+    LOG("[ble] Orion bonded (provisional) addr=%02X:%02X:%02X:%02X:%02X:%02X\n",
                    peer_addr[5], peer_addr[4], peer_addr[3],
                    peer_addr[2], peer_addr[1], peer_addr[0]);
-    save_bond_addr(BOND_KEY_ORION, peer_addr);
-    g_orion_connected = true;
-    g_orion_conn      = conn_handle;
+    // PROVISIONAL: passkey bonding succeeded, but we do NOT yet persist this as
+    // the Orion bond. Hold it in RAM until the peer proves it's Orion by writing
+    // a valid SyncControl{BEGIN} (confirm_orion_peer()); a timeout drops it. This
+    // stops a phone / non-Orion PC paired off Ori's passkey screen from being
+    // saved as Orion.
+    memcpy(g_provisional_orion_addr, peer_addr, 6);
+    g_provisional_orion_conn   = conn_handle;
+    g_orion_handshake_deadline = millis() + ORION_HANDSHAKE_TIMEOUT_MS;
+    g_orion_provisional        = true;
+    g_orion_connected          = true;
+    g_orion_conn               = conn_handle;
 
     BleEvent ev = {};
     ev.type = BleEventType::OrionBonded;
     ev.data.conn_handle = conn_handle;
     memcpy(ev.peer_addr, peer_addr, 6);
+    eq_push(ev);
+}
+
+// Called from the GATT server (NimBLE host task) when a bonded peer writes a
+// valid SyncControl{BEGIN}. If that peer is the provisional Orion, hand off to
+// the main task (OrionConfirmed) to persist the bond — keeps the NVS write off
+// the host task, mirroring the SyncCommit deferral. No-op once confirmed or for
+// runtime/reconnect BEGINs.
+void confirm_orion_peer() {
+    if (!g_orion_provisional) return;
+    LOG("[ble] Orion handshake (SyncControl BEGIN) — confirming bond\n");
+    BleEvent ev = {};
+    ev.type = BleEventType::OrionConfirmed;
     eq_push(ev);
 }
 

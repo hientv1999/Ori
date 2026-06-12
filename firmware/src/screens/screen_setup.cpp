@@ -5,6 +5,8 @@
 #include <lvgl.h>
 
 #include "app_state.h"
+#include "ble/ble_manager.h"
+#include "nvs_store.h"
 #include "state_machine.h"
 #include "theme.h"
 #include "ui_helpers.h"
@@ -404,6 +406,14 @@ static void complete_timer_cb(lv_timer_t* t) {
 }
 
 void build_complete(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
+    // Persist "setup done" the instant the Complete screen appears — NOT only
+    // after the 5 s linger / button. Otherwise a power cycle while this screen
+    // is showing would still read provisioned=false + awaiting_phone=true and
+    // resume to Step 4 ("Connect on iPhone") — confusing, since pairing is
+    // already done. Marking here makes a power cycle boot straight to runtime.
+    // (on_setup_complete() also calls this later; it's idempotent.)
+    nvs::mark_setup_complete();
+
     make_brand_mark(content);
 
     // Flex-grow block: checkmark + text centred in the remaining height.
@@ -521,6 +531,12 @@ void rebuild_for(lv_obj_t* screen, SetupState* s) {
         lv_obj_clear_flag(s->dots_row, LV_OBJ_FLAG_HIDDEN);
     }
     lv_obj_move_foreground(s->dots_row);
+
+    // Advertise the ANCS UUID only while the phone-pairing step is on screen.
+    // This covers both Setup Step 4 and the runtime re-pair flow (both rebuild
+    // through here). Leaving the step (to Complete, or any other page) closes
+    // the window; dismissal-by-deletion is handled in the screen DELETE handler.
+    ble_manager::set_iphone_pairing_window(s->step == Step::PhonePairing);
 }
 
 void on_start_clicked(lv_event_t* e) {
@@ -599,6 +615,11 @@ lv_obj_t* create(Step initial, lv_obj_t* prev_screen) {
         if (ss && ss->complete_timer) {
             lv_timer_delete(ss->complete_timer);
             ss->complete_timer = nullptr;
+        }
+        // Runtime re-pair is dismissed by deleting this screen (Skip → prev
+        // screen) without a step change, so close the pairing window here too.
+        if (ss && ss->step == screen_setup::Step::PhonePairing) {
+            ble_manager::set_iphone_pairing_window(false);
         }
         delete ss;
     }, LV_EVENT_DELETE, s);

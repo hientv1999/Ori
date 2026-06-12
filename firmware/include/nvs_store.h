@@ -17,10 +17,20 @@ void    tick();  // reserved for future debounced writes; currently a no-op
 bool    is_first_boot();
 void    mark_setup_complete();
 
-// iPhone-pairing resume.  Set after Orion sync completes during the setup
-// flow so a power cycle resumes at the iPhone pairing step (Step 3) rather
-// than restarting from Welcome.  Cleared when setup fully completes or on
-// factory reset.  Only meaningful when is_first_boot() is also true.
+// Setup resume bookmarks.  Both are only meaningful while is_first_boot() is
+// true, and are cleared when setup fully completes or on factory reset.
+//
+//   mark_orion_bonded()  — set when the Orion bond forms (Step 2), before the
+//     first sync.  A power cycle mid-Orioning resumes on the Link-Orion screen
+//     (is_awaiting_sync()) instead of Welcome; Orion reconnects via the stored
+//     bond and re-drives the sync.
+//   mark_orion_synced()  — set after the first sync completes; supersedes the
+//     sync bookmark so a power cycle resumes at the iPhone pairing step
+//     (is_awaiting_phone_pairing()).
+//
+// Resume priority (latest step wins): phone-pairing > sync > Welcome.
+void    mark_orion_bonded();
+bool    is_awaiting_sync();
 void    mark_orion_synced();
 bool    is_awaiting_phone_pairing();
 

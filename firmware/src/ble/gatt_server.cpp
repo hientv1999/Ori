@@ -577,6 +577,10 @@ private:
         LOG("[gatt] SyncControl op=%s seq=%u total=%u\n", op, (unsigned)seq, (unsigned)total);
 
         if (strcmp(op, "BEGIN") == 0) {
+            // Handshake: a valid SyncControl{BEGIN} on the encrypted link proves
+            // the bonded peer is the Orion app. If it's the provisional Orion
+            // (Step 2), this commits the bond; otherwise it's a no-op.
+            ble_manager::confirm_orion_peer();
             g_sync_seq         = (uint32_t)seq;
             g_sync_in_progress = true;
             stage_begin((uint32_t)total);

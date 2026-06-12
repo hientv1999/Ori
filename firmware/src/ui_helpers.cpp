@@ -157,14 +157,15 @@ lv_obj_t* make_btn(lv_obj_t* parent, const char* text,
     // bounce-buffer display). lv_anim fires inside lv_task_handler() so one
     // invalidation per flush; no horizontal tear bands.
     if (style != BtnStyle::Tertiary) {
-        const lv_opa_t glow_max = LV_OPA_70;
+        const lv_opa_t glow_min = LV_OPA_40;
+        const lv_opa_t glow_max = LV_OPA_80;
         lv_anim_t a;
         lv_anim_init(&a);
         lv_anim_set_var(&a, btn);
         lv_anim_set_exec_cb(&a, btn_glow_anim_cb);
-        lv_anim_set_values(&a, LV_OPA_10, (int32_t)glow_max);
-        lv_anim_set_time(&a, 1200);
-        lv_anim_set_playback_time(&a, 1200);
+        lv_anim_set_values(&a, (int32_t)glow_min, (int32_t)glow_max);
+        lv_anim_set_time(&a, 1800);
+        lv_anim_set_playback_time(&a, 1800);
         lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
         lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
         lv_anim_start(&a);

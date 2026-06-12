@@ -250,10 +250,15 @@ void load_screen(lv_obj_t* new_screen) {
 // ─── State-specific screen builders ───────────────────────────────────────
 
 lv_obj_t* build_setup_screen() {
-    // Resume at the iPhone pairing step if Orion has already synced this device
-    // but the user power-cycled before completing (or skipping) Step 3.
+    // Resume at the furthest setup step reached before a power cycle. Latest
+    // step wins: phone-pairing (synced) > Link-Orion (bonded, mid/awaiting sync)
+    // > Welcome. The Link-Orion resume lets Orion reconnect via the stored bond
+    // and re-drive the sync instead of forcing the user back to the start.
     if (nvs::is_awaiting_phone_pairing()) {
         return screen_setup::create(screen_setup::Step::PhonePairing);
+    }
+    if (nvs::is_awaiting_sync()) {
+        return screen_setup::create(screen_setup::Step::Pairing);
     }
     return screen_setup::create(screen_setup::Step::Welcome);
 }

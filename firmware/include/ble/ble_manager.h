@@ -58,6 +58,14 @@ void quiesce_for_commit();
 // Safe to call multiple times; stops any existing adv before restarting.
 void restart_advertising();
 
+// Mark whether the iPhone-pairing UI (Setup Step 4 or the runtime re-pair
+// screen) is currently on-screen. The ANCS service UUID is only advertised
+// while this is true and the iPhone slot is empty — so Ori does not solicit
+// iPhone connections in normal runtime, only when the user is actively pairing.
+// Restarts advertising on a state change. Call true on entering the pairing
+// screen, false on leaving it.
+void set_iphone_pairing_window(bool active);
+
 // ── Bond address helpers ───────────────────────────────────────────────────
 
 // Load/save the 6-byte peer address for the Orion or iPhone slot.
@@ -84,8 +92,16 @@ uint16_t orion_conn_handle();
 
 // ── Callbacks from GATT server (called from NimBLE task) ──────────────────
 
-// Called when Orion bond is formed (Step 2 complete).
+// Called when the Orion passkey bond is formed (Step 2). The bond is held
+// PROVISIONALLY (RAM only) until the peer proves it's Orion via a valid
+// SyncControl{BEGIN}; see confirm_orion_peer().
 void on_orion_bonded(uint16_t conn_handle, const uint8_t peer_addr[6]);
+
+// Called from the GATT server when a bonded peer writes a valid
+// SyncControl{BEGIN}. If that peer is the provisional Orion, this commits the
+// bond to NVS (otherwise a no-op). A provisional peer that never sends BEGIN is
+// dropped after a timeout and never saved as Orion.
+void confirm_orion_peer();
 
 // Called when iPhone bond is formed (Step 4 / re-pair).
 void on_iphone_bonded(uint16_t conn_handle, const uint8_t peer_addr[6]);

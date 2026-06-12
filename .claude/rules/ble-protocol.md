@@ -23,7 +23,7 @@ LE Secure Connections with Passkey Entry (6-digit numeric, MITM-protected) is ma
 
 ## 2. Advertising and bond policy
 
-Ori accepts **at most two bonded peers**: one PC (Orion) and one iPhone (ANCS). Once both slots are filled, Ori switches to directed advertising; unknown devices cannot connect.
+Ori accepts **at most two bonded peers**: one PC (Orion) and one iPhone (ANCS). New bonds are accepted only in the state-gated pairing windows below; outside them an unknown device that connects can neither bond (pairing is rejected) nor read/write any data characteristic (all are encrypted), so it gains nothing. When both slots are full and both peers are connected, Ori stops advertising; if a bonded peer drops, Ori advertises **public undirected** so it can reconnect on its own.
 
 ### Bond slot enforcement
 
@@ -56,24 +56,30 @@ Factory reset zeroes both NVS entries and clears both NimBLE bond records.
 | 0 bonded (fresh / post-factory-reset) | Public undirected | `0x01 SETUP` |
 | 1 bonded — PC only, iPhone slot empty | Public undirected | `0x02 RUNTIME` |
 | 1 bonded — iPhone only | Public undirected | `0x01 SETUP` |
-| 2 bonded — PC + iPhone | **Directed only**, alternating between both bonded addresses | (no flag) |
+| 2 bonded — PC + iPhone, ≥1 disconnected | **Public undirected** (so *either* central can reconnect on its own — iPhone off the advert, Orion via its own scan). No accept-list (bonding is state-gated + all data chars encrypted; iPhone uses rotating RPAs which make an accept-list fragile). | `0x02 RUNTIME` |
+| 2 bonded — PC + iPhone, both connected | **Advertising stopped** (nothing to advertise for). Re-armed on either disconnect. | (none) |
 | Runtime re-pair-iPhone in progress | Public undirected until iPhone re-bonds | `0x02 RUNTIME` |
 
 ### Advertising mode transitions
 
 | Event | Action required |
 |---|---|
-| iPhone bond formed | Both slots full → stop undirected adv, start directed adv alternating `orion_addr` / `iphone_addr` |
-| iPhone unpaired (`on_unpair_phone`) | Delete iPhone bond + zero `iphone_addr` → restart **public undirected** with flag `0x02 RUNTIME` and both service UUIDs (ANCS UUID required so a fresh iPhone can discover Ori for re-pairing) |
+| iPhone bond formed | Both slots full → once both peers are connected, advertising stops; if either later disconnects, restart **public undirected** (`0x02 RUNTIME`) so it can reconnect |
+| Bonded peer reconnects (both bonded) | BLE auto-stops adv on connect → `onConnect` restarts undirected adv so the *other* bonded peer can also reconnect; stops again once both are connected |
+| Bonded peer disconnects (both bonded) | `onDisconnect` restarts **public undirected** (`0x02 RUNTIME`) so the dropped peer can reconnect |
+| iPhone unpaired (`on_unpair_phone`) | Delete iPhone bond + zero `iphone_addr` → restart **public undirected** with flag `0x02 RUNTIME`. The **ANCS UUID is advertised only once the user opens the re-pair screen** (`set_iphone_pairing_window(true)`), not immediately on unpair — see Advertising payload below. |
 | Orion bond formed (Step 2) | iPhone slot still empty → remain public undirected, flag `0x01 SETUP` → `0x02 RUNTIME` |
 | Factory reset | Wipe both bonds + NVS addresses → restart public undirected, flag `0x01 SETUP` |
 
 ### Advertising payload
 
 - **Device name:** `Ori-XX-XX` (per-device suffix, e.g. `Ori-XT-9F`)
-- **Service UUIDs:** `Ori Sync Service` + ANCS (`7905F431-B5CE-4E99-A40F-4B1E122D00D0`) — both in every public undirected adv; omitted from directed adv (no AD payload in directed PDUs)
+- **Service UUIDs:** the public undirected advert has two mutually-exclusive flavours (two 128-bit UUIDs don't fit one 31-byte packet):
+  - **Orion-discovery (default):** `Ori Sync Service` UUID + manufacturer mode flag in the **primary advertising packet**, so Orion can discover/classify Ori.
+  - **iPhone-pairing (pairing screen on-screen + iPhone slot empty — Setup Step 4 or runtime re-pair, `set_iphone_pairing_window(true)`):** the **ANCS UUID** (`7905F431-B5CE-4E99-A40F-4B1E122D00D0`) goes in the **primary advertising packet** as a **Service Solicitation** (AD type `0x15`, "list of 128-bit Service Solicitation UUIDs") — meaning "I want a device that *provides* ANCS" — **not** as a provided-service list (`0x06`/`0x07`). Ori consumes ANCS; the solicitation is what makes iOS engage it. (Advertising ANCS as a *provided* service made the device visible in nRF — "Services: ANCS" — but iOS never listed/engaged it.) Plus a generic **Appearance** (`0x0180`). Built by hand via `addData()` (NimBLE has no solicitation setter). The Ori Sync UUID / mode flag are dropped during this window (Orion is connected through Step 4 / re-pair). In normal runtime (iPhone slot empty, not actively pairing) the ANCS solicitation is omitted, so Ori does not solicit iPhone connections.
+  - Device name is in the scan response in both flavours. Ori no longer uses directed advertising — see §2 (both-bonded reconnect is public undirected).
 - **Manufacturer data:** byte 0 = `0xFF FF` (placeholder company ID); byte 1 = `0x01 SETUP` / `0x02 RUNTIME`
-- **Interval:** 100 ms setup, 1 s runtime
+- **Interval:** 100 ms for all public undirected advertising — the 0-bonded setup state, the Orion-bonded/iPhone-slot-empty runtime state, and the both-bonded reconnect state (≥1 peer disconnected). Fast advertising keeps both reconnection and iPhone (ANCS) discovery snappy. (Ori is wall-powered, so continuous fast advertising is fine; advertising stops entirely once both bonded peers are connected.)
 
 Orion uses the mode flag to detect "Ori factory-reset since last bond" without connecting (§7).
 
@@ -292,12 +298,19 @@ Ori boots fresh → public undirected adv, mode=0x01 SETUP
 Orion scans → finds Ori-XT-9F → user taps "Pair"
 Orion connects → ATT MTU exchange → BLE bonding (LE SC, Passkey Entry)
   • Ori displays the 6-digit code (Step 2 passkey modal)
-  • User confirms on Orion → bond stored on both sides
+  • User confirms on Orion → LTK stored on both sides
+  • Ori holds the peer address PROVISIONALLY (RAM only) — the orion_addr NVS
+    slot is NOT written yet (see handshake note below)
 
 Ori notifies Device Status = SETUP_BONDED_AWAITING_SYNC
 Orion computes total = byte-length of (Time Sync + Profile Info + Profile Photo
                                         + Meeting List + PTO Entry) payloads
 Orion writes SyncControl{op:"BEGIN", seq:1, total:total}
+  → HANDSHAKE: a valid SyncControl{BEGIN} on the encrypted link is Ori's proof
+    that the bonded peer is the Orion app (not a phone or other PC someone paired
+    off the passkey screen). On this BEGIN, Ori commits the provisional address
+    to the orion_addr slot. A peer that bonds but never sends a valid BEGIN
+    within ~5 s is disconnected and its LTK bond deleted — never saved as Orion.
 Orion writes Time Sync
 Orion writes Profile Info
 Orion writes Profile Photo (chunked)
@@ -313,7 +326,7 @@ Ori notifies Device Status = SETUP_SYNC_COMPLETE
 ### 6.2 Bonded reconnect — hash-manifest delta sync
 
 ```
-Ori boots OR loses connection → directed adv to bonded peer(s)
+Ori boots OR loses connection → public undirected adv (§2)
 Orion sees adv → reconnects → encrypted via stored LTK
 
 Ori notifies Device Status = RUNTIME_RECONNECTING
