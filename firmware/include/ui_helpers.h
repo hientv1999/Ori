@@ -55,4 +55,14 @@ lv_obj_t* make_btn(lv_obj_t* parent, const char* text,
                    int16_t pad_v = 14, int16_t pad_h = 28,
                    const lv_font_t* font = nullptr);
 
+// Copy `in` to `out`, dropping every character the UI font (Hanken) can't
+// render — emoji, CJK, and any script outside the font's Latin repertoire —
+// and tidying the whitespace the drops leave behind (collapses runs of spaces,
+// trims line ends; newlines preserved as LVGL line breaks). Glyph presence is
+// queried against the live font, so broadening the font subset automatically
+// widens what survives. Always NUL-terminates; safe if in == nullptr (→ "").
+// Apply at text ingress (BLE/ANCS handlers) so stored strings are render-clean.
+// Returns out.
+const char* sanitize_text(const char* in, char* out, size_t out_sz);
+
 } // namespace ui

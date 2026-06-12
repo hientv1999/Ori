@@ -83,4 +83,9 @@ void refresh(lv_obj_t* bar);
 // changes so icons update without waiting for the 1-second clock timer.
 void refresh_active();
 
+// Mark a notification UID as "just arrived" so its icon plays a one-shot
+// entrance animation on the next ANCS rebuild. Set by the ANCS client only for
+// genuinely-new notifications (not the PreExisting backlog replayed on connect).
+void note_new_notification(uint32_t uid);
+
 } // namespace widget_status_bar

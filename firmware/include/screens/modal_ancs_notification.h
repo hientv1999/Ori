@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdint.h>
 #include <lvgl.h>
 
 namespace modal_ancs_notification {
@@ -17,9 +18,17 @@ namespace modal_ancs_notification {
 //                                           range in the meeting detail
 //   [Read] [Close] buttons
 //
-// "Read"  removes the icon tile from the status bar ANCS row and deletes the
-//         modal (simulates the ANCS PositiveAction → iOS Removed event path).
-// "Close" deletes the modal only — the icon remains in the status bar.
-lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ancs_tile, const char* token);
+// `uid` is the ANCS notification UID the tapped status-bar tile represents, so
+// the overlay shows and acts on exactly that notification.
+// "Read"  clears the notification on the iPhone (ANCS PerformNotificationAction
+//         · Negative) and removes it from Ori's queue + status bar.
+// "Close" deletes the modal only — the notification remains on both devices.
+lv_obj_t* create(lv_obj_t* base_screen, uint32_t uid);
+
+// Close the open detail overlay if it is currently showing notification `uid`.
+// Called when the iPhone reports that notification was removed (ANCS Removed
+// event), so a remotely-cleared notification doesn't leave a stale overlay up.
+// No-op if no overlay is open or it's showing a different notification.
+void close_if_showing(uint32_t uid);
 
 } // namespace modal_ancs_notification

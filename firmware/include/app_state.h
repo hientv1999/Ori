@@ -92,7 +92,10 @@ constexpr size_t MAX_ANCS_NOTIFICATIONS = 20;   // queue depth
 constexpr size_t MAX_ANCS_ICONS         = 5;    // display cap (layout constraint)
 
 struct AncsConfig {
-    const char* icons[MAX_ANCS_NOTIFICATIONS];  // full queue; only first MAX_ANCS_ICONS shown
+    // Queue order is oldest → newest (index 0 = oldest, count-1 = newest). The
+    // status bar shows the newest MAX_ANCS_ICONS, rightmost = newest.
+    const char* icons[MAX_ANCS_NOTIFICATIONS];  // app token per entry
+    uint32_t    uids [MAX_ANCS_NOTIFICATIONS];  // ANCS UID per entry (parallel to icons)
     size_t      count;                           // live entries (≤ MAX_ANCS_NOTIFICATIONS)
     bool        phone_connected;
 };
@@ -109,10 +112,54 @@ void              dismiss_ancs_notification(const char* token);
 struct AncsNotification {
     const char* display_name;  // human-readable app name ("Gmail", "Messenger")
     const char* title;         // notification title / sender name
+    const char* subtitle;      // ANCS Subtitle (e.g. mail subject, thread) — "" if none
     const char* body;          // message body (may be long — UI clips to 3 lines)
     const char* time_ago;      // relative timestamp ("2 min ago", "1 hr ago")
 };
 
+// ANCS notification categories (ble Notification Source CategoryID).
+namespace AncsCategory {
+    constexpr uint8_t OTHER = 0, INCOMING_CALL = 1, MISSED_CALL = 2, VOICEMAIL = 3,
+                      SOCIAL = 4, SCHEDULE = 5, EMAIL = 6, NEWS = 7,
+                      HEALTH = 8, FINANCE = 9, LOCATION = 10, ENTERTAINMENT = 11;
+}
+
 const AncsNotification& ancs_notification(const char* token);
+
+// Notification detail for a specific ANCS UID (each status-bar tile carries its
+// UID, so reading a tile shows/dismisses exactly that notification — correct
+// even when one app has several live notifications). Falls back to the generic
+// placeholder if the UID has no stored detail.
+const AncsNotification& ancs_notification_by_uid(uint32_t uid);
+
+// Store per-notification detail, pushed by the ANCS client after a
+// GetNotificationAttributes response is parsed. Keyed by UID (so a Modified
+// event updates in place and a Removed event can drop it); the detail modal
+// looks entries up by icon token, with the most recently received one winning
+// when an app has several live notifications.
+//   recv_epoch — phone's notification time as a Unix epoch (0 = unknown)
+//   hhmm       — TZ-free "HH:MM" from the ANCS Date attribute ("" = unknown)
+void set_ancs_detail(uint32_t uid, const char* token, const char* display_name,
+                     const char* title, const char* subtitle, const char* body,
+                     time_t recv_epoch, const char* hhmm,
+                     const char* bundle, uint8_t category, bool important);
+
+// Update the stored display name for every notification from a given app
+// bundle (used when GetAppAttributes resolves a previously-unknown app name).
+void set_ancs_display_name_for_bundle(const char* bundle, const char* name);
+
+// Category (AncsCategory::*) / importance for a stored notification UID, used
+// by the status bar to accent incoming-call / important icons. 0 (OTHER) /
+// false if the UID has no stored detail.
+uint8_t ancs_category(uint32_t uid);
+bool    ancs_is_important(uint32_t uid);
+
+// Drop the stored detail for a notification UID (ANCS Removed event).
+void remove_ancs_detail(uint32_t uid);
+
+// UID of the notification the detail modal shows for this token (the most
+// recently received one), or 0 if no detail is stored. Used to clear it on the
+// iPhone via ANCS (PerformNotificationAction) when the user reads it.
+uint32_t ancs_notification_uid(const char* token);
 
 } // namespace app_state

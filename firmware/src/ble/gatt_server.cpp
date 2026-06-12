@@ -64,6 +64,7 @@ void ble_post_pto_photo_event(uint8_t* buf, size_t len);
 #include "screens/screen_media_mode.h"
 #include "ota_receiver.h"
 #include "lcd_panel.h"
+#include "ui_helpers.h"
 
 // UUIDs ─────────────────────────────────────────────────────────────────────
 
@@ -802,7 +803,13 @@ private:
 
         LOG("[gatt] MediaMetadata: title='%s' artist='%s' can_seek=%d\n",
                        title, artist, (int)can_seek);
-        app_state::set_media_meta(title, artist, can_seek);
+        // Drop glyphs the UI font can't render (emoji, CJK, …) — track titles
+        // routinely contain them.
+        char ftitle[193] = {};
+        char fartist[97] = {};
+        ui::sanitize_text(title,  ftitle,  sizeof(ftitle));
+        ui::sanitize_text(artist, fartist, sizeof(fartist));
+        app_state::set_media_meta(ftitle, fartist, can_seek);
     }
 
     // ── Media Album Art (char 000E) — chunked raw JPEG ─────────────────────
@@ -924,8 +931,20 @@ static void apply_profile_cbor(const uint8_t* data, size_t len) {
         if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
     }
 
+    // Drop glyphs the UI font can't render (emoji, CJK, …) from the visible
+    // fields. The manifest hash below is computed over the RAW CBOR bytes, so
+    // filtering the stored display text doesn't desync the reconnect delta.
+    char fname[97]   = {};
+    char ftitle[97]  = {};
+    char femail[129] = {};
+    char fphone[33]  = {};
+    ui::sanitize_text(name,  fname,  sizeof(fname));
+    ui::sanitize_text(title, ftitle, sizeof(ftitle));
+    ui::sanitize_text(email, femail, sizeof(femail));
+    ui::sanitize_text(phone, fphone, sizeof(fphone));
+
     // Save to NVS.
-    nvs_sync::save_profile(name, title, email, phone);
+    nvs_sync::save_profile(fname, ftitle, femail, fphone);
 
     // Compute SHA-256 of the raw CBOR bytes and store.
     uint8_t hash[32];
@@ -933,9 +952,9 @@ static void apply_profile_cbor(const uint8_t* data, size_t len) {
     nvs_sync::save_hash(nvs_sync::HASH_KEY_PROFILE, hash);
 
     // Update the live profile card.
-    widget_profile_card::set_profile(name, title, email, phone);
+    widget_profile_card::set_profile(fname, ftitle, femail, fphone);
 
-    LOG("[gatt] ProfileInfo: name=%s title=%s\n", name, title);
+    LOG("[gatt] ProfileInfo: name=%s title=%s\n", fname, ftitle);
 }
 
 static void apply_photo_jpeg(uint8_t* buf, size_t n) {
@@ -1027,10 +1046,15 @@ static void apply_pto_cbor(uint8_t* buf, size_t n) {
 
     heap_caps_free(buf); // free staged CBOR blob
 
-    nvs_sync::save_pto_meta(pto_start, pto_end, dest);
+    // Drop glyphs the UI font can't render (emoji, CJK, …) from the displayed
+    // destination. PTO hash (if any) is over raw bytes, so this doesn't desync.
+    char fdest[129] = {};
+    ui::sanitize_text(dest, fdest, sizeof(fdest));
+
+    nvs_sync::save_pto_meta(pto_start, pto_end, fdest);
     LOG("[gatt] PTO: start=%u end=%u dest=%s img=%u bytes\n",
                    (unsigned)pto_start, (unsigned)pto_end,
-                   dest, (unsigned)img_len);
+                   fdest, (unsigned)img_len);
 
     // Post photo event (img_buf=nullptr, img_len=0 → clear cache).
     ble_post_pto_photo_event(img_buf, img_len);

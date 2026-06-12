@@ -27,6 +27,7 @@
 #include "screens/screen_reconnect_syncing.h"
 // #include "screens/screen_repair_phone.h" // removed obsolete repair screen
 #include "screens/screen_setup.h"
+#include "ui_helpers.h"
 #include "widgets/widget_profile_card.h"
 #include "widgets/widget_status_bar.h"
 
@@ -104,6 +105,15 @@ static void epoch_to_hhmm(uint32_t epoch, char* buf, size_t sz) {
     struct tm tm_buf;
     localtime_r(&t, &tm_buf);
     snprintf(buf, sz, "%02d:%02d", tm_buf.tm_hour, tm_buf.tm_min);
+}
+
+// Drop glyphs the UI font can't render (emoji, CJK, …) from a meeting field,
+// in place. sanitize_text needs distinct in/out, so route through a temp.
+static void sanitize_inplace(char* buf, size_t sz) {
+    char tmp[129];                 // >= largest meeting field (title)
+    if (sz == 0 || sz > sizeof(tmp)) return;
+    ui::sanitize_text(buf, tmp, sz);
+    memcpy(buf, tmp, sz);
 }
 } // namespace
 
@@ -595,6 +605,11 @@ void set_meetings_cbor(const uint8_t* buf, size_t len, bool save_to_nvs) {
         }
         cbor_value_leave_container(&item, &field);
 
+        // Drop unrenderable glyphs (emoji, CJK, …) from the displayed fields.
+        sanitize_inplace(rt.title, sizeof(rt.title));
+        sanitize_inplace(rt.loc,   sizeof(rt.loc));
+        sanitize_inplace(rt.org,   sizeof(rt.org));
+
         // Build the app_state::Meeting view.
         g_rt_display[count] = {
             rt.start_str, rt.end_str,
@@ -622,12 +637,67 @@ void set_meetings_cbor(const uint8_t* buf, size_t len, bool save_to_nvs) {
     LOG("[sm] meetings parsed: %u items\n", (unsigned)g_rt_count);
 }
 
+// Boot-time cached-meeting staging.
+//
+// The NVS blob is READ in begin_boot_meeting_load() — which runs from setup()
+// BEFORE ble_manager::init() — into this RAM buffer. The flash read disables
+// the CPU cache; doing it later (e.g. from poll()) while the NimBLE host task
+// is servicing a bonded-peer reconnect races NimBLE's own NVS bond access and
+// trips a FreeRTOS queue-set assert in queue.c — the documented power-cycle
+// reconnect crash that prime_bond_cache() exists to avoid. The CBOR PARSE, by
+// contrast, is pure-RAM (set_meetings_cbor with save_to_nvs=false never touches
+// flash), so it is safe to defer into poll() behind the loading screen.
+static uint8_t g_boot_meet_buf[4096];
+static size_t  g_boot_meet_len              = 0;
+static bool    g_boot_meeting_parse_pending = false;
+static uint8_t g_boot_frames                = 0;
+
+void begin_boot_meeting_load() {
+    // Read the blob now — pre-BLE, so cache-safe. Empty = nothing cached.
+    g_boot_meet_len = nvs_sync::load_meetings_blob(g_boot_meet_buf, sizeof(g_boot_meet_buf));
+    if (g_boot_meet_len == 0) return;
+    LOG("[sm] boot: meetings blob loaded: %u bytes\n", (unsigned)g_boot_meet_len);
+
+    if (g_state == AppState::NO_MEETINGS || g_state == AppState::MEETING_LIST) {
+        // Meeting view is what boot resolved to: show "Refreshing your day"
+        // and defer the (cache-safe) CBOR parse to poll() so the loading screen
+        // renders first. evaluate() already ran with an empty cache, so without
+        // this boot would flash "No meetings today" until the first 1 s tick.
+        g_boot_meeting_parse_pending = true;
+        g_state = AppState::RECONNECT_SYNCING;
+        apply_widget_defaults();
+        load_screen(build_reconnect_screen());
+    } else {
+        // Setup flow / post-OTA ack / PTO own the screen and outrank the
+        // meeting view — parse synchronously so the cache is warm (e.g. PTO
+        // needs meetings ready for when the window ends), no loading screen.
+        set_meetings_cbor(g_boot_meet_buf, g_boot_meet_len, /*save_to_nvs=*/false);
+    }
+}
+
 void on_setup_complete() {
     LOG("[sm] on_setup_complete — deferring NVS write to poll()\n");
     g_setup_complete_pending = true;
 }
 
 void poll() {
+    if (g_boot_meeting_parse_pending) {
+        // Let the "Refreshing your day" screen paint a couple of frames (and
+        // the ring start sweeping) before the CBOR parse. The blob was already
+        // read from NVS pre-BLE (see begin_boot_meeting_load); this parse is
+        // pure-RAM, so it's safe to run here while BLE is active.
+        if (g_boot_frames < 2) {
+            ++g_boot_frames;
+        } else {
+            g_boot_meeting_parse_pending = false;
+            set_meetings_cbor(g_boot_meet_buf, g_boot_meet_len, /*save_to_nvs=*/false);
+            // Break the RECONNECT_SYNCING early-return in compute_target_state()
+            // so evaluate() resolves to the real meeting / no-meetings screen.
+            g_force_rebuild = true;
+            g_state = AppState::NO_MEETINGS;
+            evaluate();
+        }
+    }
     if (g_setup_complete_pending) {
         g_setup_complete_pending = false;
         LOG("[sm] poll: setup complete — writing NVS + evaluating\n");

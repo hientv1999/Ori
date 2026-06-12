@@ -35,6 +35,17 @@ extern "C" {
     extern const lv_image_dsc_t uber;
     extern const lv_image_dsc_t apple_music;
     extern const lv_image_dsc_t amazon;
+    extern const lv_image_dsc_t unknown_app;  // generic fallback (bell on neutral tile)
+    // Per-category fallback glyphs (white glyph on neutral tile).
+    extern const lv_image_dsc_t cat_call;
+    extern const lv_image_dsc_t cat_social;
+    extern const lv_image_dsc_t cat_schedule;
+    extern const lv_image_dsc_t cat_email;
+    extern const lv_image_dsc_t cat_news;
+    extern const lv_image_dsc_t cat_health;
+    extern const lv_image_dsc_t cat_finance;
+    extern const lv_image_dsc_t cat_location;
+    extern const lv_image_dsc_t cat_entertainment;
 }
 
 namespace ancs_icons {
@@ -127,7 +138,25 @@ const lv_image_dsc_t* image(const char* token) {
     for (const auto& e : k_images) {
         if (strcmp(e.token, token) == 0) return e.dsc;
     }
+    // No brand asset — caller falls back to category_image().
     return nullptr;
+}
+
+const lv_image_dsc_t* category_image(uint8_t category) {
+    // ANCS CategoryID → fallback glyph. Calls (incoming/missed/voicemail) share
+    // one icon; unknown/Other gets the generic bell.
+    switch (category) {
+        case 1: case 2: case 3: return &cat_call;          // IncomingCall/Missed/Voicemail
+        case 4:                 return &cat_social;          // Social
+        case 5:                 return &cat_schedule;        // Schedule
+        case 6:                 return &cat_email;           // Email
+        case 7:                 return &cat_news;            // News
+        case 8:                 return &cat_health;          // HealthAndFitness
+        case 9:                 return &cat_finance;         // BusinessAndFinance
+        case 10:                return &cat_location;        // Location
+        case 11:                return &cat_entertainment;   // Entertainment
+        default:                return &unknown_app;         // Other / unknown
+    }
 }
 
 } // namespace ancs_icons

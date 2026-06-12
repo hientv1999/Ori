@@ -1,10 +1,85 @@
 ﻿#include "ui_helpers.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include "theme.h"
 #include "widgets/widget_status_bar.h"
 
 
 namespace ui {
+
+namespace {
+
+// Decode one UTF-8 codepoint at `s`. Sets *adv to its byte length (1..4).
+// Invalid lead/continuation bytes → adv=1, returns 0 (caller drops it).
+static uint32_t utf8_next(const uint8_t* s, size_t* adv) {
+    uint8_t c = s[0];
+    if (c < 0x80) { *adv = 1; return c; }
+    if ((c >> 5) == 0x6 && (s[1] & 0xC0) == 0x80) {
+        *adv = 2; return ((uint32_t)(c & 0x1F) << 6) | (s[1] & 0x3F);
+    }
+    if ((c >> 4) == 0xE && (s[1] & 0xC0) == 0x80 && (s[2] & 0xC0) == 0x80) {
+        *adv = 3; return ((uint32_t)(c & 0x0F) << 12) |
+                         ((uint32_t)(s[1] & 0x3F) << 6) | (s[2] & 0x3F);
+    }
+    if ((c >> 3) == 0x1E && (s[1] & 0xC0) == 0x80 &&
+        (s[2] & 0xC0) == 0x80 && (s[3] & 0xC0) == 0x80) {
+        *adv = 4; return ((uint32_t)(c & 0x07) << 18) |
+                         ((uint32_t)(s[1] & 0x3F) << 12) |
+                         ((uint32_t)(s[2] & 0x3F) << 6) | (s[3] & 0x3F);
+    }
+    *adv = 1; return 0;  // invalid byte
+}
+
+// True if the UI font has a glyph for this codepoint. ASCII printables are
+// always present in the Hanken subset; for the rest, ask the font directly.
+static bool font_has_glyph(uint32_t cp) {
+    if (cp >= 0x20 && cp < 0x7F) return true;
+    lv_font_glyph_dsc_t dsc;
+    return lv_font_get_glyph_dsc(theme::font_meta(), &dsc, cp, 0);
+}
+
+} // namespace
+
+const char* sanitize_text(const char* in, char* out, size_t out_sz) {
+    if (!out || out_sz == 0) return out;
+    if (!in) { out[0] = '\0'; return out; }
+
+    const uint8_t* s = reinterpret_cast<const uint8_t*>(in);
+    size_t o = 0;
+    bool pending_space = false;   // a space we'll emit only if a glyph follows
+    bool at_line_start = true;    // start of string or just after a newline
+
+    while (*s) {
+        size_t adv = 1;
+        uint32_t cp = utf8_next(s, &adv);
+
+        if (cp == '\n') {
+            pending_space = false;             // trim trailing space before break
+            if (o < out_sz - 1) out[o++] = '\n';
+            at_line_start = true;
+            s += adv;
+            continue;
+        }
+        if (cp == ' ' || cp == '\t') {
+            if (!at_line_start) pending_space = true;  // collapse + trim leading
+            s += adv;
+            continue;
+        }
+        // Printable candidate — drop if the font can't render it.
+        if (cp == 0 || !font_has_glyph(cp)) { s += adv; continue; }
+
+        if (pending_space && o < out_sz - 1) out[o++] = ' ';
+        pending_space = false;
+        at_line_start = false;
+        for (size_t k = 0; k < adv && o < out_sz - 1; ++k) out[o++] = s[k];
+        s += adv;
+    }
+
+    out[o] = '\0';
+    return out;
+}
 
 lv_obj_t* make_screen_body(lv_obj_t* screen) {
     lv_obj_t* body = lv_obj_create(screen);

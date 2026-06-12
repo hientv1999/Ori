@@ -56,6 +56,15 @@ void poll();
 // Call from the BLE MeetingList handler and from boot (with the NVS blob).
 void set_meetings_cbor(const uint8_t* buf, size_t len, bool save_to_nvs);
 
+// Boot-time cached-meeting load. Call once from setup() after the initial
+// evaluate(). When the meeting view is what boot resolves to, this shows the
+// "Refreshing your day" screen and defers the (blocking) NVS read + CBOR parse
+// to poll(), so the loading screen renders before the parse; once parsed it
+// evaluate()s to the real screen. For higher-priority boot screens (setup
+// flow, post-OTA ack, PTO) it parses synchronously without taking over the
+// display.
+void begin_boot_meeting_load();
+
 // Re-evaluate priority and push a new LVGL screen if the state changed.
 // Called by the internal lv_timer; may also be called directly when data
 // changes (e.g. after NVS wipe, after mode toggle).

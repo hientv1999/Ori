@@ -114,14 +114,6 @@ void setup() {
             LOG("[boot] profile loaded: name=%s title=%s\n", name, title);
         }
     }
-    {
-        static uint8_t meet_buf[4096];
-        size_t meet_len = nvs_sync::load_meetings_blob(meet_buf, sizeof(meet_buf));
-        if (meet_len > 0) {
-            state_machine::set_meetings_cbor(meet_buf, meet_len, /*save_to_nvs=*/false);
-            LOG("[boot] meetings blob loaded: %u bytes\n", (unsigned)meet_len);
-        }
-    }
     // Mount LittleFS before any photo_cache call — user photos live there.
     photo_cache::mount_fs();
     // Placeholders (compiled into firmware flash) decoded first so init() can
@@ -132,6 +124,16 @@ void setup() {
     photo_cache::init();
     photo_cache::init_pto();
     mem_snapshot("after photo_cache");
+
+    // Read the cached meeting list from NVS now — MUST be before ble_manager::init()
+    // below: a flash read disables the CPU cache, and once BLE is live it races
+    // the NimBLE host task's NVS bond access during a bonded-peer reconnect and
+    // crashes (the documented power-cycle reconnect crash). Placed after photos
+    // load so the loading screen shows the real profile photo. The CBOR parse is
+    // deferred into the main loop behind a "Refreshing your day" screen (evaluate()
+    // ran before this with an empty cache, so otherwise boot would flash "No
+    // meetings today" until the first 1 s tick). See begin_boot_meeting_load().
+    state_machine::begin_boot_meeting_load();
 
     // M5: OTA receiver + BLE stack.
     // ota_receiver must be initialised before ble_manager because it sets up

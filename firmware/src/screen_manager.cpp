@@ -12,6 +12,7 @@
 #include "state_machine.h"
 #include "screens/modal_countdown.h"
 #include "screens/modal_factory_reset.h"
+#include "screens/modal_incoming_call.h"
 #include "screens/modal_unpair_phone.h"
 #include "screens/screen_clock.h"
 #include "screens/screen_media_mode.h"
@@ -144,6 +145,7 @@ void print_keymap() {
     LOG("  f   Factory reset modal\n");
     LOG("  F   FACTORY RESET — wipe NVS + BLE bonds + reboot (no confirmation)\n");
     LOG("  U   Unpair iPhone modal\n");
+    LOG("  I   Incoming-call banner (mock)\n");
     LOG("  w   Setup — Welcome\n");
     LOG("  i   Setup — Step 1 Install Orion\n");
     LOG("  b   Setup — Step 2 Link Orion\n");
@@ -230,6 +232,17 @@ void debug_handle_key(char c) {
             lv_obj_t* base = screen_no_meetings::create();
             debug_load(base);
             modal_unpair_phone::create(base);
+            break;
+        }
+        case 'I': {
+            // Seed a mock incoming-call notification, then raise the banner over
+            // the current screen so the layout/buttons can be reviewed without a
+            // live ANCS call. Decline is a no-op here (no BLE link).
+            app_state::set_ancs_detail(0xCA11u, "phone", "Phone",
+                "Jane Appleseed", "", "mobile",
+                /*recv_epoch=*/0, /*hhmm=*/"", "com.apple.mobilephone",
+                app_state::AncsCategory::INCOMING_CALL, /*important=*/false);
+            modal_incoming_call::show(0xCA11u);
             break;
         }
         case 'w': debug_load_setup(screen_setup::Step::Welcome,      false); break;

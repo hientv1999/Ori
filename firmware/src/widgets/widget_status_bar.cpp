@@ -67,9 +67,63 @@ struct StatusBarState {
     widget_status_bar::TimeTapCb    time_tap_cb;
 };
 
+// Update just the time/date labels — what the 1-second clock timer calls. The
+// ANCS row is NOT rebuilt here (only on config change via refresh_active), so a
+// new-icon entrance animation isn't restarted every second.
+static void update_clock_labels(lv_obj_t* bar) {
+    auto* s = static_cast<StatusBarState*>(lv_obj_get_user_data(bar));
+    if (!s) return;
+    char time_buf[8], date_buf[20];
+    format_real_time(time_buf, sizeof(time_buf), date_buf, sizeof(date_buf));
+    lv_label_set_text(s->time_label, time_buf);
+    lv_label_set_text(s->date_label, date_buf);
+}
+
+// UID of a just-arrived notification whose tile should animate in once. Set by
+// note_new_notification(), consumed + cleared by the next refresh(). A separate
+// pending flag is needed because UID 0 is a valid ANCS UID (can't use 0 as the
+// "nothing pending" sentinel).
+static uint32_t g_anim_uid     = 0;
+static bool     g_anim_pending = false;
+
+static void tile_opa_cb(void* o, int32_t v) {
+    lv_obj_set_style_opa(static_cast<lv_obj_t*>(o), (lv_opa_t)v, 0);
+}
+static void tile_scale_cb(void* o, int32_t v) {
+    lv_obj_set_style_transform_scale_x(static_cast<lv_obj_t*>(o), v, 0);
+    lv_obj_set_style_transform_scale_y(static_cast<lv_obj_t*>(o), v, 0);
+}
+
+// One-shot entrance: a genuinely-new icon fades + pops in from ~62% scale,
+// pivoting about its centre. (256 = 100% in LVGL's transform scale units.)
+static void animate_tile_in(lv_obj_t* tile) {
+    lv_obj_set_style_transform_pivot_x(tile, ICON_SIZE / 2, 0);
+    lv_obj_set_style_transform_pivot_y(tile, ICON_SIZE / 2, 0);
+    lv_obj_set_style_opa(tile, LV_OPA_TRANSP, 0);
+    tile_scale_cb(tile, 160);
+
+    lv_anim_t a; lv_anim_init(&a);
+    lv_anim_set_var(&a, tile);
+    lv_anim_set_time(&a, 240);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_set_values(&a, LV_OPA_TRANSP, LV_OPA_COVER);
+    lv_anim_set_exec_cb(&a, tile_opa_cb);
+    lv_anim_start(&a);
+
+    lv_anim_t b; lv_anim_init(&b);
+    lv_anim_set_var(&b, tile);
+    lv_anim_set_time(&b, 240);
+    lv_anim_set_path_cb(&b, lv_anim_path_ease_out);
+    lv_anim_set_values(&b, 160, 256);
+    lv_anim_set_exec_cb(&b, tile_scale_cb);
+    lv_anim_start(&b);
+}
+
 // ANCS icon tile. Uses a compiled-in raster asset when available (12 px radius,
 // matching the HTML prototype); falls back to a solid brand-colour circle.
-lv_obj_t* make_ancs_tile(lv_obj_t* parent, const char* token) {
+// `token` selects the icon; `uid` identifies the exact notification so a tap
+// opens/dismisses that one specifically (not just "newest of this app").
+lv_obj_t* make_ancs_tile(lv_obj_t* parent, const char* token, uint32_t uid) {
     lv_obj_t* tile = lv_obj_create(parent);
     lv_obj_set_size(tile, ICON_SIZE, ICON_SIZE);
     lv_obj_set_style_border_width(tile, 0, LV_PART_MAIN);
@@ -78,7 +132,11 @@ lv_obj_t* make_ancs_tile(lv_obj_t* parent, const char* token) {
     lv_obj_add_flag(tile, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_opa(tile, LV_OPA_60, LV_STATE_PRESSED);
 
+    // Brand icon if we have one; otherwise a fallback chosen by ANCS category
+    // (so an unknown email app shows an envelope, an unknown social app a chat
+    // bubble, etc.), falling back to the generic bell for unknown categories.
     const lv_image_dsc_t* img = ancs_icons::image(token);
+    if (!img) img = ancs_icons::category_image(app_state::ancs_category(uid));
     if (img) {
         lv_obj_set_style_bg_opa(tile, LV_OPA_TRANSP, LV_PART_MAIN);
         lv_obj_set_style_radius(tile, 12, LV_PART_MAIN);
@@ -92,13 +150,29 @@ lv_obj_t* make_ancs_tile(lv_obj_t* parent, const char* token) {
         lv_obj_set_style_radius(tile, LV_RADIUS_CIRCLE, LV_PART_MAIN);
     }
 
-    // Tap → open the ANCS notification detail modal.
-    lv_obj_set_user_data(tile, const_cast<char*>(token));
+    // Category / importance accent ring: incoming call = danger red, otherwise
+    // an Important notification = accent. Overrides the default 0-width border.
+    uint8_t cat = app_state::ancs_category(uid);
+    if (cat == app_state::AncsCategory::INCOMING_CALL) {
+        lv_obj_set_style_border_width(tile, 3, LV_PART_MAIN);
+        lv_obj_set_style_border_color(tile, theme::color(theme::COLOR_DANGER), LV_PART_MAIN);
+        lv_obj_set_style_border_opa(tile, LV_OPA_COVER, LV_PART_MAIN);
+    } else if (app_state::ancs_is_important(uid)) {
+        lv_obj_set_style_border_width(tile, 3, LV_PART_MAIN);
+        lv_obj_set_style_border_color(tile, theme::color(theme::COLOR_ACCENT), LV_PART_MAIN);
+        lv_obj_set_style_border_opa(tile, LV_OPA_COVER, LV_PART_MAIN);
+    }
+
+    // Tap → open the ANCS notification detail modal for this exact UID.
+    lv_obj_set_user_data(tile, reinterpret_cast<void*>((uintptr_t)uid));
     lv_obj_add_event_cb(tile, [](lv_event_t* e) {
         lv_obj_t* t = (lv_obj_t*)lv_event_get_current_target(e);
-        const char* tok = static_cast<const char*>(lv_obj_get_user_data(t));
-        modal_ancs_notification::create(lv_screen_active(), t, tok);
+        uint32_t uid = (uint32_t)(uintptr_t)lv_obj_get_user_data(t);
+        modal_ancs_notification::create(lv_screen_active(), uid);
     }, LV_EVENT_CLICKED, nullptr);
+
+    // Genuinely-new notification (flagged via note_new_notification) pops in.
+    if (g_anim_pending && uid == g_anim_uid) animate_tile_in(tile);
 
     return tile;
 }
@@ -595,7 +669,7 @@ lv_obj_t* create(lv_obj_t* parent) {
     // because lv_timer_create() produces a free-standing timer, not a child.
     state->clock_timer = lv_timer_create([](lv_timer_t* t) {
         auto* b = static_cast<lv_obj_t*>(lv_timer_get_user_data(t));
-        widget_status_bar::refresh(b);
+        update_clock_labels(b);   // labels only — ANCS row rebuilds on data change
     }, 1000, bar);
 
     g_active_bar = bar;
@@ -696,14 +770,13 @@ void refresh_active() {
     if (g_active_bar) refresh(g_active_bar);
 }
 
+void note_new_notification(uint32_t uid) { g_anim_uid = uid; g_anim_pending = true; }
+
 void refresh(lv_obj_t* bar) {
     auto* s = static_cast<StatusBarState*>(lv_obj_get_user_data(bar));
     if (!s) return;
 
-    char time_buf[8], date_buf[20];
-    format_real_time(time_buf, sizeof(time_buf), date_buf, sizeof(date_buf));
-    lv_label_set_text(s->time_label, time_buf);
-    lv_label_set_text(s->date_label, date_buf);
+    update_clock_labels(bar);
 
     // Rebuild ANCS row from current config. Gate on the bar's own
     // phone_connected field — the authoritative BLE link state set by
@@ -715,11 +788,17 @@ void refresh(lv_obj_t* bar) {
     lv_obj_clean(s->ancs_row);
     size_t visible_tiles = 0;
     if (s->phone_connected) {
-        // i < MAX_ANCS_ICONS is a hard guard: even if cfg.count is somehow
-        // corrupted above the array size, we never read past icons[MAX-1].
-        for (size_t i = 0; i < cfg.count && i < app_state::MAX_ANCS_ICONS; ++i) {
+        // Queue is oldest → newest. Show the NEWEST MAX_ANCS_ICONS: start at
+        // count-5 (or 0). Adding oldest-of-window first puts it leftmost and the
+        // newest rightmost (flex row, left→right). Reading one removes it and
+        // this re-windows — the next-newest slides to the right, and any hidden
+        // older notification slides into view on the left.
+        size_t start = (cfg.count > app_state::MAX_ANCS_ICONS)
+                       ? cfg.count - app_state::MAX_ANCS_ICONS
+                       : 0;
+        for (size_t i = start; i < cfg.count && i < app_state::MAX_ANCS_NOTIFICATIONS; ++i) {
             if (cfg.icons[i]) {
-                make_ancs_tile(s->ancs_row, cfg.icons[i]);
+                make_ancs_tile(s->ancs_row, cfg.icons[i], cfg.uids[i]);
                 ++visible_tiles;
             }
         }
@@ -732,6 +811,9 @@ void refresh(lv_obj_t* bar) {
                  ? 0
                  : (int)visible_tiles * ICON_SIZE + ((int)visible_tiles - 1) * ICON_GAP;
     lv_obj_set_width(s->ancs_row, ancs_w);
+
+    // One-shot: the entrance animation (if any) has now been applied.
+    g_anim_pending = false;
 }
 
 } // namespace widget_status_bar

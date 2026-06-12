@@ -27,10 +27,15 @@
 #include <NimBLEDevice.h>
 #include <NimBLEClient.h>
 #include <string.h>
+#include <time.h>
 
 #include "app_state.h"
 #include "state_machine.h"
+#include "ota_receiver.h"
 #include "assets/ancs_icons.h"
+#include "screens/modal_ancs_notification.h"
+#include "screens/modal_incoming_call.h"
+#include "ui_helpers.h"
 #include "widgets/widget_status_bar.h"
 
 // ── ANCS UUIDs ────────────────────────────────────────────────────────────
@@ -45,50 +50,81 @@
 struct BundleMap {
     const char* bundle_id;
     const char* token;
+    const char* name;     // human-readable app name for the detail modal
 };
 
 static const BundleMap k_bundle_map[] = {
-    { "com.google.gmail.iphone",        "gmail"       },
-    { "com.facebook.Messenger",         "messenger"   },
-    { "com.burbn.instagram",            "instagram"   },
-    { "com.facebook.Facebook",          "facebook"    },
-    { "net.whatsapp.WhatsApp",          "whatsapp"    },
-    { "com.tinyspeck.chatlyio",         "slack"       },
-    { "com.atebits.Tweetie2",           "twitter"     },
-    { "com.microsoft.teams",            "teams"       },
-    { "com.apple.MobileSMS",            "sms"         },
-    { "com.apple.mobilephone",          "phone"       },
-    { "com.hammerandchisel.discord",    "discord"     },
-    { "ph.telegra.Telegraph",           "telegram"    },
-    { "com.google.ios.youtube",         "youtube"     },
-    { "com.zhiliaoapp.musically",       "tiktok"      },
-    { "com.spotify.client",             "spotify"     },
-    { "com.tencent.xin",                "wechat"      },
-    { "jp.naver.line",                  "line"        },
-    { "us.zoom.videomeetings",          "zoom"        },
-    { "com.microsoft.office.outlook",   "outlook"     },
-    { "com.toyopagroup.picaboo",        "snapchat"    },
-    { "com.google.hangouts.meet",       "google_meet" },
-    { "com.apple.facetime",             "facetime"    },
-    { "com.linkedin.LinkedIn",          "linkedin"    },
-    { "com.reddit.Reddit",              "reddit"      },
-    { "com.burbn.threads",              "threads"     },
-    { "tv.twitch.mobile.watchlive",     "twitch"      },
-    { "com.ubercab.UberClient",         "uber"        },
-    { "com.apple.Music",                "apple_music" },
-    { "com.amazon.Amazon",              "amazon"      },
+    { "com.google.gmail.iphone",        "gmail",       "Gmail"       },
+    { "com.facebook.Messenger",         "messenger",   "Messenger"   },
+    { "com.burbn.instagram",            "instagram",   "Instagram"   },
+    { "com.facebook.Facebook",          "facebook",    "Facebook"    },
+    { "net.whatsapp.WhatsApp",          "whatsapp",    "WhatsApp"    },
+    { "com.tinyspeck.chatlyio",         "slack",       "Slack"       },
+    { "com.atebits.Tweetie2",           "twitter",     "X"           },
+    { "com.microsoft.teams",            "teams",       "Teams"       },
+    { "com.apple.MobileSMS",            "sms",         "Messages"    },
+    { "com.apple.mobilephone",          "phone",       "Phone"       },
+    { "com.hammerandchisel.discord",    "discord",     "Discord"     },
+    { "ph.telegra.Telegraph",           "telegram",    "Telegram"    },
+    { "com.google.ios.youtube",         "youtube",     "YouTube"     },
+    { "com.zhiliaoapp.musically",       "tiktok",      "TikTok"      },
+    { "com.spotify.client",             "spotify",     "Spotify"     },
+    { "com.tencent.xin",                "wechat",      "WeChat"      },
+    { "jp.naver.line",                  "line",        "LINE"        },
+    { "us.zoom.videomeetings",          "zoom",        "Zoom"        },
+    { "com.microsoft.office.outlook",   "outlook",     "Outlook"     },
+    { "com.toyopagroup.picaboo",        "snapchat",    "Snapchat"    },
+    { "com.google.hangouts.meet",       "google_meet", "Google Meet" },
+    { "com.apple.facetime",             "facetime",    "FaceTime"    },
+    { "com.linkedin.LinkedIn",          "linkedin",    "LinkedIn"    },
+    { "com.reddit.Reddit",              "reddit",      "Reddit"      },
+    { "com.burbn.threads",              "threads",     "Threads"     },
+    { "tv.twitch.mobile.watchlive",     "twitch",      "Twitch"      },
+    { "com.ubercab.UberClient",         "uber",        "Uber"        },
+    { "com.apple.Music",                "apple_music", "Apple Music" },
+    { "com.amazon.Amazon",              "amazon",      "Amazon"      },
 };
 static const size_t k_bundle_map_count =
     sizeof(k_bundle_map) / sizeof(k_bundle_map[0]);
 
-static const char* resolve_token(const char* bundle_id) {
+static const BundleMap* lookup_bundle(const char* bundle_id) {
     if (!bundle_id || !bundle_id[0]) return nullptr;
     for (size_t i = 0; i < k_bundle_map_count; ++i) {
-        if (strcmp(k_bundle_map[i].bundle_id, bundle_id) == 0) {
-            return k_bundle_map[i].token;
-        }
+        if (strcmp(k_bundle_map[i].bundle_id, bundle_id) == 0) return &k_bundle_map[i];
     }
     return nullptr;
+}
+
+static const char* resolve_token(const char* bundle_id) {
+    const BundleMap* b = lookup_bundle(bundle_id);
+    return b ? b->token : nullptr;
+}
+
+// Parse an ANCS Date attribute ("yyyyMMdd'T'HHmmSS", e.g. "20140110T114000").
+// Returns the Unix epoch (interpreting the wall-clock time as device-local),
+// or 0 if the string is missing/malformed. Also fills hhmm_out with the
+// TZ-free "HH:MM" lifted straight from the string (always correct regardless
+// of the device clock), used as the display fallback when the clock isn't synced.
+static time_t parse_ancs_date(const char* s, char* hhmm_out, size_t hhmm_sz) {
+    if (hhmm_out && hhmm_sz) hhmm_out[0] = '\0';
+    if (!s || strlen(s) < 15) return 0;
+    for (int i = 0; i < 15; ++i) {
+        if (i == 8) { if (s[i] != 'T') return 0; }
+        else if (s[i] < '0' || s[i] > '9') return 0;
+    }
+    auto d2 = [](const char* p) { return (p[0] - '0') * 10 + (p[1] - '0'); };
+    struct tm tmv = {};
+    tmv.tm_year  = (s[0]-'0')*1000 + (s[1]-'0')*100 + (s[2]-'0')*10 + (s[3]-'0') - 1900;
+    tmv.tm_mon   = d2(s + 4) - 1;
+    tmv.tm_mday  = d2(s + 6);
+    tmv.tm_hour  = d2(s + 9);
+    tmv.tm_min   = d2(s + 11);
+    tmv.tm_sec   = d2(s + 13);
+    tmv.tm_isdst = -1;
+    if (hhmm_out && hhmm_sz >= 6)
+        snprintf(hhmm_out, hhmm_sz, "%c%c:%c%c", s[9], s[10], s[11], s[12]);
+    time_t e = mktime(&tmv);
+    return (e < 0) ? 0 : e;
 }
 
 namespace {
@@ -189,9 +225,94 @@ static void read_phone_name() {
     LOG("[ancs] phone name: '%s'\n", g_phone_name);
 }
 
+// ── ANCS EventFlags bits (Notification Source byte 1) ──────────────────────
+namespace EvtFlag {
+    constexpr uint8_t SILENT = 0x01, IMPORTANT = 0x02, PREEXISTING = 0x04,
+                      POSITIVE_ACTION = 0x08, NEGATIVE_ACTION = 0x10;
+}
+
+// ── Pending NS-event metadata ──────────────────────────────────────────────
+// EventFlags + CategoryID live in the NS event but aren't repeated in the DS
+// attribute response, so stash them by UID until the DS response arrives.
+struct PendingMeta { uint32_t uid; uint8_t flags; uint8_t cat; bool used; };
+static PendingMeta g_pmeta[8];
+
+static void pmeta_put(uint32_t uid, uint8_t flags, uint8_t cat) {
+    PendingMeta* slot = nullptr;
+    for (auto& m : g_pmeta) if (m.used && m.uid == uid) { slot = &m; break; }
+    if (!slot) for (auto& m : g_pmeta) if (!m.used) { slot = &m; break; }
+    if (!slot) slot = &g_pmeta[0];   // all in flight (unlikely) — reuse slot 0
+    slot->used = true; slot->uid = uid; slot->flags = flags; slot->cat = cat;
+}
+
+static bool pmeta_take(uint32_t uid, uint8_t* flags, uint8_t* cat) {
+    for (auto& m : g_pmeta) {
+        if (m.used && m.uid == uid) {
+            if (flags) *flags = m.flags;
+            if (cat)   *cat   = m.cat;
+            m.used = false;
+            return true;
+        }
+    }
+    return false;
+}
+
+// ── App display-name cache (bundle id → localized name) ────────────────────
+// Filled by GetAppAttributes responses so we resolve real names for apps not
+// in the built-in bundle map, once per app.
+struct AppNameEntry { char bundle[48]; char name[40]; bool used; };
+static AppNameEntry g_appnames[16];
+
+static const char* appname_cache_lookup(const char* bundle) {
+    if (!bundle) return nullptr;
+    for (auto& e : g_appnames) if (e.used && strcmp(e.bundle, bundle) == 0) return e.name;
+    return nullptr;
+}
+
+static void appname_cache_put(const char* bundle, const char* name) {
+    if (!bundle || !bundle[0] || !name || !name[0]) return;
+    AppNameEntry* slot = nullptr;
+    for (auto& e : g_appnames) if (e.used && strcmp(e.bundle, bundle) == 0) { slot = &e; break; }
+    if (!slot) for (auto& e : g_appnames) if (!e.used) { slot = &e; break; }
+    if (!slot) slot = &g_appnames[0];   // cache full — evict slot 0
+    slot->used = true;
+    snprintf(slot->bundle, sizeof(slot->bundle), "%s", bundle);
+    snprintf(slot->name,   sizeof(slot->name),   "%s", name);
+}
+
+// GetAppAttributes (CommandID 0x01): ask the phone for an app's localized
+// Display Name. Used for apps not in the built-in bundle map; the async
+// response lands in on_data_source and back-fills the name.
+static void request_app_attributes(const char* bundle) {
+    if (!g_cp_char || !bundle || !bundle[0]) return;
+    uint8_t cmd[64];
+    size_t  n = 0;
+    cmd[n++] = 0x01;                                  // GetAppAttributes
+    size_t blen = strlen(bundle);
+    if (blen > sizeof(cmd) - 3) blen = sizeof(cmd) - 3;
+    memcpy(&cmd[n], bundle, blen); n += blen;
+    cmd[n++] = 0x00;                                  // null-terminate AppIdentifier
+    cmd[n++] = 0x00;                                  // AttributeID 0 = Display Name (no length)
+    g_cp_char->writeValue(cmd, n, true);
+    LOG("[ancs] GetAppAttributes bundle=%s\n", bundle);
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Queue helpers
 // ─────────────────────────────────────────────────────────────────────────
+
+// Mirror the live queue (oldest → newest) into app_state and refresh the bar.
+static void publish_queue() {
+    app_state::AncsConfig cfg = {};
+    cfg.phone_connected = true;
+    cfg.count = g_queue_count;
+    for (size_t i = 0; i < g_queue_count && i < app_state::MAX_ANCS_NOTIFICATIONS; ++i) {
+        cfg.icons[i] = g_queue[i].icon_token;
+        cfg.uids[i]  = g_queue[i].uid;
+    }
+    app_state::set_ancs_config(cfg);
+    widget_status_bar::refresh_active();
+}
 
 static void queue_add(uint32_t uid, const char* token) {
     // Check for duplicate UID.
@@ -214,14 +335,7 @@ static void queue_add(uint32_t uid, const char* token) {
     g_queue_count++;
 
     // Sync icon state to app_state so the status bar widget refreshes.
-    app_state::AncsConfig cfg = {};
-    cfg.phone_connected = true;
-    cfg.count = g_queue_count;
-    for (size_t i = 0; i < g_queue_count && i < app_state::MAX_ANCS_NOTIFICATIONS; ++i) {
-        cfg.icons[i] = g_queue[i].icon_token;
-    }
-    app_state::set_ancs_config(cfg);
-    widget_status_bar::refresh_active();
+    publish_queue();
 
     state_machine::set_phone_connected(true);
     LOG("[ancs] queued uid=%u token=%s count=%u\n",
@@ -229,21 +343,16 @@ static void queue_add(uint32_t uid, const char* token) {
 }
 
 static void queue_remove(uint32_t uid) {
+    // Drop any stored detail for this notification regardless of whether it's
+    // still in the visible queue (it may be a hidden, beyond-the-5th entry).
+    app_state::remove_ancs_detail(uid);
+
     for (size_t i = 0; i < g_queue_count; ++i) {
         if (g_queue[i].uid == uid) {
             memmove(&g_queue[i], &g_queue[i + 1],
                     (g_queue_count - i - 1) * sizeof(ancs_client::QueueEntry));
             g_queue_count--;
-
-            app_state::AncsConfig cfg = {};
-            cfg.phone_connected = true;
-            cfg.count = g_queue_count;
-            for (size_t j = 0; j < g_queue_count; ++j) {
-                cfg.icons[j] = g_queue[j].icon_token;
-            }
-            app_state::set_ancs_config(cfg);
-    widget_status_bar::refresh_active();
-
+            publish_queue();
             LOG("[ancs] removed uid=%u count=%u\n",
                            (unsigned)uid, (unsigned)g_queue_count);
             return;
@@ -371,25 +480,31 @@ void on_notification_source(const uint8_t* data, uint16_t len) {
     if (len < 8) return;
 
     uint8_t  event_id = data[0];
-    // uint8_t  flags    = data[1];   // reserved for future filtering
-    // uint8_t  cat_id   = data[2];   // reserved for future filtering
+    uint8_t  flags    = data[1];   // EventFlags (Silent/Important/PreExisting/…)
+    uint8_t  cat_id   = data[2];   // CategoryID (IncomingCall, Social, Email, …)
     uint32_t uid      = (uint32_t)(data[4] | (data[5] << 8) |
                                     (data[6] << 16) | (data[7] << 24));
 
     // Diagnostic: prove whether iOS is actually streaming NS events. If this
     // never logs while the phone has notifications, the problem is iOS-side
     // (notification access not granted / device not engaged), not the parser.
-    LOG("[ancs] NS event id=%u cat=%u uid=%u\n",
-        (unsigned)event_id, (unsigned)data[2], (unsigned)uid);
+    LOG("[ancs] NS event id=%u cat=%u flags=0x%02X uid=%u\n",
+        (unsigned)event_id, (unsigned)cat_id, (unsigned)flags, (unsigned)uid);
 
-    if (event_id == 0) {
-        // Added — request attributes to get bundle ID.
+    if (event_id == 0 || event_id == 1) {
+        // Added or Modified — stash flags+category (not echoed in the DS
+        // response) then (re)request attributes. queue_add dedups by UID so a
+        // Modified event keeps the existing icon, while set_ancs_detail
+        // refreshes the stored title/body/timestamp in place.
+        pmeta_put(uid, flags, cat_id);
         ancs_client::request_attributes(uid);
     } else if (event_id == 2) {
-        // Removed.
+        // Removed on the iPhone — close any open overlay / call banner showing
+        // it, then drop it from Ori's queue + detail + status bar.
+        modal_ancs_notification::close_if_showing(uid);
+        modal_incoming_call::close_if_showing(uid);
         queue_remove(uid);
     }
-    // event_id == 1 (Modified) — ignore for now.
 }
 
 void on_data_source(const uint8_t* data, uint16_t len) {
@@ -403,41 +518,74 @@ void on_data_source(const uint8_t* data, uint16_t len) {
     memcpy(g_ds_buf + g_ds_len, data, copy_len);
     g_ds_len += copy_len;
 
-    // A GetNotificationAttributes response starts with:
-    //   [0] CommandID = 0x00
-    //   [1-4] NotificationUID (uint32 LE)
-    //   then attribute records: [AttributeID][Length(LE)][Data]
     if (g_ds_len < 5) return;
-    if (g_ds_buf[0] != 0x00) {
-        g_ds_len = 0; // not a GetNotificationAttributes response
+    uint8_t cmd_id = g_ds_buf[0];
+
+    // ── GetAppAttributes response (CommandID 0x01) — app display name ──
+    if (cmd_id == 0x01) {
+        // [0]=0x01, [1..]=AppIdentifier (null-terminated), then attr records.
+        size_t p = 1, ai = 0;
+        char app_id[128] = {};
+        while (p < g_ds_len && g_ds_buf[p] != 0x00) {
+            if (ai < sizeof(app_id) - 1) app_id[ai++] = (char)g_ds_buf[p];
+            ++p;
+        }
+        if (p >= g_ds_len) return;            // AppIdentifier not fully arrived yet
+        app_id[ai] = '\0';
+        ++p;                                   // skip the null terminator
+        char name[64] = {};
+        while (p + 3 <= g_ds_len) {
+            uint8_t  aid  = g_ds_buf[p];
+            uint16_t alen = (uint16_t)(g_ds_buf[p + 1] | (g_ds_buf[p + 2] << 8));
+            p += 3;
+            if (p + alen > g_ds_len) break;
+            if (aid == 0x00) {                 // Display Name
+                size_t c = alen < sizeof(name) - 1 ? alen : sizeof(name) - 1;
+                memcpy(name, &g_ds_buf[p], c);
+                name[c] = '\0';
+            }
+            p += alen;
+        }
+        if (name[0]) {
+            char fname[40] = {};
+            ui::sanitize_text(name, fname, sizeof(fname));
+            appname_cache_put(app_id, fname);
+            app_state::set_ancs_display_name_for_bundle(app_id, fname);
+            LOG("[ancs] app name: %s -> '%s'\n", app_id, fname);
+        }
+        g_ds_len = 0;
         return;
     }
+
+    // ── GetNotificationAttributes response (CommandID 0x00) ──
+    //   [1-4] NotificationUID (LE), then records: [AttributeID][Length LE][Data]
+    if (cmd_id != 0x00) { g_ds_len = 0; return; }
 
     uint32_t resp_uid = (uint32_t)(g_ds_buf[1] | (g_ds_buf[2] << 8) |
                                     (g_ds_buf[3] << 16) | (g_ds_buf[4] << 24));
 
-    // Parse attribute records.
-    // We requested: AppIdentifier (0x00), Title (0x01), Message (0x03)
-    char app_id[128] = {};
-    char title[193]  = {};
-    char body[513]   = {};
-    bool got_app_id  = false;
-    bool got_title   = false;
-    bool got_body    = false;
+    // Requested: AppIdentifier(0), Title(1), Subtitle(2), Message(3), Date(5)
+    char app_id[128]   = {};
+    char title[193]    = {};
+    char subtitle[129] = {};
+    char body[513]     = {};
+    char date[24]      = {};
+    bool got_app_id    = false;
 
     size_t pos = 5;
     while (pos + 3 <= g_ds_len) {
-        uint8_t  attr_id   = g_ds_buf[pos];
-        uint16_t attr_len  = (uint16_t)(g_ds_buf[pos + 1] | (g_ds_buf[pos + 2] << 8));
+        uint8_t  attr_id  = g_ds_buf[pos];
+        uint16_t attr_len = (uint16_t)(g_ds_buf[pos + 1] | (g_ds_buf[pos + 2] << 8));
         pos += 3;
         if (pos + attr_len > g_ds_len) break; // incomplete — wait for more
 
-        char* dst = nullptr;
+        char*  dst = nullptr;
         size_t dst_sz = 0;
-
-        if (attr_id == 0x00) { dst = app_id;  dst_sz = sizeof(app_id)  - 1; got_app_id = true; }
-        else if (attr_id == 0x01) { dst = title;  dst_sz = sizeof(title)  - 1; got_title  = true; }
-        else if (attr_id == 0x03) { dst = body;   dst_sz = sizeof(body)   - 1; got_body   = true; }
+        if      (attr_id == 0x00) { dst = app_id;   dst_sz = sizeof(app_id)   - 1; got_app_id = true; }
+        else if (attr_id == 0x01) { dst = title;    dst_sz = sizeof(title)    - 1; }
+        else if (attr_id == 0x02) { dst = subtitle; dst_sz = sizeof(subtitle) - 1; }
+        else if (attr_id == 0x03) { dst = body;     dst_sz = sizeof(body)     - 1; }
+        else if (attr_id == 0x05) { dst = date;     dst_sz = sizeof(date)     - 1; }
 
         if (dst) {
             size_t copy = attr_len < dst_sz ? attr_len : dst_sz;
@@ -447,30 +595,63 @@ void on_data_source(const uint8_t* data, uint16_t len) {
         pos += attr_len;
     }
 
-    // Only process once we have the app identifier.
     if (!got_app_id) return;
 
-    // Resolve icon token.
-    const char* resolved_token = resolve_token(app_id);
-    const char* token = resolved_token ? resolved_token : "unknown";
+    // Recover the NS-event metadata stashed for this UID (flags + category).
+    uint8_t flags = 0, cat = app_state::AncsCategory::OTHER;
+    pmeta_take(resp_uid, &flags, &cat);
+    bool important   = (flags & EvtFlag::IMPORTANT)   != 0;
+    bool preexisting = (flags & EvtFlag::PREEXISTING) != 0;
 
-    // Add to display queue.
+    // Resolve icon token + human-readable app name. Built-in map first (instant),
+    // then the GetAppAttributes cache; if still unknown, fire a one-off fetch —
+    // its async reply back-fills the name for this and future notifications.
+    const BundleMap* bm = lookup_bundle(app_id);
+    const char* token        = bm ? bm->token : "unknown";
+    const char* display_name = bm ? bm->name  : appname_cache_lookup(app_id);
+    if (!display_name) request_app_attributes(app_id);
+
+    // Timestamp (ANCS Date attribute).
+    char hhmm[6] = {};
+    time_t recv_epoch = parse_ancs_date(date, hhmm, sizeof(hhmm));
+
+    // Drop glyphs the UI font can't render (emoji, CJK, …) before storing.
+    char ftitle[193] = {}, fsub[129] = {}, fbody[257] = {};
+    ui::sanitize_text(title,    ftitle, sizeof(ftitle));
+    ui::sanitize_text(subtitle, fsub,   sizeof(fsub));
+    ui::sanitize_text(body,     fbody,  sizeof(fbody));
+
+    // Store detail BEFORE queue_add so the status-bar tile built during the
+    // queue_add → publish_queue → refresh can read this UID's category/importance.
+    app_state::set_ancs_detail(resp_uid, token, display_name, ftitle, fsub, fbody,
+                               recv_epoch, hhmm, app_id, cat, important);
+
+    // Genuinely-new notifications animate in; the backlog iOS replays on connect
+    // (PreExisting flag) populates silently.
+    if (!preexisting) widget_status_bar::note_new_notification(resp_uid);
+
+    // Incoming call that isn't part of the reconnect backlog → prominent banner.
+    if (cat == app_state::AncsCategory::INCOMING_CALL && !preexisting &&
+        !ota_receiver::is_active()) {
+        modal_incoming_call::show(resp_uid);
+    }
+
     queue_add(resp_uid, token);
 
-    // Store pending notification info for the detail modal.
+    // Legacy single-slot pending info (kept for compatibility).
     g_pending_info.uid = resp_uid;
-    strncpy(g_pending_info.app_id,  app_id,  sizeof(g_pending_info.app_id)  - 1);
-    strncpy(g_pending_info.title,   title,   sizeof(g_pending_info.title)   - 1);
-    strncpy(g_pending_info.body,    body,    sizeof(g_pending_info.body)    - 1);
+    strncpy(g_pending_info.app_id, app_id, sizeof(g_pending_info.app_id) - 1);
+    strncpy(g_pending_info.title,  ftitle, sizeof(g_pending_info.title)  - 1);
+    strncpy(g_pending_info.body,   fbody,  sizeof(g_pending_info.body)   - 1);
     g_pending_info.icon_token = token;
     g_pending_valid = true;
 
-    // Reset DS buffer for next response.
     g_ds_len = 0;
     g_pending_uid = 0;
 
-    LOG("[ancs] attr response: uid=%u app=%s title='%s'\n",
-                   (unsigned)resp_uid, app_id, title);
+    LOG("[ancs] attr uid=%u app=%s cat=%u%s title='%s'\n",
+        (unsigned)resp_uid, app_id, (unsigned)cat,
+        preexisting ? " (preexisting)" : "", ftitle);
 }
 
 void request_attributes(uint32_t notif_uid) {
@@ -479,22 +660,24 @@ void request_attributes(uint32_t notif_uid) {
     g_ds_len      = 0;
 
     // GetNotificationAttributes command:
-    //   CommandID=0x00, UID(4B), AppID(0x00), Title(0x01,max_len=192), Message(0x03,max_len=512)
-    uint8_t cmd[16];
-    cmd[0] = 0x00; // GetNotificationAttributes
-    cmd[1] = (uint8_t)(notif_uid & 0xFF);
-    cmd[2] = (uint8_t)((notif_uid >> 8) & 0xFF);
-    cmd[3] = (uint8_t)((notif_uid >> 16) & 0xFF);
-    cmd[4] = (uint8_t)((notif_uid >> 24) & 0xFF);
-    cmd[5]  = 0x00; // AppIdentifier attribute
-    cmd[6]  = 0x01; // Title
-    cmd[7]  = 192 & 0xFF;
-    cmd[8]  = (192 >> 8) & 0xFF;
-    cmd[9]  = 0x03; // Message
-    cmd[10] = 512 & 0xFF;
-    cmd[11] = (512 >> 8) & 0xFF;
+    //   CommandID=0x00, UID(4B), AppID(0x00), Title(0x01,192), Subtitle(0x02,128),
+    //   Message(0x03,512), Date(0x05).
+    // Only Title/Subtitle/Message carry a 2-byte max-length; AppIdentifier and
+    // Date are fixed-format and take no length field (per the ANCS spec).
+    uint8_t cmd[24];
+    size_t  n = 0;
+    cmd[n++] = 0x00; // GetNotificationAttributes
+    cmd[n++] = (uint8_t)(notif_uid & 0xFF);
+    cmd[n++] = (uint8_t)((notif_uid >> 8) & 0xFF);
+    cmd[n++] = (uint8_t)((notif_uid >> 16) & 0xFF);
+    cmd[n++] = (uint8_t)((notif_uid >> 24) & 0xFF);
+    cmd[n++] = 0x00;                       // AppIdentifier
+    cmd[n++] = 0x01; cmd[n++] = 192 & 0xFF; cmd[n++] = (192 >> 8) & 0xFF;  // Title
+    cmd[n++] = 0x02; cmd[n++] = 128 & 0xFF; cmd[n++] = (128 >> 8) & 0xFF;  // Subtitle
+    cmd[n++] = 0x03; cmd[n++] = 512 & 0xFF; cmd[n++] = (512 >> 8) & 0xFF;  // Message
+    cmd[n++] = 0x05;                       // Date (no length field)
 
-    g_cp_char->writeValue(cmd, 12, true);
+    g_cp_char->writeValue(cmd, n, true);
     LOG("[ancs] GetNotificationAttributes uid=%u\n", (unsigned)notif_uid);
 }
 

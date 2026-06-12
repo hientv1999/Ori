@@ -40,7 +40,7 @@ import logging
 import os
 import struct
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import cbor2
@@ -184,10 +184,34 @@ def build_pto_photo_jpeg() -> bytes:
 
 # ── Mock data ─────────────────────────────────────────────────────────────────
 
+def _local_posix_tz() -> str:
+    """POSIX TZ string for THIS machine's current local UTC offset.
+
+    The Ori firmware feeds the `tz` field straight into newlib's
+    setenv("TZ", …)/tzset(), which parses **POSIX** TZ strings — NOT IANA
+    names. An IANA name like "America/Los_Angeles" is unparseable and the
+    device falls back to UTC. So we emit a fixed-offset POSIX string
+    (e.g. "LOC7" = UTC-7, "LOC-2" = UTC+2) reflecting the offset in effect
+    right now. No DST transition rule is included — fine for a mock, since
+    the device re-derives wall-clock time from epoch + this offset and the
+    script re-syncs; the displayed time is correct as of the sync.
+    """
+    off = datetime.now().astimezone().utcoffset() or timedelta(0)
+    # POSIX offset is the value ADDED to local to reach UTC → sign inverted.
+    posix_min = -int(off.total_seconds() // 60)
+    sign = "-" if posix_min < 0 else ""           # '-' means east of UTC
+    hh, mm = divmod(abs(posix_min), 60)
+    name = datetime.now().astimezone().tzname() or "LOC"
+    if not name.isalpha() or len(name) < 3:       # POSIX std name: ≥3 letters
+        name = "LOC"
+    return f"{name}{sign}{hh}" + (f":{mm:02d}" if mm else "")
+
 def build_time_sync() -> bytes:
     now_utc = int(datetime.now(timezone.utc).timestamp())
     tx_ms   = int(time.monotonic() * 1000)
-    return cbor2.dumps({"epoch_utc": now_utc, "tz": "America/Los_Angeles", "tx_ms": tx_ms})
+    tz      = _local_posix_tz()
+    print(f"  [info] TimeSync tz='{tz}' (POSIX; from this machine's local offset)")
+    return cbor2.dumps({"epoch_utc": now_utc, "tz": tz, "tx_ms": tx_ms})
 
 def build_profile() -> bytes:
     # All fields maximized to their character limits (ble-protocol.md §10):
