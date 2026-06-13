@@ -707,8 +707,11 @@ void poll() {
     if (g_unpair_phone_pending) {
         g_unpair_phone_pending = false;
         LOG("[sm] poll: unpair phone — wiping bond + evaluating\n");
+        // wipe_iphone_bond() owns advertising: it stops it during the wipe and
+        // restarts it once the bond is deleted (deferred to the disconnect if
+        // the iPhone is still connected). Do NOT restart advertising here — that
+        // let the still-bonded iPhone reconnect and race the wipe (NVS crash).
         ble_manager::wipe_iphone_bond();
-        ble_manager::restart_advertising();
         g_force_rebuild = true;
         g_state = AppState::NO_MEETINGS;  // break out of any early-return guard
         evaluate();
@@ -716,11 +719,10 @@ void poll() {
     if (g_phone_wipe_pending) {
         g_phone_wipe_pending = false;
         LOG("[sm] poll: wiping stale iPhone bond for re-pair\n");
-        ble_manager::wipe_iphone_bond();
         // No evaluate() — the re-pair screen the user just opened owns the
-        // display. Restart advertising so the now-empty iPhone slot plus the
-        // open pairing window put the ANCS solicitation on air.
-        ble_manager::restart_advertising();
+        // display. wipe_iphone_bond() re-advertises after the wipe so the
+        // now-empty iPhone slot + open pairing window put ANCS solicitation on air.
+        ble_manager::wipe_iphone_bond();
     }
     if (g_mode_write_pending) {
         g_mode_write_pending = false;

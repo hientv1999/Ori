@@ -52,10 +52,9 @@ def g_social(x,y):
     dots=disk(x,y,22,27,2) or disk(x,y,30,27,2) or disk(x,y,38,27,2)
     return body and not dots
 def g_call(x,y):
-    grip=cap(x,y,21,21,39,39,4.5)
-    ear=disk(x,y,20,20,7.5) and not disk(x,y,15,15,7.5)
-    mouth=disk(x,y,40,40,7.5) and not disk(x,y,45,45,7.5)
-    return grip or ear or mouth
+    # Filled handset = a thick crescent (boomerang) hugging the upper-left and
+    # opening toward the lower-right — the classic phone-receiver silhouette.
+    return disk(x,y,31,31,15) and not disk(x,y,42,42,15.5)
 
 GLYPHS=[("call",g_call),("social",g_social),("schedule",g_schedule),
         ("email",g_email),("news",g_news),("health",g_health),

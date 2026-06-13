@@ -42,6 +42,12 @@ void set_last_sync_time(time_t t);
 // recorded by set_last_sync_time(). Returns "SYNCED" before first sync.
 const char* synced_pill_text();
 
+// True once the wall clock has actually been set by an Orion Time Sync. After a
+// cold power cycle there is no battery-backed RTC, so time() returns a ~1970
+// value until the first sync — callers use this to avoid rendering a bogus time
+// (show "--:--" instead). Threshold = 2026-07-12 (any later real epoch passes).
+bool clock_is_set();
+
 // Now-playing media metadata for the Media mode screen.
 // Populated from Orion via BLE Media Metadata / Album Art characteristics.
 // Starts with has_media=false ("Nothing playing" state) until a track arrives.

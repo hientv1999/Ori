@@ -35,6 +35,14 @@ struct ClockFaceState {
 };
 
 static void update_clock_labels(ClockFaceState* cf) {
+    // No battery-backed RTC: until Orion's first Time Sync, the clock is unknown.
+    // Show "--:--" + a hint rather than a fabricated ~1970 time/date.
+    if (!app_state::clock_is_set()) {
+        lv_label_set_text(cf->hour_lbl,   "--");
+        lv_label_set_text(cf->minute_lbl, "--");
+        lv_label_set_text(cf->date_lbl,   "WAITING FOR ORION");
+        return;
+    }
     time_t t = time(nullptr);
     struct tm tm;
     localtime_r(&t, &tm);

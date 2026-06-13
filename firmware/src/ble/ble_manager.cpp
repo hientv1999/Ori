@@ -112,6 +112,14 @@ bool     g_iphone_connected = false;
 uint16_t g_orion_conn       = BLE_HS_CONN_HANDLE_NONE;
 uint16_t g_iphone_conn      = BLE_HS_CONN_HANDLE_NONE;
 
+// Deferred iPhone bond wipe. Deleting a bond + writing NVS while the iPhone
+// link is still live corrupts NVS state (crash inside the next Preferences
+// open). When unpairing a CONNECTED iPhone we disconnect first, stash the
+// address here, and finish the delete+NVS write on the IphoneDisconnected event
+// (main task, link down). See wipe_iphone_bond() / poll() drain.
+bool    g_iphone_wipe_pending  = false;
+uint8_t g_iphone_wipe_addr[6]  = {};
+
 // Current passkey for display.
 uint32_t g_passkey = 0;
 
@@ -176,16 +184,18 @@ bool is_orion_pairing_allowed() {
            (state_machine::current_state() == AppState::SETUP);
 }
 
-// Returns true when iPhone bonding is allowed.
+// Returns true when a NEW iPhone bond may be accepted.
+//
+// ONLY while the iPhone pairing window is open — i.e. the PhonePairing screen is
+// on display (Setup Step 4 or the runtime re-pair flow, both toggle the window
+// via set_iphone_pairing_window()). Outside that window, reject new iPhone
+// bonds: an unpaired iPhone that still has Ori bonded on ITS side auto-reconnects
+// and would otherwise silently re-pair, so the unpair never sticks. This matches
+// the state-gated bond policy in ble-protocol.md §2. (Reconnects of the
+// already-bonded iPhone go through the conn_matches() branch above and are not
+// affected by this gate.)
 bool is_iphone_pairing_allowed() {
-    AppState s = state_machine::current_state();
-    // Allowed during Setup Step 4 (phone pairing) or the runtime re-pair-phone flow.
-    // In M5, setup is driven by Device Status advancing. We allow iPhone bonding
-    // whenever the device is either in Setup (past Step 3) or Runtime.
-    return (s == AppState::SETUP ||
-            s == AppState::MEETING_LIST ||
-            s == AppState::NO_MEETINGS ||
-            s == AppState::CLOCK);
+    return g_iphone_pairing_window;
 }
 
 } // namespace
@@ -327,6 +337,12 @@ public:
             eq_push(ev);
         }
 
+        // While an iPhone-bond wipe is pending, leave advertising OFF so the
+        // still-bonded iPhone can't reconnect and race the wipe — the wipe
+        // completion (finish_pending_iphone_wipe) restarts advertising once the
+        // bond is deleted.
+        if (g_iphone_wipe_pending) return;
+
         // Restart advertising.
         ble_manager::restart_advertising();
     }
@@ -428,6 +444,10 @@ static OriServerCallbacks s_server_cb;
 // ── ble_manager public API ─────────────────────────────────────────────────
 
 namespace ble_manager {
+
+// Defined below — completes a deferred iPhone bond wipe once the link is down.
+// Called from the IphoneDisconnected drain in poll().
+void finish_pending_iphone_wipe();
 
 void init() {
     LOG("[ble] init\n");
@@ -655,6 +675,9 @@ void poll() {
             case BleEventType::IphoneDisconnected:
                 LOG("[ble:poll] iPhone disconnected\n");
                 ancs_client::on_iphone_disconnected();
+                // If an unpair is waiting on this disconnect, delete the bond +
+                // clear NVS now that the link is down (safe — see wipe_iphone_bond).
+                finish_pending_iphone_wipe();
                 break;
 
             default:
@@ -916,21 +939,61 @@ void wipe_all_bonds() {
     g_iphone_conn      = BLE_HS_CONN_HANDLE_NONE;
 }
 
+// Actually delete the NimBLE bond record and zero the NVS slot. MAIN-TASK ONLY,
+// and only safe when the iPhone link is DOWN — doing this on a live link
+// corrupts NVS (the next Preferences open crashes in the namespace walk).
+static void finish_iphone_bond_wipe(const uint8_t iphone_addr[6]) {
+    if (!is_bond_slot_empty(iphone_addr)) {
+        NimBLEAddress addr(iphone_addr, BLE_ADDR_PUBLIC);
+        NimBLEDevice::deleteBond(addr);
+    }
+    const uint8_t zero[6] = {};
+    save_bond_addr(BOND_KEY_IPHONE, zero);
+    LOG("[ble] iPhone bond deleted + NVS slot cleared\n");
+}
+
+void finish_pending_iphone_wipe() {
+    if (!g_iphone_wipe_pending) return;
+    g_iphone_wipe_pending = false;
+    // Link is down AND advertising is stopped (onDisconnect left it off while a
+    // wipe was pending), so the iPhone can't have reconnected — delete the bond
+    // + clear NVS with no concurrent NimBLE store activity, then re-advertise.
+    finish_iphone_bond_wipe(g_iphone_wipe_addr);
+    restart_advertising();
+}
+
 void wipe_iphone_bond() {
     LOG("[ble] wiping iPhone bond\n");
     uint8_t iphone_addr[6] = {};
     load_bond_addr(BOND_KEY_IPHONE, iphone_addr);
 
-    if (!is_bond_slot_empty(iphone_addr)) {
-        NimBLEAddress addr(iphone_addr, BLE_ADDR_PUBLIC);
-        NimBLEDevice::deleteBond(addr);
+    // Stop advertising up front so the still-bonded iPhone can't reconnect while
+    // we tear down the bond. A live link during deleteBond + the NVS write races
+    // the NimBLE host task's bond-store NVS and corrupts it (Guru: LoadProhibited
+    // deep in nvs_*). Advertising is restarted only after the bond is gone.
+    NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
+    if (adv) adv->stop();
+
+    if (g_iphone_conn != BLE_HS_CONN_HANDLE_NONE) {
+        // Connected (the unpair modal only shows while connected): disconnect
+        // first; the delete + NVS write + advertising restart run on the
+        // IphoneDisconnected event, by which point the link is down and we never
+        // restarted advertising (onDisconnect skips it while a wipe is pending),
+        // so no reconnect can race the wipe.
+        memcpy(g_iphone_wipe_addr, iphone_addr, sizeof(g_iphone_wipe_addr));
+        g_iphone_wipe_pending = true;
+        g_iphone_connected    = false;   // reflect intent immediately
+        NimBLEServer* server = NimBLEDevice::getServer();
+        if (server) server->disconnect(g_iphone_conn);
+        return;
     }
 
-    const uint8_t zero[6] = {};
-    save_bond_addr(BOND_KEY_IPHONE, zero);
-
+    // Already disconnected (e.g. re-pair path) — delete + persist now (no link,
+    // not advertising), then re-advertise with the iPhone slot now empty.
+    finish_iphone_bond_wipe(iphone_addr);
     g_iphone_connected = false;
     g_iphone_conn      = BLE_HS_CONN_HANDLE_NONE;
+    restart_advertising();
 }
 
 bool is_orion_connected()  { return g_orion_connected;  }

@@ -92,6 +92,14 @@ void set_last_sync_time(time_t t) {
     g_last_sync_epoch = t;
 }
 
+bool clock_is_set() {
+    // Lower bound that rejects the ~1970 default after a cold boot: any real
+    // Orion-synced time is well past this. Set to the project's current date —
+    // 2026-07-12 00:00:00 UTC (epoch 1'783'814'400). Bump it on a major release
+    // if you want a tighter floor; it only needs to sit below "now".
+    return time(nullptr) > 1783814400;
+}
+
 const char* synced_pill_text() {
     static char buf[36];
     if (g_last_sync_epoch == 0) return "SYNCED";

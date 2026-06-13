@@ -35,8 +35,16 @@ constexpr int16_t PHONE_SIZE    = 64;
 constexpr int16_t DATETIME_GAP  = 12;
 
 // Format current local time into the two display strings.
-static void format_real_time(char* time_buf, size_t time_sz,
+// Fills time_buf/date_buf and returns whether the clock is actually set. Before
+// the first Orion Time Sync (e.g. after a cold power cycle) there is no valid
+// time, so we show "--:--" with no date rather than a fabricated ~1970 value.
+static bool format_real_time(char* time_buf, size_t time_sz,
                               char* date_buf, size_t date_sz) {
+    if (!app_state::clock_is_set()) {
+        snprintf(time_buf, time_sz, "--:--");
+        if (date_sz) date_buf[0] = '\0';
+        return false;
+    }
     time_t t = time(nullptr);
     struct tm tm;
     localtime_r(&t, &tm);
@@ -45,6 +53,7 @@ static void format_real_time(char* time_buf, size_t time_sz,
     strftime(day, sizeof(day), "%a", &tm);
     strftime(mon, sizeof(mon), "%b", &tm);
     snprintf(date_buf, date_sz, "%s, %s %d", day, mon, tm.tm_mday);
+    return true;
 }
 
 struct StatusBarState {
@@ -74,9 +83,18 @@ static void update_clock_labels(lv_obj_t* bar) {
     auto* s = static_cast<StatusBarState*>(lv_obj_get_user_data(bar));
     if (!s) return;
     char time_buf[8], date_buf[20];
-    format_real_time(time_buf, sizeof(time_buf), date_buf, sizeof(date_buf));
+    bool clock_set = format_real_time(time_buf, sizeof(time_buf), date_buf, sizeof(date_buf));
     lv_label_set_text(s->time_label, time_buf);
     lv_label_set_text(s->date_label, date_buf);
+    // Hide the "·" separator + date until the clock is set, so we show a clean
+    // "--:--" rather than "--:-- · <bogus date>".
+    if (clock_set) {
+        lv_obj_clear_flag(s->sep_label,  LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s->date_label, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s->sep_label,  LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s->date_label, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 // UID of a just-arrived notification whose tile should animate in once. Set by
