@@ -386,7 +386,7 @@ Ori notifies Device Status = RUNTIME_READY → overlay dismissed.
 
 | Trigger | Cadence | Effect |
 |---|---|---|
-| Time Sync | Every 60 min | Write Time Sync |
+| Time Sync | Every 10 min | Write Time Sync |
 | Meeting List | Calendar event or every 15 min | Hash-check via Manifest, push if needed |
 | PTO Entry | Calendar event | Hash-check, push if needed |
 | Profile Info / Photo | User edit in Orion | Hash-check, push if needed |

@@ -79,7 +79,7 @@ static const BundleMap k_bundle_map[] = {
     { "com.apple.facetime",             "facetime",    "FaceTime"    },
     { "com.linkedin.LinkedIn",          "linkedin",    "LinkedIn"    },
     { "com.reddit.Reddit",              "reddit",      "Reddit"      },
-    { "com.burbn.threads",              "threads",     "Threads"     },
+    { "com.burbn.barcelona",            "threads",     "Threads"     },
     { "tv.twitch.mobile.watchlive",     "twitch",      "Twitch"      },
     { "com.ubercab.UberClient",         "uber",        "Uber"        },
     { "com.apple.Music",                "apple_music", "Apple Music" },
@@ -235,16 +235,19 @@ static void read_phone_name() {
 // standard Current Time Service (0x1805 / Current Time 0x2A2B) to bonded peers —
 // the same way it exposes the GAP Device Name we already read — so the iPhone
 // can seed the clock when Orion is absent (e.g. a cold power cycle with Orion
-// not running). We only set the clock here if NOTHING has set it yet; Orion's
-// Time Sync runs ungated and therefore always overrides this when it arrives,
-// keeping Orion primary.
+// not running). On connect we only set the clock if Orion hasn't yet (force=false).
+// poll() re-reads every CTS_SYNC_INTERVAL_MS when Orion is absent to correct drift.
 //
 // Current Time (0x2A2B) "Exact Time 256", 10 bytes, little-endian year:
 //   [0..1] year  [2] month(1-12)  [3] day  [4] hours  [5] min  [6] sec
 //   [7] day-of-week  [8] fractions256  [9] adjust-reason
-static void read_phone_time() {
+
+constexpr uint32_t CTS_SYNC_INTERVAL_MS = 10UL * 60 * 1000; // 10 minutes
+static uint32_t s_last_cts_ms = 0; // millis() of last successful CTS read
+
+static void read_phone_time(bool force = false) {
     if (!g_client) return;
-    if (app_state::clock_is_set()) return;  // Orion (or a prior read) already set it
+    if (!force && app_state::clock_is_set()) return;  // Orion already set it
 
     NimBLERemoteService* cts = g_client->getService(NimBLEUUID((uint16_t)0x1805));
     if (!cts) { LOG("[ancs] iPhone has no Current Time Service\n"); return; }
@@ -280,7 +283,8 @@ static void read_phone_time() {
     if (epoch <= 0) return;
     struct timeval tv = { epoch, 0 };
     settimeofday(&tv, nullptr);
-    LOG("[ancs] clock seeded from iPhone CTS: %04u-%02u-%02u %02u:%02u (backup)\n",
+    s_last_cts_ms = millis();
+    LOG("[ancs] clock synced from iPhone CTS: %04u-%02u-%02u %02u:%02u\n",
         (unsigned)year, (unsigned)b[2], (unsigned)b[3], (unsigned)b[4], (unsigned)b[5]);
 }
 
@@ -474,7 +478,17 @@ void init() {
     // NimBLE client profile registration happens in on_iphone_connected().
 }
 
-void poll() {
+void poll(bool orion_connected) {
+    // Periodic iPhone CTS re-read — corrects clock drift when Orion is absent.
+    // Only runs when the iPhone is connected and Orion is not; Orion's own
+    // Time Sync (every 10 min) takes priority when it is connected.
+    if (!orion_connected && g_client) {
+        uint32_t now = millis();
+        if (s_last_cts_ms == 0 || (now - s_last_cts_ms) >= CTS_SYNC_INTERVAL_MS) {
+            read_phone_time(/*force=*/true);
+        }
+    }
+
     // Drain NS/DS notifications captured by the host-task callbacks. Runs on the
     // main loop task, so on_notification_source()'s blocking CP write and the
     // queue_add/remove LVGL refresh are both safe here.
@@ -560,13 +574,14 @@ void on_iphone_disconnected() {
     // banner/dialog and stop the duration timer before clearing state.
     modal_incoming_call::close_all();
 
-    g_conn_handle = 0xFFFF;
-    g_client      = nullptr;
-    g_ancs_svc    = nullptr;
-    g_ns_char     = nullptr;
-    g_cp_char     = nullptr;
-    g_ds_char     = nullptr;
+    g_conn_handle   = 0xFFFF;
+    g_client        = nullptr;
+    g_ancs_svc      = nullptr;
+    g_ns_char       = nullptr;
+    g_cp_char       = nullptr;
+    g_ds_char       = nullptr;
     g_phone_name[0] = '\0';
+    s_last_cts_ms   = 0;
 
     // Clear queue and update status bar.
     g_queue_count = 0;

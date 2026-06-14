@@ -289,6 +289,20 @@ lv_obj_t* make_synced_pill(lv_obj_t* parent) {
     lv_obj_set_style_text_font(label, theme::font_meta(), 0);
     lv_obj_set_style_text_color(label, theme::color(theme::COLOR_TEXT_TERTIARY), 0);
     lv_obj_center(label);
+
+    // Self-contained 1-second timer: updates text directly via user_data pointer.
+    // Cleaned up by LV_EVENT_DELETE — no global label pointer needed, so
+    // deferred screen deletion can never clear a newer screen's state.
+    lv_timer_t* pill_timer = lv_timer_create([](lv_timer_t* t) {
+        lv_obj_t* lbl = (lv_obj_t*)lv_timer_get_user_data(t);
+        lv_label_set_text(lbl, app_state::synced_pill_text());
+    }, 1000, (void*)label);
+
+    lv_obj_add_event_cb(label, [](lv_event_t* e) {
+        lv_timer_t* t = (lv_timer_t*)lv_event_get_user_data(e);
+        lv_timer_delete(t);
+    }, LV_EVENT_DELETE, (void*)pill_timer);
+
     return pill;
 }
 

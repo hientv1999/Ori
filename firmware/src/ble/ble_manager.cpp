@@ -761,7 +761,7 @@ void poll() {
     // Drain ANCS notifications captured by the host-task notify callbacks. Done
     // here (main task) so the attribute-request CP write and the status-bar
     // LVGL refresh run off the host task — see ancs_client::poll().
-    ancs_client::poll();
+    ancs_client::poll(g_orion_connected);
 }
 
 void quiesce_for_commit() {

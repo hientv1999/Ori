@@ -72,6 +72,11 @@ const ShortcutSlot k_shortcuts[SHORTCUT_COUNT] = {
 // Zero until the first sync completes.
 time_t g_last_sync_epoch = 0;
 
+// Forward declaration — defined later in the second anonymous namespace block.
+static void format_notif_time(time_t when, time_t now,
+                              const char* hhmm_fallback,
+                              char* out, size_t sz);
+
 } // namespace
 
 const char* ble_name() {
@@ -103,15 +108,12 @@ bool clock_is_set() {
 }
 
 const char* synced_pill_text() {
-    static char buf[36];
-    if (g_last_sync_epoch == 0) return "SYNCED";
-    time_t elapsed = time(nullptr) - g_last_sync_epoch;
-    if (elapsed < 60)
-        snprintf(buf, sizeof(buf), "SYNCED \xc2\xb7 just now");
-    else if (elapsed < 3600)
-        snprintf(buf, sizeof(buf), "SYNCED \xc2\xb7 %ld min ago", (long)(elapsed / 60));
-    else
-        snprintf(buf, sizeof(buf), "SYNCED \xc2\xb7 %ld hr ago",  (long)(elapsed / 3600));
+    static char buf[48];
+    if (g_last_sync_epoch == 0) return "LAST SYNCED";
+    char t[24] = {};
+    format_notif_time(g_last_sync_epoch, time(nullptr), "", t, sizeof(t));
+    if (t[0]) snprintf(buf, sizeof(buf), "LAST SYNCED \xc2\xb7 %s", t);
+    else       snprintf(buf, sizeof(buf), "LAST SYNCED");
     return buf;
 }
 

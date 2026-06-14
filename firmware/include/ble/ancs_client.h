@@ -29,7 +29,9 @@ void init();
 // callbacks run on the host task and only enqueue raw bytes; this does the
 // actual work (attribute requests, queue + status-bar updates), where blocking
 // GATT writes and LVGL calls are safe. Call once per main-loop iteration.
-void poll();
+// `orion_connected` gates the periodic iPhone CTS time-sync (skipped when
+// Orion is connected, since Orion's own 10-min Time Sync takes priority).
+void poll(bool orion_connected);
 
 // Called when the iPhone BLE link is established and services are discovered.
 // Subscribes to NS and DS characteristics.

@@ -43,8 +43,9 @@ namespace {
 
 // ─── Constants ────────────────────────────────────────────────────────────
 
-constexpr int ALERT_WINDOW_S    = 300; // 5 minutes in seconds
-constexpr uint32_t TICK_MS      = 1000;
+constexpr int ALERT_WINDOW_S      = 300;  // 5 minutes in seconds
+constexpr uint32_t TICK_MS        = 1000;
+constexpr uint32_t RECONNECT_MIN_MS = 300; // minimum overlay visibility
 
 // ─── Module state ─────────────────────────────────────────────────────────
 
@@ -75,6 +76,10 @@ uint8_t  g_presence_byte   = 0x03;
 // Close (which clears the NVS flag). g_ota_ack_version holds the new version.
 bool     g_has_ota_ack     = false;
 char     g_ota_ack_version[24] = {};
+
+// Timestamp (millis()) when the reconnect overlay was last shown.
+// Used by on_reconnect_end() to guarantee RECONNECT_MIN_MS visibility.
+uint32_t g_reconnect_shown_ms = 0;
 
 // Set of meeting start-times (encoded as minutes since midnight) for which
 // the 5-minute alert has already fired this boot.  Cleared on reboot only.
@@ -854,6 +859,7 @@ void on_reconnect_begin() {
     // ("No meetings today") and let the sync populate it; on_reconnect_end()
     // re-evaluates to the real meeting list once the data arrives.
     if (g_rt_count == 0) return;
+    g_reconnect_shown_ms = millis();
     g_state = AppState::RECONNECT_SYNCING;
     apply_widget_defaults();
     load_screen(build_reconnect_screen());
@@ -865,6 +871,24 @@ void on_reconnect_end() {
     // this is also the normal BLE reconnect-overlay exit). dismiss_error() routes
     // a failed/aborted OTA here.
     if (g_tick_timer) lv_timer_resume(g_tick_timer);
+
+    // poll() drains the BLE event queue in a single while-loop, so on_reconnect_end()
+    // can fire in the same drain as on_reconnect_begin() — before LVGL renders even
+    // one frame of the overlay. Enforce a minimum visible duration by deferring the
+    // screen transition when the overlay was shown too recently.
+    if (g_state == AppState::RECONNECT_SYNCING && g_reconnect_shown_ms) {
+        uint32_t elapsed = millis() - g_reconnect_shown_ms;
+        if (elapsed < RECONNECT_MIN_MS) {
+            lv_timer_create([](lv_timer_t* t) {
+                lv_timer_delete(t);
+                g_force_rebuild = true;
+                g_state = AppState::NO_MEETINGS;
+                state_machine::evaluate();
+            }, RECONNECT_MIN_MS - elapsed, nullptr);
+            return;
+        }
+    }
+
     // Clear the RECONNECT_SYNCING sentinel so compute_target_state() runs
     // the full logic (it early-returns RECONNECT_SYNCING when g_state matches).
     g_force_rebuild = true;
