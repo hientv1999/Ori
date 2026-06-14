@@ -100,9 +100,12 @@ constexpr size_t MAX_ANCS_ICONS         = 5;    // display cap (layout constrain
 struct AncsConfig {
     // Queue order is oldest → newest (index 0 = oldest, count-1 = newest). The
     // status bar shows the newest MAX_ANCS_ICONS, rightmost = newest.
-    const char* icons[MAX_ANCS_NOTIFICATIONS];  // app token per entry
-    uint32_t    uids [MAX_ANCS_NOTIFICATIONS];  // ANCS UID per entry (parallel to icons)
-    size_t      count;                           // live entries (≤ MAX_ANCS_NOTIFICATIONS)
+    // Multiple notifications from the same app are stacked: one icon slot per
+    // unique token, uid = most recent UID for that app, count = total stacked.
+    const char* icons [MAX_ANCS_NOTIFICATIONS];  // app token per deduplicated slot
+    uint32_t    uids  [MAX_ANCS_NOTIFICATIONS];  // most-recent UID per slot (parallel)
+    uint8_t     counts[MAX_ANCS_NOTIFICATIONS];  // stacked notification count per slot
+    size_t      count;                            // live slots (≤ MAX_ANCS_NOTIFICATIONS)
     bool        phone_connected;
 };
 
@@ -124,10 +127,16 @@ struct AncsNotification {
 };
 
 // ANCS notification categories (ble Notification Source CategoryID).
+//   ACTIVE_CALL (12) is NOT in the original ANCS spec (which defines 0–11).
+//   Modern iOS reports it for ongoing VoIP / CallKit calls (e.g. Viber): the
+//   notification carries the caller name + a hang-up (negative) action and no
+//   answer (positive) action. Treated as a call category so the in-call dialog
+//   shows. See ancs_client.cpp call-overlay detection.
 namespace AncsCategory {
     constexpr uint8_t OTHER = 0, INCOMING_CALL = 1, MISSED_CALL = 2, VOICEMAIL = 3,
                       SOCIAL = 4, SCHEDULE = 5, EMAIL = 6, NEWS = 7,
-                      HEALTH = 8, FINANCE = 9, LOCATION = 10, ENTERTAINMENT = 11;
+                      HEALTH = 8, FINANCE = 9, LOCATION = 10, ENTERTAINMENT = 11,
+                      ACTIVE_CALL = 12;
 }
 
 const AncsNotification& ancs_notification(const char* token);
@@ -137,6 +146,13 @@ const AncsNotification& ancs_notification(const char* token);
 // even when one app has several live notifications). Falls back to the generic
 // placeholder if the UID has no stored detail.
 const AncsNotification& ancs_notification_by_uid(uint32_t uid);
+
+// Collect the UIDs of all stored notifications that share the given UID's app
+// (token) AND title — i.e. the same conversation/sender — newest-first by
+// arrival. Writes up to `max` UIDs to out_uids and returns the count (0 if the
+// UID has no stored detail). The detail overlay uses this to stack same-title
+// notifications into one screen and Read them all at once.
+size_t ancs_collect_same_title(uint32_t uid, uint32_t* out_uids, size_t max);
 
 // Store per-notification detail, pushed by the ANCS client after a
 // GetNotificationAttributes response is parsed. Keyed by UID (so a Modified

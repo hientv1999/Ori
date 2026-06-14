@@ -93,11 +93,13 @@ void set_last_sync_time(time_t t) {
 }
 
 bool clock_is_set() {
-    // Lower bound that rejects the ~1970 default after a cold boot: any real
-    // Orion-synced time is well past this. Set to the project's current date —
-    // 2026-07-12 00:00:00 UTC (epoch 1'783'814'400). Bump it on a major release
-    // if you want a tighter floor; it only needs to sit below "now".
-    return time(nullptr) > 1783814400;
+    // Lower bound that rejects the ~1970 default after a cold boot but accepts
+    // any real Orion-synced time. It MUST sit safely BELOW "now" — the old
+    // 2026-07-12 floor was actually in the future, so a genuine sync (e.g. a
+    // 2026-06 epoch) read as "unset" and the status-bar clock stayed blank.
+    // 2025-01-01 00:00:00 UTC (epoch 1'735'689'600) is well past 1970 and below
+    // any real deployment date.
+    return time(nullptr) > 1735689600;
 }
 
 const char* synced_pill_text() {
@@ -290,6 +292,46 @@ const AncsNotification& ancs_notification(const char* token) {
 const AncsNotification& ancs_notification_by_uid(uint32_t uid) {
     for (auto& e : k_detail) if (e.used && e.uid == uid) return fill_detail_view(&e);
     return k_ancs_fallback;
+}
+
+size_t ancs_collect_same_title(uint32_t uid, uint32_t* out_uids, size_t max) {
+    if (!out_uids || max == 0) return 0;
+
+    // Find the reference entry whose (token, title) defines the group.
+    AncsDetailEntry* ref = nullptr;
+    for (auto& e : k_detail) if (e.used && e.uid == uid) { ref = &e; break; }
+    if (!ref) return 0;
+
+    // Gather every live entry sharing the reference's app token AND title.
+    AncsDetailEntry* matches[MAX_ANCS_NOTIFICATIONS];
+    size_t n = 0;
+    for (auto& e : k_detail) {
+        if (!e.used) continue;
+        if (strcmp(e.token, ref->token) != 0) continue;
+        if (strcmp(e.title, ref->title) != 0) continue;
+        if (n < MAX_ANCS_NOTIFICATIONS) matches[n++] = &e;
+    }
+
+    // Newest-first by the phone's notification time (recv_epoch), with arrival
+    // seq as the tiebreaker for equal/unknown timestamps. Ordering by the real
+    // time — not Ori's arrival order — keeps the chronology correct even when
+    // iOS replays the notification backlog out of order on reconnect. The
+    // overlay renders this reversed, so the OLDEST ends up at the top.
+    // Selection sort; n ≤ 20.
+    for (size_t i = 0; i < n; ++i) {
+        size_t best = i;
+        for (size_t j = i + 1; j < n; ++j) {
+            bool newer = matches[j]->recv_epoch >  matches[best]->recv_epoch ||
+                        (matches[j]->recv_epoch == matches[best]->recv_epoch &&
+                         matches[j]->seq        >  matches[best]->seq);
+            if (newer) best = j;
+        }
+        if (best != i) { AncsDetailEntry* t = matches[i]; matches[i] = matches[best]; matches[best] = t; }
+    }
+
+    size_t out_n = n < max ? n : max;
+    for (size_t i = 0; i < out_n; ++i) out_uids[i] = matches[i]->uid;
+    return out_n;
 }
 
 const Media& media()                  { return k_media; }

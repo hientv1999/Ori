@@ -1,7 +1,7 @@
 # Ori — BLE GATT Protocol Specification
 
 **Protocol version:** 1.2
-**Date:** 2026-06-10
+**Date:** 2026-06-13
 **Status:** Authoritative — `esp32-connectivity` (peripheral) and `orion-sync` (central) must conform.
 
 This document defines the single BLE GATT contract between Ori (peripheral) and the Orion PC app (central).
@@ -54,7 +54,9 @@ Factory reset zeroes both NVS entries and clears both NimBLE bond records.
 | Bond state | Advertising mode | Manufacturer-data flag |
 |---|---|---|
 | 0 bonded (fresh / post-factory-reset) | Public undirected | `0x01 SETUP` |
-| 1 bonded — PC only, iPhone slot empty | Public undirected | `0x02 RUNTIME` |
+| 1 bonded — PC only, iPhone slot empty, **Orion disconnected** | Public undirected (so Orion can reconnect) | `0x02 RUNTIME` |
+| 1 bonded — PC only, iPhone slot empty, **Orion connected** | **Advertising stopped** — nothing to advertise for (Orion is here; a fresh iPhone is only solicited from the re-pair screen). Re-armed when Orion drops (`onDisconnect`) or the re-pair window opens (`set_iphone_pairing_window(true)`). | (none) |
+| 1 bonded — PC only, iPhone slot empty, **re-pair window open** | Public undirected (ANCS solicitation, see payload) | `0x02 RUNTIME` |
 | 1 bonded — iPhone only | Public undirected | `0x01 SETUP` |
 | 2 bonded — PC + iPhone, ≥1 disconnected | **Public undirected** (so *either* central can reconnect on its own — iPhone off the advert, Orion via its own scan). No accept-list (bonding is state-gated + all data chars encrypted; iPhone uses rotating RPAs which make an accept-list fragile). | `0x02 RUNTIME` |
 | 2 bonded — PC + iPhone, both connected | **Advertising stopped** (nothing to advertise for). Re-armed on either disconnect. | (none) |
@@ -67,8 +69,8 @@ Factory reset zeroes both NVS entries and clears both NimBLE bond records.
 | iPhone bond formed | Both slots full → once both peers are connected, advertising stops; if either later disconnects, restart **public undirected** (`0x02 RUNTIME`) so it can reconnect |
 | Bonded peer reconnects (both bonded) | BLE auto-stops adv on connect → `onConnect` restarts undirected adv so the *other* bonded peer can also reconnect; stops again once both are connected |
 | Bonded peer disconnects (both bonded) | `onDisconnect` restarts **public undirected** (`0x02 RUNTIME`) so the dropped peer can reconnect |
-| iPhone unpaired (`on_unpair_phone`) | Delete iPhone bond + zero `iphone_addr` → restart **public undirected** with flag `0x02 RUNTIME`. The **ANCS UUID is advertised only once the user opens the re-pair screen** (`set_iphone_pairing_window(true)`), not immediately on unpair — see Advertising payload below. |
-| Orion bond formed (Step 2) | iPhone slot still empty → remain public undirected, flag `0x01 SETUP` → `0x02 RUNTIME` |
+| iPhone unpaired (`on_unpair_phone`) | Delete iPhone bond + zero `iphone_addr`. If Orion is **connected**, **advertising stops** — nothing to solicit until the user opens the re-pair screen; if Orion is **disconnected**, restart **public undirected** (`0x02 RUNTIME`) so it can reconnect. The **ANCS UUID is advertised only once the user opens the re-pair screen** (`set_iphone_pairing_window(true)`), not immediately on unpair — see Advertising payload below. |
+| Orion bond formed (Step 2) | iPhone slot still empty → public undirected (`0x01 SETUP` → `0x02 RUNTIME`). Once Orion is **connected** with no re-pair window open, **advertising stops** (re-armed when Orion drops, or when the re-pair window opens). |
 | Factory reset | Wipe both bonds + NVS addresses → restart public undirected, flag `0x01 SETUP` |
 
 ### Advertising payload
@@ -101,9 +103,9 @@ Each characteristic UUID replaces bytes 4–5 of the base with the offset below.
 | 2 | Device Status | `0002` | Read, Notify | P→C notify | No |
 | 3 | Time Sync | `0003` | Write (response) | C→P | Yes |
 | 4 | Profile Info | `0004` | Write (response) | C→P | Yes |
-| 5 | Profile Photo | `0005` | Write (response) | C→P chunked | Yes |
-| 6 | Meeting List | `0006` | Write (response) | C→P chunked | Yes |
-| 7 | PTO Entry | `0007` | Write (response) | C→P chunked | Yes |
+| 5 | Profile Photo | `0005` | Write, **Write NR** | C→P chunked | Yes |
+| 6 | Meeting List | `0006` | Write, **Write NR** | C→P chunked | Yes |
+| 7 | PTO Entry | `0007` | Write, **Write NR** | C→P chunked | Yes |
 | 8 | Sync Control | `0008` | Write, Notify | bidirectional | Yes |
 | 9 | Factory Reset Command | `0009` | Write (response) | C→P | Yes |
 | 10 | Sync Manifest | `000A` | Write, Notify | bidirectional | Yes |
@@ -141,9 +143,9 @@ Meeting = {
   "id":    text,       // calendar-provider-stable id
   "start": uint,       // epoch UTC
   "end":   uint,       // epoch UTC
-  "title": text,       // no length cap (chunking handles size)
-  "loc":   text,
-  "org":   text
+  "title": text,       // ≤ 128 UTF-8 bytes — firmware truncates past that
+  "loc":   text,       // ≤ 64 UTF-8 bytes  — firmware truncates past that
+  "org":   text        // ≤ 64 UTF-8 bytes  — firmware truncates past that
 }
 
 MeetingList = {
@@ -263,6 +265,32 @@ Offset  Size  Field
 - Gap → `SyncControl{op:"NACK", seq:<expected>, reason:"chunk_missing"}`; sender restarts from seq=0.
 - Timeout (10 s no progress) → NACK `"chunk_timeout"`.
 
+### Write type and flow control (throughput)
+
+Profile Photo, Meeting List, and PTO Entry advertise **both** `Write` and
+`Write Without Response` (proto ≥ 1.2); Media Album Art is `Write Without
+Response` only. The central SHOULD stream fragments **Write-No-Response** — it
+avoids the per-fragment ATT round-trip, so many fragments ride each connection
+event (especially on the 2M PHY) instead of one-per-event. This is the dominant
+throughput lever (≈5–10× over per-fragment Write-with-response).
+
+Because Write-No-Response has no ATT-level pacing, the central MUST bound how far
+it runs ahead of the peripheral so a fast burst can't overrun Ori's RX buffers:
+
+- **Windowed checkpoint (required).** Send fragments Write-No-Response, but every
+  **`WINDOW` fragments (≤ 32, ≈ 7.6 KB)** — and on the final fragment — send that
+  one fragment as a **Write-with-response**. Its ATT acknowledgement confirms
+  every prior fragment landed and blocks the sender until Ori has drained them,
+  keeping in-flight data ≤ one window. No new ops or characteristics are needed —
+  the same fragment frame is just written with-response at the checkpoint.
+- Reliability is unchanged: the link layer still acks/retransmits every packet
+  (no on-air loss or corruption), and a dropped-on-overrun fragment is caught by
+  the existing seq-gap → `NACK_CHUNK_MISSING` → restart. The window makes overrun
+  (and the wasteful full-item restart) not happen in the first place.
+- Control/command characteristics (Time Sync, Sync Control, Factory Reset, Sync
+  Manifest) stay **Write-with-response** — they are tiny (no speed benefit) and
+  the ack/error code is wanted.
+
 ---
 
 ## 6. Connection sequences
@@ -278,8 +306,15 @@ PSRAM before a single flash commit.
   card, meeting list, PTO, hashes) changes. If the link drops mid-session, Ori discards
   the staged data and keeps serving the previously cached data — a partial transfer
   can never corrupt or partially overwrite NVS.
-- At `END`, Ori parses each staged item, computes its SHA-256, persists it to NVS, and
-  updates the live UI — in one batch.
+- At `END`, Ori parses each staged item, computes its SHA-256, and updates the live UI
+  — in one batch. **Profile, Profile Photo, and PTO Entry persist to NVS.**
+- **Meeting List and Time Sync are RAM-only on Ori** — staged and applied (to RAM +
+  live UI) at `END` like the rest, but NOT written to NVS, and their delta hashes live
+  in RAM too. A power cycle drops them, so the next reconnect's manifest reports
+  `meetings` as needed and Orion re-pushes it. **The wire is unchanged** — Orion sends
+  meetings/time identically; this is purely Ori's storage choice (no `proto` bump). Why:
+  with no battery-backed RTC the local clock isn't restored on a cold boot, so the
+  meeting time logic can't run offline anyway — see `meeting-list.md`.
 - **Progress.** If `BEGIN` includes `total` (> 0), Ori tracks cumulative bytes received
   across Time Sync, Profile Info, Profile Photo, Meeting List, and PTO Entry writes —
   for chunked characteristics, each fragment's `payload_len` (not the 6-byte frame
@@ -372,7 +407,7 @@ Presence Status is ephemeral — not in the manifest flow, not persisted to NVS.
 
 ## 7. Disconnect, reconnect, and cache semantics
 
-- Synced data persists to NVS on `SyncControl{op:"END"}`. Ori displays cached data with "SYNCED · X min ago" pill while offline.
+- Profile, photo, and PTO persist to NVS on `SyncControl{op:"END"}` and are shown with a "SYNCED · X min ago" pill while offline. **Meeting List and local time are RAM-only** (not persisted, §6.0) — the pill therefore appears only on a *runtime* disconnect (meetings still in RAM), never after a power cycle (the list is empty → "No meetings today"). See `meeting-list.md`.
 - Factory reset wipes NVS and both bonds; next connection is first-time pairing.
 
 ### 7.1 Factory-reset-during-reconnect
@@ -412,7 +447,7 @@ Link-layer encryption failure (`BLE_HS_ENC_FAIL`) signals a stale bond — see �
 
 ## 9. Versioning
 
-- Protocol Version characteristic: `{ proto_major, proto_minor, fw_version }`. This spec's wire version = **v1.1** (`PROTO_MAJOR=1, PROTO_MINOR=1` — `SyncControl.total` is the additive minor change).
+- Protocol Version characteristic: `{ proto_major, proto_minor, fw_version }`. This spec's wire version = **v1.2** (`PROTO_MAJOR=1, PROTO_MINOR=2`). Additive minor changes vs 1.0: `SyncControl.total` (progress), and Profile Photo / Meeting List / PTO Entry also accepting **Write-No-Response** (§5). Both are backward-compatible — a central may still use Write-with-response and ignore `total`.
 - **Major bump** = breaking. Orion refuses sync, shows "Update Ori firmware".
 - **Minor bump** = additive. Unknown CBOR keys silently ignored.
 - `fw_version` (semver) used by Orion to detect available updates; update runs over USB CDC (`ota.md`).
@@ -428,7 +463,9 @@ Link-layer encryption failure (`BLE_HS_ENC_FAIL`) signals a stale bond — see �
 | `ProfileInfo.email` | ≤ 32 chars; optional |
 | `ProfileInfo.phone` | ≤ 16 chars; optional |
 | Profile Photo (JPEG, 228×228) | hard cap 200 KB |
-| Meeting `title` | no cap (chunking handles size) |
+| Meeting `title` | ≤ 128 UTF-8 bytes (firmware buffer; truncated on a UTF-8 boundary past that). Orion should cap before sending. |
+| Meeting `loc` | ≤ 64 UTF-8 bytes (firmware buffer; truncated past that) |
+| Meeting `org` | ≤ 64 UTF-8 bytes (firmware buffer; truncated past that) |
 | Meeting list total | ≤ 32 meetings/day |
 | `PtoEntry.destination` | ≤ 128 UTF-8 bytes |
 | PTO image (JPEG, 528×396) | hard cap 512 KB — Orion resizes to 528×396 before sending |

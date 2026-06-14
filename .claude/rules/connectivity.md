@@ -34,7 +34,7 @@ Source: `PC_app/`. See `pc-app.md` for app details.
 - Next PTO entry (start, end, destination image) — only the next entry, not full history
 - Current local time
 
-All data cached in NVS after pairing; survives power cycles and connection loss.
+Profile, photo, PTO, and pairing bonds are cached in NVS and survive power cycles and connection loss. **The meeting list and local time are RAM-only** — a power cycle clears them. Meetings are re-pushed by Orion on reconnect; the clock is re-supplied by Orion (primary) or the iPhone (secondary backup, see §2). See `meeting-list.md` for why meetings aren't persisted.
 
 **Reconnect:** hash-manifest delta sync — Orion sends SHA-256 of each item; Ori replies with what it needs. Typical reconnect ~300 ms when nothing changed. See `ble-protocol.md` §6.2 for the wire flow and `state-machine.md` for the overlay UX.
 
@@ -50,3 +50,4 @@ iPhone only — ANCS is Apple-proprietary; Android is explicitly out of scope.
 - A **phone icon** is always visible in the status bar: neutral colour when the iPhone is connected, danger red when disconnected. ANCS notification icons are hidden while disconnected.
 - Tap (or long-press) the phone icon: **connected → Unpair iPhone modal; disconnected → re-pair iPhone screen** (a stale bond is wiped automatically so the iPhone slot opens). Available from any runtime state.
 - On connect, Ori reads the iPhone's GAP Device Name (0x2A00) over the encrypted link (e.g. "Xander's iPhone") and shows it in the Unpair modal. RAM only — cleared on disconnect.
+- **Secondary time source.** On connect, Ori also reads the iPhone's **Current Time Service** (0x1805 / Current Time 0x2A2B) — iOS exposes it to bonded peers, like the GAP name. Ori seeds its clock from it **only if Orion (the primary source) hasn't already set the time**, so the status-bar clock works even when Orion is absent (e.g. after a power cycle with the PC off). Orion's Time Sync always overrides it. Display-only — RAM, never persisted; the CTS value is local time (no tz), so Ori runs on UTC0 while iPhone-sourced (no meetings exist in that state, so the meeting epoch logic is unaffected).

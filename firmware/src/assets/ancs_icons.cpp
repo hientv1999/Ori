@@ -35,6 +35,9 @@ extern "C" {
     extern const lv_image_dsc_t uber;
     extern const lv_image_dsc_t apple_music;
     extern const lv_image_dsc_t amazon;
+    extern const lv_image_dsc_t viber;
+    extern const lv_image_dsc_t claude;
+    extern const lv_image_dsc_t chatgpt;
     extern const lv_image_dsc_t unknown_app;  // generic fallback (bell on neutral tile)
     // Per-category fallback glyphs (white glyph on neutral tile).
     extern const lv_image_dsc_t cat_call;
@@ -86,6 +89,9 @@ static const Entry k_table[] = {
     { "uber",        0x000000 },
     { "apple_music", 0xFC3C44 },
     { "amazon",      0xFF9900 },
+    { "viber",       0x7360F2 },
+    { "claude",      0xD97757 },
+    { "chatgpt",     0x10A37F },
 };
 
 } // namespace
@@ -130,6 +136,9 @@ static const ImageEntry k_images[] = {
     { "uber",        &uber        },
     { "apple_music", &apple_music },
     { "amazon",      &amazon      },
+    { "viber",       &viber       },
+    { "claude",      &claude      },
+    { "chatgpt",     &chatgpt     },
 };
 } // namespace
 

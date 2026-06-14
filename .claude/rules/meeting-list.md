@@ -33,12 +33,22 @@
 
 ## Offline / Cached State
 
+**The meeting list is RAM-only — it is NOT persisted to flash.** A power cycle
+clears it; the list is rebuilt only when Orion reconnects and re-pushes it.
+
 | Condition | Left panel (Calendar mode) |
 |---|---|
-| Orion synced | Live meeting list |
-| BLE only (not synced) | Cached meeting list + "SYNCED · X min ago" pill |
-| Fully offline + cache exists | Cached meeting list + "SYNCED · X min ago" pill |
-| Fully offline + no cached data | "No meetings today" |
+| Orion connected & synced | Live meeting list |
+| Orion disconnected at runtime (meetings still in RAM) | Cached meeting list + "SYNCED · X min ago" pill |
+| After a power cycle (RAM cleared), before re-sync | "No meetings today" |
 | Within PTO window | PTO destination visual (overrides Calendar) |
 
-Local time is set by Orion on sync, persists in flash, and drives all time-based logic while offline.
+**Why RAM-only:** local time is also not restored from flash on a cold boot
+(there is no battery-backed RTC). Without a valid clock the time-based logic
+(5-minute alert, in-progress red, expiry) can't run, so showing a persisted-but-
+stale meeting list would mislead. Keeping meetings in RAM ties their lifetime to
+having a live clock. The "SYNCED · X min ago" pill therefore only appears on a
+**runtime** Orion disconnect (meetings + clock still live in RAM), never after a
+power cycle. Local time comes from Orion (primary) or the iPhone's Current Time
+Service (secondary backup) — see `connectivity.md`; when neither has provided it,
+the status-bar clock is hidden entirely (no "--:--").

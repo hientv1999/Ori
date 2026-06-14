@@ -173,6 +173,40 @@ ModalLayout make_modal_layout(lv_obj_t* base_screen, lv_coord_t card_w, lv_coord
     return layout;
 }
 
+lv_obj_t* add_close_x(lv_obj_t* card, lv_event_cb_t cb, void* user) {
+    lv_obj_t* btn = lv_obj_create(card);
+    lv_obj_add_flag(btn, LV_OBJ_FLAG_IGNORE_LAYOUT);   // not part of the card's flex flow
+    lv_obj_set_size(btn, 52, 52);                      // 40 px +30%
+    lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, 20, -20);    // nudged toward the card corner
+    lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(btn, theme::color(theme::COLOR_ELEV), 0);
+    lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(btn, 0, 0);
+    lv_obj_set_style_shadow_width(btn, 0, 0);
+    lv_obj_set_style_pad_all(btn, 0, 0);
+    lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_opa(btn, LV_OPA_60, LV_STATE_PRESSED);
+
+    // "X" from two crossing lines — no dependency on a symbol font glyph.
+    // Glyph + stroke scaled with the button (14 px → 18 px, 3 px → 4 px).
+    static const lv_point_precise_t seg_a[] = {{0, 0}, {18, 18}};
+    static const lv_point_precise_t seg_b[] = {{0, 18}, {18, 0}};
+    const lv_point_precise_t* segs[2] = { seg_a, seg_b };
+    for (int i = 0; i < 2; ++i) {
+        lv_obj_t* ln = lv_line_create(btn);
+        lv_line_set_points(ln, segs[i], 2);
+        lv_obj_center(ln);
+        lv_obj_set_style_line_width(ln, 4, 0);
+        lv_obj_set_style_line_color(ln, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
+        lv_obj_set_style_line_rounded(ln, true, 0);
+        lv_obj_clear_flag(ln, LV_OBJ_FLAG_CLICKABLE);
+    }
+
+    if (cb) lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, user);
+    return btn;
+}
+
 static void btn_glow_anim_cb(void* obj, int32_t v) {
     lv_obj_set_style_shadow_opa(static_cast<lv_obj_t*>(obj), (lv_opa_t)v, 0);
 }

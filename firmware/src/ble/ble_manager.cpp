@@ -238,6 +238,17 @@ public:
         // Request maximum MTU.
         NimBLEDevice::setMTU(247);
 
+        // Throughput tuning for bulk sync (photo, meetings, PTO, album art):
+        //   • Data Length Extension — 251-octet LL PDUs so a full 247-byte ATT
+        //     write rides in a single radio packet (less per-packet overhead).
+        //   • Faster connection-interval range (15–30 ms vs the conservative
+        //     default) → more connection events per second. These are requests
+        //     the central refines: Orion settles near 15 ms for fast transfer,
+        //     while an iPhone keeps its preferred ~30 ms within the same range.
+        //     latency 0 (responsive), 6 s supervision timeout.
+        server->setDataLen(handle, 251);
+        server->updateConnParams(handle, 12, 24, 0, 600);
+
         // NOTE: do NOT call NimBLEDevice::startSecurity() here. Forcing a
         // peripheral-initiated Security Request on connect races the central's
         // own pairing procedure — the two SMP exchanges collide and pairing
@@ -423,17 +434,31 @@ public:
         g_passkey = r % 1000000;
         if (g_passkey < 100000) g_passkey += 100000;
 
-        BleEvent ev = {};
-        ev.type         = BleEventType::PasskeyDisplay;
-        ev.data.passkey = g_passkey;
-        eq_push(ev);
+        // Only surface the passkey modal when a pairing window is actually open
+        // (Setup Step 2 for Orion, or the re-pair iPhone screen). Outside a
+        // window the bond is rejected at onAuthenticationComplete anyway — but a
+        // central that connects just after the re-pair screen closes (an iPhone
+        // that already saw the ANCS solicitation) would still start the SMP
+        // exchange and pop a confusing code. Suppress the modal in that case.
+        // Bonded reconnects re-encrypt with the stored LTK and never reach here.
+        if (is_orion_pairing_allowed() || is_iphone_pairing_allowed()) {
+            BleEvent ev = {};
+            ev.type         = BleEventType::PasskeyDisplay;
+            ev.data.passkey = g_passkey;
+            eq_push(ev);
+        } else {
+            LOG("[ble] passkey exchange outside pairing window — modal suppressed\n");
+        }
         return g_passkey;
     }
 
     void onConfirmPassKey(NimBLEConnInfo& info, uint32_t pin) override {
-        // LE Secure Connections numeric comparison — always confirm.
-        // User verifies the code matches on the Orion PC side.
-        NimBLEDevice::injectConfirmPasskey(info, true);
+        // LE Secure Connections numeric comparison. Confirm only inside a
+        // pairing window; otherwise reject so a stray / in-flight central can't
+        // bond — matching the onAuthenticationComplete gate, but failing the
+        // pairing up front instead of forming then tearing down a bond.
+        bool allow = is_orion_pairing_allowed() || is_iphone_pairing_allowed();
+        NimBLEDevice::injectConfirmPasskey(info, allow);
     }
 };
 
@@ -460,6 +485,13 @@ void init() {
     g_ble_name = app_state::ble_name();
     NimBLEDevice::init(g_ble_name);
     NimBLEDevice::setMTU(247);
+
+    // Prefer the 2 Mbit PHY on every connection — roughly doubles on-air
+    // throughput for bulk sync (photo, meetings, PTO, album art). The link
+    // negotiates back to 1M automatically if the central doesn't support 2M,
+    // so this is safe for any Orion PC / iPhone.
+    NimBLEDevice::setDefaultPhy(BLE_GAP_LE_PHY_1M_MASK | BLE_GAP_LE_PHY_2M_MASK,
+                                BLE_GAP_LE_PHY_1M_MASK | BLE_GAP_LE_PHY_2M_MASK);
 
     // Security: LE Secure Connections, Passkey Entry (IO_CAP_DISP_ONLY).
     NimBLEDevice::setSecurityAuth(BLE_SM_PAIR_AUTHREQ_SC |
@@ -532,6 +564,10 @@ void poll() {
                 // len == 0 means no destination photo set — store_pto clears cache.
                 LOG("[ble] PtoPhotoReceived: %u bytes\n", (unsigned)ev.data.art.len);
                 photo_cache::store_pto(ev.data.art.buf, ev.data.art.len);
+                // store_pto() only updates the cache; the PTO screen (if shown)
+                // was built earlier with the placeholder, so ask the state
+                // machine to rebuild it now that the real image is decoded.
+                state_machine::notify_pto_image_changed();
                 break;
 
             case BleEventType::PasskeyDisplay:
@@ -646,14 +682,13 @@ void poll() {
                 // dropped and re-connected. Idempotent if already subscribed.
                 ancs_client::on_iphone_connected(ev.data.conn_handle);
                 restart_advertising();
-                // First-boot setup: the iPhone bonding at Step 4 completes the
-                // optional phone-pairing step → advance to the Setup Complete
-                // screen (its 5 s timer then transitions to runtime). Without
-                // this, only the "Skip" button advanced, so a successful pair
-                // left the UI stuck on the Connect-on-iPhone screen.
-                if (nvs::is_first_boot()) {
-                    screen_setup::set_step(lv_scr_act(), screen_setup::Step::Complete);
-                }
+                // Pairing done → leave the phone-pairing screen: hides the
+                // passkey modal, then first-boot setup advances to the Setup
+                // Complete screen while a runtime re-pair returns to the screen
+                // that launched it. Without this a successful runtime re-pair
+                // left the passkey modal stuck on screen forever (and first-boot
+                // only advanced via the Skip button).
+                screen_setup::dismiss_phone_pairing(lv_scr_act());
                 break;
 
             case BleEventType::OrionDisconnected:
@@ -788,6 +823,17 @@ void restart_advertising() {
         // Re-armed by onDisconnect when either drops (so the missing peer can
         // reconnect), and by onConnect after the first of the two reconnects.
         LOG("[ble] adv: stopped (both bonded peers connected)\n");
+        adv->stop();
+        return;
+    }
+
+    // Orion is bonded + connected and there is no iPhone bond — nothing to
+    // advertise for: Orion is already here, and a fresh iPhone is only solicited
+    // from the re-pair screen (which opens the pairing window). Stay silent until
+    // then. If Orion later drops, onDisconnect re-arms undirected advertising so
+    // it can reconnect; opening the re-pair screen re-arms it for the iPhone.
+    if (orion_bonded && g_orion_connected && !iphone_bonded && !g_iphone_pairing_window) {
+        LOG("[ble] adv: stopped (Orion connected, iPhone slot empty, not pairing)\n");
         adv->stop();
         return;
     }

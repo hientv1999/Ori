@@ -198,17 +198,24 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
     modal_labels.phone_lbl  = phone_lbl;
     widget_profile_card::register_modal_labels(modal_labels);
 
+    // Always create the image (even with no photo yet) and register it so
+    // set_photo() can update it live when a photo arrives over BLE while the
+    // modal is open. Falls back to the placeholder, matching the base card.
+    lv_obj_t* img = lv_image_create(photo);
+    lv_obj_set_size(img, widget_profile_card::PHOTO_SIZE, widget_profile_card::PHOTO_SIZE);
+    lv_obj_align(img, LV_ALIGN_CENTER, 0, 0);
     const lv_image_dsc_t* photo_dsc = photo_cache::get();
     if (!photo_dsc) photo_dsc = photo_cache::get_profile_placeholder();
     if (photo_dsc) {
-        lv_obj_t* img = lv_image_create(photo);
         lv_image_set_src(img, photo_dsc);
-        lv_obj_set_size(img, widget_profile_card::PHOTO_SIZE, widget_profile_card::PHOTO_SIZE);
-        lv_obj_align(img, LV_ALIGN_CENTER, 0, 0);
+    } else {
+        lv_obj_add_flag(img, LV_OBJ_FLAG_HIDDEN);
     }
+    widget_profile_card::register_modal_photo_img(img);
 
     lv_obj_add_event_cb(screen, [](lv_event_t*) {
         widget_profile_card::unregister_modal_photo();
+        widget_profile_card::unregister_modal_photo_img();
         widget_profile_card::unregister_modal_labels();
     }, LV_EVENT_DELETE, nullptr);
 

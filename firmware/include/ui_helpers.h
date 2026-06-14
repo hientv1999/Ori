@@ -55,6 +55,12 @@ lv_obj_t* make_btn(lv_obj_t* parent, const char* text,
                    int16_t pad_v = 14, int16_t pad_h = 28,
                    const lv_font_t* font = nullptr);
 
+// Circular close affordance pinned to the top-right corner of a modal `card`.
+// The "X" is drawn from two crossing lines (no symbol-font dependency). Ignores
+// the card's flex layout. `cb` fires on tap (typically deletes the scrim).
+// Returns the button. Use instead of a bottom "Close" button on overlays.
+lv_obj_t* add_close_x(lv_obj_t* card, lv_event_cb_t cb = nullptr, void* user = nullptr);
+
 // Copy `in` to `out`, dropping every character the UI font (Hanken) can't
 // render — emoji, CJK, and any script outside the font's Latin repertoire —
 // and tidying the whitespace the drops leave behind (collapses runs of spaces,

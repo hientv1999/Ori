@@ -21,6 +21,7 @@ struct RingState {
     lv_timer_t* spin_timer;
     uint16_t    spin_angle;
     bool        indeterminate;
+    int16_t     big_y_off;   // big-label vertical offset (≠0 when a sub-label shares the centre)
 };
 
 // LVGL arc helpers — values stored in degrees, NOT 0.1°.
@@ -84,6 +85,7 @@ lv_obj_t* create(lv_obj_t* parent, uint16_t size_px,
     s->spin_timer    = nullptr;
     s->spin_angle    = 0;
     s->indeterminate = false;
+    s->big_y_off     = 0;
     s->big_label = lv_label_create(arc);
     lv_label_set_text(s->big_label, "");
     lv_obj_set_style_text_color(s->big_label, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
@@ -148,7 +150,9 @@ void set_label_text_center(lv_obj_t* ring, const char* s_text, int16_t x_offset)
     if (s_text) {
         lv_label_set_text(s->big_label, s_text);
         lv_obj_clear_flag(s->big_label, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_align(s->big_label,   LV_ALIGN_CENTER, x_offset, 0);
+        // Honour big_y_off so the per-second time update doesn't re-pin the
+        // label back to the exact centre (which sits low when a sub-label shares it).
+        lv_obj_align(s->big_label,   LV_ALIGN_CENTER, x_offset, s->big_y_off);
     } else {
         lv_obj_add_flag(s->big_label, LV_OBJ_FLAG_HIDDEN);
     }
@@ -160,13 +164,16 @@ void set_sub_label_text(lv_obj_t* ring, const char* s_text) {
     if (s_text) {
         lv_label_set_text(s->small_label, s_text);
         lv_obj_clear_flag(s->small_label, LV_OBJ_FLAG_HIDDEN);
-        // Two-label layout: nudge both so their combined block is centred.
-        lv_obj_align(s->big_label,   LV_ALIGN_CENTER, 0, 0);
-        lv_obj_align(s->small_label, LV_ALIGN_CENTER, 0, 40);
+        // Two-label layout: lift both so the combined block (big timer + sub-
+        // label) is vertically centred in the ring instead of sitting ~16 px low.
+        s->big_y_off = -16;
+        lv_obj_align(s->big_label,   LV_ALIGN_CENTER, 0, s->big_y_off);
+        lv_obj_align(s->small_label, LV_ALIGN_CENTER, 0, 24);
     } else {
         lv_obj_add_flag(s->small_label, LV_OBJ_FLAG_HIDDEN);
         // Single-label layout: restore big label to exact centre.
-        lv_obj_align(s->big_label, LV_ALIGN_CENTER, 0, 0);
+        s->big_y_off = 0;
+        lv_obj_align(s->big_label, LV_ALIGN_CENTER, 0, s->big_y_off);
     }
 }
 

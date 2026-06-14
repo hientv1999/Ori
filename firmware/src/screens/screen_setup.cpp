@@ -10,6 +10,7 @@
 #include "state_machine.h"
 #include "theme.h"
 #include "ui_helpers.h"
+#include "widgets/widget_profile_card.h"
 #include "widgets/widget_progress_ring.h"
 
 // Setup wizard — single LVGL screen, six sub-states. Status bar is OFF
@@ -391,7 +392,6 @@ void build_pairing(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
 }
 
 void build_phone_pairing(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
-    (void)s;
     lv_obj_set_style_pad_bottom(content, 54, 0);
     make_brand_mark(content);
 
@@ -409,7 +409,11 @@ void build_phone_pairing(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
     lv_obj_t* spinner = make_spinner(mid, 100, 8);
     lv_obj_set_style_pad_top(spinner, 24, 0);
 
-    ui::make_btn(content, "Skip",
+    // Runtime re-pair (prev_screen set) just returns to the launching screen, so
+    // label it "Close". During first-time setup it skips the optional iPhone
+    // step and advances, so it stays "Skip". (on_skip_phone_clicked branches on
+    // prev_screen to do the right thing in each case.)
+    ui::make_btn(content, s->prev_screen ? "Close" : "Skip",
         ui::BtnStyle::Tertiary,
         on_skip_phone_clicked, screen,
         14, 40, theme::font_time());
@@ -432,6 +436,12 @@ void build_complete(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
     // (on_setup_complete() also calls this later; it's idempotent.)
     nvs::mark_setup_complete();
 
+    // mark_setup_complete() just flipped is_first_boot() to false, so the state
+    // machine would otherwise rebuild to the runtime screen on the next tick and
+    // cut the checkmark animation short. Hold the screen until the 5 s timer
+    // (complete_timer_cb → on_setup_complete) hands off to runtime.
+    state_machine::hold_for_setup_complete();
+
     make_brand_mark(content);
 
     // Flex-grow block: checkmark + text centred in the remaining height.
@@ -439,10 +449,25 @@ void build_complete(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
 
     make_ok_check(mid);
 
-    // "Everstorm" is the mock first name — at runtime use the first token of the
-    // profile name synced by Orion.
+    // Greet by the FIRST name from the profile Orion synced (g_name is populated
+    // by run_staged_commit before this Complete screen builds). Use the first
+    // whitespace-delimited token; fall back to a plain "Welcome" if no name came.
+    const char* full = widget_profile_card::get_profile_name();
+    char greeting[128];
+    if (full && full[0]) {
+        char first[97] = {};
+        size_t i = 0;
+        while (full[i] && full[i] != ' ' && i < sizeof(first) - 1) {
+            first[i] = full[i];
+            ++i;
+        }
+        first[i] = '\0';
+        snprintf(greeting, sizeof(greeting), "Welcome, %s", first);
+    } else {
+        snprintf(greeting, sizeof(greeting), "Welcome");
+    }
     lv_obj_t* h = lv_label_create(mid);
-    lv_label_set_text(h, "Welcome, Everstorm");
+    lv_label_set_text(h, greeting);
     lv_obj_set_style_text_color(h, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(h, theme::font_display(), 0);
     lv_obj_set_style_text_align(h, LV_TEXT_ALIGN_CENTER, 0);
@@ -569,16 +594,8 @@ void on_next_clicked(lv_event_t* e) {
 
 void on_skip_phone_clicked(lv_event_t* e) {
     lv_obj_t* screen = static_cast<lv_obj_t*>(lv_event_get_user_data(e));
-    auto* s = static_cast<SetupState*>(lv_obj_get_user_data(screen));
-    if (s && s->prev_screen) {
-        // Runtime re-pair: return to the screen that launched this flow.
-        // auto_del=true deletes this PhonePairing screen; prev_screen stays (kept
-        // alive because the launch site used auto_del=false).
-        lv_scr_load_anim(s->prev_screen, LV_SCR_LOAD_ANIM_NONE, 0, 0, /*auto_del=*/true);
-    } else {
-        // Initial setup flow: advance to the Complete step.
-        screen_setup::set_step(screen, screen_setup::Step::Complete);
-    }
+    // Skip (setup) / Close (runtime re-pair) — same exit as a successful bond.
+    screen_setup::dismiss_phone_pairing(screen);
 }
 
 } // namespace
@@ -713,6 +730,21 @@ void hide_passkey_modal(lv_obj_t* screen) {
     lv_obj_delete(s->passkey_modal);
     s->passkey_modal = nullptr;
     if (s->pairing_spinner) lv_obj_clear_flag(s->pairing_spinner, LV_OBJ_FLAG_HIDDEN);
+}
+
+void dismiss_phone_pairing(lv_obj_t* screen) {
+    auto* s = static_cast<SetupState*>(lv_obj_get_user_data(screen));
+    if (!s) return;
+    hide_passkey_modal(screen);  // drop the passkey overlay if it's still up
+    if (s->prev_screen) {
+        // Runtime re-pair done/cancelled: return to the launching screen.
+        // auto_del=true deletes this PhonePairing screen (and the passkey scrim
+        // that lives on it); prev_screen stays (launch site used auto_del=false).
+        lv_scr_load_anim(s->prev_screen, LV_SCR_LOAD_ANIM_NONE, 0, 0, /*auto_del=*/true);
+    } else {
+        // First-time setup: advance to the Complete step.
+        set_step(screen, Step::Complete);
+    }
 }
 
 lv_obj_t* show_orioning_modal(lv_obj_t* screen) {

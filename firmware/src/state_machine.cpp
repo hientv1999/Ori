@@ -56,6 +56,14 @@ bool     g_phone_connected = false;
 bool     g_phone_bonded    = false; // true when an iPhone bond exists in NVS
 bool     g_force_rebuild   = false; // force evaluate() to rebuild even if state unchanged
 
+// True while the Setup-Complete screen is showing its checkmark + 5 s linger.
+// build_complete() calls nvs::mark_setup_complete() up front (for power-cycle
+// safety), which flips is_first_boot() to false — so compute_target_state()
+// would immediately resolve to a runtime screen and the next tick/evaluate()
+// would yank the Complete screen away mid-animation. This holds the screen put
+// until the 5 s timer fires on_setup_complete(), which clears the flag.
+bool     g_setup_complete_hold = false;
+
 // Most recent Teams presence pushed by Orion via the Presence Status
 // characteristic (ble-protocol.md §3). 0x03 = Offline, matching the
 // gatt_server default and the "never show stale presence" rule — never
@@ -183,7 +191,8 @@ static app_state::MeetingList filtered_meetings() {
 // window for any un-alerted meeting. Populates out_* with the meeting data
 // if returning true.
 static bool check_countdown(const char** out_title,
-                             const char** out_when,
+                             const char** out_org,
+                             const char** out_loc,
                              int*         out_diff_s,
                              int*         out_key) {
     long now_s = now_seconds();
@@ -203,12 +212,8 @@ static bool check_countdown(const char** out_title,
 
         // New alert.
         *out_title = m.title;
-
-        // Build "Starts at HH:MM" string — m.start is already "HH:MM".
-        static char when_buf[32];
-        snprintf(when_buf, sizeof(when_buf), "Starts at %s", m.start);
-        *out_when = when_buf;
-
+        *out_org   = m.org;
+        *out_loc   = m.loc;
         *out_diff_s = (int)diff;
         *out_key = start_mins;
         return true;
@@ -304,7 +309,13 @@ lv_obj_t* build_pto_screen() {
 }
 
 lv_obj_t* build_meeting_list_screen() {
-    return screen_meeting_list::create(filtered_meetings(), false);
+    // "cached" drives the "SYNCED · X min ago" pill. The on-screen list is cached
+    // whenever Orion's BLE link is down — a runtime disconnect (meetings still in
+    // RAM, clock still valid). While Orion is connected the data is live (sync
+    // completes before we leave the reconnect overlay), so no pill. After a power
+    // cycle the RAM list is empty, so we're on the "No meetings today" screen
+    // instead and the pill never applies. Matches meeting-list.md's offline table.
+    return screen_meeting_list::create(filtered_meetings(), !g_pc_connected);
 }
 
 lv_obj_t* build_no_meetings_screen() {
@@ -326,7 +337,7 @@ lv_obj_t* build_reconnect_screen() {
 // Fire a countdown modal on top of the appropriate base screen.
 // The base screen is created fresh (or reused if it's already the current one)
 // and stored in g_countdown_base so we don't destroy it when the modal fires.
-void fire_countdown(const char* title, const char* when, int diff_s) {
+void fire_countdown(const char* title, const char* organizer, const char* location, int diff_s) {
     // Build the base screen that sits under the modal.
     lv_obj_t* base = nullptr;
     if (g_mode == 1 && g_pc_connected) {
@@ -342,7 +353,7 @@ void fire_countdown(const char* title, const char* when, int diff_s) {
 
     g_countdown_base = base;
     load_screen(base);
-    modal_countdown::create(base, title, when, diff_s);
+    modal_countdown::create(base, title, organizer, location, diff_s);
     g_state = AppState::COUNTDOWN;
 }
 
@@ -383,14 +394,15 @@ static void tick_cb(lv_timer_t* /*t*/) {
         !is_pto_active()) {
 
         const char* title = nullptr;
-        const char* when  = nullptr;
+        const char* org   = nullptr;
+        const char* loc   = nullptr;
         int diff_s        = 0;
         int key           = -1;
 
-        if (check_countdown(&title, &when, &diff_s, &key)) {
+        if (check_countdown(&title, &org, &loc, &diff_s, &key)) {
             g_alerted_meetings.insert(key);
             LOG("[sm] countdown alert for meeting key=%d\n", key);
-            fire_countdown(title, when, diff_s);
+            fire_countdown(title, org, loc, diff_s);
             return;  // screen already updated; skip re-evaluate below
         }
     }
@@ -437,6 +449,10 @@ void init() {
 }
 
 AppState evaluate() {
+    // Hold the Setup-Complete screen through its checkmark + linger. Cleared by
+    // on_setup_complete() (the 5 s timer) which then transitions to runtime.
+    if (g_setup_complete_hold) return g_state;
+
     AppState target = compute_target_state();
 
     // COUNTDOWN: user must tap Close; not overridden by normal state changes.
@@ -521,6 +537,20 @@ AppState evaluate() {
     return g_state;
 }
 
+void notify_pto_image_changed() {
+    // The PTO image arrives asynchronously, after the synchronous meetings
+    // commit has already rebuilt the panel with the placeholder. If PTO is the
+    // screen on display right now, force one rebuild so screen_pto::create()
+    // re-reads photo_cache::get_pto() and shows the real destination image
+    // (or reverts to the placeholder if the image was cleared). When PTO isn't
+    // the current screen the next entry into PTO_ACTIVE picks up the cached
+    // image on its own, so this is a no-op.
+    if (g_state == AppState::PTO_ACTIVE) {
+        g_force_rebuild = true;
+        evaluate();
+    }
+}
+
 // Deferred work flags — set from LVGL timer callbacks, drained in poll()
 // which runs in the main loop before lv_timer_handler(). NVS flash writes
 // disable ICache/DCache system-wide; doing them inside an LVGL callback
@@ -530,10 +560,38 @@ static bool g_unpair_phone_pending   = false;
 static bool g_phone_wipe_pending     = false;  // stale-bond wipe before re-pair
 static bool g_mode_write_pending     = false;  // persist g_mode (set from on_mode_toggle)
 
-void set_meetings_cbor(const uint8_t* buf, size_t len, bool save_to_nvs) {
+// Copy a CBOR text string into a fixed buffer, truncating cleanly on a UTF-8
+// character boundary when it's longer than the buffer. Plain
+// cbor_value_copy_text_string() copies NOTHING when the buffer is too small (it
+// returns CborErrorOutOfMemory and leaves the buffer untouched), which would
+// render an over-length meeting title/location as BLANK. This keeps the prefix
+// that fits, never splitting a multi-byte UTF-8 sequence.
+static void copy_text_truncated(const CborValue* field, char* dst, size_t dst_sz) {
+    if (dst_sz == 0) return;
+    dst[0] = '\0';
+    size_t sz = dst_sz - 1;
+    CborError err = cbor_value_copy_text_string(field, dst, &sz, nullptr);
+    if (err == CborNoError) { dst[sz] = '\0'; return; }   // fit exactly
+    if (err != CborErrorOutOfMemory) return;              // malformed → leave empty
+    // Too long: `sz` now holds the full byte length. Copy the whole string into
+    // a temp buffer, then keep the longest UTF-8-valid prefix that fits.
+    size_t full = sz;
+    char* tmp = static_cast<char*>(malloc(full + 1));
+    if (!tmp) return;                                     // OOM → leave empty
+    size_t tsz = full + 1;
+    if (cbor_value_copy_text_string(field, tmp, &tsz, nullptr) == CborNoError) {
+        size_t n = dst_sz - 1;
+        while (n > 0 && ((uint8_t)tmp[n] & 0xC0) == 0x80) --n;  // don't split a char
+        memcpy(dst, tmp, n);
+        dst[n] = '\0';
+    }
+    free(tmp);
+}
+
+void set_meetings_cbor(const uint8_t* buf, size_t len) {
     if (!buf || !len) return;
 
-    if (save_to_nvs) nvs_sync::save_meetings_blob(buf, len);
+    // Meetings are RAM-only (see header): no NVS write here.
 
     // Parse CBOR: { "date": uint, "items": [ { "start": uint, "end": uint,
     //   "title": text, "loc": text, "org": text }, ... ] }
@@ -592,14 +650,11 @@ void set_meetings_cbor(const uint8_t* buf, size_t len, bool save_to_nvs) {
                 rt.end_epoch = (uint32_t)v;
                 epoch_to_hhmm(rt.end_epoch, rt.end_str, sizeof(rt.end_str));
             } else if (strcmp(fkey, "title") == 0 && cbor_value_is_text_string(&field)) {
-                size_t sz = sizeof(rt.title) - 1;
-                cbor_value_copy_text_string(&field, rt.title, &sz, nullptr);
+                copy_text_truncated(&field, rt.title, sizeof(rt.title));
             } else if (strcmp(fkey, "loc") == 0 && cbor_value_is_text_string(&field)) {
-                size_t sz = sizeof(rt.loc) - 1;
-                cbor_value_copy_text_string(&field, rt.loc, &sz, nullptr);
+                copy_text_truncated(&field, rt.loc, sizeof(rt.loc));
             } else if (strcmp(fkey, "org") == 0 && cbor_value_is_text_string(&field)) {
-                size_t sz = sizeof(rt.org) - 1;
-                cbor_value_copy_text_string(&field, rt.org, &sz, nullptr);
+                copy_text_truncated(&field, rt.org, sizeof(rt.org));
             }
             if (!cbor_value_at_end(&field)) cbor_value_advance(&field);
         }
@@ -637,67 +692,23 @@ void set_meetings_cbor(const uint8_t* buf, size_t len, bool save_to_nvs) {
     LOG("[sm] meetings parsed: %u items\n", (unsigned)g_rt_count);
 }
 
-// Boot-time cached-meeting staging.
-//
-// The NVS blob is READ in begin_boot_meeting_load() — which runs from setup()
-// BEFORE ble_manager::init() — into this RAM buffer. The flash read disables
-// the CPU cache; doing it later (e.g. from poll()) while the NimBLE host task
-// is servicing a bonded-peer reconnect races NimBLE's own NVS bond access and
-// trips a FreeRTOS queue-set assert in queue.c — the documented power-cycle
-// reconnect crash that prime_bond_cache() exists to avoid. The CBOR PARSE, by
-// contrast, is pure-RAM (set_meetings_cbor with save_to_nvs=false never touches
-// flash), so it is safe to defer into poll() behind the loading screen.
-static uint8_t g_boot_meet_buf[4096];
-static size_t  g_boot_meet_len              = 0;
-static bool    g_boot_meeting_parse_pending = false;
-static uint8_t g_boot_frames                = 0;
+// Meetings are RAM-only — there is no boot-time load from NVS. After a power
+// cycle the meeting list is empty until Orion reconnects and re-pushes it
+// (see set_meetings_cbor / meeting-list.md). The local clock is likewise not
+// restored from flash, so the meeting time logic can't run offline anyway.
 
-void begin_boot_meeting_load() {
-    // Read the blob now — pre-BLE, so cache-safe. Empty = nothing cached.
-    g_boot_meet_len = nvs_sync::load_meetings_blob(g_boot_meet_buf, sizeof(g_boot_meet_buf));
-    if (g_boot_meet_len == 0) return;
-    LOG("[sm] boot: meetings blob loaded: %u bytes\n", (unsigned)g_boot_meet_len);
-
-    if (g_state == AppState::NO_MEETINGS || g_state == AppState::MEETING_LIST) {
-        // Meeting view is what boot resolved to: show "Refreshing your day"
-        // and defer the (cache-safe) CBOR parse to poll() so the loading screen
-        // renders first. evaluate() already ran with an empty cache, so without
-        // this boot would flash "No meetings today" until the first 1 s tick.
-        g_boot_meeting_parse_pending = true;
-        g_state = AppState::RECONNECT_SYNCING;
-        apply_widget_defaults();
-        load_screen(build_reconnect_screen());
-    } else {
-        // Setup flow / post-OTA ack / PTO own the screen and outrank the
-        // meeting view — parse synchronously so the cache is warm (e.g. PTO
-        // needs meetings ready for when the window ends), no loading screen.
-        set_meetings_cbor(g_boot_meet_buf, g_boot_meet_len, /*save_to_nvs=*/false);
-    }
+void hold_for_setup_complete() {
+    // Called from build_complete() when the Setup-Complete screen appears.
+    g_setup_complete_hold = true;
 }
 
 void on_setup_complete() {
     LOG("[sm] on_setup_complete — deferring NVS write to poll()\n");
+    g_setup_complete_hold    = false;  // release the hold — hand off to runtime now
     g_setup_complete_pending = true;
 }
 
 void poll() {
-    if (g_boot_meeting_parse_pending) {
-        // Let the "Refreshing your day" screen paint a couple of frames (and
-        // the ring start sweeping) before the CBOR parse. The blob was already
-        // read from NVS pre-BLE (see begin_boot_meeting_load); this parse is
-        // pure-RAM, so it's safe to run here while BLE is active.
-        if (g_boot_frames < 2) {
-            ++g_boot_frames;
-        } else {
-            g_boot_meeting_parse_pending = false;
-            set_meetings_cbor(g_boot_meet_buf, g_boot_meet_len, /*save_to_nvs=*/false);
-            // Break the RECONNECT_SYNCING early-return in compute_target_state()
-            // so evaluate() resolves to the real meeting / no-meetings screen.
-            g_force_rebuild = true;
-            g_state = AppState::NO_MEETINGS;
-            evaluate();
-        }
-    }
     if (g_setup_complete_pending) {
         g_setup_complete_pending = false;
         LOG("[sm] poll: setup complete — writing NVS + evaluating\n");
@@ -835,7 +846,14 @@ void on_ota_ack_close() {
 void on_reconnect_begin() {
     // Never overlay the reconnect-syncing UI on top of an OTA takeover.
     if (ota_receiver::is_active()) return;
-    LOG("[sm] on_reconnect_begin\n");
+    LOG("[sm] on_reconnect_begin (meetings cached=%u)\n", (unsigned)g_rt_count);
+    // Only show the "Refreshing your day" overlay when there is actually cached
+    // meeting data to refresh. With meetings RAM-only, a power-cycle reconnect
+    // starts with an empty list — "Refreshing your day" would be misleading
+    // (there's no day cached yet). In that case stay on the current base screen
+    // ("No meetings today") and let the sync populate it; on_reconnect_end()
+    // re-evaluates to the real meeting list once the data arrives.
+    if (g_rt_count == 0) return;
     g_state = AppState::RECONNECT_SYNCING;
     apply_widget_defaults();
     load_screen(build_reconnect_screen());
@@ -884,7 +902,15 @@ void set_pc_connected(bool connected) {
     // Track the flag, but never rebuild the screen during an OTA takeover — a
     // BLE connect/disconnect mid-update must not yank the OTA screen or starve
     // the USB CDC poll. evaluate() runs (and resyncs) once the transfer ends.
-    if (changed && !ota_receiver::is_active()) {
+    //
+    // Also skip the rebuild during first-boot setup: the setup flow owns the
+    // screen (driven by set_step + the passkey/orioning modals on BLE events),
+    // and build_setup_screen() re-derives the step from NVS flags that aren't
+    // set until the bond handshake commits. Rebuilding on the *provisional*-bond
+    // OrionConnected event (before mark_orion_bonded → is_awaiting_sync) would
+    // snap Step 2 "Connect on Orion" back to Welcome. The mode-toggle this
+    // rebuild serves is a runtime-only affordance anyway.
+    if (changed && !ota_receiver::is_active() && !nvs::is_first_boot()) {
         g_force_rebuild = true;
         g_state = AppState::NO_MEETINGS;  // ensure evaluate() does a full rebuild
         evaluate();

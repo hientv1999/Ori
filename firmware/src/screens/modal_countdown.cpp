@@ -62,7 +62,8 @@ namespace modal_countdown {
 
 lv_obj_t* create(lv_obj_t* base_screen,
                  const char* meeting_title,
-                 const char* when_text,
+                 const char* organizer,
+                 const char* location,
                  int seconds_remaining) {
     // Full-screen scrim that absorbs taps.
     lv_obj_t* scrim = lv_obj_create(base_screen);
@@ -75,13 +76,17 @@ lv_obj_t* create(lv_obj_t* base_screen,
     lv_obj_clear_flag(scrim, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(scrim, LV_OBJ_FLAG_CLICKABLE);
 
-    // Content column, centered.
+    // Content column, centered. Full screen width (with side padding) so the
+    // title / organizer / location labels below — each lv_pct(100), single-line
+    // with ellipsis — can use nearly the whole screen before truncating, instead
+    // of being capped at a narrow column. The ring + Close button stay centred.
     lv_obj_t* col = lv_obj_create(scrim);
-    lv_obj_set_size(col, 360, LV_SIZE_CONTENT);
+    lv_obj_set_size(col, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_center(col);
     lv_obj_set_style_bg_opa(col, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(col, 0, 0);
     lv_obj_set_style_pad_all(col, 0, 0);
+    lv_obj_set_style_pad_hor(col, 24, 0);  // side margin so text isn't edge-to-edge
     lv_obj_clear_flag(col, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(col, LV_OBJ_FLAG_CLICKABLE);  // taps pass through to scrim
     lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
@@ -99,9 +104,9 @@ lv_obj_t* create(lv_obj_t* base_screen,
     widget_progress_ring::set_label_text_center(ring, init_label);
     widget_progress_ring::set_sub_label_text(ring, "UNTIL START");
 
-    // Meeting name.
+    // Meeting title — single line, ellipsis on overflow.
     lv_obj_t* name = lv_label_create(col);
-    lv_label_set_long_mode(name, LV_LABEL_LONG_WRAP);
+    lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
     lv_label_set_text(name, meeting_title);
     lv_obj_set_width(name, lv_pct(100));
     lv_obj_set_style_text_color(name, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
@@ -109,20 +114,34 @@ lv_obj_t* create(lv_obj_t* base_screen,
     lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_top(name, 20, 0);
 
-    // When line.
-    lv_obj_t* when = lv_label_create(col);
-    lv_label_set_long_mode(when, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(when, when_text);
-    lv_obj_set_width(when, lv_pct(100));
-    lv_obj_set_style_text_color(when, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
-    lv_obj_set_style_text_font(when, theme::font_meta(), 0);
-    lv_obj_set_style_text_align(when, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_pad_top(when, 4, 0);
+    // Organizer — single line, ellipsis. Omitted when empty.
+    if (organizer && organizer[0]) {
+        lv_obj_t* org = lv_label_create(col);
+        lv_label_set_long_mode(org, LV_LABEL_LONG_DOT);
+        lv_label_set_text(org, organizer);
+        lv_obj_set_width(org, lv_pct(100));
+        lv_obj_set_style_text_color(org, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
+        lv_obj_set_style_text_font(org, theme::font_meta(), 0);
+        lv_obj_set_style_text_align(org, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_pad_top(org, 3, 0);  // gap above organizer (was 6, −50%)
+    }
+
+    // Location — single line, ellipsis. Omitted when empty.
+    if (location && location[0]) {
+        lv_obj_t* loc = lv_label_create(col);
+        lv_label_set_long_mode(loc, LV_LABEL_LONG_DOT);
+        lv_label_set_text(loc, location);
+        lv_obj_set_width(loc, lv_pct(100));
+        lv_obj_set_style_text_color(loc, theme::color(theme::COLOR_TEXT_TERTIARY), 0);
+        lv_obj_set_style_text_font(loc, theme::font_meta(), 0);
+        lv_obj_set_style_text_align(loc, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_pad_top(loc, 2, 0);  // gap above location (was 4, −50%)
+    }
 
     // Gap between text and close button.
     lv_obj_t* gap = lv_obj_create(col);
     ui::clear_container(gap);
-    lv_obj_set_size(gap, lv_pct(100), 18);
+    lv_obj_set_size(gap, lv_pct(100), 4);
 
     lv_obj_t* close_btn = ui::make_btn(col, "Close", ui::BtnStyle::Tertiary,
                                        nullptr, nullptr, 12, 26, theme::font_meta());

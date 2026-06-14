@@ -18,6 +18,7 @@ extern "C" uint32_t millis(void) {
 namespace state_machine {
     AppState evaluate() { return AppState::MEETING_LIST; }
     void on_factory_reset() {}
+    void hold_for_setup_complete() {}
     void on_setup_complete() {}
     void on_mode_toggle() {}
     void on_ota_begin() {}

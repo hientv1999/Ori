@@ -7,6 +7,7 @@
 #include "assets/ancs_icons.h"
 #include "app_state.h"
 #include "screens/modal_ancs_notification.h"
+#include "screens/modal_incoming_call.h"
 #include "screens/modal_unpair_phone.h"
 // #include "screens/screen_repair_phone.h" // removed obsolete repair screen
 #include "state_machine.h"
@@ -36,12 +37,13 @@ constexpr int16_t DATETIME_GAP  = 12;
 
 // Format current local time into the two display strings.
 // Fills time_buf/date_buf and returns whether the clock is actually set. Before
-// the first Orion Time Sync (e.g. after a cold power cycle) there is no valid
-// time, so we show "--:--" with no date rather than a fabricated ~1970 value.
+// the first time sync (e.g. after a cold power cycle) there is no valid time, so
+// both strings are emptied and the caller hides the whole clock — no "--:--"
+// placeholder, no fabricated ~1970 value.
 static bool format_real_time(char* time_buf, size_t time_sz,
                               char* date_buf, size_t date_sz) {
     if (!app_state::clock_is_set()) {
-        snprintf(time_buf, time_sz, "--:--");
+        if (time_sz) time_buf[0] = '\0';
         if (date_sz) date_buf[0] = '\0';
         return false;
     }
@@ -86,12 +88,15 @@ static void update_clock_labels(lv_obj_t* bar) {
     bool clock_set = format_real_time(time_buf, sizeof(time_buf), date_buf, sizeof(date_buf));
     lv_label_set_text(s->time_label, time_buf);
     lv_label_set_text(s->date_label, date_buf);
-    // Hide the "·" separator + date until the clock is set, so we show a clean
-    // "--:--" rather than "--:-- · <bogus date>".
+    // No local time yet (e.g. after a cold power cycle, before the first Orion or
+    // iPhone time sync): hide the WHOLE clock — time, "·" separator and date —
+    // rather than showing a "--:--" placeholder.
     if (clock_set) {
+        lv_obj_clear_flag(s->time_label, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(s->sep_label,  LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(s->date_label, LV_OBJ_FLAG_HIDDEN);
     } else {
+        lv_obj_add_flag(s->time_label, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s->sep_label,  LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s->date_label, LV_OBJ_FLAG_HIDDEN);
     }
@@ -139,9 +144,10 @@ static void animate_tile_in(lv_obj_t* tile) {
 
 // ANCS icon tile. Uses a compiled-in raster asset when available (12 px radius,
 // matching the HTML prototype); falls back to a solid brand-colour circle.
-// `token` selects the icon; `uid` identifies the exact notification so a tap
-// opens/dismisses that one specifically (not just "newest of this app").
-lv_obj_t* make_ancs_tile(lv_obj_t* parent, const char* token, uint32_t uid) {
+// `token` selects the icon; `uid` identifies the exact (most-recent) notification
+// for this app; `count` is the number of stacked notifications — when > 1, a
+// small red badge is drawn in the top-right corner showing the count.
+lv_obj_t* make_ancs_tile(lv_obj_t* parent, const char* token, uint32_t uid, uint8_t count = 1) {
     lv_obj_t* tile = lv_obj_create(parent);
     lv_obj_set_size(tile, ICON_SIZE, ICON_SIZE);
     lv_obj_set_style_border_width(tile, 0, LV_PART_MAIN);
@@ -181,16 +187,60 @@ lv_obj_t* make_ancs_tile(lv_obj_t* parent, const char* token, uint32_t uid) {
         lv_obj_set_style_border_opa(tile, LV_OPA_COVER, LV_PART_MAIN);
     }
 
-    // Tap → open the ANCS notification detail modal for this exact UID.
+    // Tap → call notifications reopen the in-call dialog (caller + live timer +
+    // End call); everything else opens the generic ANCS detail overlay.
     lv_obj_set_user_data(tile, reinterpret_cast<void*>((uintptr_t)uid));
     lv_obj_add_event_cb(tile, [](lv_event_t* e) {
         lv_obj_t* t = (lv_obj_t*)lv_event_get_current_target(e);
         uint32_t uid = (uint32_t)(uintptr_t)lv_obj_get_user_data(t);
-        modal_ancs_notification::create(lv_screen_active(), uid);
+        uint8_t cat = app_state::ancs_category(uid);
+        if (cat == app_state::AncsCategory::INCOMING_CALL ||
+            cat == app_state::AncsCategory::ACTIVE_CALL) {
+            modal_incoming_call::show_active(uid);
+        } else {
+            modal_ancs_notification::create(lv_screen_active(), uid);
+        }
     }, LV_EVENT_CLICKED, nullptr);
 
     // Genuinely-new notification (flagged via note_new_notification) pops in.
     if (g_anim_pending && uid == g_anim_uid) animate_tile_in(tile);
+
+    // Stacked-count badge: shown when multiple notifications from the same app
+    // are queued. Red pill in the top-right corner; text is the count or "9+"
+    // for ten or more. Badge is non-clickable so taps pass through to the tile.
+    if (count > 1) {
+        char buf[4];
+        if (count > 9) {
+            buf[0] = '9'; buf[1] = '+'; buf[2] = '\0';
+        } else {
+            buf[0] = static_cast<char>('0' + count); buf[1] = '\0';
+        }
+        // Fixed square size so LV_RADIUS_CIRCLE renders a true circle — a
+        // content-sized box is taller than wide for a single digit, which
+        // LV_RADIUS_CIRCLE turns into a pill, not a round badge.
+        constexpr int BADGE_SIZE = 26;
+        lv_obj_t* badge = lv_obj_create(tile);
+        lv_obj_set_size(badge, BADGE_SIZE, BADGE_SIZE);
+        lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(badge, theme::color(theme::COLOR_DANGER), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, LV_PART_MAIN);
+        // Black border to set the badge apart from the icon behind it.
+        lv_obj_set_style_border_width(badge, 2, LV_PART_MAIN);
+        lv_obj_set_style_border_color(badge, lv_color_black(), LV_PART_MAIN);
+        lv_obj_set_style_border_opa(badge, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_shadow_width(badge, 0, LV_PART_MAIN);
+        lv_obj_set_style_pad_all(badge, 0, LV_PART_MAIN);
+        lv_obj_clear_flag(badge, static_cast<lv_obj_flag_t>(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+        lv_obj_t* lbl = lv_label_create(badge);
+        lv_label_set_text(lbl, buf);
+        lv_obj_set_style_text_font(lbl, theme::font_body(), LV_PART_MAIN);
+        lv_obj_set_style_text_color(lbl, lv_color_black(), LV_PART_MAIN);
+        lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_center(lbl);
+
+        lv_obj_align(badge, LV_ALIGN_TOP_RIGHT, 0, 0);
+    }
 
     return tile;
 }
@@ -427,19 +477,18 @@ void on_phone_icon_tap(lv_event_t* e) {
     if (code != LV_EVENT_CLICKED && code != LV_EVENT_LONG_PRESSED) return;
     auto* st = static_cast<StatusBarState*>(lv_event_get_user_data(e));
     if (!st) return;
-    // Routing is by CONNECTION state, not bond state:
-    //   connected     → unpair modal (the phone is right here, offer to unpair)
-    //   not connected → re-pair screen; a stale bond (phone bonded but away)
-    //                   is wiped via the poll()-deferred path so the iPhone
-    //                   slot opens and the ANCS solicitation can advertise.
-    bool connected = st->phone_connected;
-    bool bonded    = st->phone_bonded;
+    // Routing is by BOND state, not connection state:
+    //   bonded (connected or not) → unpair modal. We already know this iPhone,
+    //                               so offer to unpair it; the modal's Unpair
+    //                               button wipes the bond via on_unpair_phone()
+    //                               (which opens the slot + re-advertises ANCS).
+    //   not bonded                → re-pair screen so a fresh iPhone can bond.
+    bool bonded = st->phone_bonded;
     lv_obj_t* screen = lv_screen_active();
-    s_deferred_phone_cb = [connected, bonded, screen]() {
-        if (connected) {
+    s_deferred_phone_cb = [bonded, screen]() {
+        if (bonded) {
             modal_unpair_phone::create(screen);
         } else {
-            if (bonded) state_machine::request_phone_bond_wipe();
             lv_obj_t* pairing = screen_setup::create(screen_setup::Step::PhonePairing, screen);
             lv_scr_load_anim(pairing, LV_SCR_LOAD_ANIM_NONE, 0, 0, /*auto_del=*/false);
         }
@@ -816,7 +865,7 @@ void refresh(lv_obj_t* bar) {
                        : 0;
         for (size_t i = start; i < cfg.count && i < app_state::MAX_ANCS_NOTIFICATIONS; ++i) {
             if (cfg.icons[i]) {
-                make_ancs_tile(s->ancs_row, cfg.icons[i], cfg.uids[i]);
+                make_ancs_tile(s->ancs_row, cfg.icons[i], cfg.uids[i], cfg.counts[i]);
                 ++visible_tiles;
             }
         }

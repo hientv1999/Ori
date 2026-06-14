@@ -127,9 +127,13 @@ static uint16_t* load_and_decode(const char* path, size_t max_jpeg_bytes,
         return nullptr;
     }
 
+    // PSRAM-only: never fall back to internal DRAM. A freed DRAM JPEG buffer
+    // leaves JFIF SOI bytes (0xFF D8 FF E0) in the heap; if a subsequent NVS
+    // allocation lands there, the JPEG bytes corrupt the FreeRTOS Queue_t
+    // pxQueueSetContainer field → LoadProhibited in prvNotifyQueueSetContainer.
+    // At boot, PSRAM is nearly empty, so ≤512 KB always fits.
     uint8_t* jpeg_buf = static_cast<uint8_t*>(
         heap_caps_malloc(sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!jpeg_buf) jpeg_buf = static_cast<uint8_t*>(malloc(sz));
     if (!jpeg_buf) { f.close(); return nullptr; }
 
     size_t got = f.read(jpeg_buf, sz);

@@ -51,19 +51,21 @@ void init();
 // lv_timer_handler().
 void poll();
 
-// Parse a raw MeetingList CBOR blob (from BLE or NVS) into the runtime meeting
-// cache. Also saves the blob to NVS for persistence across reboots.
-// Call from the BLE MeetingList handler and from boot (with the NVS blob).
-void set_meetings_cbor(const uint8_t* buf, size_t len, bool save_to_nvs);
+// Parse a raw MeetingList CBOR blob (from BLE) into the runtime meeting cache.
+// Meetings are RAM-only — NOT persisted to NVS: a power cycle drops the local
+// clock (it is never restored from flash), so the meeting time logic (5-minute
+// alert, in-progress red, expiry) couldn't run, and showing stale meetings
+// would mislead. Orion re-pushes the list on reconnect. Call from the BLE
+// MeetingList handler.
+void set_meetings_cbor(const uint8_t* buf, size_t len);
 
-// Boot-time cached-meeting load. Call once from setup() after the initial
-// evaluate(). When the meeting view is what boot resolves to, this shows the
-// "Refreshing your day" screen and defers the (blocking) NVS read + CBOR parse
-// to poll(), so the loading screen renders before the parse; once parsed it
-// evaluate()s to the real screen. For higher-priority boot screens (setup
-// flow, post-OTA ack, PTO) it parses synchronously without taking over the
-// display.
-void begin_boot_meeting_load();
+// The PTO destination image finished decoding into photo_cache after the
+// screen was already built (the image streams in asynchronously). Unlike the
+// profile photo — which widget_profile_card::set_photo() live-updates on the
+// active card — the PTO screen has no in-place image setter, so this forces a
+// rebuild when PTO_ACTIVE is the screen currently shown (cheap no-op otherwise).
+// Call from the BLE PtoPhotoReceived handler after photo_cache::store_pto().
+void notify_pto_image_changed();
 
 // Re-evaluate priority and push a new LVGL screen if the state changed.
 // Called by the internal lv_timer; may also be called directly when data
@@ -71,6 +73,12 @@ void begin_boot_meeting_load();
 AppState evaluate();
 
 // ── Callbacks wired from screen code ──────────────────────────────────────
+
+// Called when the Setup-Complete screen appears: holds the state machine on the
+// current screen so a tick / BLE-driven evaluate() can't rebuild to the runtime
+// screen mid-animation (mark_setup_complete() has already flipped is_first_boot).
+// Released by on_setup_complete().
+void hold_for_setup_complete();
 
 // User confirmed "LET'S GET TO WORK" on the Setup Complete screen,
 // or the 5 s auto-advance timer fired.

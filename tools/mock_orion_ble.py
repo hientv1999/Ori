@@ -14,10 +14,15 @@ Usage:
     python tools/mock_orion_ble.py --address AA:BB:CC:DD:EE:FF
 
 Interactive commands (shown on connect):
-    s  — first-time setup sync   (§6.1)
-    r  — reconnect delta sync    (§6.2)
+    s  — sync now (hash-driven delta; also runs automatically on connect)
     f  — factory reset           (§7.2)
     q  — quit
+
+On connect the mock runs ONE unified sync: it sends Ori a manifest of every
+section's hash (time/profile/photo/meetings/PTO), Ori replies with the subset
+that differs, and only those are sent — everything on a first pair, or just the
+changed/dropped sections on a reconnect (e.g. meetings + time after a power
+cycle). Time Sync is always sent.
 
 Pairing note:
     BLE bonding (LE Secure Connections, Passkey Entry) is handled by the OS.
@@ -272,6 +277,7 @@ class MockOrion:
         self.last_status: Optional[int] = None
         self.needed: list[str] = []
         self.disconnected     = False
+        self._seq             = 0   # SyncControl seq, bumped each run_sync()
 
     # ── notification handlers ──
 
@@ -301,9 +307,12 @@ class MockOrion:
     # ── helpers ──
 
     async def wait_status(self, target: int, timeout: float = 30.0) -> bool:
+        return await self.wait_status_in({target}, timeout)
+
+    async def wait_status_in(self, targets, timeout: float = 30.0) -> bool:
         deadline = time.monotonic() + timeout
         while True:
-            if self.last_status == target:
+            if self.last_status in targets:
                 return True
             self._status.clear()
             left = deadline - time.monotonic()
@@ -318,12 +327,24 @@ class MockOrion:
         await self.client.write_gatt_char(uuid, bytearray(data), response=True)
         print(f"  [write]  {label} ({len(data)} B)")
 
+    # In-flight fragment window between Write-With-Response checkpoints. Bounds
+    # how far the fast Write-No-Response stream can run ahead of Ori draining its
+    # RX buffer (32 × 238 B ≈ 7.6 KB). See ble-protocol.md §5 flow control.
+    CHUNK_WINDOW = 32
+
     async def write_chunked(self, uuid: str, payload: bytes, label: str):
         frames = make_frames(payload)
         suffix = "empty" if not payload else f"{len(payload):,} B → {len(frames)} frame(s)"
         print(f"  [chunk]  {label}: {suffix}")
-        for frame in frames:
-            await self.client.write_gatt_char(uuid, bytearray(frame), response=True)
+        # Stream fragments Write-No-Response for speed (no per-write ATT ack),
+        # with a Write-With-Response checkpoint every CHUNK_WINDOW frames (and on
+        # the last frame). The checkpoint's ack confirms every prior fragment
+        # landed and paces the sender so a 2M-PHY/WNR burst can't overrun Ori.
+        # Chars 0005/0006/0007 advertise WRITE_NR as of proto 1.2.
+        n = len(frames)
+        for i, frame in enumerate(frames):
+            checkpoint = ((i + 1) % self.CHUNK_WINDOW == 0) or (i == n - 1)
+            await self.client.write_gatt_char(uuid, bytearray(frame), response=checkpoint)
 
     async def subscribe(self):
         await self.client.start_notify(UUID_DEV_STATUS, self._on_dev_status)
@@ -339,19 +360,23 @@ class MockOrion:
         print(f"  meetings: {sha256(meetings).hex()}")
         print(f"  pto:      {sha256(pto).hex()}")
 
-    # ── setup sync §6.1 ──────────────────────────────────────────────────────
+    # ── Unified sync (hash-driven delta) — §6.1 + §6.2 in one flow ────────────
+    #
+    # ONE flow for first-time setup AND reconnect. We hand Ori a manifest of every
+    # section's hash; Ori replies with the subset that differs and we send only
+    # those — everything on a first pair (Ori has nothing), or just the changed /
+    # dropped sections on a reconnect (e.g. meetings + time after a power cycle,
+    # since meetings are RAM-only on Ori). Time Sync is ALWAYS sent (clock drifts
+    # and is lost on power cycle). Completion is SETUP_SYNC_COMPLETE (0x03) on a
+    # first pair or RUNTIME_READY (0x10) on a reconnect — we accept either.
 
-    async def run_setup(self):
-        print("\n═══ First-time setup sync ═══")
-        print("   (Complete BLE pairing on Ori if prompted — confirm passkey)")
+    async def run_sync(self):
+        print("\n═══ Sync (hash-driven delta) ═══")
 
-        if not await self.wait_status(0x01, timeout=60.0):
-            print(f"  [error] Timed out waiting for SETUP_BONDED_AWAITING_SYNC")
-            print(f"  Last status: {DS.get(self.last_status, '?')}")
-            print("  Is Ori in setup mode and bonded?")
-            return
-
-        print("\n── Building payload ──")
+        # Build every payload up front: needed to hash for the manifest, and so
+        # the BEGIN→END burst never stalls building JPEGs mid-transfer (keeps a
+        # first-pair handshake well within Ori's BEGIN deadline).
+        print("── Building payload ──")
         time_sync_bytes = build_time_sync()
         profile_bytes   = build_profile()
         photo_bytes     = build_profile_photo_jpeg()
@@ -359,112 +384,62 @@ class MockOrion:
         pto_image       = build_pto_photo_jpeg()
         pto_bytes       = build_pto(image=pto_image)
 
-        total = (len(time_sync_bytes) + len(profile_bytes) + len(photo_bytes)
-                 + len(meetings_bytes) + len(pto_bytes))
-
-        print(f"  [info] byte breakdown:"
-              f"  time_sync={len(time_sync_bytes)}"
-              f"  profile={len(profile_bytes)}"
-              f"  photo={len(photo_bytes):,}"
-              f"  meetings={len(meetings_bytes)}"
-              f"  pto={len(pto_bytes):,}"
-              f"  → total={total:,}")
-
-        print("\n── Writing sync data ──")
-        seq = 1
-        await self.write(UUID_SYNC_CTRL,
-            cbor2.dumps({"op": "BEGIN", "seq": seq, "total": total}),
-            f"SyncControl BEGIN seq={seq} total={total:,}")
-        await self.write(UUID_TIME_SYNC,  time_sync_bytes,   "TimeSync")
-        await self.write(UUID_PROFILE,    profile_bytes,     "ProfileInfo")
-        await self.write_chunked(UUID_PHOTO,    photo_bytes,    "ProfilePhoto")
-        await self.write_chunked(UUID_MEETINGS, meetings_bytes, "MeetingList")
-        await self.write_chunked(UUID_PTO,      pto_bytes,      "PtoEntry")
-        await self.write(UUID_SYNC_CTRL,
-            cbor2.dumps({"op": "END", "seq": seq}), f"SyncControl END seq={seq}")
-
-        print("\n── Waiting for SETUP_SYNC_COMPLETE ──")
-        if await self.wait_status(0x03, timeout=30.0):
-            print("  [ok] Sync complete — Ori should advance to Step 4.\n")
-        else:
-            print(f"  [warn] SETUP_SYNC_COMPLETE not received "
-                  f"(last: {DS.get(self.last_status, '?')})\n")
-
-        self._print_hashes(profile_bytes, photo_bytes, meetings_bytes, pto_bytes)
-
-    # ── reconnect delta sync §6.2 ─────────────────────────────────────────────
-
-    async def run_reconnect(self):
-        print("\n═══ Reconnect delta sync ═══")
-
-        if not await self.wait_status(0x11, timeout=30.0):
-            print(f"  [warn] Expected RUNTIME_RECONNECTING, got "
-                  f"{DS.get(self.last_status, '?')} — proceeding anyway")
-
-        print("\n── Building payload ──")
-        time_sync_bytes = build_time_sync()
-        profile_bytes   = build_profile()
-        photo_bytes     = build_profile_photo_jpeg()
-        meetings_bytes  = build_meetings()
-        pto_image       = build_pto_photo_jpeg()
-        pto_bytes       = build_pto(image=pto_image)
-
-        print("\n── Writing TimeSync (always) ──")
-        await self.write(UUID_TIME_SYNC, time_sync_bytes, "TimeSync")
-
-        print("\n── Writing Sync Manifest ──")
+        # Ask Ori which sections differ from what it already holds.
+        print("\n── Sync Manifest (section hashes) ──")
         self._manifest_reply.clear()
+        self.needed = []
         await self.write(UUID_MANIFEST, cbor2.dumps({
             "profile_sha":  sha256(profile_bytes),
             "photo_sha":    sha256(photo_bytes),
             "meetings_sha": sha256(meetings_bytes),
             "pto_sha":      sha256(pto_bytes),
         }), "SyncManifest")
-
         print("── Waiting for Ori manifest reply ──")
         try:
             await asyncio.wait_for(self._manifest_reply.wait(), timeout=10.0)
         except asyncio.TimeoutError:
-            print("  [warn] No manifest reply — assuming all data needed")
+            print("  [warn] No manifest reply — assuming all sections needed")
             self.needed = ["profile", "photo", "meetings", "pto"]
 
-        if not self.needed:
-            print("  [ok] Nothing changed — skipping writes")
+        item_bytes = {
+            "profile":  profile_bytes,
+            "photo":    photo_bytes,
+            "meetings": meetings_bytes,
+            "pto":      pto_bytes,
+        }
+        # Time Sync rides inside every BEGIN→END, so its bytes count toward total;
+        # only the mismatching sections are added.
+        total = len(time_sync_bytes) + sum(
+            len(item_bytes[k]) for k in self.needed if k in item_bytes)
+        print(f"  [info] syncing: time"
+              + "".join(f" + {k}({len(item_bytes[k]):,}B)"
+                        for k in self.needed if k in item_bytes)
+              + f"   → total {total:,} B")
+
+        self._seq += 1
+        seq = self._seq
+        print("\n── Writing sync data ──")
+        await self.write(UUID_SYNC_CTRL,
+            cbor2.dumps({"op": "BEGIN", "seq": seq, "total": total}),
+            f"SyncControl BEGIN seq={seq} total={total:,}")
+        await self.write(UUID_TIME_SYNC, time_sync_bytes, "TimeSync")
+        if "profile"  in self.needed:
+            await self.write(UUID_PROFILE, profile_bytes, "ProfileInfo")
+        if "photo"    in self.needed:
+            await self.write_chunked(UUID_PHOTO, photo_bytes, "ProfilePhoto")
+        if "meetings" in self.needed:
+            await self.write_chunked(UUID_MEETINGS, meetings_bytes, "MeetingList")
+        if "pto"      in self.needed:
+            await self.write_chunked(UUID_PTO, pto_bytes, "PtoEntry")
+        await self.write(UUID_SYNC_CTRL,
+            cbor2.dumps({"op": "END", "seq": seq}), f"SyncControl END seq={seq}")
+
+        # First pair → SETUP_SYNC_COMPLETE (0x03); reconnect → RUNTIME_READY (0x10).
+        print("\n── Waiting for sync to complete ──")
+        if await self.wait_status_in({0x03, 0x10}, timeout=30.0):
+            print(f"  [ok] Sync complete (status {DS.get(self.last_status, '?')}).\n")
         else:
-            item_bytes = {
-                "profile":  profile_bytes,
-                "photo":    photo_bytes,
-                "meetings": meetings_bytes,
-                "pto":      pto_bytes,
-            }
-            total = len(time_sync_bytes) + sum(
-                len(item_bytes[k]) for k in self.needed if k in item_bytes)
-
-            print(f"  [info] byte breakdown:  time_sync={len(time_sync_bytes)}"
-                  + "".join(f"  {k}={len(item_bytes[k]):,}"
-                             for k in self.needed if k in item_bytes)
-                  + f"  → total={total:,}")
-
-            seq = 2
-            await self.write(UUID_SYNC_CTRL,
-                cbor2.dumps({"op": "BEGIN", "seq": seq, "total": total}),
-                f"SyncControl BEGIN seq={seq} total={total:,}")
-            if "profile"  in self.needed:
-                await self.write(UUID_PROFILE, profile_bytes, "ProfileInfo")
-            if "photo"    in self.needed:
-                await self.write_chunked(UUID_PHOTO, photo_bytes, "ProfilePhoto")
-            if "meetings" in self.needed:
-                await self.write_chunked(UUID_MEETINGS, meetings_bytes, "MeetingList")
-            if "pto"      in self.needed:
-                await self.write_chunked(UUID_PTO, pto_bytes, "PtoEntry")
-            await self.write(UUID_SYNC_CTRL,
-                cbor2.dumps({"op": "END", "seq": seq}), f"SyncControl END seq={seq}")
-
-        print("\n── Waiting for RUNTIME_READY ──")
-        if await self.wait_status(0x10, timeout=30.0):
-            print("  [ok] Reconnect overlay dismissed — Ori is live.\n")
-        else:
-            print(f"  [warn] RUNTIME_READY not received "
+            print(f"  [warn] completion not seen "
                   f"(last: {DS.get(self.last_status, '?')})\n")
 
         self._print_hashes(profile_bytes, photo_bytes, meetings_bytes, pto_bytes)
@@ -504,8 +479,7 @@ class MockOrion:
 
 MENU = """
 Commands:
-  s — setup sync      (first-time, §6.1)
-  r — reconnect sync  (delta, §6.2)
+  s — sync now        (hash-driven delta; also runs automatically on connect)
   f — factory reset   (§7.2)
   q — quit
 """
@@ -523,10 +497,7 @@ async def command_loop(orion: MockOrion):
             print("  [error] BLE link is down. Quit and reconnect.")
             break
         if cmd == "s":
-            await orion.run_setup()
-            print(MENU)
-        elif cmd == "r":
-            await orion.run_reconnect()
+            await orion.run_sync()
             print(MENU)
         elif cmd == "f":
             await orion.run_factory_reset()
@@ -535,7 +506,7 @@ async def command_loop(orion: MockOrion):
             print("  Goodbye.")
             break
         elif cmd:
-            print("  Unknown command. Type s / r / f / q")
+            print("  Unknown command. Type s / f / q")
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -574,6 +545,10 @@ async def main(args):
 
         orion = MockOrion(client)
         await orion.subscribe()
+        # Sync automatically on connect — Ori reports which sections differ and we
+        # send only those. Running it immediately also satisfies Ori's first-pair
+        # BEGIN handshake deadline. Re-run anytime with 's'.
+        await orion.run_sync()
         await command_loop(orion)
 
 if __name__ == "__main__":

@@ -35,6 +35,13 @@ enum class Step {
 lv_obj_t* create(Step initial, lv_obj_t* prev_screen = nullptr);
 void      set_step(lv_obj_t* screen, Step s);
 
+// Leave the iPhone phone-pairing screen once pairing is done (bonded) or
+// dismissed (Skip/Close): hides the passkey modal, then — for a runtime re-pair
+// — returns to the launching screen, or — during first-time setup — advances to
+// the Complete step. Call on a successful iPhone bond and from the Skip/Close
+// button so a finished re-pair never leaves the passkey modal stuck on screen.
+void      dismiss_phone_pairing(lv_obj_t* screen);
+
 // Pairing-step modal overlays. Both sit on top of the Pairing base screen.
 // show_* returns the modal object; callers may ignore it.
 // passkey must be 0..999999; it is formatted as a zero-padded 6-digit string.

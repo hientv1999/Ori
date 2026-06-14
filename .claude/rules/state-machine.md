@@ -38,6 +38,11 @@ Left panel: PTO destination scenic image fills the full panel. A frosted-dark ca
 ### Reconnect-Syncing Overlay
 - Trigger: BLE link to Orion re-established; Device Status = `RUNTIME_RECONNECTING` (see `ble-protocol.md` §6.2).
 - Display: circular progress ring overlaying the left panel. Copy: **"Reconnecting to Orion…"** / **"Refreshing your day"**.
+- **Only shown when there is cached meeting data to refresh** (a runtime
+  disconnect that kept meetings in RAM). After a power cycle the meeting list is
+  empty (meetings are RAM-only), so "Refreshing your day" would be misleading —
+  the device stays on **"No meetings today"** and the list simply populates when
+  the sync arrives, no overlay.
 - Auto-dismisses when Device Status returns to `RUNTIME_READY` (typically <500 ms when nothing changed).
 - Not user-dismissable; touch on overlay is inert.
 - Does **not** appear for periodic in-session refreshes.

@@ -6,9 +6,9 @@
 //   0002 Device Status       Read+Notify
 //   0003 Time Sync           Write (enc)
 //   0004 Profile Info        Write (enc)
-//   0005 Profile Photo       Write (enc, chunked)
-//   0006 Meeting List        Write (enc, chunked)
-//   0007 PTO Entry           Write (enc, chunked)
+//   0005 Profile Photo       Write + Write-NR (enc, chunked)
+//   0006 Meeting List        Write + Write-NR (enc, chunked)
+//   0007 PTO Entry           Write + Write-NR (enc, chunked)
 //   0008 Sync Control        Write+Notify (enc)
 //   0009 Factory Reset Cmd   Write (enc)
 //   000A Sync Manifest       Write+Notify (enc)
@@ -92,7 +92,8 @@ void ble_post_pto_photo_event(uint8_t* buf, size_t len);
 // Single source of truth in include/fw_version.h — shared with ota_receiver.
 #define FIRMWARE_VERSION ORI_FW_VERSION
 #define PROTO_MAJOR 1
-#define PROTO_MINOR 1
+#define PROTO_MINOR 2  // 1.2: Photo/Meetings/PTO chars also accept Write-No-Response
+                       // (additive — Write-with-response still works for old centrals)
 
 namespace {
 
@@ -118,6 +119,15 @@ NimBLECharacteristic* c_host_vol    = nullptr; // 000C
 NimBLECharacteristic* c_media_meta  = nullptr; // 000D
 NimBLECharacteristic* c_album_art   = nullptr; // 000E
 NimBLECharacteristic* c_presence    = nullptr; // 000F
+
+// Meeting list is RAM-only (not persisted to NVS — see state_machine). Its
+// delta-sync hash therefore also lives in RAM only: a power cycle drops the
+// meetings AND this hash together, so the next reconnect's manifest reports
+// "meetings" as needed and Orion re-pushes them (instead of wrongly assuming
+// they're still cached). Profile/photo/PTO hashes stay in NVS (that data does
+// persist). Set on each MeetingList commit; consulted in handle_manifest_write.
+uint8_t g_meetings_hash[32]  = {};
+bool    g_meetings_hash_valid = false;
 
 // ── Chunked transfer contexts ─────────────────────────────────────────────
 chunked_transfer::Context g_photo_ctx;
@@ -585,10 +595,12 @@ private:
             g_sync_seq         = (uint32_t)seq;
             g_sync_in_progress = true;
             stage_begin((uint32_t)total);
-            uint8_t new_status = (g_device_status <= DS_SETUP_SYNC_COMPLETE)
-                                  ? DS_SETUP_SYNCING
-                                  : DS_RUNTIME_SYNCING;
-            gatt_server::set_device_status(new_status);
+            {
+                uint8_t new_status = (g_device_status <= DS_SETUP_SYNC_COMPLETE)
+                                      ? DS_SETUP_SYNCING
+                                      : DS_RUNTIME_SYNCING;
+                gatt_server::set_device_status(new_status);
+            }
             // Defer orioning modal to main task (LVGL must not be called from NimBLE task).
             ble_post_sync_begin_event();
 
@@ -688,8 +700,10 @@ private:
             if (!match) needed[needed_count++] = "photo";
         }
         if (got_meetings) {
-            bool match = nvs_sync::load_hash(nvs_sync::HASH_KEY_MEETINGS, stored)
-                         && memcmp(stored, recv_meetings, 32) == 0;
+            // Meetings are RAM-only: compare against the RAM hash, not NVS. After
+            // a power cycle g_meetings_hash_valid is false → always "needed".
+            bool match = g_meetings_hash_valid
+                         && memcmp(g_meetings_hash, recv_meetings, 32) == 0;
             if (!match) needed[needed_count++] = "meetings";
         }
         if (got_pto) {
@@ -966,11 +980,12 @@ static void apply_photo_jpeg(uint8_t* buf, size_t n) {
 }
 
 static void apply_meetings_cbor(uint8_t* buf, size_t n) {
-    uint8_t hash[32];
-    sha256_of_buf(buf, n, hash);
-    nvs_sync::save_hash(nvs_sync::HASH_KEY_MEETINGS, hash);
-    LOG("[gatt] Meetings received: %u bytes, hash stored\n", (unsigned)n);
-    state_machine::set_meetings_cbor(buf, n, /*save_to_nvs=*/true);
+    // RAM-only: keep the delta-sync hash in RAM (NOT NVS) so a power cycle drops
+    // it with the meetings, forcing a re-request on the next reconnect.
+    sha256_of_buf(buf, n, g_meetings_hash);
+    g_meetings_hash_valid = true;
+    LOG("[gatt] Meetings received: %u bytes (RAM-only)\n", (unsigned)n);
+    state_machine::set_meetings_cbor(buf, n);
     heap_caps_free(buf);
 }
 
@@ -1107,22 +1122,25 @@ void init() {
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
     c_profile->setCallbacks(&s_char_cb);
 
-    // 0005 Profile Photo — Write with response, encrypted (chunked)
+    // 0005 Profile Photo — Write + Write-No-Response, encrypted (chunked).
+    // WRITE_NR is the fast bulk path (central streams fragments without per-write
+    // ATT acks); WRITE is kept for the periodic WR checkpoint that bounds the
+    // sender's in-flight window (see ble-protocol.md §5 flow control).
     c_photo = svc->createCharacteristic(
         "6F726900-0005-4F72-9F00-000000000000",
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC);
     c_photo->setCallbacks(&s_char_cb);
 
-    // 0006 Meeting List — Write with response, encrypted (chunked)
+    // 0006 Meeting List — Write + Write-No-Response, encrypted (chunked)
     c_meetings = svc->createCharacteristic(
         "6F726900-0006-4F72-9F00-000000000000",
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC);
     c_meetings->setCallbacks(&s_char_cb);
 
-    // 0007 PTO Entry — Write with response, encrypted (chunked)
+    // 0007 PTO Entry — Write + Write-No-Response, encrypted (chunked)
     c_pto = svc->createCharacteristic(
         "6F726900-0007-4F72-9F00-000000000000",
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC);
     c_pto->setCallbacks(&s_char_cb);
 
     // 0008 Sync Control — Write + Notify, encrypted

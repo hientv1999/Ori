@@ -52,6 +52,13 @@ Presence get_default_presence();
 void register_modal_photo(lv_obj_t* photo_obj);
 void unregister_modal_photo();
 
+// Register the modal_profile photo image (lv_image) so set_photo() updates it
+// live while the detail overlay is open — otherwise a photo that arrives over
+// BLE while the modal is up wouldn't appear until it's closed and reopened.
+// Call on open, unregister on the screen's LV_EVENT_DELETE. One observer.
+void register_modal_photo_img(lv_obj_t* img_obj);
+void unregister_modal_photo_img();
+
 // Live-update handles for the modal_profile text labels. All fields may be
 // nullptr (email/phone labels are only created when data is non-empty).
 // register_modal_labels() is called after create() builds all labels so that

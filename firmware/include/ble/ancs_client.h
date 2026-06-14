@@ -52,6 +52,11 @@ void request_attributes(uint32_t notif_uid);
 // Also sends ANCS PerformNotificationAction(Negative) to clear it on the phone.
 void dismiss_notification(uint32_t notif_uid);
 
+// Accept/answer a notification's positive action via ANCS
+// PerformNotificationAction(Positive) — used to answer an incoming call. Does
+// NOT remove it from the queue: the call becomes active and stays until it ends.
+void answer_notification(uint32_t notif_uid);
+
 // Notification data made available after attributes arrive.
 struct NotificationInfo {
     uint32_t    uid;

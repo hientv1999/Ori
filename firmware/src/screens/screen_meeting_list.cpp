@@ -123,9 +123,10 @@ static void show_meeting_detail(lv_obj_t* screen, const app_state::Meeting& m) {
     lv_obj_set_style_text_align(org, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_top(org, 4, 0);
 
-    // Time range — state-colored, same as title.
+    // Time range — state-colored, same as title. No dash separator (matches the
+    // dashless list row); the two times are spaced apart.
     char time_buf[32];
-    lv_snprintf(time_buf, sizeof(time_buf), "%s \xe2\x80\x93 %s", m.start, m.end);
+    lv_snprintf(time_buf, sizeof(time_buf), "%s   %s", m.start, m.end);
     lv_obj_t* time_lbl = lv_label_create(scroll_area);
     lv_label_set_text(time_lbl, time_buf);
     lv_obj_set_style_text_font(time_lbl, theme::font_h2(), 0);
@@ -199,10 +200,8 @@ lv_obj_t* make_meeting_row(lv_obj_t* parent, const app_state::Meeting& m) {
     lv_obj_set_style_text_font(start, theme::font_h2(), 0);
     lv_obj_set_style_text_color(start, theme::color(time_primary_color), 0);
 
-    char end_buf[16];
-    lv_snprintf(end_buf, sizeof(end_buf), "\xe2\x80\x94 %s", m.end);
     lv_obj_t* end = lv_label_create(time_block);
-    lv_label_set_text(end, end_buf);
+    lv_label_set_text(end, m.end);
     lv_obj_set_style_text_font(end, theme::font_meta(), 0);
     lv_obj_set_style_text_color(end, theme::color(time_secondary_color), 0);
     lv_obj_set_style_pad_top(end, 2, 0);

@@ -28,6 +28,7 @@
 #include <NimBLEClient.h>
 #include <string.h>
 #include <time.h>
+#include <sys/time.h>   // settimeofday (iPhone CTS backup clock)
 
 #include "app_state.h"
 #include "state_machine.h"
@@ -54,7 +55,7 @@ struct BundleMap {
 };
 
 static const BundleMap k_bundle_map[] = {
-    { "com.google.gmail.iphone",        "gmail",       "Gmail"       },
+    { "com.google.Gmail",               "gmail",       "Gmail"       },
     { "com.facebook.Messenger",         "messenger",   "Messenger"   },
     { "com.burbn.instagram",            "instagram",   "Instagram"   },
     { "com.facebook.Facebook",          "facebook",    "Facebook"    },
@@ -83,6 +84,9 @@ static const BundleMap k_bundle_map[] = {
     { "com.ubercab.UberClient",         "uber",        "Uber"        },
     { "com.apple.Music",                "apple_music", "Apple Music" },
     { "com.amazon.Amazon",              "amazon",      "Amazon"      },
+    { "com.viber",                      "viber",       "Viber"       },
+    { "com.anthropic.claude",           "claude",      "Claude"      },
+    { "com.openai.chat",                "chatgpt",     "ChatGPT"     },
 };
 static const size_t k_bundle_map_count =
     sizeof(k_bundle_map) / sizeof(k_bundle_map[0]);
@@ -225,6 +229,61 @@ static void read_phone_name() {
     LOG("[ancs] phone name: '%s'\n", g_phone_name);
 }
 
+// ── iPhone time (Current Time Service) — SECONDARY/backup clock source ─────
+//
+// Orion is PRIMARY (Time Sync gives real UTC + IANA tz). iOS also exposes the
+// standard Current Time Service (0x1805 / Current Time 0x2A2B) to bonded peers —
+// the same way it exposes the GAP Device Name we already read — so the iPhone
+// can seed the clock when Orion is absent (e.g. a cold power cycle with Orion
+// not running). We only set the clock here if NOTHING has set it yet; Orion's
+// Time Sync runs ungated and therefore always overrides this when it arrives,
+// keeping Orion primary.
+//
+// Current Time (0x2A2B) "Exact Time 256", 10 bytes, little-endian year:
+//   [0..1] year  [2] month(1-12)  [3] day  [4] hours  [5] min  [6] sec
+//   [7] day-of-week  [8] fractions256  [9] adjust-reason
+static void read_phone_time() {
+    if (!g_client) return;
+    if (app_state::clock_is_set()) return;  // Orion (or a prior read) already set it
+
+    NimBLERemoteService* cts = g_client->getService(NimBLEUUID((uint16_t)0x1805));
+    if (!cts) { LOG("[ancs] iPhone has no Current Time Service\n"); return; }
+    NimBLERemoteCharacteristic* ct =
+        cts->getCharacteristic(NimBLEUUID((uint16_t)0x2A2B));
+    if (!ct || !ct->canRead()) { LOG("[ancs] Current Time char not readable\n"); return; }
+
+    NimBLEAttValue val = ct->readValue();
+    if (val.size() < 7) { LOG("[ancs] Current Time payload too short\n"); return; }
+    const uint8_t* b = val.data();
+    uint16_t year = (uint16_t)(b[0] | (b[1] << 8));
+    if (year < 2020 || year > 2099 || b[2] < 1 || b[2] > 12 || b[3] < 1 || b[3] > 31) {
+        LOG("[ancs] Current Time fields out of range\n");
+        return;
+    }
+
+    struct tm tmv = {};
+    tmv.tm_year = year - 1900;
+    tmv.tm_mon  = b[2] - 1;
+    tmv.tm_mday = b[3];
+    tmv.tm_hour = b[4];
+    tmv.tm_min  = b[5];
+    tmv.tm_sec  = b[6];
+
+    // CTS gives LOCAL time with no timezone. Treat it as the wall clock directly:
+    // set TZ=UTC so localtime_r() returns exactly these values (no offset applied).
+    // Real UTC + tz only comes from Orion; this backup is display-only — after a
+    // power cycle (the only time the iPhone is the sole source) there are no
+    // meetings, so the UTC-vs-local epoch distinction doesn't affect any logic.
+    setenv("TZ", "UTC0", 1);
+    tzset();
+    time_t epoch = mktime(&tmv);
+    if (epoch <= 0) return;
+    struct timeval tv = { epoch, 0 };
+    settimeofday(&tv, nullptr);
+    LOG("[ancs] clock seeded from iPhone CTS: %04u-%02u-%02u %02u:%02u (backup)\n",
+        (unsigned)year, (unsigned)b[2], (unsigned)b[3], (unsigned)b[4], (unsigned)b[5]);
+}
+
 // ── ANCS EventFlags bits (Notification Source byte 1) ──────────────────────
 namespace EvtFlag {
     constexpr uint8_t SILENT = 0x01, IMPORTANT = 0x02, PREEXISTING = 0x04,
@@ -301,15 +360,51 @@ static void request_app_attributes(const char* bundle) {
 // Queue helpers
 // ─────────────────────────────────────────────────────────────────────────
 
-// Mirror the live queue (oldest → newest) into app_state and refresh the bar.
+// Mirror the live queue into app_state, deduplicating into status-bar slots so
+// multiple notifications stack into one icon.
+//   • Known apps  → group by icon token (one icon per app).
+//   • Unknown apps (token "unknown") have no brand icon and render a per-category
+//     fallback glyph, so grouping them all by token would collapse unrelated
+//     apps into a single bell. Instead group unknown notifications by ANCS
+//     CATEGORY, so e.g. unknown email apps stack separately from unknown social
+//     apps. `cat` is only significant for the "unknown" token.
+// Walk newest→oldest so the first occurrence of each group captures the most
+// recent UID. Reverse into cfg so cfg[count-1] = newest-active group (rightmost).
 static void publish_queue() {
     app_state::AncsConfig cfg = {};
     cfg.phone_connected = true;
-    cfg.count = g_queue_count;
-    for (size_t i = 0; i < g_queue_count && i < app_state::MAX_ANCS_NOTIFICATIONS; ++i) {
-        cfg.icons[i] = g_queue[i].icon_token;
-        cfg.uids[i]  = g_queue[i].uid;
+
+    struct Slot { const char* token; uint32_t uid; uint8_t count; uint8_t cat; };
+    Slot slots[app_state::MAX_ANCS_NOTIFICATIONS] = {};
+    size_t slot_count = 0;
+
+    for (int i = (int)g_queue_count - 1; i >= 0; --i) {
+        const char* tok = g_queue[i].icon_token;
+        uint32_t    uid = g_queue[i].uid;
+        bool    is_unknown = (strcmp(tok, "unknown") == 0);
+        uint8_t cat        = is_unknown ? app_state::ancs_category(uid) : 0;
+
+        bool found = false;
+        for (size_t j = 0; j < slot_count; ++j) {
+            if (strcmp(slots[j].token, tok) == 0 && (!is_unknown || slots[j].cat == cat)) {
+                slots[j].count++;
+                found = true;
+                break;
+            }
+        }
+        if (!found && slot_count < app_state::MAX_ANCS_NOTIFICATIONS) {
+            slots[slot_count++] = { tok, uid, 1, cat };
+        }
     }
+
+    cfg.count = slot_count;
+    for (size_t i = 0; i < slot_count; ++i) {
+        size_t src       = slot_count - 1 - i;
+        cfg.icons[i]     = slots[src].token;
+        cfg.uids[i]      = slots[src].uid;
+        cfg.counts[i]    = slots[src].count;
+    }
+
     app_state::set_ancs_config(cfg);
     widget_status_bar::refresh_active();
 }
@@ -452,11 +547,19 @@ void on_iphone_connected(uint16_t conn_handle) {
     // Fetch the phone's device name for display (unpair modal).
     read_phone_name();
 
+    // Seed the clock from the iPhone if Orion hasn't (secondary time source).
+    read_phone_time();
+
     state_machine::set_phone_connected(true);
 }
 
 void on_iphone_disconnected() {
     LOG("[ancs] iPhone disconnected\n");
+
+    // A call can't survive the ANCS link dropping — close any open call
+    // banner/dialog and stop the duration timer before clearing state.
+    modal_incoming_call::close_all();
+
     g_conn_handle = 0xFFFF;
     g_client      = nullptr;
     g_ancs_svc    = nullptr;
@@ -630,10 +733,20 @@ void on_data_source(const uint8_t* data, uint16_t len) {
     // (PreExisting flag) populates silently.
     if (!preexisting) widget_status_bar::note_new_notification(resp_uid);
 
-    // Incoming call that isn't part of the reconnect backlog → prominent banner.
-    if (cat == app_state::AncsCategory::INCOMING_CALL && !preexisting &&
-        !ota_receiver::is_active()) {
-        modal_incoming_call::show(resp_uid);
+    // Call notification that isn't part of the reconnect backlog → call overlay.
+    // Two call categories: the classic INCOMING_CALL (1, native Phone app) and
+    // ACTIVE_CALL (12), which modern iOS reports for ongoing VoIP/CallKit calls
+    // such as Viber. A ringing call still offers the ANCS positive (answer)
+    // action; once it's answered the phone drops that action (only hang-up
+    // remains) — that's how we tell "ringing" from "on call". VoIP calls often
+    // arrive already in the no-positive-action state, so they open the in-call
+    // dialog directly. Best-effort: relies on iOS's action flags.
+    bool is_call = (cat == app_state::AncsCategory::INCOMING_CALL ||
+                    cat == app_state::AncsCategory::ACTIVE_CALL);
+    if (is_call && !preexisting && !ota_receiver::is_active()) {
+        bool can_answer = (flags & EvtFlag::POSITIVE_ACTION) != 0;
+        if (can_answer) modal_incoming_call::show(resp_uid);          // ringing
+        else            modal_incoming_call::notify_active(resp_uid); // on call
     }
 
     queue_add(resp_uid, token);
@@ -694,6 +807,22 @@ void dismiss_notification(uint32_t notif_uid) {
         g_cp_char->writeValue(cmd, 6, true);
     }
     queue_remove(notif_uid);
+}
+
+void answer_notification(uint32_t notif_uid) {
+    // ANCS PerformNotificationAction · Positive = answer/accept the call. Unlike
+    // dismiss, the notification is NOT removed — the call becomes active and the
+    // entry remains in the queue until the call ends (ANCS Removed).
+    if (g_cp_char) {
+        uint8_t cmd[6];
+        cmd[0] = 0x02; // PerformNotificationAction
+        cmd[1] = (uint8_t)(notif_uid & 0xFF);
+        cmd[2] = (uint8_t)((notif_uid >> 8) & 0xFF);
+        cmd[3] = (uint8_t)((notif_uid >> 16) & 0xFF);
+        cmd[4] = (uint8_t)((notif_uid >> 24) & 0xFF);
+        cmd[5] = 0x00; // ActionID Positive
+        g_cp_char->writeValue(cmd, 6, true);
+    }
 }
 
 const NotificationInfo* pending_notification_info() {

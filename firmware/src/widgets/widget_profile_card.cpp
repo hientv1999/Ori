@@ -38,6 +38,11 @@ lv_obj_t* g_active_card = nullptr;
 // the overlay without closing and reopening it.
 lv_obj_t* g_modal_photo = nullptr;
 
+// Optional live photo IMAGE (lv_image) inside the modal_profile overlay. Updated
+// by set_photo() so a photo arriving over BLE while the modal is open appears
+// immediately. nullptr when the modal is closed.
+lv_obj_t* g_modal_photo_img = nullptr;
+
 // Live text-label handles for the modal_profile overlay. Populated by
 // register_modal_labels(); zeroed on unregister_modal_labels().
 widget_profile_card::ModalLabels g_modal_labels = {};
@@ -271,6 +276,9 @@ void set_default_presence(Presence p) {
 void register_modal_photo(lv_obj_t* photo_obj) { g_modal_photo = photo_obj; }
 void unregister_modal_photo()                   { g_modal_photo = nullptr; }
 
+void register_modal_photo_img(lv_obj_t* img_obj) { g_modal_photo_img = img_obj; }
+void unregister_modal_photo_img()                { g_modal_photo_img = nullptr; }
+
 void register_modal_labels(const ModalLabels& labels) { g_modal_labels = labels; }
 void unregister_modal_labels()                         { g_modal_labels = {}; }
 
@@ -278,21 +286,31 @@ Presence get_default_presence() {
     return g_default_presence;
 }
 
+// Apply a photo descriptor to one image object: show it with the given source,
+// or hide it when the descriptor is null.
+static void apply_photo_to(lv_obj_t* img, const lv_image_dsc_t* img_dsc) {
+    if (!img) return;
+    if (img_dsc) {
+        lv_image_set_src(img, img_dsc);
+        lv_obj_clear_flag(img, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(img, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 void set_photo(const lv_image_dsc_t* img_dsc) {
     // Store as the new default so future screen creates start with the photo.
     g_default_photo = img_dsc;
 
     // Update the currently visible card if one exists.
-    if (!g_active_card) return;
-    auto* s = static_cast<CardState*>(lv_obj_get_user_data(g_active_card));
-    if (!s || !s->photo_img) return;
-
-    if (img_dsc) {
-        lv_image_set_src(s->photo_img, img_dsc);
-        lv_obj_clear_flag(s->photo_img, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_obj_add_flag(s->photo_img, LV_OBJ_FLAG_HIDDEN);
+    if (g_active_card) {
+        auto* s = static_cast<CardState*>(lv_obj_get_user_data(g_active_card));
+        if (s) apply_photo_to(s->photo_img, img_dsc);
     }
+
+    // Update the profile detail overlay's photo if it's open, so a photo
+    // arriving over BLE while the modal is up appears without reopening it.
+    apply_photo_to(g_modal_photo_img, img_dsc);
 }
 
 const lv_image_dsc_t* get_photo() {

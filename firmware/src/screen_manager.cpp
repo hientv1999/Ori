@@ -189,7 +189,7 @@ void debug_handle_key(char c) {
             lv_obj_t* base = screen_no_meetings::create();
             debug_load(base);
             modal_countdown::create(base, "Industrial design review",
-                "Starts at 10:30 \xc2\xb7 Studio", 187);
+                "Priya Anand", "Studio 4 \xc2\xb7 3rd floor", 187);
             break;
         }
         case 'k': {
