@@ -75,6 +75,7 @@ struct ShortcutSlot {
     const char* icon_token;  // "vol-mute", "mic-mute", "screenshot", etc.
 };
 const ShortcutSlot* shortcuts();   // returns array of 3
+void set_shortcuts(const char* s1, const char* s2, const char* s3);
 constexpr size_t SHORTCUT_COUNT = 3;
 
 // ANCS icon set + phone connectivity.

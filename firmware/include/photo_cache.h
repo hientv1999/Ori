@@ -62,4 +62,13 @@ void clear_pto();
 void init_pto_placeholder(const uint8_t* jpeg, size_t len);
 const lv_image_dsc_t* get_pto_placeholder();
 
+// ── Shared decode utility ─────────────────────────────────────────────────
+// Decode a raw JPEG into a freshly PSRAM-allocated RGB565 buffer.
+// Caller must heap_caps_free() the returned pointer when done.
+// Does NOT take ownership of jpeg. Returns nullptr on failure.
+uint16_t* decode_to_psram(const uint8_t* jpeg, size_t len, uint16_t w, uint16_t h);
+
+// Fill an lv_image_dsc_t from a decoded PSRAM RGB565 buffer.
+void fill_image_dsc(lv_image_dsc_t* dsc, const uint16_t* buf, uint16_t w, uint16_t h);
+
 } // namespace photo_cache

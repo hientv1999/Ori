@@ -10,12 +10,15 @@
 // a progress ring + "Reconnecting to Orion…" / "Refreshing your day" copy
 // OVER THE LEFT PANEL ONLY. Status bar and profile card stay visible.
 //
-// Visually reuses the Step 3 "Orioning" ring at a slightly smaller size to
-// fit inside the 528 px left panel cleanly. M3 builds the full screen
-// (status + overlay + profile card). Auto-dismiss is M5.
+// Ring shows sync progress (0–100 %) driven by OrioningProgress BLE events,
+// matching the Orioning ring on the setup flow. set_progress() is called by
+// ble_manager on each OrioningProgress event.
 
 namespace screen_reconnect_syncing {
 
 lv_obj_t* create();
+
+// Update the progress ring (0–100). No-op when the overlay is not on screen.
+void set_progress(uint8_t pct);
 
 } // namespace screen_reconnect_syncing

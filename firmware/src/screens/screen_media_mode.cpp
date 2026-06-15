@@ -6,10 +6,14 @@
 #include "assets/shortcut_icons.h"
 #include "ble/gatt_server.h"
 #include "app_state.h"
+#include "ori_log.h"
+#include "photo_cache.h"
 #include "theme.h"
 #include "ui_helpers.h"
 #include "widgets/widget_profile_card.h"
 #include "widgets/widget_status_bar.h"
+
+#include <esp_heap_caps.h>
 
 // Declared in gatt_server.cpp — sets the vol-swipe override flag.
 extern "C" void gatt_server_set_vol_swipe_active(bool active);
@@ -52,7 +56,9 @@ constexpr int16_t TL_OVERLAY_H = 46;
 constexpr int16_t TL_THUMB_SZ  = 8;
 
 struct ArtState {
-    lv_obj_t* art;
+    lv_obj_t* art;           // gradient fallback — always visible behind art_img
+    lv_obj_t* art_img;       // lv_image showing decoded JPEG; hidden until art arrives
+    lv_obj_t* shortcuts_row; // row of 3 shortcut buttons — updated by update_shortcuts()
     lv_obj_t* paused_overlay;
     lv_obj_t* hud;             // volume HUD (initially hidden)
     lv_obj_t* hud_fill;        // accent-fill bar inside HUD
@@ -77,6 +83,11 @@ struct ArtState {
 // below. Anonymous-namespace scope keeps it TU-local (same as g_active_card
 // in widget_profile_card.cpp).
 ArtState* g_active_art = nullptr;
+
+// RAM-only PSRAM cache for the current album art (not persisted to LittleFS).
+// Cleared when a new track arrives or the media screen is rebuilt.
+static uint16_t*      g_art_buf = nullptr;
+static lv_image_dsc_t g_art_dsc = {};
 
 // Build the paused-state play-triangle widget on top of the album art.
 // Matches the HTML #i-play SVG path `M7 5v14l12-7z` at viewBox 24x24,
@@ -292,6 +303,24 @@ lv_obj_t* make_art_block(lv_obj_t* parent, ArtState* s) {
     lv_obj_clear_flag(s->art, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(s->art, LV_OBJ_FLAG_CLICKABLE);
 
+    // lv_image overlay — sits on top of the gradient and shows the decoded
+    // JPEG once set_album_art() delivers it. Hidden until then so the
+    // gradient fallback shows through.
+    s->art_img = lv_image_create(wrap);
+    lv_obj_set_size(s->art_img, ART_W, ART_H);
+    lv_obj_align(s->art_img, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_radius(s->art_img, 14, LV_PART_MAIN);
+    lv_obj_set_style_clip_corner(s->art_img, true, LV_PART_MAIN);
+    lv_obj_clear_flag(s->art_img, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s->art_img, LV_OBJ_FLAG_CLICKABLE);
+    // Restore from cache if art was received before the screen was created
+    // (e.g. Controls mode entered after a sync that already pushed art).
+    if (g_art_buf) {
+        lv_image_set_src(s->art_img, &g_art_dsc);
+        lv_obj_clear_flag(s->art_img, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s->art_img, LV_OBJ_FLAG_HIDDEN);
+    }
 
     // Centred play-triangle overlay shown while paused. Drawn via lv_canvas
     // because LV_SYMBOL_PLAY (FontAwesome U+F04B) is not present in our
@@ -488,7 +517,7 @@ lv_obj_t* make_meta_block(lv_obj_t* parent, ArtState* s) {
 }
 
 // User-assignable shortcut buttons. M5 wires tap → KeyboardCommand{op:"shortcut", arg:N}.
-lv_obj_t* make_shortcuts_row(lv_obj_t* parent) {
+lv_obj_t* make_shortcuts_row(lv_obj_t* parent, ArtState* s) {
     lv_obj_t* row = lv_obj_create(parent);
     // Row box height = button height (82) + internal pad_top (8).
     lv_obj_set_size(row, lv_pct(100), 90);
@@ -546,6 +575,7 @@ lv_obj_t* make_shortcuts_row(lv_obj_t* parent) {
             lv_obj_center(glyph);
         }
     }
+    s->shortcuts_row = row;
     return row;
 }
 
@@ -592,7 +622,7 @@ lv_obj_t* create() {
 
     make_art_block(left, state);
     make_meta_block(left, state);
-    make_shortcuts_row(left);
+    make_shortcuts_row(left, state);
 
     ui::make_panel_divider(body);
 
@@ -626,6 +656,72 @@ void update_playing(bool playing) {
     app_state::set_media_playing(playing);
     if (!g_active_art) return;
     apply_paused_visual(g_active_art, !playing);
+}
+
+void update_shortcuts() {
+    if (!g_active_art || !g_active_art->shortcuts_row) return;
+    const auto* slots = app_state::shortcuts();
+    lv_obj_t* row = g_active_art->shortcuts_row;
+    for (size_t i = 0; i < app_state::SHORTCUT_COUNT; ++i) {
+        lv_obj_t* btn = lv_obj_get_child(row, (int32_t)i);
+        if (!btn) continue;
+        // Remove the existing icon/label child and recreate from the updated token.
+        lv_obj_t* old_child = lv_obj_get_child(btn, 0);
+        if (old_child) lv_obj_del(old_child);
+        const char* token = slots[i].icon_token;
+        const lv_image_dsc_t* img = shortcut_icons::image(token);
+        if (img) {
+            lv_obj_t* img_obj = lv_image_create(btn);
+            lv_image_set_src(img_obj, img);
+            lv_obj_center(img_obj);
+            lv_obj_clear_flag(img_obj, LV_OBJ_FLAG_CLICKABLE);
+        } else {
+            lv_obj_t* glyph = lv_label_create(btn);
+            char letter[2] = { (char)(token && token[0] ? (token[0] - 'a' + 'A') : '?'), 0 };
+            lv_label_set_text(glyph, letter);
+            lv_obj_set_style_text_color(glyph, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
+            lv_obj_set_style_text_font(glyph, theme::font_display(), 0);
+            lv_obj_center(glyph);
+        }
+    }
+}
+
+void set_album_art(uint8_t* jpeg_buf, size_t len) {
+    if (!jpeg_buf || len == 0) {
+        if (jpeg_buf) heap_caps_free(jpeg_buf);
+        clear_album_art();
+        return;
+    }
+
+    uint16_t* new_buf = photo_cache::decode_to_psram(jpeg_buf, len, ART_W, ART_H);
+    heap_caps_free(jpeg_buf);
+
+    if (!new_buf) {
+        LOG("[media] set_album_art: decode failed (%u bytes)\n", (unsigned)len);
+        return;
+    }
+
+    // Swap in new buffer; free the old one.
+    if (g_art_buf) heap_caps_free(g_art_buf);
+    g_art_buf = new_buf;
+    photo_cache::fill_image_dsc(&g_art_dsc, g_art_buf, ART_W, ART_H);
+
+    if (g_active_art && g_active_art->art_img) {
+        lv_image_set_src(g_active_art->art_img, &g_art_dsc);
+        lv_obj_clear_flag(g_active_art->art_img, LV_OBJ_FLAG_HIDDEN);
+    }
+    LOG("[media] set_album_art: %ux%u displayed (%u bytes)\n",
+        (unsigned)ART_W, (unsigned)ART_H, (unsigned)len);
+}
+
+void clear_album_art() {
+    if (g_art_buf) {
+        heap_caps_free(g_art_buf);
+        g_art_buf = nullptr;
+        g_art_dsc = {};
+    }
+    if (g_active_art && g_active_art->art_img)
+        lv_obj_add_flag(g_active_art->art_img, LV_OBJ_FLAG_HIDDEN);
 }
 
 void update_seek(uint32_t position_s, uint32_t duration_s) {

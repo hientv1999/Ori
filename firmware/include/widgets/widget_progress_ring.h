@@ -5,9 +5,9 @@
 // Ori — circular progress ring.
 //
 // Built on lv_arc. Used by:
-//   - Step 3 "Orioning"            — indeterminate or %
+//   - Step 3 "Orioning"            — % (driven by OrioningProgress BLE events)
 //   - 5-min countdown modal        — % (5:00 → 0:00)
-//   - Reconnect-Syncing overlay    — indeterminate
+//   - Reconnect-Syncing overlay    — % (driven by OrioningProgress BLE events)
 //   - OTA-Updating screen          — %
 //
 // The center label is a child of the ring container; callers can update it

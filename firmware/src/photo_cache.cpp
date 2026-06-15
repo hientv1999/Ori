@@ -378,4 +378,23 @@ const lv_image_dsc_t* get_pto_placeholder() {
     return g_pto_ph_ready ? &g_pto_ph_dsc : nullptr;
 }
 
+uint16_t* decode_to_psram(const uint8_t* jpeg, size_t len, uint16_t w, uint16_t h) {
+    if (!jpeg || !len) return nullptr;
+    uint16_t* buf = static_cast<uint16_t*>(
+        heap_caps_malloc((size_t)w * h * 2, MALLOC_CAP_SPIRAM));
+    if (!buf) {
+        LOG("[photo_cache] decode_to_psram: PSRAM alloc failed\n");
+        return nullptr;
+    }
+    if (!decode_jpeg_to(jpeg, len, buf, w, h)) {
+        heap_caps_free(buf);
+        return nullptr;
+    }
+    return buf;
+}
+
+void fill_image_dsc(lv_image_dsc_t* dsc, const uint16_t* buf, uint16_t w, uint16_t h) {
+    build_dsc(dsc, buf, w, h);
+}
+
 } // namespace photo_cache

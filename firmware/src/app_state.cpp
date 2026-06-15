@@ -61,11 +61,13 @@ Media k_media = {
 };
 bool k_playing = false;
 
-// Default shortcut config.
-const ShortcutSlot k_shortcuts[SHORTCUT_COUNT] = {
-    { "vol-mute"   },
-    { "mic-mute"   },
-    { "screenshot" },
+// Mutable shortcut token storage — updated by set_shortcuts() when Orion pushes
+// a ShortcutConfig. Defaults match the mock_orion_ble.py defaults.
+static char k_slot_tokens[SHORTCUT_COUNT][20] = { "vol-mute", "mic-mute", "screenshot" };
+static ShortcutSlot k_shortcuts[SHORTCUT_COUNT] = {
+    { k_slot_tokens[0] },
+    { k_slot_tokens[1] },
+    { k_slot_tokens[2] },
 };
 
 // Wall-clock time of the last successful BLE sync (SyncControl END).
@@ -351,5 +353,11 @@ void         set_media_seek(uint32_t position_s, uint32_t duration_s) {
     k_media.duration_s = duration_s;
 }
 const ShortcutSlot* shortcuts() { return k_shortcuts; }
+
+void set_shortcuts(const char* s1, const char* s2, const char* s3) {
+    strncpy(k_slot_tokens[0], s1 ? s1 : "", sizeof(k_slot_tokens[0]) - 1);
+    strncpy(k_slot_tokens[1], s2 ? s2 : "", sizeof(k_slot_tokens[1]) - 1);
+    strncpy(k_slot_tokens[2], s3 ? s3 : "", sizeof(k_slot_tokens[2]) - 1);
+}
 
 } // namespace app_state

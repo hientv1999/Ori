@@ -30,10 +30,16 @@
 
 namespace nvs_sync {
 
-// SHA-256 hash operations.
+// SHA-256 hash operations. Backed by a RAM cache (see prime_hash_cache()) —
+// load_hash() never touches NVS, so it's safe to call from the NimBLE host
+// task (e.g. handle_manifest_write() on every reconnect).
 // Returns false if the key is missing (first boot or after factory reset).
 bool load_hash(const char* key, uint8_t out_hash[32]);
 void save_hash(const char* key, const uint8_t hash[32]);
+
+// Pre-load all sync hashes into RAM while the heap is clean (before any
+// screen is created). Call once at startup alongside prime_pto_cache().
+void prime_hash_cache();
 
 // Profile string fields.
 void save_profile(const char* name, const char* title,
@@ -68,5 +74,6 @@ extern const char* const HASH_KEY_PROFILE;
 extern const char* const HASH_KEY_PHOTO;
 extern const char* const HASH_KEY_MEETINGS;
 extern const char* const HASH_KEY_PTO;
+extern const char* const HASH_KEY_SHORTCUTS;
 
 } // namespace nvs_sync

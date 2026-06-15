@@ -29,4 +29,14 @@ void update_meta(const char* title, const char* artist);
 void update_playing(bool playing);
 void update_seek(uint32_t position_s, uint32_t duration_s);
 
+// Refresh shortcut button icons from the current app_state::shortcuts() values.
+// No-op when the media screen is not active.
+void update_shortcuts();
+
+// Album art — takes ownership of jpeg_buf (always freed internally).
+// Decodes the JPEG to a PSRAM RGB565 buffer and shows it over the gradient
+// fallback. Call with len == 0 to revert to the gradient (nothing playing).
+void set_album_art(uint8_t* jpeg_buf, size_t len);
+void clear_album_art();
+
 } // namespace screen_media_mode

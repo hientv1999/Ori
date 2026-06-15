@@ -127,8 +127,10 @@ void factory_reset() {
     if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
         prefs.clear();
         prefs.end();
+        LOG("[nvs] factory reset wipe complete\n");
+    } else {
+        LOG("[nvs] ERROR: factory reset wipe FAILED — could not open namespace\n");
     }
-    LOG("[nvs] factory reset wipe complete\n");
 }
 
 // ── Post-OTA acknowledgement ────────────────────────────────────────────────

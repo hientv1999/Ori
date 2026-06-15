@@ -424,11 +424,13 @@ static void tick_cb(lv_timer_t* /*t*/) {
 namespace state_machine {
 
 void init() {
-    // Pre-load PTO metadata into RAM cache while the heap is clean (before any
-    // screen is created). This prevents the NVS handle allocator from landing
-    // on SRAM that was previously used by the media screen's LVGL allocations,
-    // which would corrupt the NVSHandleSimple vtable pointer and crash.
+    // Pre-load PTO metadata and sync hashes into RAM cache while the heap is
+    // clean (before any screen is created). This prevents the NVS handle
+    // allocator from landing on SRAM that was previously used by the media
+    // screen's LVGL allocations, which would corrupt the NVSHandleSimple
+    // vtable pointer and crash.
     nvs_sync::prime_pto_cache();
+    nvs_sync::prime_hash_cache();
 
     // Restore mode from NVS.
     g_mode = nvs::get_mode();
@@ -851,6 +853,8 @@ void on_ota_ack_close() {
 void on_reconnect_begin() {
     // Never overlay the reconnect-syncing UI on top of an OTA takeover.
     if (ota_receiver::is_active()) return;
+    // Idempotent — guards against being called twice for the same reconnect.
+    if (g_state == AppState::RECONNECT_SYNCING) return;
     LOG("[sm] on_reconnect_begin (meetings cached=%u)\n", (unsigned)g_rt_count);
     // Only show the "Refreshing your day" overlay when there is actually cached
     // meeting data to refresh. With meetings RAM-only, a power-cycle reconnect

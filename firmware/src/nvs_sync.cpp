@@ -12,10 +12,11 @@ namespace nvs_sync {
 
 // ── Hash key constants ────────────────────────────────────────────────────────
 
-const char* const HASH_KEY_PROFILE  = "p_sha";
-const char* const HASH_KEY_PHOTO    = "ph_sha";
-const char* const HASH_KEY_MEETINGS = "m_sha";
-const char* const HASH_KEY_PTO      = "pto_sha";
+const char* const HASH_KEY_PROFILE   = "p_sha";
+const char* const HASH_KEY_PHOTO     = "ph_sha";
+const char* const HASH_KEY_MEETINGS  = "m_sha";
+const char* const HASH_KEY_PTO       = "pto_sha";
+const char* const HASH_KEY_SHORTCUTS = "sc_sha";
 
 namespace {
 constexpr const char* NS = "ori";
@@ -60,27 +61,101 @@ static void load_pto_from_nvs() {
     memcpy(g_pto_cache.dest, d.c_str(), dlen);
     g_pto_cache.dest[dlen] = '\0';
 }
+
+// Sync-hash RAM cache — same rationale as PtoCache above. handle_manifest_write()
+// (gatt_server.cpp) calls load_hash() up to 4 times per reconnect, on the NimBLE
+// host task, right after a sync session that may have decoded/freed JPEG buffers.
+// A fresh nvs_open() there can land on heap previously holding JFIF bytes and
+// corrupt the NVS lock semaphore's Queue_t (LoadProhibited in
+// prvNotifyQueueSetContainer, A7/EXCVADDR = 0xe0ffd8ff-ish — "FF D8 FF E0").
+// Fix: prime once at startup (clean heap) and keep in sync via save_hash();
+// load_hash() never calls nvs_open().
+struct HashCache {
+    uint8_t profile[32];
+    uint8_t photo[32];
+    uint8_t pto[32];
+    uint8_t shortcuts[32];
+    bool has_profile;
+    bool has_photo;
+    bool has_pto;
+    bool has_shortcuts;
+    bool loaded;
+};
+static HashCache g_hash_cache = {};
+
+static void load_one_hash(const char* key, uint8_t out[32], bool* has) {
+    size_t sz = prefs.getBytesLength(key);
+    if (sz == 32) {
+        prefs.getBytes(key, out, 32);
+        *has = true;
+    }
+}
+
+static void load_hashes_from_nvs() {
+    g_hash_cache = {};
+    g_hash_cache.loaded = true; // mark done even if NVS fails
+    if (!prefs.begin(NS, /*readOnly=*/true)) return;
+    load_one_hash(HASH_KEY_PROFILE,   g_hash_cache.profile,   &g_hash_cache.has_profile);
+    load_one_hash(HASH_KEY_PHOTO,     g_hash_cache.photo,     &g_hash_cache.has_photo);
+    load_one_hash(HASH_KEY_PTO,       g_hash_cache.pto,       &g_hash_cache.has_pto);
+    load_one_hash(HASH_KEY_SHORTCUTS, g_hash_cache.shortcuts, &g_hash_cache.has_shortcuts);
+    prefs.end();
+}
+
 } // namespace
 
 // ── SHA-256 hash storage ───────────────────────────────────────────────────────
 
+void prime_hash_cache() {
+    if (!g_hash_cache.loaded) load_hashes_from_nvs();
+}
+
 bool load_hash(const char* key, uint8_t out_hash[32]) {
-    bool ok = false;
-    if (prefs.begin(NS, /*readOnly=*/true)) {
-        size_t sz = prefs.getBytesLength(key);
-        if (sz == 32) {
-            prefs.getBytes(key, out_hash, 32);
-            ok = true;
-        }
-        prefs.end();
+    if (!g_hash_cache.loaded) load_hashes_from_nvs();
+    if (key == HASH_KEY_PROFILE) {
+        if (!g_hash_cache.has_profile) return false;
+        memcpy(out_hash, g_hash_cache.profile, 32);
+        return true;
     }
-    return ok;
+    if (key == HASH_KEY_PHOTO) {
+        if (!g_hash_cache.has_photo) return false;
+        memcpy(out_hash, g_hash_cache.photo, 32);
+        return true;
+    }
+    if (key == HASH_KEY_PTO) {
+        if (!g_hash_cache.has_pto) return false;
+        memcpy(out_hash, g_hash_cache.pto, 32);
+        return true;
+    }
+    if (key == HASH_KEY_SHORTCUTS) {
+        if (!g_hash_cache.has_shortcuts) return false;
+        memcpy(out_hash, g_hash_cache.shortcuts, 32);
+        return true;
+    }
+    // HASH_KEY_MEETINGS: meetings are RAM-only (not NVS-persisted) — the
+    // manifest handler compares against its own RAM hash, not via load_hash().
+    return false;
 }
 
 void save_hash(const char* key, const uint8_t hash[32]) {
     if (prefs.begin(NS, /*readOnly=*/false)) {
         prefs.putBytes(key, hash, 32);
         prefs.end();
+    }
+    // Keep the RAM cache in sync so load_hash() reflects this write immediately.
+    if (!g_hash_cache.loaded) load_hashes_from_nvs();
+    if (key == HASH_KEY_PROFILE) {
+        memcpy(g_hash_cache.profile, hash, 32);
+        g_hash_cache.has_profile = true;
+    } else if (key == HASH_KEY_PHOTO) {
+        memcpy(g_hash_cache.photo, hash, 32);
+        g_hash_cache.has_photo = true;
+    } else if (key == HASH_KEY_PTO) {
+        memcpy(g_hash_cache.pto, hash, 32);
+        g_hash_cache.has_pto = true;
+    } else if (key == HASH_KEY_SHORTCUTS) {
+        memcpy(g_hash_cache.shortcuts, hash, 32);
+        g_hash_cache.has_shortcuts = true;
     }
 }
 
