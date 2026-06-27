@@ -111,7 +111,7 @@ Each characteristic UUID replaces bytes 4–5 of the base with the offset below.
 | 10 | Sync Manifest | `000A` | Write, Notify | bidirectional | Yes |
 | 11 | **Keyboard Command** | `000B` | Notify | P→C notify | Yes |
 | 12 | **Host Volume State** | `000C` | Read, Write (response) | C→P | Yes |
-| 13 | **Media Metadata** | `000D` | Write, Notify | C→P | Yes |
+| 13 | **Media Metadata** | `000D` | Write | C→P | Yes |
 | 14 | **Media Album Art** | `000E` | Write (no response) | C→P chunked | Yes |
 | 15 | **Presence Status** | `000F` | Read, Write (response) | C→P | Yes |
 

@@ -8,13 +8,12 @@
 // Stores per-item SHA-256 hashes (for hash-manifest delta reconnect per
 // ble-protocol.md §6.2) and the synced string payload for Profile Info.
 //
-// Large blobs (profile photo JPEG, PTO image JPEG, meeting list CBOR)
-// are held in PSRAM at runtime and written to NVS only as SHA-256 hashes.
-// On power-up the large blobs are re-fetched from Orion on the next
-// reconnect (the manifest will detect the mismatch because the PSRAM cache
-// is empty, producing a non-matching hash). Only the string profile fields,
-// meeting CBOR (small enough), and PTO non-image fields are persisted as
-// full values.
+// Large blobs (profile photo JPEG, PTO image JPEG) are held in PSRAM at
+// runtime and written to NVS only as SHA-256 hashes; they are re-fetched from
+// Orion on the next reconnect. Meeting list CBOR is small enough to persist
+// in full (key "m_cbor"), so the list survives a power cycle and is available
+// immediately on boot without waiting for Orion to reconnect. String profile
+// fields and PTO non-image fields are also persisted as full values.
 //
 // Key layout (all in the "ori" Preferences namespace):
 //   "p_sha"  — bytes(32): SHA-256 of the last-written Profile Info CBOR
@@ -65,9 +64,16 @@ bool load_pto_meta(uint32_t* out_start, uint32_t* out_end,
                    char* out_dest, size_t dest_sz);
 
 // Meeting list CBOR blob (raw bytes, ≤ ~4 KB).
-// save returns true on success; load returns actual bytes written (0 = not found).
+// save returns true on success; load returns actual bytes read (0 = not found).
 bool   save_meetings_blob(const uint8_t* buf, size_t len);
 size_t load_meetings_blob(uint8_t* out, size_t max_len);
+
+// Pre-load meeting CBOR into PSRAM while the heap is clean (before any screen
+// is created). Call once at startup alongside prime_pto_cache() and prime_hash_cache().
+void prime_meetings_cache();
+// Returns a pointer to the PSRAM-cached meeting CBOR, or nullptr if none stored.
+// Valid until the next save_meetings_blob() call.
+const uint8_t* cached_meetings_cbor(size_t* len_out);
 
 // Hash key constants — used by gatt_server for manifest comparison.
 extern const char* const HASH_KEY_PROFILE;

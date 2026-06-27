@@ -7,6 +7,7 @@
 
 #include <Arduino.h>
 #include <Preferences.h>
+#include "ori_log.h"
 
 namespace nvs_sync {
 
@@ -48,6 +49,13 @@ struct PtoCache {
 };
 static PtoCache g_pto_cache = {};
 
+// Meeting list CBOR RAM/PSRAM cache — populated by prime_meetings_cache() at
+// boot and kept in sync by save_meetings_blob(). Allows state_machine::init()
+// to restore the meeting list before any screen is created, so the list is
+// available immediately on power-up (no blank until Orion reconnects).
+static uint8_t* g_meetings_cbor_cache     = nullptr;
+static size_t   g_meetings_cbor_cache_len = 0;
+
 static void load_pto_from_nvs() {
     g_pto_cache = {};       // zero fields
     g_pto_cache.loaded = true;  // mark done even if NVS fails
@@ -75,10 +83,12 @@ struct HashCache {
     uint8_t photo[32];
     uint8_t pto[32];
     uint8_t shortcuts[32];
+    uint8_t meetings[32];
     bool has_profile;
     bool has_photo;
     bool has_pto;
     bool has_shortcuts;
+    bool has_meetings;
     bool loaded;
 };
 static HashCache g_hash_cache = {};
@@ -99,6 +109,7 @@ static void load_hashes_from_nvs() {
     load_one_hash(HASH_KEY_PHOTO,     g_hash_cache.photo,     &g_hash_cache.has_photo);
     load_one_hash(HASH_KEY_PTO,       g_hash_cache.pto,       &g_hash_cache.has_pto);
     load_one_hash(HASH_KEY_SHORTCUTS, g_hash_cache.shortcuts, &g_hash_cache.has_shortcuts);
+    load_one_hash(HASH_KEY_MEETINGS,  g_hash_cache.meetings,  &g_hash_cache.has_meetings);
     prefs.end();
 }
 
@@ -132,8 +143,11 @@ bool load_hash(const char* key, uint8_t out_hash[32]) {
         memcpy(out_hash, g_hash_cache.shortcuts, 32);
         return true;
     }
-    // HASH_KEY_MEETINGS: meetings are RAM-only (not NVS-persisted) — the
-    // manifest handler compares against its own RAM hash, not via load_hash().
+    if (key == HASH_KEY_MEETINGS) {
+        if (!g_hash_cache.has_meetings) return false;
+        memcpy(out_hash, g_hash_cache.meetings, 32);
+        return true;
+    }
     return false;
 }
 
@@ -156,6 +170,9 @@ void save_hash(const char* key, const uint8_t hash[32]) {
     } else if (key == HASH_KEY_SHORTCUTS) {
         memcpy(g_hash_cache.shortcuts, hash, 32);
         g_hash_cache.has_shortcuts = true;
+    } else if (key == HASH_KEY_MEETINGS) {
+        memcpy(g_hash_cache.meetings, hash, 32);
+        g_hash_cache.has_meetings = true;
     }
 }
 
@@ -271,6 +288,14 @@ bool save_meetings_blob(const uint8_t* buf, size_t len) {
     if (!prefs.begin(NS, /*readOnly=*/false)) return false;
     size_t written = prefs.putBytes("m_cbor", buf, len);
     prefs.end();
+    // Keep the PSRAM cache current so cached_meetings_cbor() reflects the new data.
+    uint8_t* nb = (uint8_t*)heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (nb) {
+        memcpy(nb, buf, len);
+        heap_caps_free(g_meetings_cbor_cache);
+        g_meetings_cbor_cache     = nb;
+        g_meetings_cbor_cache_len = len;
+    }
     return written == len;
 }
 
@@ -282,6 +307,31 @@ size_t load_meetings_blob(uint8_t* out, size_t max_len) {
     prefs.getBytes("m_cbor", out, sz);
     prefs.end();
     return sz;
+}
+
+void prime_meetings_cache() {
+    if (g_meetings_cbor_cache) return;  // already loaded
+    if (!prefs.begin(NS, /*readOnly=*/true)) return;
+    size_t sz = prefs.getBytesLength("m_cbor");
+    prefs.end();
+    if (sz == 0) return;
+    uint8_t* buf = (uint8_t*)heap_caps_malloc(sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) {
+        LOG("[nvs_sync] prime_meetings_cache: alloc %u bytes failed\n", (unsigned)sz);
+        return;
+    }
+    if (!prefs.begin(NS, /*readOnly=*/true)) { heap_caps_free(buf); return; }
+    size_t read = prefs.getBytes("m_cbor", buf, sz);
+    prefs.end();
+    if (read != sz) { heap_caps_free(buf); return; }
+    g_meetings_cbor_cache     = buf;
+    g_meetings_cbor_cache_len = sz;
+    LOG("[nvs_sync] prime_meetings_cache: loaded %u bytes\n", (unsigned)sz);
+}
+
+const uint8_t* cached_meetings_cbor(size_t* len_out) {
+    if (len_out) *len_out = g_meetings_cbor_cache_len;
+    return g_meetings_cbor_cache;
 }
 
 } // namespace nvs_sync

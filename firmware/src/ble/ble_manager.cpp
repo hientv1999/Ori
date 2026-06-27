@@ -57,6 +57,7 @@ enum class BleEventType : uint8_t {
     SyncEnd,           // staged commit done       — advance setup / dismiss reconnect overlay
     OrioningProgress,  // sync milestone reached  — update progress ring (0–100)
     OrionConnected,
+    OrionEncrypted,      // bonded reconnect: link is now encrypted — safe to notify()
     OrionBonded,         // provisional bond formed (passkey OK) — UI only, NOT persisted
     OrionConfirmed,      // bonded peer proved it's Orion (valid SyncControl{BEGIN}) — persist
     OrionDisconnected,
@@ -140,14 +141,10 @@ bool g_iphone_pairing_window = false;
 // Orion-bond handshake gating. A peer that completes passkey bonding during
 // Step 2 is only PROVISIONALLY Orion: its address is held in RAM (not persisted
 // to the orion_addr slot) until it proves it speaks the Ori protocol by writing
-// a valid SyncControl{BEGIN} (confirm_orion_peer()). A peer that bonds but never
-// sends BEGIN within ORION_HANDSHAKE_TIMEOUT_MS — a stray phone or non-Orion PC
-// someone paired off Ori's passkey screen — is dropped, never saved as Orion.
-constexpr uint32_t ORION_HANDSHAKE_TIMEOUT_MS = 5000;
+// a valid SyncControl{BEGIN} (confirm_orion_peer()).
 volatile bool g_orion_provisional         = false;
 uint8_t       g_provisional_orion_addr[6] = {};
 uint16_t      g_provisional_orion_conn    = 0xFFFF; // BLE_HS_CONN_HANDLE_NONE
-uint32_t      g_orion_handshake_deadline  = 0;
 
 // "Connect on Orion" minimum-linger (setup only). When the passkey modal closes
 // on bonding, the "Connect on Orion" base screen (spinner) is revealed. Orion
@@ -391,6 +388,17 @@ public:
                 ev.data.conn_handle = handle;
                 eq_push(ev);
             }
+            // Always push OrionEncrypted so the RUNTIME_RECONNECTING notify is
+            // sent only after the link is encrypted. Calling notify() from the
+            // OrionConnected handler (which fires from onConnect, pre-auth) races
+            // the NimBLE host task's CCCD subscription processing and crashes with
+            // LoadProhibited at EXCVADDR=0x29 in the connection descriptor.
+            {
+                BleEvent ev = {};
+                ev.type = BleEventType::OrionEncrypted;
+                ev.data.conn_handle = handle;
+                eq_push(ev);
+            }
             return;
         }
         if (conn_matches(info, iphone_addr)) {
@@ -585,13 +593,19 @@ void poll() {
                 LOG("[ble:poll] Orion connected — begin reconnect sync\n");
                 state_machine::set_pc_connected(true);
                 state_machine::on_reconnect_begin();
-                // The GATT Manifest flow will call on_reconnect_end() when done.
-                // Set Device Status to RUNTIME_RECONNECTING.
-                gatt_server::set_device_status(0x11); // RUNTIME_RECONNECTING
-                // Read Presence Status from Orion (source of truth on reconnect).
-                // Orion will push it; until then show Offline.
+                // Presence resets to Offline immediately — never show stale presence.
+                // Device Status notify deferred to OrionEncrypted (post-auth) so
+                // notify() is never called before the encrypted link is confirmed.
                 widget_profile_card::set_default_presence(
                     widget_profile_card::Presence::Offline);
+                break;
+
+            case BleEventType::OrionEncrypted:
+                LOG("[ble:poll] Orion encrypted — notifying RUNTIME_RECONNECTING\n");
+                // Safe to call notify() here: link is encrypted, CCCD subscriptions
+                // are complete. Calling it from OrionConnected (pre-auth) raced
+                // the NimBLE host task's subscription setup → LoadProhibited crash.
+                gatt_server::set_device_status(0x11); // RUNTIME_RECONNECTING
                 break;
 
             case BleEventType::IphoneConnected:
@@ -728,24 +742,6 @@ void poll() {
         (int32_t)(millis() - g_orion_bonded_ms) >= (int32_t)CONNECT_ORION_MIN_MS) {
         g_orioning_pending = false;
         screen_setup::show_orioning_modal(lv_scr_act());
-    }
-
-    // Orion handshake timeout: a peer bonded (passkey OK) but never sent a valid
-    // SyncControl{BEGIN} — it isn't Orion. Drop it (disconnect + delete its LTK
-    // bond) so it's never saved as the Orion slot, and keep advertising for the
-    // real Orion. onDisconnect() handles re-advertising and connection cleanup.
-    if (g_orion_provisional &&
-        (int32_t)(millis() - g_orion_handshake_deadline) >= 0) {
-        LOG("[ble] Orion handshake timeout — dropping unconfirmed peer\n");
-        g_orion_provisional = false;
-        NimBLEServer* server = NimBLEDevice::getServer();
-        if (server && g_provisional_orion_conn != BLE_HS_CONN_HANDLE_NONE) {
-            server->disconnect(g_provisional_orion_conn);
-        }
-        NimBLEAddress addr(g_provisional_orion_addr, BLE_ADDR_PUBLIC);
-        NimBLEDevice::deleteBond(addr);
-        // onDisconnect() (fired by the disconnect above) resets connection state
-        // and restarts advertising for the real Orion.
     }
 
     // Factory-reset deferred restart (from remote BLE factory-reset command
@@ -1056,9 +1052,8 @@ void on_orion_bonded(uint16_t conn_handle, const uint8_t peer_addr[6]) {
     // stops a phone / non-Orion PC paired off Ori's passkey screen from being
     // saved as Orion.
     memcpy(g_provisional_orion_addr, peer_addr, 6);
-    g_provisional_orion_conn   = conn_handle;
-    g_orion_handshake_deadline = millis() + ORION_HANDSHAKE_TIMEOUT_MS;
-    g_orion_provisional        = true;
+    g_provisional_orion_conn = conn_handle;
+    g_orion_provisional      = true;
     g_orion_connected          = true;
     g_orion_conn               = conn_handle;
 

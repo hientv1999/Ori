@@ -14,7 +14,7 @@
 //   000A Sync Manifest       Write+Notify (enc)
 //   000B Keyboard Command    Notify (enc)
 //   000C Host Volume State   Read+Write (enc)
-//   000D Media Metadata      Write+Notify (enc)
+//   000D Media Metadata      Write (enc)
 //   000E Media Album Art     Write no-rsp (enc, chunked)
 //   000F Presence Status     Read+Write (enc)
 
@@ -120,12 +120,10 @@ NimBLECharacteristic* c_media_meta  = nullptr; // 000D
 NimBLECharacteristic* c_album_art   = nullptr; // 000E
 NimBLECharacteristic* c_presence    = nullptr; // 000F
 
-// Meeting list is RAM-only (not persisted to NVS — see state_machine). Its
-// delta-sync hash therefore also lives in RAM only: a power cycle drops the
-// meetings AND this hash together, so the next reconnect's manifest reports
-// "meetings" as needed and Orion re-pushes them (instead of wrongly assuming
-// they're still cached). Profile/photo/PTO hashes stay in NVS (that data does
-// persist). Set on each MeetingList commit; consulted in handle_manifest_write.
+// Meeting list delta-sync hash. Persisted to NVS (key "m_sha") alongside the
+// meeting CBOR blob — restored at init() so the first reconnect's manifest can
+// correctly report "meetings not needed" when nothing changed across a reboot.
+// Set on each MeetingList commit (apply_meetings_cbor); consulted in handle_manifest_write.
 uint8_t g_meetings_hash[32]  = {};
 bool    g_meetings_hash_valid = false;
 
@@ -980,11 +978,11 @@ static void apply_photo_jpeg(uint8_t* buf, size_t n) {
 }
 
 static void apply_meetings_cbor(uint8_t* buf, size_t n) {
-    // RAM-only: keep the delta-sync hash in RAM (NOT NVS) so a power cycle drops
-    // it with the meetings, forcing a re-request on the next reconnect.
     sha256_of_buf(buf, n, g_meetings_hash);
     g_meetings_hash_valid = true;
-    LOG("[gatt] Meetings received: %u bytes (RAM-only)\n", (unsigned)n);
+    nvs_sync::save_meetings_blob(buf, n);
+    nvs_sync::save_hash(nvs_sync::HASH_KEY_MEETINGS, g_meetings_hash);
+    LOG("[gatt] Meetings received: %u bytes\n", (unsigned)n);
     state_machine::set_meetings_cbor(buf, n);
     heap_caps_free(buf);
 }
@@ -1177,11 +1175,17 @@ void init() {
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
     c_host_vol->setCallbacks(&s_char_cb);
 
-    // 000D Media Metadata — Write + Notify, encrypted
+    // 000D Media Metadata — Write-only, encrypted (C→P; Ori never notifies on this char).
+    // NOTIFY was mistakenly added here; Windows WinRT auto-subscribes to every NOTIFY
+    // characteristic, so having it pushed the total CCCD subscription count to 5 on
+    // reconnect. The 5th bonded NVS write triggered an NVS page compaction, which
+    // transiently exhausted SRAM → ble_hci_trans_buf_alloc malloc(259) failed →
+    // NimBLE's subscription table was left partially initialised → notify() crashed
+    // (LoadProhibited, EXCVADDR=0xe0ffd937). Fixed by removing NOTIFY (and the
+    // spurious READ_ENC) to stay at 4 NOTIFY chars × 2 bonds = 8 CCCD slots.
     c_media_meta = svc->createCharacteristic(
         "6F726900-000D-4F72-9F00-000000000000",
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC |
-        NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ_ENC);
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
     c_media_meta->setCallbacks(&s_char_cb);
 
     // 000E Media Album Art — Write no response, encrypted (chunked JPEG)
@@ -1197,6 +1201,10 @@ void init() {
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
     c_presence->setCallbacks(&s_char_cb);
     c_presence->setValue(&g_presence_byte, 1);
+
+    // Restore meetings hash from NVS so the manifest delta check on the first
+    // reconnect can correctly report "meetings not needed" when nothing changed.
+    g_meetings_hash_valid = nvs_sync::load_hash(nvs_sync::HASH_KEY_MEETINGS, g_meetings_hash);
 
     // In NimBLE 2.5, services are started when NimBLEServer::start() is called.
     // svc->start() is deprecated and a no-op; omit it.

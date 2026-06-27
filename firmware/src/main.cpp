@@ -125,10 +125,6 @@ void setup() {
     photo_cache::init_pto();
     mem_snapshot("after photo_cache");
 
-    // Meetings are RAM-only (see state_machine::set_meetings_cbor) — nothing to
-    // load from NVS at boot. After a power cycle the list is empty until Orion
-    // reconnects and re-pushes it.
-
     // M5: OTA receiver + BLE stack.
     // ota_receiver must be initialised before ble_manager because it sets up
     // the USB CDC framing parser which runs independently of BLE.

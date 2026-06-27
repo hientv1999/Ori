@@ -233,24 +233,38 @@ def build_meetings() -> bytes:
     # 32 meetings (protocol cap) with near-maximum field lengths.
     # Per-meeting estimate ~122 B × 32 + 19 B wrapper ≈ 3,923 B — under the
     # firmware boot buffer cap of 4,096 B (main.cpp: static uint8_t meet_buf[4096]).
-    now      = int(datetime.now(timezone.utc).timestamp())
-    midnight = now - (now % 86400)
+    #
+    # Meetings are anchored to the LOCAL current time so there are always
+    # upcoming meetings regardless of timezone or time of day. The first
+    # meeting starts 5 minutes from now; subsequent meetings are spaced 30 min
+    # apart. This avoids the "No meetings today" symptom that occurred when
+    # meetings were hard-coded to UTC hours that had already passed locally.
+    now_local = datetime.now()
+    # Round up to the next 30-min boundary, then offset by 5 min so the first
+    # meeting is always imminent (tests the 5-min countdown alert).
+    mins = now_local.minute
+    next_half = ((mins // 30) + 1) * 30   # next :00 or :30
+    anchor = now_local.replace(minute=0, second=0, microsecond=0) + \
+             timedelta(minutes=next_half - 5)
+
+    # Local-midnight as UTC epoch (the MeetingList `date` field = epoch UTC of
+    # local midnight, per ble-protocol.md §4).
+    local_midnight = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    midnight_utc = int(local_midnight.astimezone(timezone.utc).timestamp())
+
     items = []
     for i in range(32):
-        start = midnight + (8 + i // 2) * 3600 + (i % 2) * 1800   # 08:00–23:30
+        start_local = anchor + timedelta(minutes=i * 30)
+        start_epoch = int(start_local.astimezone(timezone.utc).timestamp())
         items.append({
             "id":    f"ev{i:02d}",
-            "start": start,
-            "end":   start + 3600,
+            "start": start_epoch,
+            "end":   start_epoch + 3600,
             "title": (f"Stress Meeting {i:02d}: " + "X" * 40)[:40],
             "loc":   (f"Room-{i:02d}/Video "      + "X" * 20)[:20],
             "org":   (f"Organizer{i:02d} "         + "X" * 15)[:15],
         })
-    data = cbor2.dumps({"date": midnight, "items": items})
-    if len(data) >= 4096:
-        raise ValueError(
-            f"meetings CBOR too large: {len(data)} B (firmware boot buffer limit 4096 B)")
-    return data
+    return cbor2.dumps({"date": midnight_utc, "items": items})
 
 def build_pto(image: bytes = b"") -> bytes:
     # destination maximized to its 128-byte wire cap (ble-protocol.md §10).

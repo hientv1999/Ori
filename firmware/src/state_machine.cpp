@@ -151,14 +151,6 @@ static int hhmm_to_mins(const char* s) {
     return h * 60 + m;
 }
 
-// Current local time as minutes since midnight.
-static int now_mins() {
-    time_t t = time(nullptr);
-    struct tm tm_buf;
-    localtime_r(&t, &tm_buf);
-    return tm_buf.tm_hour * 60 + tm_buf.tm_min;
-}
-
 // Current local time as seconds since midnight.
 static long now_seconds() {
     time_t t = time(nullptr);
@@ -173,21 +165,18 @@ static long now_seconds() {
 static app_state::MeetingList filtered_meetings() {
     static app_state::Meeting buf[32];
     app_state::MeetingList all = { g_rt_display, g_rt_count };
-    int now_m = now_mins();
     uint32_t now_epoch = (uint32_t)time(nullptr);
     size_t n = 0;
     for (size_t i = 0; i < all.count && n < 32; ++i) {
-        const app_state::Meeting& m = all.items[i];
-        int end_m = hhmm_to_mins(m.end);
-        if (end_m < 0 || end_m >= now_m) {
-            buf[n] = m;
-            // Recompute in_progress from epoch if available, else from string.
-            if (g_rt_count > 0) {
-                const RtMeeting& rt = g_rt[i];
-                buf[n].in_progress = (now_epoch >= rt.start_epoch && now_epoch <= rt.end_epoch);
-            }
-            ++n;
-        }
+        const RtMeeting& rt = g_rt[i];
+        // Clock not set yet (epoch == 0) → show all meetings; otherwise drop
+        // meetings whose end epoch has already passed.
+        if (now_epoch > 0 && rt.end_epoch < now_epoch) continue;
+        buf[n] = all.items[i];
+        buf[n].in_progress = (now_epoch > 0 &&
+                              now_epoch >= rt.start_epoch &&
+                              now_epoch <= rt.end_epoch);
+        ++n;
     }
     return { buf, n };
 }
@@ -314,12 +303,10 @@ lv_obj_t* build_pto_screen() {
 }
 
 lv_obj_t* build_meeting_list_screen() {
-    // "cached" drives the "SYNCED · X min ago" pill. The on-screen list is cached
-    // whenever Orion's BLE link is down — a runtime disconnect (meetings still in
-    // RAM, clock still valid). While Orion is connected the data is live (sync
-    // completes before we leave the reconnect overlay), so no pill. After a power
-    // cycle the RAM list is empty, so we're on the "No meetings today" screen
-    // instead and the pill never applies. Matches meeting-list.md's offline table.
+    // "cached" drives the "SYNCED · X min ago" pill. The list is shown as cached
+    // whenever Orion's BLE link is down (runtime disconnect or post-power-cycle
+    // with meetings restored from NVS). While Orion is connected, data is live
+    // (sync completes before we leave the reconnect overlay), so no pill.
     return screen_meeting_list::create(filtered_meetings(), !g_pc_connected);
 }
 
@@ -424,13 +411,20 @@ static void tick_cb(lv_timer_t* /*t*/) {
 namespace state_machine {
 
 void init() {
-    // Pre-load PTO metadata and sync hashes into RAM cache while the heap is
-    // clean (before any screen is created). This prevents the NVS handle
-    // allocator from landing on SRAM that was previously used by the media
-    // screen's LVGL allocations, which would corrupt the NVSHandleSimple
-    // vtable pointer and crash.
+    // Pre-load PTO metadata, sync hashes, and meeting CBOR into RAM/PSRAM while
+    // the heap is clean (before any screen is created). This prevents the NVS
+    // handle allocator from landing on SRAM previously used by LVGL allocations,
+    // which would corrupt the NVSHandleSimple vtable pointer and crash.
     nvs_sync::prime_pto_cache();
     nvs_sync::prime_hash_cache();
+    nvs_sync::prime_meetings_cache();
+    {
+        size_t sz = 0;
+        const uint8_t* cbor = nvs_sync::cached_meetings_cbor(&sz);
+        if (cbor && sz) {
+            set_meetings_cbor(cbor, sz);
+        }
+    }
 
     // Restore mode from NVS.
     g_mode = nvs::get_mode();
@@ -598,8 +592,6 @@ static void copy_text_truncated(const CborValue* field, char* dst, size_t dst_sz
 void set_meetings_cbor(const uint8_t* buf, size_t len) {
     if (!buf || !len) return;
 
-    // Meetings are RAM-only (see header): no NVS write here.
-
     // Parse CBOR: { "date": uint, "items": [ { "start": uint, "end": uint,
     //   "title": text, "loc": text, "org": text }, ... ] }
     CborParser parser;
@@ -680,7 +672,6 @@ void set_meetings_cbor(const uint8_t* buf, size_t len) {
             false   // in_progress — computed in filtered_meetings()
         };
         ++count;
-        cbor_value_advance(&item);
     }
 
     g_rt_count = count;
@@ -698,11 +689,6 @@ void set_meetings_cbor(const uint8_t* buf, size_t len) {
 
     LOG("[sm] meetings parsed: %u items\n", (unsigned)g_rt_count);
 }
-
-// Meetings are RAM-only — there is no boot-time load from NVS. After a power
-// cycle the meeting list is empty until Orion reconnects and re-pushes it
-// (see set_meetings_cbor / meeting-list.md). The local clock is likewise not
-// restored from flash, so the meeting time logic can't run offline anyway.
 
 void hold_for_setup_complete() {
     // Called from build_complete() when the Setup-Complete screen appears.
@@ -857,11 +843,10 @@ void on_reconnect_begin() {
     if (g_state == AppState::RECONNECT_SYNCING) return;
     LOG("[sm] on_reconnect_begin (meetings cached=%u)\n", (unsigned)g_rt_count);
     // Only show the "Refreshing your day" overlay when there is actually cached
-    // meeting data to refresh. With meetings RAM-only, a power-cycle reconnect
-    // starts with an empty list — "Refreshing your day" would be misleading
-    // (there's no day cached yet). In that case stay on the current base screen
-    // ("No meetings today") and let the sync populate it; on_reconnect_end()
-    // re-evaluates to the real meeting list once the data arrives.
+    // meeting data to refresh. First-ever boot (before any sync) starts with an
+    // empty list — no overlay, stay on "No meetings today" and let the sync
+    // populate it. After the first sync, the list persists to NVS so g_rt_count
+    // is non-zero on every subsequent boot, and the overlay shows as expected.
     if (g_rt_count == 0) return;
     g_reconnect_shown_ms = millis();
     g_state = AppState::RECONNECT_SYNCING;
