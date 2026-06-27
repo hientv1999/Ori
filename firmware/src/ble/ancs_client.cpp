@@ -366,47 +366,98 @@ static void request_app_attributes(const char* bundle) {
 
 // Mirror the live queue into app_state, deduplicating into status-bar slots so
 // multiple notifications stack into one icon.
-//   • Known apps  → group by icon token (one icon per app).
+//   • Grouping key is (icon token, title) — NOT app alone. Two different
+//     Messenger senders are two different titles, so they get two separate
+//     bubbles; only repeated notifications sharing the same app AND title
+//     (e.g. several messages from the same sender) stack into one slot's
+//     count badge. Title comes from app_state::ancs_title(), so a queue entry
+//     whose attributes haven't arrived yet (title still "") groups with other
+//     not-yet-resolved entries from the same app until it does.
 //   • Unknown apps (token "unknown") have no brand icon and render a per-category
 //     fallback glyph, so grouping them all by token would collapse unrelated
-//     apps into a single bell. Instead group unknown notifications by ANCS
-//     CATEGORY, so e.g. unknown email apps stack separately from unknown social
-//     apps. `cat` is only significant for the "unknown" token.
-// Walk newest→oldest so the first occurrence of each group captures the most
-// recent UID. Reverse into cfg so cfg[count-1] = newest-active group (rightmost).
+//     apps into a single bell. They additionally require matching ANCS
+//     CATEGORY, so e.g. unknown email apps never group with unknown social
+//     apps even if (implausibly) titles collided. `cat` is only significant
+//     for the "unknown" token.
+//
+// Groups are ordered oldest→newest by each group's most recent ACTUAL
+// notification time (ANCS Date attribute, via app_state::ancs_recv_epoch),
+// so the rightmost status-bar icon is the genuinely most recent notification —
+// NOT simply whichever group has the highest g_queue index. Queue index alone
+// would be wrong whenever a `Modified` event refreshes an existing UID's
+// content without moving its queue position (queue_add() no-ops on a UID
+// already present), which would otherwise leave a just-updated notification
+// stuck wherever it first arrived. Entries with no known timestamp (clock not
+// yet synced, or the phone omitted Date) fall back to queue position.
 static void publish_queue() {
     app_state::AncsConfig cfg = {};
     cfg.phone_connected = true;
 
-    struct Slot { const char* token; uint32_t uid; uint8_t count; uint8_t cat; };
+    struct Slot {
+        const char* token;
+        const char* title;        // group identity, with token (+ cat for "unknown")
+        uint32_t    uid;          // representative — most recent by real time
+        uint8_t     count;
+        uint8_t     cat;
+        time_t      sort_epoch;   // representative's recv_epoch (0 = unknown)
+        int         sort_idx;     // queue index — tiebreak / fallback for epoch 0
+    };
     Slot slots[app_state::MAX_ANCS_NOTIFICATIONS] = {};
     size_t slot_count = 0;
 
-    for (int i = (int)g_queue_count - 1; i >= 0; --i) {
-        const char* tok = g_queue[i].icon_token;
-        uint32_t    uid = g_queue[i].uid;
-        bool    is_unknown = (strcmp(tok, "unknown") == 0);
-        uint8_t cat        = is_unknown ? app_state::ancs_category(uid) : 0;
+    for (int i = 0; i < (int)g_queue_count; ++i) {
+        const char* tok        = g_queue[i].icon_token;
+        uint32_t    uid        = g_queue[i].uid;
+        bool        is_unknown = (strcmp(tok, "unknown") == 0);
+        uint8_t     cat        = is_unknown ? app_state::ancs_category(uid) : 0;
+        time_t      epoch      = app_state::ancs_recv_epoch(uid);
+        const char* title      = app_state::ancs_title(uid);
 
-        bool found = false;
+        Slot* slot = nullptr;
         for (size_t j = 0; j < slot_count; ++j) {
-            if (strcmp(slots[j].token, tok) == 0 && (!is_unknown || slots[j].cat == cat)) {
-                slots[j].count++;
-                found = true;
+            if (strcmp(slots[j].token, tok) == 0 && (!is_unknown || slots[j].cat == cat) &&
+                strcmp(slots[j].title, title) == 0) {
+                slot = &slots[j];
                 break;
             }
         }
-        if (!found && slot_count < app_state::MAX_ANCS_NOTIFICATIONS) {
-            slots[slot_count++] = { tok, uid, 1, cat };
+        if (!slot) {
+            if (slot_count >= app_state::MAX_ANCS_NOTIFICATIONS) continue;
+            slot = &slots[slot_count++];
+            slot->token = tok;
+            slot->title = title;
+            slot->cat   = cat;
+            slot->count = 0;
+            slot->uid = uid; slot->sort_epoch = epoch; slot->sort_idx = i;
         }
+        slot->count++;
+        bool newer = (epoch > 0 && slot->sort_epoch > 0) ? (epoch >= slot->sort_epoch)
+                                                          : (i >= slot->sort_idx);
+        if (newer) { slot->uid = uid; slot->sort_epoch = epoch; slot->sort_idx = i; }
+    }
+
+    // Stable insertion sort, oldest→newest by representative time (slot_count
+    // is small — ≤ a handful of distinct apps in practice).
+    for (size_t a = 1; a < slot_count; ++a) {
+        Slot key = slots[a];
+        size_t b = a;
+        while (b > 0) {
+            const Slot& prev = slots[b - 1];
+            bool prev_after_key = (prev.sort_epoch > 0 && key.sort_epoch > 0)
+                                   ? (prev.sort_epoch > key.sort_epoch)
+                                   : (prev.sort_idx > key.sort_idx);
+            if (!prev_after_key) break;
+            slots[b] = slots[b - 1];
+            --b;
+        }
+        slots[b] = key;
     }
 
     cfg.count = slot_count;
     for (size_t i = 0; i < slot_count; ++i) {
-        size_t src       = slot_count - 1 - i;
-        cfg.icons[i]     = slots[src].token;
-        cfg.uids[i]      = slots[src].uid;
-        cfg.counts[i]    = slots[src].count;
+        cfg.icons[i]  = slots[i].token;
+        cfg.uids[i]   = slots[i].uid;
+        cfg.counts[i] = slots[i].count;
     }
 
     app_state::set_ancs_config(cfg);

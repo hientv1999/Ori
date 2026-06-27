@@ -13,6 +13,10 @@
 
 namespace app_state {
 
+// Allocates the ANCS notification-detail store in PSRAM. Call once at boot,
+// before anything can touch ANCS state (well before ble_manager::init()).
+void init();
+
 struct Meeting {
     const char* start;
     const char* end;
@@ -85,6 +89,10 @@ constexpr size_t SHORTCUT_COUNT = 3;
 //   full, the oldest entry is displaced (FIFO). When the user reads one (taps
 //   the icon → detail modal → close), the entry is removed and the queue shifts
 //   left, bringing the next hidden notification into the visible window.
+//   Each entry's full detail (title/subtitle/body strings) is cached in a
+//   PSRAM-allocated store (app_state::init(), ~38 KB at 50 entries) rather
+//   than a static SRAM array — SRAM is the scarce resource on this board,
+//   PSRAM is not.
 //
 // MAX_ANCS_ICONS — display cap. Status-bar layout budget:
 //   bar inner width 776px minus datetime (~239px), mode-toggle (60px), and
@@ -95,14 +103,19 @@ constexpr size_t SHORTCUT_COUNT = 3;
 //   refresh() always renders min(count, MAX_ANCS_ICONS) icons, so notifications
 //   beyond the 5th are hidden but not lost — they become visible as earlier
 //   ones are dismissed.
-constexpr size_t MAX_ANCS_NOTIFICATIONS = 20;   // queue depth
+constexpr size_t MAX_ANCS_NOTIFICATIONS = 50;   // queue depth
 constexpr size_t MAX_ANCS_ICONS         = 5;    // display cap (layout constraint)
 
 struct AncsConfig {
-    // Queue order is oldest → newest (index 0 = oldest, count-1 = newest). The
-    // status bar shows the newest MAX_ANCS_ICONS, rightmost = newest.
-    // Multiple notifications from the same app are stacked: one icon slot per
-    // unique token, uid = most recent UID for that app, count = total stacked.
+    // Order is oldest → newest BY EACH APP'S MOST RECENT ACTUAL NOTIFICATION
+    // TIME (index 0 = least recently active app, count-1 = most recently
+    // active), not by queue/arrival order — see ancs_client.cpp::publish_queue().
+    // The status bar shows the newest MAX_ANCS_ICONS, rightmost = newest.
+    // One icon slot per unique (app token, title) pair — NOT per app alone, so
+    // e.g. two different Messenger senders get two separate bubbles. Only
+    // repeated notifications sharing the same app AND title (e.g. several
+    // messages from the same sender) stack into one slot's count badge.
+    // uid = most recent UID within that (token, title) group.
     const char* icons [MAX_ANCS_NOTIFICATIONS];  // app token per deduplicated slot
     uint32_t    uids  [MAX_ANCS_NOTIFICATIONS];  // most-recent UID per slot (parallel)
     uint8_t     counts[MAX_ANCS_NOTIFICATIONS];  // stacked notification count per slot
@@ -176,6 +189,18 @@ void set_ancs_display_name_for_bundle(const char* bundle, const char* name);
 // false if the UID has no stored detail.
 uint8_t ancs_category(uint32_t uid);
 bool    ancs_is_important(uint32_t uid);
+
+// Phone's actual notification time (ANCS Date attribute) for a stored UID, as
+// a Unix epoch. 0 if unknown (no stored detail yet, or the phone omitted the
+// Date attribute) — callers must treat 0 as "can't compare by time" rather
+// than "very old". Used by the ANCS client to order status-bar icons by real
+// notification recency rather than by queue/arrival order.
+time_t ancs_recv_epoch(uint32_t uid);
+
+// Stored title for a UID (""  if no stored detail yet). Used by the ANCS
+// client to group status-bar icons by (app, title) rather than by app alone —
+// see AncsConfig above.
+const char* ancs_title(uint32_t uid);
 
 // Drop the stored detail for a notification UID (ANCS Removed event).
 void remove_ancs_detail(uint32_t uid);

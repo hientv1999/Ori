@@ -83,6 +83,7 @@ void setup() {
     mem_snapshot("boot");
 
     nvs::init();
+    app_state::init();  // PSRAM-allocate the ANCS notification-detail store
     // Prime the BLE bond-address RAM cache now, before state_machine::init()
     // (reads the iPhone slot) and ble_manager::init() (starts the BLE stack).
     // After this, bond reads never open NVS — so the NimBLE host-task callbacks

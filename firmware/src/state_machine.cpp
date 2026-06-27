@@ -860,13 +860,16 @@ void on_reconnect_begin() {
     // Idempotent — guards against being called twice for the same reconnect.
     if (g_state == AppState::RECONNECT_SYNCING) return;
     LOG("[sm] on_reconnect_begin (meetings cached=%u)\n", (unsigned)g_rt_count);
-    // Only show the "Refreshing your day" overlay when there is actually cached
-    // meeting data to refresh. With meetings RAM-only, a power-cycle reconnect
-    // starts with an empty list — "Refreshing your day" would be misleading
-    // (there's no day cached yet). In that case stay on the current base screen
-    // ("No meetings today") and let the sync populate it; on_reconnect_end()
-    // re-evaluates to the real meeting list once the data arrives.
-    if (g_rt_count == 0) return;
+    // Always show the overlay on every reconnect/resync — including the very
+    // first sync after a fresh boot (meetings RAM-only, so g_rt_count==0 then).
+    // Profile, Photo, and PTO are NVS-backed and can be large enough that the
+    // sync takes a while AND ends in a display blackout for the flash commit
+    // (ble-protocol.md §6.0) — without this overlay the user would otherwise
+    // sit on a static "No meetings today" screen and then have it go black
+    // with no explanation. on_reconnect_end() re-evaluates to the real
+    // meeting list (or back to "No meetings today") once the sync finishes;
+    // the progress ring is driven by real byte progress from BEGIN onward
+    // (ble-protocol.md §6.0, ble_manager's OrioningProgress fan-out).
     g_reconnect_shown_ms = millis();
     g_state = AppState::RECONNECT_SYNCING;
     apply_widget_defaults();

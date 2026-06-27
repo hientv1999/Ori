@@ -344,8 +344,11 @@ PSRAM before a single flash commit.
   the 6-byte frame header) counts towards the total — and derives
   `pct = received * 100 / total` (capped at 99 until `END` finishes the commit, then
   100). This drives the **Step 2/3 "Orioning" progress ring** during first-time setup
-  only (`setup-flow.md`). The reconnect "Reconnecting…" overlay (`state-machine.md`)
-  does not show a percentage and ignores `total`.
+  (`setup-flow.md`) AND the runtime reconnect **"Refreshing your day"** overlay
+  (`state-machine.md`) — both are driven by the same `OrioningProgress` event;
+  whichever screen isn't actually live no-ops on it harmlessly. The runtime
+  overlay itself is only shown when `total` exceeds `RECONNECT_OVERLAY_MIN_BYTES`
+  (200 B) — see `state-machine.md`'s Reconnect-Syncing Overlay section.
 - If `total` is absent or 0, Ori still stages-then-commits as above, but the orioning
   ring is not driven by byte progress (legacy/indeterminate).
 

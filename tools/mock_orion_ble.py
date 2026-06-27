@@ -8,6 +8,8 @@ restarting the script.
 
 Requirements:
     pip install bleak cbor2 Pillow
+    pip install winsdk   # optional, Windows only — needed for the 'm' command
+                          # (reads the current Windows now-playing media session)
 
 Usage:
     python tools/mock_orion_ble.py
@@ -21,8 +23,19 @@ Interactive commands (shown on connect):
     c  — push shortcuts (cycles through SHORTCUT_COMBOS test sets, incl. an
          unknown-token combo to exercise the fallback-icon path)
     t  — resync time (manual TimeSync-only push, RAM-only, no blackout)
+    m  — push media now (manual one-shot push of the current Windows
+         now-playing session — title, artist, embedded album art)
     f  — factory reset           (§7.2)
     q  — quit
+
+Media (Media Metadata + Media Album Art, ble-protocol.md §12) also auto-pushes
+in the background: a watcher task polls Windows' now-playing session
+(GlobalSystemMediaTransportControlsSessionManager) every 2 s and pushes
+whenever the track actually changes, mirroring how the real Orion app's
+Windows bridge reacts to OS media-change notifications. 'm' is just for
+forcing an immediate push without waiting for the next poll. Windows only;
+requires winsdk — degrades to a one-time warning (and the watcher silently
+does nothing) if it isn't installed.
 
 On connect the mock runs ONE unified sync: it sends Ori a manifest of every
 section's hash (time/profile/photo/meetings/PTO), Ori replies with the subset
@@ -74,6 +87,21 @@ except ImportError:
     _PILImage = None
     _PIL_AVAILABLE = False
 
+# Windows now-playing media (ble-protocol.md §12 — GlobalSystemMediaTransport-
+# ControlsSessionManager, the same OS API the real Orion app's Windows bridge
+# uses). Windows-only, optional — only needed for the 'm' command.
+try:
+    from winsdk.windows.media.control import (
+        GlobalSystemMediaTransportControlsSessionManager as _MediaManager,
+    )
+    from winsdk.windows.storage.streams import (
+        Buffer as _WinBuffer,
+        InputStreamOptions as _WinInputStreamOptions,
+    )
+    _WINRT_AVAILABLE = True
+except ImportError:
+    _WINRT_AVAILABLE = False
+
 # Paths to source images resolved relative to this script.
 _SCRIPT_DIR        = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT         = os.path.dirname(_SCRIPT_DIR)
@@ -111,6 +139,8 @@ UUID_PTO          = _uuid(0x0007)   # Write chunked         — encrypted
 UUID_SYNC_CTRL    = _uuid(0x0008)   # Write, Notify         — encrypted
 UUID_FACTORY_RST  = _uuid(0x0009)   # Write (response)      — encrypted
 UUID_MANIFEST     = _uuid(0x000A)   # Write, Notify         — encrypted
+UUID_MEDIA_META   = _uuid(0x000D)   # Write (response), Notify — encrypted
+UUID_ALBUM_ART    = _uuid(0x000E)   # Write NO RESPONSE only   — encrypted
 UUID_PRESENCE     = _uuid(0x000F)   # Write (response)      — encrypted
 UUID_SHORTCUTS    = _uuid(0x0010)   # Write (response)      — encrypted
 
@@ -230,6 +260,88 @@ def build_pto_photo_jpeg() -> bytes:
     print(f"  [info] PTO photo: {tw}×{th} JPEG, {len(data):,} B")
     return data
 
+def build_album_art_jpeg(raw_image_bytes: bytes) -> bytes:
+    """Crop/resize an arbitrary source image (the Windows now-playing session's
+    embedded thumbnail — any format Pillow can decode, usually JPEG or PNG) to
+    Ori's Media Album Art target: 484×216, target 15-30 KB, hard cap 64 KB
+    (ble-protocol.md §10)."""
+    if not _PIL_AVAILABLE or not raw_image_bytes:
+        return b""
+    img = _PILImage.open(io.BytesIO(raw_image_bytes)).convert("RGB")
+    w, h   = img.size
+    tw, th = 484, 216
+    if w / h > tw / th:                      # source too wide — crop sides
+        nw = int(h * tw / th)
+        img = img.crop(((w - nw) // 2, 0, (w + nw) // 2, h))
+    else:                                    # source too tall — crop top/bottom
+        nh = int(w * th / tw)
+        img = img.crop((0, (h - nh) // 2, w, (h + nh) // 2))
+    img  = img.resize((tw, th), _PILImage.LANCZOS)
+    data = _jpeg_max_quality(img, hard_cap=64 * 1024)
+    print(f"  [info] album art: {tw}×{th} JPEG, {len(data):,} B")
+    return data
+
+# ── Windows now-playing media (ble-protocol.md §12) ────────────────────────────
+
+async def _read_thumbnail_bytes(thumb_ref) -> bytes:
+    """Read a WinRT IRandomAccessStreamReference (MediaProperties.thumbnail)
+    into raw bytes. Returns b"" if there's no thumbnail."""
+    if not thumb_ref:
+        return b""
+    stream = await thumb_ref.open_read_async()
+    size = stream.size
+    if size == 0:
+        return b""
+    buf = _WinBuffer(size)
+    await stream.read_async(buf, size, _WinInputStreamOptions.READ_AHEAD)
+    return bytes(buf)
+
+async def read_now_playing_media(quiet: bool = False,
+                                  fetch_art: bool = True) -> Optional[dict]:
+    """Query the Windows GlobalSystemMediaTransportControlsSessionManager for
+    the current now-playing session — the same OS API the real Orion app's
+    Windows media bridge uses (ble-protocol.md §12). Returns
+    {"title", "artist", "can_seek", "art_jpeg"} (art_jpeg already
+    resized/recompressed to Ori's 484×216 target via build_album_art_jpeg()),
+    or None if winsdk isn't installed.
+
+    quiet=True suppresses the per-call status prints — used by media_watcher()'s
+    polling loop so it doesn't spam the console every interval.
+    fetch_art=False skips reading/re-encoding the thumbnail entirely (art_jpeg
+    comes back b"") — also for the polling loop, which only needs title/artist/
+    can_seek to detect a change; the thumbnail is fetched separately once a
+    change is confirmed."""
+    if not _WINRT_AVAILABLE:
+        if not quiet:
+            print("  [warn] winsdk not installed — can't read Windows now-playing "
+                  "media  (pip install winsdk; Windows only)")
+        return None
+    mgr = await _MediaManager.request_async()
+    session = mgr.get_current_session()
+    if not session:
+        if not quiet:
+            print("  [info] No active media session on Windows (nothing playing)")
+        return {"title": "", "artist": "", "can_seek": False, "art_jpeg": b""}
+
+    props    = await session.try_get_media_properties_async()
+    playback = session.get_playback_info()
+    can_seek = False
+    try:
+        can_seek = bool(playback.controls.is_playback_position_enabled)
+    except Exception:
+        pass
+
+    art_jpeg = b""
+    if fetch_art:
+        art_raw  = await _read_thumbnail_bytes(props.thumbnail)
+        art_jpeg = build_album_art_jpeg(art_raw) if art_raw else b""
+    return {
+        "title":    props.title or "",
+        "artist":   props.artist or "",
+        "can_seek": can_seek,
+        "art_jpeg": art_jpeg,
+    }
+
 # ── Mock data ─────────────────────────────────────────────────────────────────
 
 def _local_posix_tz() -> str:
@@ -274,6 +386,21 @@ def build_profile() -> bytes:
         "p": ("+1-555-867-5309-000" * 2)[:16],
     })
 
+def _local_midnight_epoch() -> int:
+    """Epoch (UTC) of THIS machine's local midnight, today.
+
+    Meeting hour offsets below (e.g. "09:00") are meant as local wall-clock
+    times — using UTC midnight instead (now - now % 86400) silently shifts
+    the whole sample day by the tester's UTC offset, e.g. on a UTC-7 machine
+    "09:00-17:00" actually lands at 02:00-10:00 local. Past mid-morning,
+    every sample meeting is already expired and the list shows empty —
+    easily mistaken for a sync bug. datetime.timestamp() on an aware
+    datetime always returns the correct UTC epoch regardless of tzinfo.
+    """
+    local_now = datetime.now().astimezone()
+    local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return int(local_midnight.timestamp())
+
 def build_meetings() -> bytes:
     return build_meetings_stress() if _STRESS_MEETINGS else build_meetings_realistic()
 
@@ -282,8 +409,7 @@ def build_meetings_realistic() -> bytes:
     # screen with content that actually looks like someone's calendar.
     # Keys are single chars: i=id, s=start, e=end, t=title, l=loc, o=org;
     # wrapper: d=date, m=items.
-    now      = int(datetime.now(timezone.utc).timestamp())
-    midnight = now - (now % 86400)
+    midnight = _local_midnight_epoch()
     sample = [
         ("09:00", "09:30", "Daily Standup",            "Zoom",              "Sarah Chen"),
         ("10:00", "11:00", "Q3 Roadmap Review",        "Conference Room A", "Mike Torres"),
@@ -310,8 +436,7 @@ def build_meetings_stress() -> bytes:
     # test for truncation/buffer limits, not representative of a real day.
     # Per-meeting estimate ~122 B × 32 + 19 B wrapper ≈ 3,923 B — under the
     # firmware boot buffer cap of 4,096 B (main.cpp: static uint8_t meet_buf[4096]).
-    now      = int(datetime.now(timezone.utc).timestamp())
-    midnight = now - (now % 86400)
+    midnight = _local_midnight_epoch()
     items = []
     for i in range(32):
         start = midnight + (8 + i // 2) * 3600 + (i % 2) * 1800   # 08:00–23:30
@@ -332,12 +457,18 @@ def build_meetings_stress() -> bytes:
 def build_pto(image: bytes = b"") -> bytes:
     # destination maximized to its 128-byte wire cap (ble-protocol.md §10).
     # Keys are single chars: s=start, e=end, d=destination, m=image.
-    now         = int(datetime.now(timezone.utc).timestamp())
+    #
+    # Anchored to local midnight (not raw "now") for the same reason as
+    # build_meetings_realistic(): a live wall-clock second makes start/end
+    # — and therefore the whole entry's hash — different on every call, so
+    # Ori's manifest correctly (but unhelpfully, for testing) reports PTO as
+    # changed on every single resync even though nothing actually changed.
+    midnight    = _local_midnight_epoch()
     week        = 7 * 86400
     destination = ("Tokyo, Japan — Cherry Blossom Season Adventure " * 3)[:128]
     return cbor2.dumps({
-        "s": now + week,
-        "e": now + 2 * week,
+        "s": midnight + week,
+        "e": midnight + 2 * week,
         "d": destination,
         "m": image,
     })
@@ -348,6 +479,15 @@ def build_shortcut_config(slot1: str = "vol-mute", slot2: str = "mic-mute",
     # a first sync round-trips the same value Ori already shows.
     # Keys are single chars: "1"=slot1, "2"=slot2, "3"=slot3.
     return cbor2.dumps({"1": slot1, "2": slot2, "3": slot3})
+
+def build_media_metadata(title: str, artist: str, can_seek: bool = False) -> bytes:
+    # Keys are single chars (ble-protocol.md §4): t=title, a=artist, c=can_seek.
+    # c is optional; absent = false (Ori hides the scrubber) — only include it
+    # when true, matching every other optional field in this script.
+    d = {"t": (title or "")[:192], "a": (artist or "")[:96]}
+    if can_seek:
+        d["c"] = True
+    return cbor2.dumps(d)
 
 def sha256(data: bytes) -> bytes:
     return hashlib.sha256(data).digest()
@@ -431,6 +571,25 @@ class MockOrion:
             checkpoint = ((i + 1) % self.CHUNK_WINDOW == 0) or (i == n - 1)
             await self.client.write_gatt_char(uuid, bytearray(frame), response=checkpoint)
 
+    async def write_chunked_nr(self, uuid: str, payload: bytes, label: str):
+        # Media Album Art (000E) advertises WRITE_NR only — no Write (with-
+        # response) property at all (gatt_server.cpp), so the write_chunked()
+        # checkpoint above isn't available here. Every frame is Write-No-
+        # Response; the only throttle against overrunning Ori's RX buffer is a
+        # short pause every CHUNK_WINDOW frames. Album art is small (≤ 64 KB
+        # hard cap) and non-critical (a stale/missing frame just means a
+        # blank/old art tile, not a broken sync), so this is acceptable for a
+        # test tool — the real Orion app should request WRITE on this
+        # characteristic if it needs the same ack-based pacing as the other
+        # chunked characteristics.
+        frames = make_frames(payload)
+        suffix = "empty" if not payload else f"{len(payload):,} B → {len(frames)} frame(s)"
+        print(f"  [chunk]  {label}: {suffix} (write-no-response only)")
+        for i, frame in enumerate(frames):
+            await self.client.write_gatt_char(uuid, bytearray(frame), response=False)
+            if (i + 1) % self.CHUNK_WINDOW == 0:
+                await asyncio.sleep(0.02)
+
     async def subscribe(self):
         await self.client.start_notify(UUID_DEV_STATUS, self._on_dev_status)
         await self.client.start_notify(UUID_SYNC_CTRL,  self._on_sync_ctrl)
@@ -490,6 +649,32 @@ class MockOrion:
             print(f"  [ok] Time sync applied (status {DS.get(self.last_status, '?')}).\n")
         else:
             print(f"  [warn] completion not seen (last: {DS.get(self.last_status, '?')})\n")
+
+    async def push_media(self):
+        info = await read_now_playing_media()
+        if info is None:
+            return  # winsdk missing — already warned
+        await self._send_media(info)
+
+    async def _send_media(self, info: dict):
+        # Media Metadata (000D) and Media Album Art (000E) are applied
+        # immediately on write — unlike Time/Profile/Photo/Meetings/PTO, they
+        # are NOT staged behind SyncControl{BEGIN..END} (gatt_server.cpp's
+        # handle_media_metadata/handle_album_art call straight into app_state,
+        # no g_stage involved). PSRAM-cached only, no NVS, no hash, no
+        # manifest, no blackout (ble-protocol.md §12) — so this is just two
+        # bare writes, no BEGIN/END session needed. Shared by push_media()
+        # (manual 'm') and media_watcher() (auto-push on change).
+        print(f"\n  [info] now playing: title='{info['title']}' "
+              f"artist='{info['artist']}' can_seek={info['can_seek']}")
+        meta_bytes = build_media_metadata(info["title"], info["artist"], info["can_seek"])
+        await self.write(UUID_MEDIA_META, meta_bytes, "MediaMetadata")
+
+        if info["art_jpeg"]:
+            await self.write_chunked_nr(UUID_ALBUM_ART, info["art_jpeg"], "MediaAlbumArt")
+            print("  [ok] Media metadata + album art pushed.\n")
+        else:
+            print("  [info] no album art available — sent metadata only.\n")
 
     def _print_hashes(self, profile, photo, meetings, pto):
         # No Shortcut Config entry — it's RAM-only and always resent
@@ -645,6 +830,43 @@ class MockOrion:
 
         self.disconnected = True  # signal the command loop to reconnect
 
+# ── Background media watcher ───────────────────────────────────────────────────
+
+# How often to poll Windows for a track change. winsdk/WinRT does expose native
+# change events (add_media_properties_changed), but those fire callbacks on a
+# non-asyncio COM thread — bridging them into this script's event loop reliably
+# is much more involved than a cheap poll, and a track change is not latency-
+# critical enough to justify it. Polling only fetches title/artist/can_seek
+# (fetch_art=False) until a change is actually detected, so steady-state cost
+# is one lightweight WinRT call per interval, not a JPEG re-encode.
+MEDIA_WATCH_INTERVAL_S = 2.0
+
+async def media_watcher(orion: MockOrion):
+    """Background task (started in main(), alongside command_loop()): polls
+    the current Windows now-playing session and auto-pushes MediaMetadata +
+    MediaAlbumArt whenever the track actually changes — mirrors how the real
+    Orion app's Windows bridge reacts to OS now-playing change notifications
+    (ble-protocol.md §12), so you don't have to press 'm' on every track
+    change. The first check runs immediately (no initial sleep), so whatever
+    is already playing when you connect gets pushed right away — same as
+    Orion re-pushing the current track on reconnect (§12 cache semantics)."""
+    if not _WINRT_AVAILABLE:
+        return  # 'm' already warns once if the user tries it; stay quiet here
+    last = (None, None, None)  # (title, artist, can_seek) of the last push
+    while not orion.disconnected and orion.client.is_connected:
+        info = await read_now_playing_media(quiet=True, fetch_art=False)
+        if info is None:
+            return
+        key = (info["title"], info["artist"], info["can_seek"])
+        if key != last:
+            last = key
+            print(f"\n  [watch] media changed → '{info['title']}' — {info['artist']}")
+            full = await read_now_playing_media(quiet=True, fetch_art=True)
+            if full is None:
+                return
+            await orion._send_media(full)
+        await asyncio.sleep(MEDIA_WATCH_INTERVAL_S)
+
 # ── Interactive command loop ──────────────────────────────────────────────────
 
 MENU = """
@@ -653,6 +875,8 @@ Commands:
   p — push presence   (cycle AVAILABLE -> BUSY -> AWAY -> OFFLINE -> ...)
   c — push shortcuts   (cycle through SHORTCUT_COMBOS test sets)
   t — resync time     (manual TimeSync-only push)
+  m — push media now  (manual one-shot; media also auto-pushes in the
+                        background on every track change — see media_watcher)
   f — factory reset   (§7.2)
   q — quit
 """
@@ -683,6 +907,8 @@ async def command_loop(orion: MockOrion):
             await orion.push_shortcuts(slot1, slot2, slot3)
         elif cmd == "t":
             await orion.push_time_sync()
+        elif cmd == "m":
+            await orion.push_media()
         elif cmd == "f":
             await orion.run_factory_reset()
             # Don't reprint menu — factory reset exits the loop.
@@ -690,7 +916,7 @@ async def command_loop(orion: MockOrion):
             print("  Goodbye.")
             break
         elif cmd:
-            print("  Unknown command. Type s / p / c / t / f / q")
+            print("  Unknown command. Type s / p / c / t / m / f / q")
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -781,7 +1007,16 @@ async def main(args):
         # send only those. Running it immediately also satisfies Ori's first-pair
         # BEGIN handshake deadline. Re-run anytime with 's'.
         await orion.run_sync()
-        await command_loop(orion)
+
+        watcher_task = asyncio.create_task(media_watcher(orion))
+        try:
+            await command_loop(orion)
+        finally:
+            watcher_task.cancel()
+            try:
+                await watcher_task
+            except asyncio.CancelledError:
+                pass
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING)

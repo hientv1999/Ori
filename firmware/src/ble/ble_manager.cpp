@@ -29,6 +29,8 @@
 #include "state_machine.h"
 #include "factory_reset.h"
 #include "screens/screen_setup.h"
+#include "screens/screen_reconnect_syncing.h"
+#include "screens/screen_media_mode.h"
 #include "widgets/widget_profile_card.h"
 
 // ── BLE device name ────────────────────────────────────────────────────────
@@ -47,6 +49,7 @@ enum class BleEventType : uint8_t {
     None = 0,
     FactoryReset,
     PresenceUpdate,
+    MediaMetaUpdated,  // MediaMetadata write applied to app_state — repaint media screen
     AlbumArt,
     PhotoReceived,      // profile photo JPEG — forward to photo_cache::store()
     PtoPhotoReceived,   // PTO destination JPEG (or len=0 = no photo)
@@ -74,6 +77,7 @@ struct BleEvent {
         uint16_t conn_handle;
         uint8_t  pct;            // OrioningProgress
         bool     light_refresh;  // SyncEnd — see ble_post_sync_end_event()
+        uint32_t total_bytes;    // SyncBegin — declared total from SyncControl{BEGIN}
     } data;
     uint8_t peer_addr[6]; // populated for bonded events
 };
@@ -123,6 +127,13 @@ uint8_t g_iphone_wipe_addr[6]  = {};
 
 // Current passkey for display.
 uint32_t g_passkey = 0;
+
+// Minimum SyncControl{BEGIN} declared total (bytes) to show the runtime
+// "Refreshing your day" overlay (see SyncBegin handling in poll()). Time Sync
+// + Shortcut Config alone — sent unconditionally on every periodic refresh,
+// ble-protocol.md §6.3 — run well under 100 bytes combined; any sync that
+// also carries Profile/Photo/Meetings/PTO is comfortably over this.
+constexpr uint32_t RECONNECT_OVERLAY_MIN_BYTES = 200;
 
 // Flag for deferred restart (factory reset from BLE callback).
 volatile bool g_restart_pending = false;
@@ -542,16 +553,27 @@ void poll() {
                 break;
             }
 
+            case BleEventType::MediaMetaUpdated: {
+                // gatt_server::handle_media_metadata() already wrote the new
+                // title/artist/can_seek into app_state (a plain struct copy,
+                // safe from the NimBLE host task) but couldn't call
+                // screen_media_mode::update_meta() itself — it touches LVGL
+                // labels, which must only happen on the main task. Re-read
+                // the now-current value and paint it.
+                const auto& m = app_state::media();
+                screen_media_mode::update_meta(m.title, m.artist);
+                break;
+            }
+
             case BleEventType::AlbumArt:
-                // Album art JPEG received — post to media mode screen.
-                // The buf was allocated in PSRAM by chunked_transfer.
-                // Screen will decode via LVGL TJPGD.
-                // TODO (M7 integration): call screen_media_mode::set_album_art().
+                // Album art JPEG received — buf was allocated in PSRAM by
+                // chunked_transfer. set_album_art() decodes it (LVGL TJPGD)
+                // and displays it if the media screen is active; it always
+                // takes ownership and frees jpeg_buf internally either way.
                 if (ev.data.art.buf) {
                     LOG("[ble] AlbumArt received %u bytes\n",
                                    (unsigned)ev.data.art.len);
-                    // For now, free the buffer — art display wired at M7 integration.
-                    heap_caps_free(ev.data.art.buf);
+                    screen_media_mode::set_album_art(ev.data.art.buf, ev.data.art.len);
                 }
                 break;
 
@@ -583,11 +605,16 @@ void poll() {
                 break;
 
             case BleEventType::OrionConnected:
-                LOG("[ble:poll] Orion connected — begin reconnect sync\n");
+                LOG("[ble:poll] Orion connected\n");
                 state_machine::set_pc_connected(true);
-                state_machine::on_reconnect_begin();
-                // The GATT Manifest flow will call on_reconnect_end() when done.
-                // Set Device Status to RUNTIME_RECONNECTING.
+                // Notify Device Status = RUNTIME_RECONNECTING per ble-protocol.md
+                // §6.2 — this is just the wire-protocol status Orion sees. The
+                // "Refreshing your day" overlay itself is NOT shown here: BLE
+                // connecting doesn't guarantee Orion (the app) is actually
+                // running in the background to ever send a BEGIN — showing the
+                // overlay now could leave it stuck with nothing to dismiss it.
+                // It's triggered instead by SyncBegin below, on the real
+                // SyncControl{BEGIN} frame.
                 gatt_server::set_device_status(0x11); // RUNTIME_RECONNECTING
                 // Read Presence Status from Orion (source of truth on reconnect).
                 // Orion will push it; until then show Offline.
@@ -633,13 +660,24 @@ void poll() {
                 break;
 
             case BleEventType::SyncBegin:
-                LOG("[ble:poll] sync begin\n");
-                // Setup only: defer the Orioning modal so the "Connect on Orion"
-                // screen gets its guaranteed beat (poll() shows it once
-                // CONNECT_ORION_MIN_MS has elapsed since bonding). The runtime
-                // reconnect path uses the reconnect overlay, not this modal.
+                LOG("[ble:poll] sync begin (total=%u)\n", (unsigned)ev.data.total_bytes);
                 if (nvs::is_first_boot()) {
+                    // Setup only: defer the Orioning modal so the "Connect on
+                    // Orion" screen gets its guaranteed beat (poll() shows it
+                    // once CONNECT_ORION_MIN_MS has elapsed since bonding).
                     g_orioning_pending = true;
+                } else if (ev.data.total_bytes > RECONNECT_OVERLAY_MIN_BYTES) {
+                    // Runtime: this is the actual SyncControl{BEGIN} frame —
+                    // the real start of a sync, as opposed to merely a BLE
+                    // connection (Orion's background service might not even
+                    // be running yet). Show the "Refreshing your day" overlay
+                    // now, but only for syncs big enough to actually be worth
+                    // it — Time Sync and Shortcut Config alone (sent
+                    // unconditionally every periodic refresh, §6.3) total well
+                    // under this, and those were deliberately built to be
+                    // invisible (no blackout, no rebuild). Any sync that also
+                    // carries Profile/Photo/Meetings/PTO is comfortably larger.
+                    state_machine::on_reconnect_begin();
                 }
                 break;
 
@@ -672,7 +710,12 @@ void poll() {
                 break;
 
             case BleEventType::OrioningProgress:
+                // Only one of these two is ever the live screen at a time — the
+                // other no-ops safely (update_orioning_progress checks for a
+                // SetupState* user_data; set_progress checks its own module-level
+                // ring pointer, cleared on screen delete).
                 screen_setup::update_orioning_progress(lv_scr_act(), ev.data.pct);
+                screen_reconnect_syncing::set_progress(ev.data.pct);
                 break;
 
             case BleEventType::IphoneBonded: {
@@ -1180,6 +1223,15 @@ void ble_post_presence_event(widget_profile_card::Presence p) {
     eq_push(ev);
 }
 
+// Deferred media-screen repaint after handle_media_metadata() updates
+// app_state on the NimBLE host task (no payload — the main task re-reads
+// app_state::media()).
+void ble_post_media_meta_event() {
+    BleEvent ev = {};
+    ev.type = BleEventType::MediaMetaUpdated;
+    eq_push(ev);
+}
+
 // Deferred album art delivery (from AlbumArt chunked callback).
 void ble_post_album_art_event(uint8_t* buf, size_t len) {
     BleEvent ev = {};
@@ -1208,10 +1260,11 @@ void ble_post_pto_photo_event(uint8_t* buf, size_t len) {
     eq_push(ev);
 }
 
-// Deferred SyncControl BEGIN — show orioning modal on main task.
-void ble_post_sync_begin_event() {
+// Deferred SyncControl BEGIN — show orioning modal / reconnect overlay on main task.
+void ble_post_sync_begin_event(uint32_t total_bytes) {
     BleEvent ev = {};
     ev.type = BleEventType::SyncBegin;
+    ev.data.total_bytes = total_bytes;
     eq_push(ev);
 }
 

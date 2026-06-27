@@ -36,13 +36,24 @@ Left panel: PTO destination scenic image fills the full panel. A frosted-dark ca
 - High-priority states (OTA, PTO) override Clock; meeting list updates do not exit Clock.
 
 ### Reconnect-Syncing Overlay
-- Trigger: BLE link to Orion re-established; Device Status = `RUNTIME_RECONNECTING` (see `ble-protocol.md` §6.2).
-- Display: circular progress ring overlaying the left panel. Copy: **"Reconnecting to Orion…"** / **"Refreshing your day"**.
-- **Only shown when there is cached meeting data to refresh** (a runtime
-  disconnect that kept meetings in RAM). After a power cycle the meeting list is
-  empty (meetings are RAM-only), so "Refreshing your day" would be misleading —
-  the device stays on **"No meetings today"** and the list simply populates when
-  the sync arrives, no overlay.
+- Trigger: a real `SyncControl{op:"BEGIN"}` frame, NOT the underlying BLE
+  connection — Orion's background service might not even be running yet when
+  the BLE link comes up, so the overlay waits for actual proof a sync is
+  starting (see `ble-protocol.md` §6.2). Only shown when the BEGIN's declared
+  `total` exceeds `RECONNECT_OVERLAY_MIN_BYTES` (200 B, `ble_manager.cpp`) —
+  Time Sync + Shortcut Config alone, sent unconditionally on every periodic
+  refresh (`ble-protocol.md` §6.3), total well under that and were
+  deliberately built to be invisible (no blackout, no rebuild); any sync that
+  also carries Profile/Photo/Meetings/PTO is comfortably larger.
+- Display: circular progress ring overlaying the left panel. Copy: **"Reconnecting to Orion…"** / **"Refreshing your day"**. The ring is driven by real byte progress as data is written into the PSRAM staging buffers — same `received/total` mechanism and `OrioningProgress` event as the Step 2/3 Orioning ring (`ble-protocol.md` §6.0). Capped at 99% until the sync commits at `END`, then jumps to 100% just before the overlay dismisses.
+- **Shown on every qualifying resync** — including the very first sync after a
+  fresh boot, when the meeting list is still empty (meetings are RAM-only).
+  Profile, Photo, and PTO are NVS-backed and can be large enough that the sync
+  takes a while and ends in a display blackout for the flash commit
+  (`ble-protocol.md` §6.0); without the overlay the user would otherwise sit
+  on a static "No meetings today" and then have the screen go black with no
+  explanation. `on_reconnect_end()` re-evaluates to the real meeting list (or
+  back to "No meetings today") once the sync finishes.
 - Auto-dismisses when Device Status returns to `RUNTIME_READY` (typically <500 ms when nothing changed).
 - Not user-dismissable; touch on overlay is inert.
 - Does **not** appear for periodic in-session refreshes.

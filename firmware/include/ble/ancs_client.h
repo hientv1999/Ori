@@ -14,7 +14,8 @@
 //   - Notification ICONS only — never content or counts displayed on the icon
 //   - Tapping an icon fires an ANCS GetNotificationAttributes request for the
 //     Title and Body, which are shown in modal_ancs_notification
-//   - MAX_ANCS_NOTIFICATIONS = 20 queue depth; MAX_ANCS_ICONS = 5 visible
+//   - MAX_ANCS_NOTIFICATIONS = 50 queue depth (PSRAM-backed detail store);
+//     MAX_ANCS_ICONS = 5 visible
 //
 // This module also handles the BLE connection setup for the iPhone link
 // (separate from the Orion link).

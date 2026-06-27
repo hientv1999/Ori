@@ -4,6 +4,7 @@
 #include <string.h>
 #include <time.h>
 #include <esp_mac.h>
+#include <esp_heap_caps.h>
 
 namespace app_state {
 
@@ -35,7 +36,19 @@ struct AncsDetailEntry {
     uint32_t seq;            // insertion order — higher = more recent
     bool     used;
 };
-static AncsDetailEntry  k_detail[MAX_ANCS_NOTIFICATIONS] = {};
+// Backing storage lives in PSRAM (allocated by app_state::init()) — at
+// MAX_ANCS_NOTIFICATIONS=50 entries this is ~38 KB, which would otherwise sit
+// in scarce internal SRAM for the life of the firmware. A thin span wrapper
+// keeps every existing `for (auto& e : k_detail)` loop and `k_detail[i]`
+// access unchanged.
+struct DetailArray {
+    AncsDetailEntry* data = nullptr;
+    size_t           n    = 0;
+    AncsDetailEntry*       begin()       { return data; }
+    AncsDetailEntry*       end()         { return data + n; }
+    AncsDetailEntry&       operator[](size_t i)       { return data[i]; }
+};
+static DetailArray      k_detail;
 static uint32_t         k_detail_seq = 0;
 static AncsNotification k_detail_view;  // const-char* view returned by ancs_notification()
 
@@ -80,6 +93,22 @@ static void format_notif_time(time_t when, time_t now,
                               char* out, size_t sz);
 
 } // namespace
+
+void init() {
+    if (k_detail.data) return;  // idempotent
+    k_detail.data = static_cast<AncsDetailEntry*>(
+        heap_caps_calloc(MAX_ANCS_NOTIFICATIONS, sizeof(AncsDetailEntry),
+                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (k_detail.data) {
+        k_detail.n = MAX_ANCS_NOTIFICATIONS;
+    } else {
+        // PSRAM exhausted (shouldn't happen — this is ~38 KB out of 8 MB).
+        // Fall back to a tiny SRAM store rather than crash on every ANCS event.
+        static AncsDetailEntry s_fallback[4] = {};
+        k_detail.data = s_fallback;
+        k_detail.n = 4;
+    }
+}
 
 const char* ble_name() {
     // Canonical Ori BLE name — single source of truth for both the advertised
@@ -196,6 +225,16 @@ uint8_t ancs_category(uint32_t uid) {
 bool ancs_is_important(uint32_t uid) {
     for (auto& e : k_detail) if (e.used && e.uid == uid) return e.important;
     return false;
+}
+
+time_t ancs_recv_epoch(uint32_t uid) {
+    for (auto& e : k_detail) if (e.used && e.uid == uid) return e.recv_epoch;
+    return 0;
+}
+
+const char* ancs_title(uint32_t uid) {
+    for (auto& e : k_detail) if (e.used && e.uid == uid) return e.title;
+    return "";
 }
 
 void remove_ancs_detail(uint32_t uid) {

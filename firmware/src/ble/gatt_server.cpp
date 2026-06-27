@@ -31,9 +31,10 @@
 
 void ble_post_factory_reset_event();
 void ble_post_presence_event(widget_profile_card::Presence p);
+void ble_post_media_meta_event();
 void ble_post_album_art_event(uint8_t* buf, size_t len);
 void ble_post_photo_event(uint8_t* buf, size_t len);
-void ble_post_sync_begin_event();
+void ble_post_sync_begin_event(uint32_t total_bytes);
 void ble_post_sync_commit_event();
 void ble_post_sync_end_event(bool light_refresh);
 void ble_post_orioning_progress(uint8_t pct);
@@ -312,16 +313,21 @@ static void stage_begin(uint32_t total_bytes) {
     g_stage.total_bytes = total_bytes;
 }
 
-// Account for `n` newly received application-payload bytes and, while the
-// setup orioning modal is on screen, post byte-accurate progress (capped at
-// 99% — 100% is posted only after stage_commit() finishes at END). Gating on
-// DS_SETUP_SYNCING avoids posting to update_orioning_progress() when the
-// active screen's user_data isn't a SetupState* (reconnect / media mode).
+// Account for `n` newly received application-payload bytes (written into the
+// PSRAM staging buffers as they arrive) and post byte-accurate progress
+// (capped at 99% — 100% is posted only after stage_commit() finishes at
+// END). No device-status gate here: a sync session is fully described by
+// g_stage.active/total_bytes, and ble_manager fans OrioningProgress out to
+// both the setup Orioning ring and the runtime reconnect overlay's ring —
+// whichever one isn't actually the live screen no-ops safely on its own.
+// (Device status during a runtime sync is DS_RUNTIME_SYNCING, set by the
+// BEGIN handler below — gating on DS_RUNTIME_RECONNECTING here, the status
+// notified at the BLE-connection moment *before* BEGIN, silently dropped
+// every runtime progress update.)
 static void stage_add_bytes(uint16_t n) {
     if (!g_stage.active) return;
     g_stage.received_bytes += n;
     if (g_stage.total_bytes == 0) return;
-    if (g_device_status != DS_SETUP_SYNCING) return;
 
     uint32_t pct = (uint32_t)((uint64_t)g_stage.received_bytes * 100u / g_stage.total_bytes);
     if (pct > 99) pct = 99;
@@ -363,7 +369,7 @@ static bool stage_commit() {
         apply_shortcuts_cbor(g_stage.shortcut_cbor, g_stage.shortcut_len);
     }
 
-    if (g_stage.total_bytes > 0 && g_device_status == DS_SETUP_SYNCING) {
+    if (g_stage.total_bytes > 0) {
         ble_post_orioning_progress(100);
     }
 
@@ -639,8 +645,9 @@ private:
                                       : DS_RUNTIME_SYNCING;
                 gatt_server::set_device_status(new_status);
             }
-            // Defer orioning modal to main task (LVGL must not be called from NimBLE task).
-            ble_post_sync_begin_event();
+            // Defer orioning modal / reconnect overlay to main task (LVGL must
+            // not be called from NimBLE task).
+            ble_post_sync_begin_event((uint32_t)total);
 
         } else if (strcmp(op, "END") == 0) {
             g_sync_in_progress = false;
@@ -863,6 +870,10 @@ private:
         ui::sanitize_text(title,  ftitle,  sizeof(ftitle));
         ui::sanitize_text(artist, fartist, sizeof(fartist));
         app_state::set_media_meta(ftitle, fartist, can_seek);
+        // app_state write is a plain struct copy (safe from this NimBLE host
+        // task), but painting it onto the live screen touches LVGL labels —
+        // defer that to the main task.
+        ble_post_media_meta_event();
     }
 
     // ── Media Album Art (char 000E) — chunked raw JPEG ─────────────────────
