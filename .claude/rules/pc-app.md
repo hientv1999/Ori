@@ -45,7 +45,7 @@ When Orion is not running, Ori falls back to cached data. See `connectivity.md` 
 - **Controls-mode state push**: mirror OS state to Ori so the Controls UI stays accurate:
   - Volume changes: `IAudioEndpointVolumeCallback` (Win) / `AudioObjectAddPropertyListener` (macOS) → debounce ~100 ms → write `HostVolumeState { level, mute }`.
   - Track changes: `GlobalSystemMediaTransportControlsSessionManager` (Win) / `MRMediaRemoteRegisterForNowPlayingNotifications` (macOS) → write `MediaMetadata { title, artist }` + resize thumbnail to 180 × 180, JPEG-encode (~8–15 KB), chunk-write to `MediaAlbumArt`.
-- **Media-mode shortcut configuration UI**: settings pane where the user assigns each of the three shortcut slots an icon (displayed on Ori) and a host-side action. The mapping is local to Orion. The chosen icon for each slot is written to Ori so the device knows what to render.
+- **Media-mode shortcut configuration UI**: settings pane where the user assigns each of the three shortcut slots an icon (displayed on Ori) and a host-side action. The host-side action mapping is local to Orion. The chosen icon token for each slot is written to Ori via **Shortcut Config** (`ble-protocol.md` §3/§12) — Orion just resends it unconditionally on every sync (RAM-only on Ori, no hash, like Time Sync); it's cheap enough that hash-checking it isn't worth the protocol complexity.
 - **BLE backward-compatibility**: every Orion release must be able to GATT-connect to every prior `proto_major.proto_minor` that has shipped. Rationale: Orion → USB CDC is the only firmware-update path — if Orion can't connect to an older Ori, the user is stuck. If a `proto_major` bump is ever needed, the prior GATT layout must remain supported in Orion alongside the new one.
 
 ## Cross-Reference

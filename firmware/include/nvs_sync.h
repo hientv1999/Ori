@@ -25,7 +25,6 @@
 //   "p_titl" — string: profile title (≤64 bytes)
 //   "p_email"— string: profile email (≤128 bytes, optional)
 //   "p_phone"— string: profile phone (≤32 bytes, optional)
-//   "tz"     — string: IANA timezone (e.g. "Europe/Lisbon")
 //   "epoch"  — uint32: last synced UTC epoch (for displaying SYNCED pill)
 
 namespace nvs_sync {
@@ -49,10 +48,6 @@ bool load_profile(char* out_name,  size_t name_sz,
                   char* out_email, size_t email_sz,
                   char* out_phone, size_t phone_sz);
 
-// Timezone string (IANA, e.g. "America/New_York").
-void save_tz(const char* tz);
-bool load_tz(char* out, size_t sz);
-
 // Last synced epoch (for the "SYNCED · X min ago" pill).
 void  save_epoch(uint32_t epoch_utc);
 uint32_t load_epoch();
@@ -74,6 +69,5 @@ extern const char* const HASH_KEY_PROFILE;
 extern const char* const HASH_KEY_PHOTO;
 extern const char* const HASH_KEY_MEETINGS;
 extern const char* const HASH_KEY_PTO;
-extern const char* const HASH_KEY_SHORTCUTS;
 
 } // namespace nvs_sync

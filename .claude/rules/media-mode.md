@@ -70,7 +70,9 @@ Centred, ~10 px below art. Single-line ellipsis only — no wrapping.
 
 Three icon-only square buttons, 82 px tall, 14 px gap, full row width (~152 px wide each in firmware). 8 px top padding, 10 px bottom padding. Each emits `KeyboardCommand{op:"shortcut", arg:1|2|3}`; Orion runs the configured action.
 
-**Icon assets are compiled into firmware flash.** Ori ships with a fixed set of icon glyphs. Orion's settings UI lets the user pick one per slot from that set and communicates the selection to Ori as an icon ID. Adding new icon types to the available set requires a firmware update — there is no runtime asset delivery path.
+**Icon assets are compiled into firmware flash.** Ori ships with a fixed set of icon glyphs. Orion's settings UI lets the user pick one per slot from that set and writes the selection to Ori as an icon token over **Shortcut Config** (`ble-protocol.md` §3/§12) — staged like Profile Info, but RAM-only and sent unconditionally on every sync, like Time Sync (no NVS, no hash, no manifest entry — see `ble-protocol.md` §6.0). Adding new icon types to the available set requires a firmware update — there is no runtime asset delivery path.
+
+**Unrecognized token → hide the slot.** If a token doesn't match any compiled-in icon (e.g. Orion and firmware drift out of sync on the supported set), Ori hides that slot's button entirely rather than showing a placeholder — the remaining valid slot(s) stay centred in the row. The sync itself doesn't reject unknown tokens; only rendering treats them as absent.
 
 Supported icon tokens (5 total):
 

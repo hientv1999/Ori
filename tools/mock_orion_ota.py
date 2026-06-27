@@ -50,10 +50,9 @@ import cbor2
 
 # ── Defaults (this bench) ─────────────────────────────────────────────────────
 
-DEFAULT_PORT  = "COM72"  # this bench's Ori; override with --port
+DEFAULT_PORT  = "COM3"  # this bench's Ori; override with --port
 DEFAULT_FIRMWARE = (
-    r"C:\Users\xander.to\Documents\PlatformIO\Projects\Ori"
-    r"\firmware\.pio\build\ori\firmware.bin"
+    r"..\firmware\.pio\build\ori\firmware.bin"
 )  # default build output; pass a path to override
 
 # Must match ORI_FW_VERSION in firmware/include/fw_version.h — used by the

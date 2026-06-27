@@ -75,6 +75,27 @@ Draw buffer is in PSRAM (not static SRAM) because NVS flash writes temporarily d
 
 ---
 
+## Debugging Guru Meditation Crashes
+
+Resolve panic backtraces against the real build (addresses often point into
+framework/library code, not just `firmware/src`):
+
+```bash
+"/c/Users/hient/.platformio/packages/toolchain-xtensa-esp-elf/bin/xtensa-esp32s3-elf-addr2line.exe" \
+  -pfiC -e firmware/.pio/build/ori/firmware.elf <addr> [<addr> ...]
+```
+
+**Known crash family:** `notify()` on any GATT char can synchronously run NimBLE's
+CCCD-persist-to-NVS chain (`ble_gatts_chr_updated → ble_store_write_cccd →
+ble_store_config_persist_cccds`) on whatever task called it. With 2 bonded peers
+reconnecting at once (power-cycle reconnect — never happens during setup, since
+peers bond one at a time there), this chain got deep enough to overflow first the
+NimBLE host task (fixed: stack 4096→16384 in `platformio.ini`), then later the
+Arduino loop task (fixed: `getArduinoLoopTaskStackSize()` override → 16384 in
+`main.cpp`). If a backtrace touches `ble_store_config_persist_cccds`, suspect this.
+
+---
+
 ## Wordmark
 
 Lowercase `ori` text; "o" and "i" in primary text colour, "r" in accent gold `#E0B86A` (`theme::COLOR_ACCENT`). Flanking gradient lines on setup screens. Used as the album-art empty-state placeholder (centred on dark gradient) and the Orion app icon.

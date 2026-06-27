@@ -600,8 +600,8 @@ void set_meetings_cbor(const uint8_t* buf, size_t len) {
 
     // Meetings are RAM-only (see header): no NVS write here.
 
-    // Parse CBOR: { "date": uint, "items": [ { "start": uint, "end": uint,
-    //   "title": text, "loc": text, "org": text }, ... ] }
+    // Parse CBOR: { "d":date, "m":[ { "i":id, "s":start, "e":end,
+    //   "t":title, "l":loc, "o":org }, ... ] }
     CborParser parser;
     CborValue  root;
     if (cbor_parser_init(buf, len, 0, &parser, &root) != CborNoError) return;
@@ -620,7 +620,7 @@ void set_meetings_cbor(const uint8_t* buf, size_t len) {
         cbor_value_copy_text_string(&map, key, &key_len, &map);
         if (cbor_value_at_end(&map)) break;
 
-        if (strcmp(key, "items") == 0 && cbor_value_is_array(&map)) {
+        if (strcmp(key, "m") == 0 && cbor_value_is_array(&map)) {
             items_val = map;
             found_items = true;
         }
@@ -648,23 +648,28 @@ void set_meetings_cbor(const uint8_t* buf, size_t len) {
             cbor_value_copy_text_string(&field, fkey, &fkey_len, &field);
             if (cbor_value_at_end(&field)) break;
 
-            if (strcmp(fkey, "start") == 0 && cbor_value_is_unsigned_integer(&field)) {
+            if (strcmp(fkey, "s") == 0 && cbor_value_is_unsigned_integer(&field)) {
                 uint64_t v; cbor_value_get_uint64(&field, &v);
                 rt.start_epoch = (uint32_t)v;
                 epoch_to_hhmm(rt.start_epoch, rt.start_str, sizeof(rt.start_str));
-            } else if (strcmp(fkey, "end") == 0 && cbor_value_is_unsigned_integer(&field)) {
+            } else if (strcmp(fkey, "e") == 0 && cbor_value_is_unsigned_integer(&field)) {
                 uint64_t v; cbor_value_get_uint64(&field, &v);
                 rt.end_epoch = (uint32_t)v;
                 epoch_to_hhmm(rt.end_epoch, rt.end_str, sizeof(rt.end_str));
-            } else if (strcmp(fkey, "title") == 0 && cbor_value_is_text_string(&field)) {
+            } else if (strcmp(fkey, "t") == 0 && cbor_value_is_text_string(&field)) {
                 copy_text_truncated(&field, rt.title, sizeof(rt.title));
-            } else if (strcmp(fkey, "loc") == 0 && cbor_value_is_text_string(&field)) {
+            } else if (strcmp(fkey, "l") == 0 && cbor_value_is_text_string(&field)) {
                 copy_text_truncated(&field, rt.loc, sizeof(rt.loc));
-            } else if (strcmp(fkey, "org") == 0 && cbor_value_is_text_string(&field)) {
+            } else if (strcmp(fkey, "o") == 0 && cbor_value_is_text_string(&field)) {
                 copy_text_truncated(&field, rt.org, sizeof(rt.org));
             }
             if (!cbor_value_at_end(&field)) cbor_value_advance(&field);
         }
+        // cbor_value_leave_container() already advances `item` past this
+        // meeting's map onto the next array element (or end-of-array) — an
+        // extra cbor_value_advance(&item) here double-advances, silently
+        // skipping every other meeting on even-length lists and asserting
+        // (advancing past an already-exhausted iterator) on odd-length ones.
         cbor_value_leave_container(&item, &field);
 
         // Drop unrenderable glyphs (emoji, CJK, …) from the displayed fields.
@@ -680,7 +685,6 @@ void set_meetings_cbor(const uint8_t* buf, size_t len) {
             false   // in_progress — computed in filtered_meetings()
         };
         ++count;
-        cbor_value_advance(&item);
     }
 
     g_rt_count = count;

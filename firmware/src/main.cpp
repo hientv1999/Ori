@@ -26,6 +26,7 @@
 #include "ori_log.h"
 #include <lvgl.h>
 
+#include "app_state.h"
 #include "backlight.h"
 #include "ble/ble_manager.h"
 #include "lcd_panel.h"
@@ -41,6 +42,18 @@
 #include "state_machine.h"
 #include "widgets/widget_profile_card.h"
 #include "touch_gt911.h"
+
+// Arduino-ESP32 defaults the loop task to an 8192-byte stack. ble_manager::poll()
+// calls gatt_server::set_device_status() -> NimBLECharacteristic::notify(), which
+// can synchronously walk into NimBLE's ble_store_config_persist_cccds() -> NVS
+// flash write when a bonded peer's CCCD is dirty after reconnect — the same call
+// chain that overflowed the *NimBLE host task*'s 4096-byte stack with two bonded
+// peers reconnecting at once (see CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE in
+// platformio.ini). That fix only widened the host task; this widens the loop
+// task to the same 16384 bytes for the identical worst case reached via notify().
+size_t getArduinoLoopTaskStackSize(void) {
+    return 16384;
+}
 
 // Print a one-line memory snapshot to Serial.
 static void mem_snapshot(const char* tag) {
@@ -114,6 +127,9 @@ void setup() {
             LOG("[boot] profile loaded: name=%s title=%s\n", name, title);
         }
     }
+    // Shortcut Config is RAM-only (ble-protocol.md §6.0, like Meeting List) —
+    // no NVS load here. app_state's compiled-in defaults (vol-mute/mic-mute/
+    // screenshot) hold until Orion's next sync re-pushes it.
     // Mount LittleFS before any photo_cache call — user photos live there.
     photo_cache::mount_fs();
     // Placeholders (compiled into firmware flash) decoded first so init() can

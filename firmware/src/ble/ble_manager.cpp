@@ -72,7 +72,8 @@ struct BleEvent {
         widget_profile_card::Presence presence;
         struct { uint8_t* buf; size_t len; } art;
         uint16_t conn_handle;
-        uint8_t  pct;   // OrioningProgress
+        uint8_t  pct;            // OrioningProgress
+        bool     light_refresh;  // SyncEnd — see ble_post_sync_end_event()
     } data;
     uint8_t peer_addr[6]; // populated for bonded events
 };
@@ -658,6 +659,13 @@ void poll() {
                     screen_setup::update_orioning_progress(lv_scr_act(), 100);
                     screen_setup::hide_orioning_modal(lv_scr_act());
                     screen_setup::set_step(lv_scr_act(), screen_setup::Step::PhonePairing);
+                } else if (ev.data.light_refresh) {
+                    // Only Shortcut Config changed — apply_shortcuts_cbor()
+                    // already updated the shortcuts row in place. Skip the
+                    // disruptive full screen rebuild; just redraw the
+                    // existing (already-correct) screen to restore it from
+                    // run_staged_commit()'s blackout() before the NVS write.
+                    lv_obj_invalidate(lv_scr_act());
                 } else {
                     state_machine::on_reconnect_end();
                 }
@@ -667,8 +675,14 @@ void poll() {
                 screen_setup::update_orioning_progress(lv_scr_act(), ev.data.pct);
                 break;
 
-            case BleEventType::IphoneBonded:
+            case BleEventType::IphoneBonded: {
                 LOG("[ble:poll] iPhone bonded\n");
+                // Capture BEFORE dismiss_phone_pairing() below — on first-boot
+                // setup it synchronously builds the Complete screen, whose
+                // build_complete() calls nvs::mark_setup_complete() immediately,
+                // flipping is_first_boot() to false right then. Checking after
+                // that call would always see false and never fire this fix.
+                bool was_first_boot = nvs::is_first_boot();
                 // Persist the iPhone bond slot here, on the main task. The host
                 // task already updated the RAM cache in on_iphone_bonded(); this
                 // commits it to NVS off the host-task stack.
@@ -689,7 +703,35 @@ void poll() {
                 // left the passkey modal stuck on screen forever (and first-boot
                 // only advanced via the Skip button).
                 screen_setup::dismiss_phone_pairing(lv_scr_act());
+
+                // iOS quirk: it doesn't reliably flush the ANCS notification
+                // backlog (the "PreExisting" replay) on the SAME connection
+                // where the bond was just created — only on connections after
+                // that (a power-cycle reconnect proves the firmware-side
+                // backlog handling above already works correctly). Force that
+                // "after the first" condition immediately: drop this fresh
+                // bond a moment after NS/DS subscribe, then let the existing
+                // bonded-disconnect → restart_advertising() → iOS auto-
+                // reconnect path bring it straight back. The status bar is
+                // hidden during setup, so this brief blip is invisible.
+                //
+                // Only on initial setup (Step 4) — NOT a runtime re-pair.
+                // The backlog-on-first-bond quirk is specifically a first-boot
+                // condition; a runtime re-pair hasn't been confirmed to need
+                // (or want) a surprise reconnect blip on an otherwise-live device.
+                if (was_first_boot) {
+                    uint16_t handle = ev.data.conn_handle;
+                    lv_timer_t* t = lv_timer_create([](lv_timer_t* timer) {
+                        uint16_t h = (uint16_t)(uintptr_t)lv_timer_get_user_data(timer);
+                        LOG("[ble] forcing iPhone reconnect to flush ANCS backlog (handle=%u)\n",
+                            (unsigned)h);
+                        NimBLEDevice::getServer()->disconnect(h);
+                        lv_timer_delete(timer);
+                    }, 500, (void*)(uintptr_t)handle);
+                    lv_timer_set_repeat_count(t, 1);
+                }
                 break;
+            }
 
             case BleEventType::OrionDisconnected:
                 LOG("[ble:poll] Orion disconnected\n");
@@ -1185,10 +1227,13 @@ void ble_post_sync_commit_event() {
 }
 
 // Posted by gatt_server::run_staged_commit() — advance setup step or dismiss
-// reconnect overlay now that staged data has been committed.
-void ble_post_sync_end_event() {
+// reconnect overlay now that staged data has been committed. light_refresh
+// is true when Shortcut Config was the only item with a screen-visible
+// effect in this sync — see stage_commit()'s doc comment.
+void ble_post_sync_end_event(bool light_refresh) {
     BleEvent ev = {};
     ev.type = BleEventType::SyncEnd;
+    ev.data.light_refresh = light_refresh;
     eq_push(ev);
 }
 

@@ -12,9 +12,15 @@ Requirements:
 Usage:
     python tools/mock_orion_ble.py
     python tools/mock_orion_ble.py --address AA:BB:CC:DD:EE:FF
+    python tools/mock_orion_ble.py --presence 1   # push BUSY on connect
+    python tools/mock_orion_ble.py --stress-meetings   # 32 max-length meetings instead of 5 realistic ones
 
 Interactive commands (shown on connect):
     s  — sync now (hash-driven delta; also runs automatically on connect)
+    p  — push presence (cycles AVAILABLE -> BUSY -> AWAY -> OFFLINE -> ...)
+    c  — push shortcuts (cycles through SHORTCUT_COMBOS test sets, incl. an
+         unknown-token combo to exercise the fallback-icon path)
+    t  — resync time (manual TimeSync-only push, RAM-only, no blackout)
     f  — factory reset           (§7.2)
     q  — quit
 
@@ -24,6 +30,11 @@ that differs, and only those are sent — everything on a first pair, or just th
 changed/dropped sections on a reconnect (e.g. meetings + time after a power
 cycle). Time Sync is always sent.
 
+Presence Status is pushed separately from the sync flow — it has no manifest,
+no hash, and no Read property, so this script always writes
+a fresh value right after connecting (--presence, default AVAILABLE), then
+lets you re-push a different value anytime with 'p'.
+
 Pairing note:
     BLE bonding (LE Secure Connections, Passkey Entry) is handled by the OS.
     When the encrypted writes start, Windows will show a pairing dialog.
@@ -31,10 +42,14 @@ Pairing note:
     first pair, so subsequent runs connect silently.
 
 Factory reset note:
-    After sending a factory reset, Ori wipes its bond and reboots. You must
-    also remove it from Windows Bluetooth settings before re-pairing:
-    Settings → Bluetooth → find Ori-XX-XX → Remove device.
-    Then press 's' to run the setup sync again.
+    After a factory reset (sent remotely with 'f', or triggered locally on
+    Ori via long-press), Ori wipes its bond and reboots. On disconnect this
+    script automatically re-scans for Ori's advertising flag (ble-protocol.md
+    §2/§7.1) and tells you whether it saw SETUP (factory reset — remove the
+    stale Windows pairing first) or RUNTIME (just a reboot — bond intact).
+    After removing the stale pairing in Windows Bluetooth settings
+    (Settings → Bluetooth → find Ori-XX-XX → Remove device), re-run this
+    script to pair again.
 """
 
 import asyncio
@@ -71,6 +86,11 @@ _PTO_PHOTO_SRC     = os.path.join(_REPO_ROOT, "firmware", "img", "pto_photo",   
 # firmware JPEG decoder and shortening chunked transfers during testing.
 _FORCED_JPEG_QUALITY: Optional[int] = None
 
+# False (default) = a believable 5-meeting day, for eyeballing the meeting
+# list screen. True (--stress-meetings) = 32 max-length meetings, the
+# protocol-cap boundary test this script originally always sent.
+_STRESS_MEETINGS: bool = False
+
 # ── UUIDs ────────────────────────────────────────────────────────────────────
 # Base: 6F726900-0000-4F72-9F00-000000000000
 # Each char UUID replaces bytes 4-5 (second group) with its offset.
@@ -91,8 +111,31 @@ UUID_PTO          = _uuid(0x0007)   # Write chunked         — encrypted
 UUID_SYNC_CTRL    = _uuid(0x0008)   # Write, Notify         — encrypted
 UUID_FACTORY_RST  = _uuid(0x0009)   # Write (response)      — encrypted
 UUID_MANIFEST     = _uuid(0x000A)   # Write, Notify         — encrypted
+UUID_PRESENCE     = _uuid(0x000F)   # Write (response)      — encrypted
+UUID_SHORTCUTS    = _uuid(0x0010)   # Write (response)      — encrypted
 
 FACTORY_RESET_MAGIC = bytes([0xFA, 0xC7, 0x5E, 0x5E])
+
+# Presence Status byte values (ble-protocol.md §4). Orion is the sole writer —
+# no Read property — so it must push a fresh value on every connect/reconnect.
+PRESENCE_NAMES = {0x00: "AVAILABLE", 0x01: "BUSY", 0x02: "AWAY", 0x03: "OFFLINE"}
+
+# Shortcut icon token combos to cycle through with 'c' (media-mode.md /
+# shortcut_icons.cpp). Last entry includes an unknown token deliberately, to
+# exercise Ori's "unrecognized token → fall back to a neutral icon" path.
+SHORTCUT_COMBOS = [
+    ("vol-mute",    "mic-mute",    "screenshot"),   # firmware default
+    ("lock-screen", "favorite",    "calculator"),
+    ("mic-mute",    "lock-screen", "vol-mute"),
+    ("favorite",    "screenshot",  "not-a-real-token"),
+]
+
+# Advertising manufacturer-data mode flag (ble-protocol.md §2). Company ID is a
+# placeholder; Bleak strips the 2-byte company-ID prefix, so manufacturer_data[
+# MFG_COMPANY_ID] is just the flag byte.
+MFG_COMPANY_ID   = 0xFFFF
+ADV_FLAG_SETUP   = 0x01   # 0 bonded peers — fresh device or post-factory-reset
+ADV_FLAG_RUNTIME = 0x02   # ≥1 bonded peer, advertising so it can reconnect
 
 # ── Device Status values ─────────────────────────────────────────────────────
 
@@ -216,21 +259,55 @@ def build_time_sync() -> bytes:
     tx_ms   = int(time.monotonic() * 1000)
     tz      = _local_posix_tz()
     print(f"  [info] TimeSync tz='{tz}' (POSIX; from this machine's local offset)")
-    return cbor2.dumps({"epoch_utc": now_utc, "tz": tz, "tx_ms": tx_ms})
+    # Keys are single chars (ble-protocol.md §4): u=epoch_utc, z=tz, x=tx_ms.
+    return cbor2.dumps({"u": now_utc, "z": tz, "x": tx_ms})
 
 def build_profile() -> bytes:
     # All fields maximized to their character limits (ble-protocol.md §10):
     # name / title / email = 32 chars, phone = 16 chars. Slicing by characters
     # (not bytes) mirrors the input cap Orion enforces.
+    # Keys are single chars: n=name, t=title, e=email, p=phone.
     return cbor2.dumps({
-        "name":  ("Stress-Test Name Padding " * 3)[:32],
-        "title": ("Stress-Test Title Padding " * 3)[:32],
-        "email": ("stress.test.email@example.com.org" * 2)[:32],
-        "phone": ("+1-555-867-5309-000" * 2)[:16],
+        "n": ("Stress-Test Name Padding " * 3)[:32],
+        "t": ("Stress-Test Title Padding " * 3)[:32],
+        "e": ("stress.test.email@example.com.org" * 2)[:32],
+        "p": ("+1-555-867-5309-000" * 2)[:16],
     })
 
 def build_meetings() -> bytes:
-    # 32 meetings (protocol cap) with near-maximum field lengths.
+    return build_meetings_stress() if _STRESS_MEETINGS else build_meetings_realistic()
+
+def build_meetings_realistic() -> bytes:
+    # A believable day, not a boundary test — for eyeballing the meeting list
+    # screen with content that actually looks like someone's calendar.
+    # Keys are single chars: i=id, s=start, e=end, t=title, l=loc, o=org;
+    # wrapper: d=date, m=items.
+    now      = int(datetime.now(timezone.utc).timestamp())
+    midnight = now - (now % 86400)
+    sample = [
+        ("09:00", "09:30", "Daily Standup",            "Zoom",              "Sarah Chen"),
+        ("10:00", "11:00", "Q3 Roadmap Review",        "Conference Room A", "Mike Torres"),
+        ("12:00", "13:00", "Lunch with Design Team",   "Cafeteria",         "Priya Patel"),
+        ("14:30", "15:00", "1:1 with Manager",         "Zoom",              "James Wright"),
+        ("16:00", "17:00", "Sprint Retro",             "Conference Room B", "Sarah Chen"),
+    ]
+    items = []
+    for i, (hhmm_start, hhmm_end, title, loc, org) in enumerate(sample):
+        sh, sm = (int(x) for x in hhmm_start.split(":"))
+        eh, em = (int(x) for x in hhmm_end.split(":"))
+        items.append({
+            "i": f"ev{i:02d}",
+            "s": midnight + sh * 3600 + sm * 60,
+            "e": midnight + eh * 3600 + em * 60,
+            "t": title,
+            "l": loc,
+            "o": org,
+        })
+    return cbor2.dumps({"d": midnight, "m": items})
+
+def build_meetings_stress() -> bytes:
+    # 32 meetings (protocol cap) with near-maximum field lengths — boundary
+    # test for truncation/buffer limits, not representative of a real day.
     # Per-meeting estimate ~122 B × 32 + 19 B wrapper ≈ 3,923 B — under the
     # firmware boot buffer cap of 4,096 B (main.cpp: static uint8_t meet_buf[4096]).
     now      = int(datetime.now(timezone.utc).timestamp())
@@ -239,14 +316,14 @@ def build_meetings() -> bytes:
     for i in range(32):
         start = midnight + (8 + i // 2) * 3600 + (i % 2) * 1800   # 08:00–23:30
         items.append({
-            "id":    f"ev{i:02d}",
-            "start": start,
-            "end":   start + 3600,
-            "title": (f"Stress Meeting {i:02d}: " + "X" * 40)[:40],
-            "loc":   (f"Room-{i:02d}/Video "      + "X" * 20)[:20],
-            "org":   (f"Organizer{i:02d} "         + "X" * 15)[:15],
+            "i": f"ev{i:02d}",
+            "s": start,
+            "e": start + 3600,
+            "t": (f"Stress Meeting {i:02d}: " + "X" * 40)[:40],
+            "l": (f"Room-{i:02d}/Video "      + "X" * 20)[:20],
+            "o": (f"Organizer{i:02d} "         + "X" * 15)[:15],
         })
-    data = cbor2.dumps({"date": midnight, "items": items})
+    data = cbor2.dumps({"d": midnight, "m": items})
     if len(data) >= 4096:
         raise ValueError(
             f"meetings CBOR too large: {len(data)} B (firmware boot buffer limit 4096 B)")
@@ -254,15 +331,23 @@ def build_meetings() -> bytes:
 
 def build_pto(image: bytes = b"") -> bytes:
     # destination maximized to its 128-byte wire cap (ble-protocol.md §10).
+    # Keys are single chars: s=start, e=end, d=destination, m=image.
     now         = int(datetime.now(timezone.utc).timestamp())
     week        = 7 * 86400
     destination = ("Tokyo, Japan — Cherry Blossom Season Adventure " * 3)[:128]
     return cbor2.dumps({
-        "start":       now + week,
-        "end":         now + 2 * week,
-        "destination": destination,
-        "image":       image,
+        "s": now + week,
+        "e": now + 2 * week,
+        "d": destination,
+        "m": image,
     })
+
+def build_shortcut_config(slot1: str = "vol-mute", slot2: str = "mic-mute",
+                          slot3: str = "screenshot") -> bytes:
+    # Matches firmware's compiled-in defaults (app_state.cpp k_slot_tokens) so
+    # a first sync round-trips the same value Ori already shows.
+    # Keys are single chars: "1"=slot1, "2"=slot2, "3"=slot3.
+    return cbor2.dumps({"1": slot1, "2": slot2, "3": slot3})
 
 def sha256(data: bytes) -> bytes:
     return hashlib.sha256(data).digest()
@@ -298,7 +383,7 @@ class MockOrion:
     def _on_manifest(self, _: BleakGATTCharacteristic, data: bytearray):
         try:
             msg = cbor2.loads(bytes(data))
-            self.needed = msg.get("needed", [])
+            self.needed = msg.get("n", [])  # "n" = needed (ble-protocol.md §4)
             print(f"\n  [notify] SyncManifest ← needed={self.needed}")
         except Exception:
             print(f"\n  [notify] SyncManifest ← raw {data.hex()}")
@@ -353,7 +438,62 @@ class MockOrion:
         raw = await self.client.read_gatt_char(UUID_DEV_STATUS)
         self._on_dev_status(None, raw)  # seed current value
 
+    async def push_presence(self, value: int):
+        # Presence Status is Write-only (ble-protocol.md §6.4) — Orion is the
+        # sole source of truth and must push a fresh byte on every connect,
+        # since Ori has no Read property to fall back on and no way to
+        # recover a value on its own after a disconnect.
+        name = PRESENCE_NAMES.get(value, f"0x{value:02X}")
+        await self.write(UUID_PRESENCE, bytes([value]), f"PresenceStatus ({name})")
+
+    async def push_shortcuts(self, slot1: str, slot2: str, slot3: str):
+        # Unlike Presence, Shortcut Config is still staged (ble-protocol.md
+        # §6.0) — Ori only applies it at SyncControl{END}, so a bare write
+        # here would sit in g_stage and never reach app_state. Run a minimal
+        # BEGIN→write→END session just for this one item. RAM-only, no hash,
+        # no manifest involved — this Ori commit also skips blackout() (no
+        # NVS write) and the full-rebuild path (update_shortcuts() handles it
+        # in place), so this should land with no screen flicker at all.
+        shortcut_bytes = build_shortcut_config(slot1, slot2, slot3)
+        print(f"\n  [info] pushing shortcuts: {slot1}, {slot2}, {slot3}")
+        self._seq += 1
+        seq = self._seq
+        await self.write(UUID_SYNC_CTRL,
+            cbor2.dumps({"o": "BEGIN", "s": seq, "t": len(shortcut_bytes)}),
+            f"SyncControl BEGIN seq={seq}")
+        await self.write(UUID_SHORTCUTS, shortcut_bytes, "ShortcutConfig")
+        await self.write(UUID_SYNC_CTRL,
+            cbor2.dumps({"o": "END", "s": seq}), f"SyncControl END seq={seq}")
+        if await self.wait_status_in({0x03, 0x10}, timeout=10.0):
+            print(f"  [ok] Shortcuts applied (status {DS.get(self.last_status, '?')}).\n")
+        else:
+            print(f"  [warn] completion not seen (last: {DS.get(self.last_status, '?')})\n")
+
+    async def push_time_sync(self):
+        # TimeSync is also staged (ble-protocol.md §6.0) — Ori only applies it
+        # (settimeofday + setenv("TZ",...)) at SyncControl{END}, so a bare
+        # write here would sit in g_stage and never take effect. Run a
+        # minimal BEGIN→write→END session just for this one item. RAM-only
+        # (epoch AND tz, as of the latest firmware), no NVS, so this commit
+        # skips blackout() entirely — no screen flicker for a manual resync.
+        time_sync_bytes = build_time_sync()
+        print(f"\n  [info] pushing time sync")
+        self._seq += 1
+        seq = self._seq
+        await self.write(UUID_SYNC_CTRL,
+            cbor2.dumps({"o": "BEGIN", "s": seq, "t": len(time_sync_bytes)}),
+            f"SyncControl BEGIN seq={seq}")
+        await self.write(UUID_TIME_SYNC, time_sync_bytes, "TimeSync")
+        await self.write(UUID_SYNC_CTRL,
+            cbor2.dumps({"o": "END", "s": seq}), f"SyncControl END seq={seq}")
+        if await self.wait_status_in({0x03, 0x10}, timeout=10.0):
+            print(f"  [ok] Time sync applied (status {DS.get(self.last_status, '?')}).\n")
+        else:
+            print(f"  [warn] completion not seen (last: {DS.get(self.last_status, '?')})\n")
+
     def _print_hashes(self, profile, photo, meetings, pto):
+        # No Shortcut Config entry — it's RAM-only and always resent
+        # unconditionally (like Time Sync), so there's nothing to hash-compare.
         print("── SHA-256 hashes (reference for next reconnect) ──")
         print(f"  profile:  {sha256(profile).hex()}")
         print(f"  photo:    {sha256(photo).hex()}")
@@ -383,21 +523,29 @@ class MockOrion:
         meetings_bytes  = build_meetings()
         pto_image       = build_pto_photo_jpeg()
         pto_bytes       = build_pto(image=pto_image)
+        shortcut_bytes  = build_shortcut_config()
 
         # Ask Ori which sections differ from what it already holds.
         print("\n── Sync Manifest (section hashes) ──")
         self._manifest_reply.clear()
         self.needed = []
+        # Keys are single chars (ble-protocol.md §4):
+        # p=profile_sha, h=photo_sha, m=meetings_sha, t=pto_sha.
+        # No shortcut_sha — Shortcut Config is RAM-only and always resent
+        # unconditionally (like Time Sync), same as Meeting List's exclusion
+        # rationale minus the hash check (it has neither NVS nor a hash).
         await self.write(UUID_MANIFEST, cbor2.dumps({
-            "profile_sha":  sha256(profile_bytes),
-            "photo_sha":    sha256(photo_bytes),
-            "meetings_sha": sha256(meetings_bytes),
-            "pto_sha":      sha256(pto_bytes),
+            "p": sha256(profile_bytes),
+            "h": sha256(photo_bytes),
+            "m": sha256(meetings_bytes),
+            "t": sha256(pto_bytes),
         }), "SyncManifest")
         print("── Waiting for Ori manifest reply ──")
+        manifest_timed_out = False
         try:
             await asyncio.wait_for(self._manifest_reply.wait(), timeout=10.0)
         except asyncio.TimeoutError:
+            manifest_timed_out = True
             print("  [warn] No manifest reply — assuming all sections needed")
             self.needed = ["profile", "photo", "meetings", "pto"]
 
@@ -407,11 +555,31 @@ class MockOrion:
             "meetings": meetings_bytes,
             "pto":      pto_bytes,
         }
-        # Time Sync rides inside every BEGIN→END, so its bytes count toward total;
-        # only the mismatching sections are added.
-        total = len(time_sync_bytes) + sum(
+
+        # Stale vs. up-to-date breakdown — what Ori actually said it needs,
+        # vs. what it already has cached and matches (so we're not sending it).
+        stale   = [k for k in item_bytes if k in self.needed]
+        in_sync = [k for k in item_bytes if k not in self.needed]
+        print("\n── Manifest result ──")
+        if manifest_timed_out:
+            print("  (no manifest reply — treating every group as stale)")
+        if stale:
+            print("  STALE     (will send): "
+                  + ", ".join(f"{k}({len(item_bytes[k]):,}B)" for k in stale))
+        else:
+            print("  STALE     (will send): none")
+        if in_sync:
+            print("  UP TO DATE (skipping): " + ", ".join(in_sync))
+        else:
+            print("  UP TO DATE (skipping): none")
+
+        # Time Sync and Shortcut Config both ride inside every BEGIN→END
+        # unconditionally (RAM-only on Ori, no hash, no manifest gating) —
+        # their bytes always count toward total. Only the mismatching
+        # hash-gated sections (profile/photo/meetings/pto) are conditional.
+        total = len(time_sync_bytes) + len(shortcut_bytes) + sum(
             len(item_bytes[k]) for k in self.needed if k in item_bytes)
-        print(f"  [info] syncing: time"
+        print(f"\n  [info] syncing: time + shortcut({len(shortcut_bytes):,}B)"
               + "".join(f" + {k}({len(item_bytes[k]):,}B)"
                         for k in self.needed if k in item_bytes)
               + f"   → total {total:,} B")
@@ -419,10 +587,12 @@ class MockOrion:
         self._seq += 1
         seq = self._seq
         print("\n── Writing sync data ──")
+        # Keys are single chars (ble-protocol.md §4): o=op, s=seq, t=total.
         await self.write(UUID_SYNC_CTRL,
-            cbor2.dumps({"op": "BEGIN", "seq": seq, "total": total}),
+            cbor2.dumps({"o": "BEGIN", "s": seq, "t": total}),
             f"SyncControl BEGIN seq={seq} total={total:,}")
         await self.write(UUID_TIME_SYNC, time_sync_bytes, "TimeSync")
+        await self.write(UUID_SHORTCUTS, shortcut_bytes, "ShortcutConfig")
         if "profile"  in self.needed:
             await self.write(UUID_PROFILE, profile_bytes, "ProfileInfo")
         if "photo"    in self.needed:
@@ -432,7 +602,7 @@ class MockOrion:
         if "pto"      in self.needed:
             await self.write_chunked(UUID_PTO, pto_bytes, "PtoEntry")
         await self.write(UUID_SYNC_CTRL,
-            cbor2.dumps({"op": "END", "seq": seq}), f"SyncControl END seq={seq}")
+            cbor2.dumps({"o": "END", "s": seq}), f"SyncControl END seq={seq}")
 
         # First pair → SETUP_SYNC_COMPLETE (0x03); reconnect → RUNTIME_READY (0x10).
         print("\n── Waiting for sync to complete ──")
@@ -480,12 +650,17 @@ class MockOrion:
 MENU = """
 Commands:
   s — sync now        (hash-driven delta; also runs automatically on connect)
+  p — push presence   (cycle AVAILABLE -> BUSY -> AWAY -> OFFLINE -> ...)
+  c — push shortcuts   (cycle through SHORTCUT_COMBOS test sets)
+  t — resync time     (manual TimeSync-only push)
   f — factory reset   (§7.2)
   q — quit
 """
 
 async def command_loop(orion: MockOrion):
     loop = asyncio.get_event_loop()
+    presence = [0x00]  # mutable cell so 'p' can cycle across iterations
+    combo_idx = [0]    # mutable cell so 'c' can cycle across iterations
     print(MENU)
     while not orion.disconnected:
         try:
@@ -499,6 +674,15 @@ async def command_loop(orion: MockOrion):
         if cmd == "s":
             await orion.run_sync()
             print(MENU)
+        elif cmd == "p":
+            presence[0] = (presence[0] + 1) % 4
+            await orion.push_presence(presence[0])
+        elif cmd == "c":
+            slot1, slot2, slot3 = SHORTCUT_COMBOS[combo_idx[0]]
+            combo_idx[0] = (combo_idx[0] + 1) % len(SHORTCUT_COMBOS)
+            await orion.push_shortcuts(slot1, slot2, slot3)
+        elif cmd == "t":
+            await orion.push_time_sync()
         elif cmd == "f":
             await orion.run_factory_reset()
             # Don't reprint menu — factory reset exits the loop.
@@ -506,7 +690,7 @@ async def command_loop(orion: MockOrion):
             print("  Goodbye.")
             break
         elif cmd:
-            print("  Unknown command. Type s / f / q")
+            print("  Unknown command. Type s / p / c / t / f / q")
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -525,8 +709,53 @@ async def find_ori(address: Optional[str]) -> Optional[str]:
             print(f"    {d.name or '(unknown)'}  [{d.address}]")
     return None
 
-def on_disconnect(_: BleakClient):
+async def check_post_disconnect_flag(address: str, timeout: float = 4.0) -> Optional[int]:
+    """Passively scan for Ori's post-disconnect advert and read its mode flag.
+
+    ble-protocol.md §7.1: after a factory reset Ori reboots advertising
+    manufacturer-data flag 0x01 SETUP (vs the normal 0x02 RUNTIME a plain
+    reboot/drop would show, bond still intact). Reading this requires no
+    connection attempt — the "preferred" detection path in the spec, vs.
+    discovering it the hard way via a stale-bond encryption failure.
+    """
+    flag: list[Optional[int]] = [None]
+    found = asyncio.Event()
+
+    def _on_adv(device, adv_data):
+        if device.address.lower() != address.lower():
+            return
+        data = adv_data.manufacturer_data.get(MFG_COMPANY_ID)
+        if data:
+            flag[0] = data[0]
+            found.set()
+
+    async with BleakScanner(detection_callback=_on_adv):
+        try:
+            await asyncio.wait_for(found.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            pass
+    return flag[0]
+
+async def report_disconnect_reason(address: str):
+    flag = await check_post_disconnect_flag(address)
+    if flag == ADV_FLAG_SETUP:
+        print("\n  [info] Ori is advertising SETUP (0x01) — looks like a factory reset,")
+        print("         not just a reboot/drop.")
+        print("  ── To re-pair ────────────────────────────────────────────────")
+        print("  1. Windows Settings → Bluetooth & devices → find 'Ori-XX-XX'")
+        print("     → '...' → Remove device (your old bond is now stale)")
+        print("  2. Re-run this script to pair fresh")
+        print("  ──────────────────────────────────────────────────────────────\n")
+    elif flag == ADV_FLAG_RUNTIME:
+        print("  [info] Ori still advertising RUNTIME (0x02) — bond intact, "
+              "should auto-reconnect on its own.\n")
+    else:
+        print("  [info] Didn't see Ori readvertise within 4 s — "
+              "check it's powered and in range.\n")
+
+def on_disconnect(client: BleakClient):
     print("\n  [disconnected] BLE link dropped (Ori may have rebooted).")
+    asyncio.create_task(report_disconnect_reason(client.address))
 
 async def main(args):
     address = await find_ori(args.address)
@@ -545,6 +774,9 @@ async def main(args):
 
         orion = MockOrion(client)
         await orion.subscribe()
+        # Presence has no manifest/hash and no Read fallback — push it fresh
+        # on every connect, independent of the sync flow below.
+        await orion.push_presence(args.presence)
         # Sync automatically on connect — Ori reports which sections differ and we
         # send only those. Running it immediately also satisfies Ori's first-pair
         # BEGIN handshake deadline. Re-run anytime with 's'.
@@ -563,9 +795,16 @@ if __name__ == "__main__":
     parser.add_argument("--photo-quality", type=int, metavar="1-95",
                         help="force JPEG quality for the profile + PTO photos "
                              "(lower = smaller/worse). Default: highest that fits the cap.")
+    parser.add_argument("--presence", type=int, default=0x00, choices=[0x00, 0x01, 0x02, 0x03],
+                        help="Presence Status to push on connect: "
+                             "0=AVAILABLE (default) 1=BUSY 2=AWAY 3=OFFLINE")
+    parser.add_argument("--stress-meetings", action="store_true",
+                        help="send 32 max-length meetings (protocol-cap boundary test) "
+                             "instead of the default 5-meeting realistic day")
     args = parser.parse_args()
     if args.photo_quality is not None:
         if not 1 <= args.photo_quality <= 95:
             parser.error("--photo-quality must be between 1 and 95")
         _FORCED_JPEG_QUALITY = args.photo_quality
+    _STRESS_MEETINGS = args.stress_meetings
     asyncio.run(main(args))

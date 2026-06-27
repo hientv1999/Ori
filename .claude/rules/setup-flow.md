@@ -16,6 +16,12 @@ A **3-dot** progress indicator is anchored at a fixed Y position near the bottom
 | Step 3 — iPhone pairing | Dot 2 active | Optional; user may skip; pairing can be done later via long-press |
 | Setup complete | Dots **hidden** | Brief acknowledgement before transitioning to normal runtime |
 
+### iPhone bond — forced reconnect (first-boot only)
+
+iOS doesn't reliably flush the ANCS notification backlog (the "PreExisting" replay of already-existing notifications) on the **same connection** where the bond was just created — only on connections after that. So immediately after the Step 3 iPhone bond completes and ANCS subscribes, Ori deliberately drops just the iPhone link ~500 ms later and lets it auto-reconnect (existing bonded-disconnect → re-advertise → iOS auto-reconnect machinery). That reconnect is what actually triggers iOS to deliver the notification backlog. The blip happens during the Setup Complete screen's 5 s linger, while the status bar is still hidden, so it's invisible.
+
+This is gated to **first-boot setup only** (`nvs::is_first_boot()`, captured *before* the screen transition to Setup Complete — that transition flips the flag) — a runtime re-pair (below) does not force a reconnect.
+
 ### Welcome and Step 1 layout (locked design)
 
 Both screens share the same wordmark + title + description + primary-button stack, **top-aligned** (`pad_top 104 px` = status-bar-height 84 + 20; `pad_bottom 70 px`). Top-aligned (not centred) so the wordmark sits at the same screen position on every screen regardless of description length.
@@ -58,3 +64,4 @@ Both screens share the same wordmark + title + description + primary-button stac
 - Available from every runtime state (not during first-boot setup).
 - Status bar **hidden** during re-pair — layout identical to Step 3.
 - A Cancel button returns to the main screen.
+- **No forced reconnect here** — the first-boot-only ANCS-backlog workaround above doesn't apply; a runtime re-pair bond is left alone after subscribing.

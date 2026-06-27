@@ -566,13 +566,10 @@ lv_obj_t* make_shortcuts_row(lv_obj_t* parent, ArtState* s) {
             lv_obj_center(img_obj);
             lv_obj_clear_flag(img_obj, LV_OBJ_FLAG_CLICKABLE);
         } else {
-            // Fallback: capital letter from token until image asset is added.
-            lv_obj_t* glyph = lv_label_create(btn);
-            char letter[2] = { (char)(token && token[0] ? (token[0] - 'a' + 'A') : '?'), 0 };
-            lv_label_set_text(glyph, letter);
-            lv_obj_set_style_text_color(glyph, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
-            lv_obj_set_style_text_font(glyph, theme::font_display(), 0);
-            lv_obj_center(glyph);
+            // Unrecognized token (no compiled-in icon for it) — hide the slot
+            // entirely rather than showing a placeholder. Flex layout (CENTER
+            // main-axis) re-centers the remaining visible slots automatically.
+            lv_obj_add_flag(btn, LV_OBJ_FLAG_HIDDEN);
         }
     }
     s->shortcuts_row = row;
@@ -633,10 +630,16 @@ lv_obj_t* create() {
     g_active_art = state;
 
     // Store the ArtState pointer and free it when the screen is destroyed.
+    // load_screen() uses lv_scr_load_anim(..., auto_del=true), which defers
+    // the OLD screen's deletion until after the NEW screen is already built
+    // and has set g_active_art to itself. Only clear g_active_art if it
+    // still points to THIS (the one being deleted) — otherwise this stale
+    // callback would null out a newer screen's already-correct pointer.
     lv_obj_set_user_data(screen, state);
     lv_obj_add_event_cb(screen, [](lv_event_t* e) {
-        g_active_art = nullptr;
-        delete static_cast<ArtState*>(lv_event_get_user_data(e));
+        ArtState* mine = static_cast<ArtState*>(lv_event_get_user_data(e));
+        if (g_active_art == mine) g_active_art = nullptr;
+        delete mine;
     }, LV_EVENT_DELETE, state);
     return screen;
 }
@@ -671,17 +674,14 @@ void update_shortcuts() {
         const char* token = slots[i].icon_token;
         const lv_image_dsc_t* img = shortcut_icons::image(token);
         if (img) {
+            lv_obj_clear_flag(btn, LV_OBJ_FLAG_HIDDEN);  // a prior bad token may have hidden it
             lv_obj_t* img_obj = lv_image_create(btn);
             lv_image_set_src(img_obj, img);
             lv_obj_center(img_obj);
             lv_obj_clear_flag(img_obj, LV_OBJ_FLAG_CLICKABLE);
         } else {
-            lv_obj_t* glyph = lv_label_create(btn);
-            char letter[2] = { (char)(token && token[0] ? (token[0] - 'a' + 'A') : '?'), 0 };
-            lv_label_set_text(glyph, letter);
-            lv_obj_set_style_text_color(glyph, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
-            lv_obj_set_style_text_font(glyph, theme::font_display(), 0);
-            lv_obj_center(glyph);
+            // Unrecognized token — hide the slot entirely (see make_shortcuts_row).
+            lv_obj_add_flag(btn, LV_OBJ_FLAG_HIDDEN);
         }
     }
 }

@@ -1,4 +1,4 @@
-﻿// Ori GATT Server — 15 characteristics, ble-protocol.md v1.0.
+﻿// Ori GATT Server — 16 characteristics, ble-protocol.md v1.0.
 //
 // Service UUID: 6F726900-0000-4F72-9F00-000000000000
 // Each char UUID replaces bytes 4-5 with the offset:
@@ -16,7 +16,8 @@
 //   000C Host Volume State   Read+Write (enc)
 //   000D Media Metadata      Write+Notify (enc)
 //   000E Media Album Art     Write no-rsp (enc, chunked)
-//   000F Presence Status     Read+Write (enc)
+//   000F Presence Status     Write (enc)
+//   0010 Shortcut Config     Write (enc)
 
 #include "ble/gatt_server.h"
 #include "ble/ble_manager.h"
@@ -34,7 +35,7 @@ void ble_post_album_art_event(uint8_t* buf, size_t len);
 void ble_post_photo_event(uint8_t* buf, size_t len);
 void ble_post_sync_begin_event();
 void ble_post_sync_commit_event();
-void ble_post_sync_end_event();
+void ble_post_sync_end_event(bool light_refresh);
 void ble_post_orioning_progress(uint8_t pct);
 void ble_post_pto_photo_event(uint8_t* buf, size_t len);
 
@@ -119,6 +120,7 @@ NimBLECharacteristic* c_host_vol    = nullptr; // 000C
 NimBLECharacteristic* c_media_meta  = nullptr; // 000D
 NimBLECharacteristic* c_album_art   = nullptr; // 000E
 NimBLECharacteristic* c_presence    = nullptr; // 000F
+NimBLECharacteristic* c_shortcuts   = nullptr; // 0010
 
 // Meeting list is RAM-only (not persisted to NVS — see state_machine). Its
 // delta-sync hash therefore also lives in RAM only: a power cycle drops the
@@ -188,12 +190,12 @@ static size_t cbor_encode_sync_ctrl(uint8_t* buf, size_t buf_sz,
     cbor_encoder_init(&enc, buf, buf_sz, 0);
     size_t entries = reason ? 3u : 2u;
     cbor_encoder_create_map(&enc, &map, entries);
-    cbor_encode_text_stringz(&map, "op");
+    cbor_encode_text_stringz(&map, "o");
     cbor_encode_text_stringz(&map, op);
-    cbor_encode_text_stringz(&map, "seq");
+    cbor_encode_text_stringz(&map, "s");
     cbor_encode_uint(&map, seq);
     if (reason) {
-        cbor_encode_text_stringz(&map, "reason");
+        cbor_encode_text_stringz(&map, "r");
         cbor_encode_text_stringz(&map, reason);
     }
     cbor_encoder_close_container(&enc, &map);
@@ -205,11 +207,11 @@ static size_t cbor_encode_proto_ver(uint8_t* buf, size_t buf_sz) {
     CborEncoder enc, map;
     cbor_encoder_init(&enc, buf, buf_sz, 0);
     cbor_encoder_create_map(&enc, &map, 3);
-    cbor_encode_text_stringz(&map, "proto_major");
+    cbor_encode_text_stringz(&map, "j");
     cbor_encode_uint(&map, PROTO_MAJOR);
-    cbor_encode_text_stringz(&map, "proto_minor");
+    cbor_encode_text_stringz(&map, "n");
     cbor_encode_uint(&map, PROTO_MINOR);
-    cbor_encode_text_stringz(&map, "fw_version");
+    cbor_encode_text_stringz(&map, "f");
     cbor_encode_text_stringz(&map, FIRMWARE_VERSION);
     cbor_encoder_close_container(&enc, &map);
     return cbor_encoder_get_buffer_size(&enc, buf);
@@ -221,7 +223,7 @@ static size_t cbor_encode_manifest_notify(uint8_t* buf, size_t buf_sz,
     CborEncoder enc, map, arr;
     cbor_encoder_init(&enc, buf, buf_sz, 0);
     cbor_encoder_create_map(&enc, &map, 1);
-    cbor_encode_text_stringz(&map, "needed");
+    cbor_encode_text_stringz(&map, "n");
     cbor_encoder_create_array(&map, &arr, n);
     for (size_t i = 0; i < n; ++i) {
         cbor_encode_text_stringz(&arr, needed[i]);
@@ -276,6 +278,10 @@ struct SyncStage {
     bool     have_pto = false;
     uint8_t* pto_cbor = nullptr;     // owned (PSRAM, from chunked_transfer)
     size_t   pto_len  = 0;
+
+    bool     have_shortcuts = false;
+    uint8_t* shortcut_cbor  = nullptr; // owned
+    size_t   shortcut_len   = 0;
 };
 
 SyncStage g_stage;
@@ -286,6 +292,7 @@ static void apply_time_sync(uint64_t epoch_utc, const char* tz);
 static void apply_profile_cbor(const uint8_t* data, size_t len);
 static void apply_photo_jpeg(uint8_t* buf, size_t n);
 static void apply_meetings_cbor(uint8_t* buf, size_t n);
+static void apply_shortcuts_cbor(const uint8_t* data, size_t len);
 static void apply_pto_cbor(uint8_t* buf, size_t n);
 
 // Free any owned staging buffers and zero the struct.
@@ -294,6 +301,7 @@ static void stage_reset() {
     if (g_stage.photo_jpeg)    heap_caps_free(g_stage.photo_jpeg);
     if (g_stage.meetings_cbor) heap_caps_free(g_stage.meetings_cbor);
     if (g_stage.pto_cbor)      heap_caps_free(g_stage.pto_cbor);
+    if (g_stage.shortcut_cbor) heap_caps_free(g_stage.shortcut_cbor);
     g_stage = SyncStage{};
 }
 
@@ -324,8 +332,15 @@ static void stage_add_bytes(uint16_t n) {
 }
 
 // Apply every staged item to NVS / live state in one burst, then reset.
-// Called on SyncControl{END}.
-static void stage_commit() {
+// Called on SyncControl{END}. Returns true when Shortcut Config was the only
+// staged item with a screen-visible effect (Time alone never needs a screen
+// refresh) — the caller can then do a cheap redraw instead of a full rebuild,
+// since apply_shortcuts_cbor() already updates the shortcuts row in place.
+static bool stage_commit() {
+    bool only_shortcuts = g_stage.have_shortcuts &&
+        !g_stage.have_profile && !g_stage.have_photo &&
+        !g_stage.have_meetings && !g_stage.have_pto;
+
     if (g_stage.have_time) {
         apply_time_sync(g_stage.epoch_utc, g_stage.tz);
     }
@@ -344,12 +359,16 @@ static void stage_commit() {
         apply_pto_cbor(g_stage.pto_cbor, g_stage.pto_len);
         g_stage.pto_cbor = nullptr; // freed by apply_pto_cbor
     }
+    if (g_stage.have_shortcuts) {
+        apply_shortcuts_cbor(g_stage.shortcut_cbor, g_stage.shortcut_len);
+    }
 
     if (g_stage.total_bytes > 0 && g_device_status == DS_SETUP_SYNCING) {
         ble_post_orioning_progress(100);
     }
 
     stage_reset();
+    return only_shortcuts;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -402,6 +421,8 @@ public:
             handle_album_art(data, len, info);
         } else if (c == c_presence) {
             handle_presence(data, len, info);
+        } else if (c == c_shortcuts) {
+            handle_shortcut_config(data, len, info);
         }
     }
 
@@ -415,9 +436,6 @@ public:
         } else if (c == c_host_vol) {
             if (!info.isEncrypted()) return;
             handle_host_volume_read(c);
-        } else if (c == c_presence) {
-            if (!info.isEncrypted()) return;
-            c->setValue(&g_presence_byte, 1);
         }
     }
 
@@ -450,9 +468,9 @@ private:
                 cbor_value_advance(&map_val);
             }
 
-            if (strcmp(key, "epoch_utc") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
+            if (strcmp(key, "u") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
                 cbor_value_get_uint64(&map_val, &epoch_utc);
-            } else if (strcmp(key, "tz") == 0 && cbor_value_is_text_string(&map_val)) {
+            } else if (strcmp(key, "z") == 0 && cbor_value_is_text_string(&map_val)) {
                 size_t tz_len = sizeof(tz) - 1;
                 cbor_value_copy_text_string(&map_val, tz, &tz_len, nullptr);
             }
@@ -481,6 +499,26 @@ private:
             memcpy(g_stage.profile_cbor, data, len);
             g_stage.profile_len  = len;
             g_stage.have_profile = true;
+        }
+
+        stage_add_bytes(len);
+    }
+
+    // ── Shortcut Config (char 0010) ─────────────────────────────────────────
+    // Staged — parsed and applied at SyncControl{END} via apply_shortcuts_cbor() (§6.0).
+    void handle_shortcut_config(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
+        if (!check_write_allowed(info, "ShortcutConfig")) return;
+
+        if (g_stage.shortcut_cbor) {
+            heap_caps_free(g_stage.shortcut_cbor);
+            g_stage.shortcut_cbor = nullptr;
+        }
+        g_stage.shortcut_cbor = static_cast<uint8_t*>(
+            heap_caps_malloc(len > 0 ? len : 1, MALLOC_CAP_8BIT));
+        if (g_stage.shortcut_cbor) {
+            memcpy(g_stage.shortcut_cbor, data, len);
+            g_stage.shortcut_len    = len;
+            g_stage.have_shortcuts  = true;
         }
 
         stage_add_bytes(len);
@@ -574,12 +612,12 @@ private:
             } else { cbor_value_advance(&map_val); continue; }
             if (cbor_value_at_end(&map_val)) break;
 
-            if (strcmp(key, "op") == 0 && cbor_value_is_text_string(&map_val)) {
+            if (strcmp(key, "o") == 0 && cbor_value_is_text_string(&map_val)) {
                 size_t sz = sizeof(op) - 1;
                 cbor_value_copy_text_string(&map_val, op, &sz, nullptr);
-            } else if (strcmp(key, "seq") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
+            } else if (strcmp(key, "s") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
                 cbor_value_get_uint64(&map_val, &seq);
-            } else if (strcmp(key, "total") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
+            } else if (strcmp(key, "t") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
                 cbor_value_get_uint64(&map_val, &total);
             }
             if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
@@ -648,11 +686,12 @@ private:
         if (cbor_parser_init(data, len, 0, &parser, &root) != CborNoError) return;
         if (!cbor_value_is_map(&root)) return;
 
-        // Received hashes from Orion.
-        uint8_t recv_profile[32]  = {};
-        uint8_t recv_photo[32]    = {};
-        uint8_t recv_meetings[32] = {};
-        uint8_t recv_pto[32]      = {};
+        // Received hashes from Orion. Shortcut Config has no entry here — it's
+        // RAM-only and always resent unconditionally, like Time Sync (§6.0).
+        uint8_t recv_profile[32]   = {};
+        uint8_t recv_photo[32]     = {};
+        uint8_t recv_meetings[32]  = {};
+        uint8_t recv_pto[32]       = {};
         bool    got_profile  = false, got_photo = false;
         bool    got_meetings = false, got_pto   = false;
 
@@ -667,16 +706,16 @@ private:
 
             if (cbor_value_is_byte_string(&map_val)) {
                 size_t sz = 32;
-                if (strcmp(key, "profile_sha") == 0) {
+                if (strcmp(key, "p") == 0) {
                     cbor_value_copy_byte_string(&map_val, recv_profile, &sz, nullptr);
                     got_profile = (sz == 32);
-                } else if (strcmp(key, "photo_sha") == 0) {
+                } else if (strcmp(key, "h") == 0) {
                     cbor_value_copy_byte_string(&map_val, recv_photo, &sz, nullptr);
                     got_photo = (sz == 32);
-                } else if (strcmp(key, "meetings_sha") == 0) {
+                } else if (strcmp(key, "m") == 0) {
                     cbor_value_copy_byte_string(&map_val, recv_meetings, &sz, nullptr);
                     got_meetings = (sz == 32);
-                } else if (strcmp(key, "pto_sha") == 0) {
+                } else if (strcmp(key, "t") == 0) {
                     cbor_value_copy_byte_string(&map_val, recv_pto, &sz, nullptr);
                     got_pto = (sz == 32);
                 }
@@ -749,9 +788,9 @@ private:
             } else { cbor_value_advance(&map_val); continue; }
             if (cbor_value_at_end(&map_val)) break;
 
-            if (strcmp(key, "level") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
+            if (strcmp(key, "l") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
                 cbor_value_get_uint64(&map_val, &level);
-            } else if (strcmp(key, "mute") == 0 && cbor_value_is_boolean(&map_val)) {
+            } else if (strcmp(key, "m") == 0 && cbor_value_is_boolean(&map_val)) {
                 cbor_value_get_boolean(&map_val, &mute);
             }
             if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
@@ -772,9 +811,9 @@ private:
         uint8_t buf[32];
         cbor_encoder_init(&enc, buf, sizeof(buf), 0);
         cbor_encoder_create_map(&enc, &map, 2);
-        cbor_encode_text_stringz(&map, "level");
+        cbor_encode_text_stringz(&map, "l");
         cbor_encode_uint(&map, g_volume_level);
-        cbor_encode_text_stringz(&map, "mute");
+        cbor_encode_text_stringz(&map, "m");
         cbor_encode_boolean(&map, g_muted);
         cbor_encoder_close_container(&enc, &map);
         size_t n = cbor_encoder_get_buffer_size(&enc, buf);
@@ -803,13 +842,13 @@ private:
             } else { cbor_value_advance(&map_val); continue; }
             if (cbor_value_at_end(&map_val)) break;
 
-            if (strcmp(key, "title") == 0 && cbor_value_is_text_string(&map_val)) {
+            if (strcmp(key, "t") == 0 && cbor_value_is_text_string(&map_val)) {
                 size_t sz = sizeof(title) - 1;
                 cbor_value_copy_text_string(&map_val, title, &sz, nullptr);
-            } else if (strcmp(key, "artist") == 0 && cbor_value_is_text_string(&map_val)) {
+            } else if (strcmp(key, "a") == 0 && cbor_value_is_text_string(&map_val)) {
                 size_t sz = sizeof(artist) - 1;
                 cbor_value_copy_text_string(&map_val, artist, &sz, nullptr);
-            } else if (strcmp(key, "can_seek") == 0 && cbor_value_is_boolean(&map_val)) {
+            } else if (strcmp(key, "c") == 0 && cbor_value_is_boolean(&map_val)) {
                 cbor_value_get_boolean(&map_val, &can_seek);
             }
             if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
@@ -898,7 +937,6 @@ static void apply_time_sync(uint64_t epoch_utc, const char* tz) {
     if (tz && tz[0]) {
         setenv("TZ", tz, 1);
         tzset();
-        nvs_sync::save_tz(tz);
     }
 
     LOG("[gatt] TimeSync: epoch=%llu tz=%s\n",
@@ -929,16 +967,16 @@ static void apply_profile_cbor(const uint8_t* data, size_t len) {
 
         if (cbor_value_at_end(&map_val)) break;
 
-        if (strcmp(key, "name") == 0 && cbor_value_is_text_string(&map_val)) {
+        if (strcmp(key, "n") == 0 && cbor_value_is_text_string(&map_val)) {
             size_t sz = sizeof(name) - 1;
             cbor_value_copy_text_string(&map_val, name, &sz, nullptr);
-        } else if (strcmp(key, "title") == 0 && cbor_value_is_text_string(&map_val)) {
+        } else if (strcmp(key, "t") == 0 && cbor_value_is_text_string(&map_val)) {
             size_t sz = sizeof(title) - 1;
             cbor_value_copy_text_string(&map_val, title, &sz, nullptr);
-        } else if (strcmp(key, "email") == 0 && cbor_value_is_text_string(&map_val)) {
+        } else if (strcmp(key, "e") == 0 && cbor_value_is_text_string(&map_val)) {
             size_t sz = sizeof(email) - 1;
             cbor_value_copy_text_string(&map_val, email, &sz, nullptr);
-        } else if (strcmp(key, "phone") == 0 && cbor_value_is_text_string(&map_val)) {
+        } else if (strcmp(key, "p") == 0 && cbor_value_is_text_string(&map_val)) {
             size_t sz = sizeof(phone) - 1;
             cbor_value_copy_text_string(&map_val, phone, &sz, nullptr);
         }
@@ -971,6 +1009,50 @@ static void apply_profile_cbor(const uint8_t* data, size_t len) {
     LOG("[gatt] ProfileInfo: name=%s title=%s\n", fname, ftitle);
 }
 
+// Schema: { "1": text, "2": text, "3": text } — slot1/slot2/slot3 icon tokens
+// matching shortcut_icons::image() (e.g. "vol-mute"); unknown tokens fall
+// back to a neutral icon in the UI rather than failing the sync.
+//
+// RAM-only, like Meeting List — NOT persisted to NVS and NOT in the hash
+// manifest. Orion just re-sends it on every sync unconditionally (like Time
+// Sync), so there's nothing worth hash-checking against, and skipping NVS
+// means this commit never needs gatt_server::run_staged_commit()'s blackout().
+static void apply_shortcuts_cbor(const uint8_t* data, size_t len) {
+    CborParser parser;
+    CborValue  root, map_val;
+    if (cbor_parser_init(data, len, 0, &parser, &root) != CborNoError) return;
+    if (!cbor_value_is_map(&root)) return;
+
+    char slot1[20] = {}, slot2[20] = {}, slot3[20] = {};
+
+    cbor_value_enter_container(&root, &map_val);
+    while (!cbor_value_at_end(&map_val)) {
+        char key[8] = {};
+        size_t key_len = sizeof(key) - 1;
+        if (cbor_value_is_text_string(&map_val)) {
+            cbor_value_copy_text_string(&map_val, key, &key_len, &map_val);
+        } else { cbor_value_advance(&map_val); continue; }
+        if (cbor_value_at_end(&map_val)) break;
+
+        if (strcmp(key, "1") == 0 && cbor_value_is_text_string(&map_val)) {
+            size_t sz = sizeof(slot1) - 1;
+            cbor_value_copy_text_string(&map_val, slot1, &sz, nullptr);
+        } else if (strcmp(key, "2") == 0 && cbor_value_is_text_string(&map_val)) {
+            size_t sz = sizeof(slot2) - 1;
+            cbor_value_copy_text_string(&map_val, slot2, &sz, nullptr);
+        } else if (strcmp(key, "3") == 0 && cbor_value_is_text_string(&map_val)) {
+            size_t sz = sizeof(slot3) - 1;
+            cbor_value_copy_text_string(&map_val, slot3, &sz, nullptr);
+        }
+        if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
+    }
+
+    app_state::set_shortcuts(slot1, slot2, slot3);
+    screen_media_mode::update_shortcuts();
+
+    LOG("[gatt] ShortcutConfig: %s, %s, %s\n", slot1, slot2, slot3);
+}
+
 static void apply_photo_jpeg(uint8_t* buf, size_t n) {
     uint8_t hash[32];
     sha256_of_buf(buf, n, hash);
@@ -996,7 +1078,7 @@ static void apply_pto_cbor(uint8_t* buf, size_t n) {
     nvs_sync::save_hash(nvs_sync::HASH_KEY_PTO, hash);
 
     // ── Parse PtoEntry CBOR ────────────────────────────────────
-    // Schema: { start:uint, end:uint, destination:text, image:bytes }
+    // Schema: { s:start, e:end, d:destination, m:image }
     CborParser parser;
     CborValue  root, map_val;
     uint32_t   pto_start = 0, pto_end = 0;
@@ -1018,24 +1100,24 @@ static void apply_pto_cbor(uint8_t* buf, size_t n) {
             cbor_value_copy_text_string(&map_val, key, &ksz, &map_val);
             if (cbor_value_at_end(&map_val)) break;
 
-            if (strcmp(key, "start") == 0 &&
+            if (strcmp(key, "s") == 0 &&
                 cbor_value_is_unsigned_integer(&map_val)) {
                 uint64_t v = 0;
                 cbor_value_get_uint64(&map_val, &v);
                 pto_start = (uint32_t)v;
 
-            } else if (strcmp(key, "end") == 0 &&
+            } else if (strcmp(key, "e") == 0 &&
                        cbor_value_is_unsigned_integer(&map_val)) {
                 uint64_t v = 0;
                 cbor_value_get_uint64(&map_val, &v);
                 pto_end = (uint32_t)v;
 
-            } else if (strcmp(key, "destination") == 0 &&
+            } else if (strcmp(key, "d") == 0 &&
                        cbor_value_is_text_string(&map_val)) {
                 size_t dsz = sizeof(dest) - 1;
                 cbor_value_copy_text_string(&map_val, dest, &dsz, nullptr);
 
-            } else if (strcmp(key, "image") == 0 &&
+            } else if (strcmp(key, "m") == 0 &&
                        cbor_value_is_byte_string(&map_val)) {
                 size_t raw_len = 0;
                 cbor_value_get_string_length(&map_val, &raw_len);
@@ -1190,13 +1272,22 @@ void init() {
         NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC);
     c_album_art->setCallbacks(&s_char_cb);
 
-    // 000F Presence Status — Read + Write, encrypted
+    // 000F Presence Status — Write only, encrypted. Orion is the sole writer
+    // and re-pushes fresh on every connect, so there's nothing for a Read to
+    // recover that Orion doesn't already know (ble-protocol.md §6.4).
     c_presence = svc->createCharacteristic(
         "6F726900-000F-4F72-9F00-000000000000",
-        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_ENC |
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
     c_presence->setCallbacks(&s_char_cb);
     c_presence->setValue(&g_presence_byte, 1);
+
+    // 0010 Shortcut Config — Write with response, encrypted. Small + rarely
+    // changed like Profile Info, so it's staged + NVS-persisted + hashed into
+    // the manifest rather than treated as ephemeral push-only state.
+    c_shortcuts = svc->createCharacteristic(
+        "6F726900-0010-4F72-9F00-000000000000",
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
+    c_shortcuts->setCallbacks(&s_char_cb);
 
     // In NimBLE 2.5, services are started when NimBLEServer::start() is called.
     // svc->start() is deprecated and a no-op; omit it.
@@ -1229,9 +1320,9 @@ void notify_keyboard_command(const char* op, uint32_t arg) {
     uint8_t buf[64];
     cbor_encoder_init(&enc, buf, sizeof(buf), 0);
     cbor_encoder_create_map(&enc, &map, 2);
-    cbor_encode_text_stringz(&map, "op");
+    cbor_encode_text_stringz(&map, "o");
     cbor_encode_text_stringz(&map, op);
-    cbor_encode_text_stringz(&map, "arg");
+    cbor_encode_text_stringz(&map, "a");
     cbor_encode_uint(&map, arg);
     cbor_encoder_close_container(&enc, &map);
     size_t n = cbor_encoder_get_buffer_size(&enc, buf);
@@ -1250,13 +1341,21 @@ void abort_sync_stage() {
 // SyncControl{op:"END"}. Applies all staged items to NVS/UI in one burst,
 // then transitions Device Status and signals SyncEnd for the UI advance.
 void run_staged_commit() {
-    // Blank the display immediately before the flash write burst. LCD_CAM DMA
-    // keeps scanning the (now black) framebuffer, so there are no rendering
-    // glitches during NVS / LittleFS writes. LVGL redraws the next screen
-    // automatically when it flushes after the state transition below.
-    lcd_panel::blackout();
+    // Only blank the display ahead of items that actually hit flash: Profile,
+    // Photo, and PTO call into nvs_sync::save_*(). Time, Meetings, and
+    // Shortcuts are all RAM-only — no flash write, so no glitch window to
+    // guard against. Read g_stage here, before stage_commit() resets it.
+    bool needs_nvs = g_stage.have_profile || g_stage.have_photo || g_stage.have_pto;
+    if (needs_nvs) {
+        // Blank the display immediately before the flash write burst. LCD_CAM
+        // DMA keeps scanning the (now black) framebuffer, so there are no
+        // rendering glitches during NVS / LittleFS writes. LVGL redraws the
+        // next screen automatically when it flushes after the state
+        // transition below.
+        lcd_panel::blackout();
+    }
 
-    stage_commit();
+    bool light_refresh = stage_commit();
 
     time_t now = time(nullptr);
     nvs_sync::save_epoch((uint32_t)now);
@@ -1267,7 +1366,7 @@ void run_staged_commit() {
                           ? DS_SETUP_SYNC_COMPLETE
                           : DS_RUNTIME_READY;
     set_device_status(new_status);
-    ble_post_sync_end_event();
+    ble_post_sync_end_event(light_refresh);
 }
 
 } // namespace gatt_server

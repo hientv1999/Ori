@@ -16,7 +16,6 @@ const char* const HASH_KEY_PROFILE   = "p_sha";
 const char* const HASH_KEY_PHOTO     = "ph_sha";
 const char* const HASH_KEY_MEETINGS  = "m_sha";
 const char* const HASH_KEY_PTO       = "pto_sha";
-const char* const HASH_KEY_SHORTCUTS = "sc_sha";
 
 namespace {
 constexpr const char* NS = "ori";
@@ -26,7 +25,6 @@ constexpr const char* K_NAME   = "p_name";
 constexpr const char* K_TITLE  = "p_titl";
 constexpr const char* K_EMAIL  = "p_email";
 constexpr const char* K_PHONE  = "p_phone";
-constexpr const char* K_TZ     = "tz";
 constexpr const char* K_EPOCH  = "epoch";
 
 Preferences prefs;
@@ -74,11 +72,9 @@ struct HashCache {
     uint8_t profile[32];
     uint8_t photo[32];
     uint8_t pto[32];
-    uint8_t shortcuts[32];
     bool has_profile;
     bool has_photo;
     bool has_pto;
-    bool has_shortcuts;
     bool loaded;
 };
 static HashCache g_hash_cache = {};
@@ -95,10 +91,9 @@ static void load_hashes_from_nvs() {
     g_hash_cache = {};
     g_hash_cache.loaded = true; // mark done even if NVS fails
     if (!prefs.begin(NS, /*readOnly=*/true)) return;
-    load_one_hash(HASH_KEY_PROFILE,   g_hash_cache.profile,   &g_hash_cache.has_profile);
-    load_one_hash(HASH_KEY_PHOTO,     g_hash_cache.photo,     &g_hash_cache.has_photo);
-    load_one_hash(HASH_KEY_PTO,       g_hash_cache.pto,       &g_hash_cache.has_pto);
-    load_one_hash(HASH_KEY_SHORTCUTS, g_hash_cache.shortcuts, &g_hash_cache.has_shortcuts);
+    load_one_hash(HASH_KEY_PROFILE, g_hash_cache.profile, &g_hash_cache.has_profile);
+    load_one_hash(HASH_KEY_PHOTO,   g_hash_cache.photo,   &g_hash_cache.has_photo);
+    load_one_hash(HASH_KEY_PTO,     g_hash_cache.pto,     &g_hash_cache.has_pto);
     prefs.end();
 }
 
@@ -127,13 +122,9 @@ bool load_hash(const char* key, uint8_t out_hash[32]) {
         memcpy(out_hash, g_hash_cache.pto, 32);
         return true;
     }
-    if (key == HASH_KEY_SHORTCUTS) {
-        if (!g_hash_cache.has_shortcuts) return false;
-        memcpy(out_hash, g_hash_cache.shortcuts, 32);
-        return true;
-    }
     // HASH_KEY_MEETINGS: meetings are RAM-only (not NVS-persisted) — the
     // manifest handler compares against its own RAM hash, not via load_hash().
+    // Shortcut Config has no hash at all — see ble-protocol.md §6.0.
     return false;
 }
 
@@ -153,9 +144,6 @@ void save_hash(const char* key, const uint8_t hash[32]) {
     } else if (key == HASH_KEY_PTO) {
         memcpy(g_hash_cache.pto, hash, 32);
         g_hash_cache.has_pto = true;
-    } else if (key == HASH_KEY_SHORTCUTS) {
-        memcpy(g_hash_cache.shortcuts, hash, 32);
-        g_hash_cache.has_shortcuts = true;
     }
 }
 
@@ -189,25 +177,6 @@ bool load_profile(char* out_name,  size_t name_sz,
     if (out_phone && phone_sz > 0) strncpy(out_phone, p.c_str(), phone_sz - 1);
 
     return n.length() > 0;
-}
-
-// ── Timezone ──────────────────────────────────────────────────────────────────
-
-void save_tz(const char* tz) {
-    if (!tz || !tz[0]) return;
-    if (prefs.begin(NS, /*readOnly=*/false)) {
-        prefs.putString(K_TZ, tz);
-        prefs.end();
-    }
-}
-
-bool load_tz(char* out, size_t sz) {
-    if (!prefs.begin(NS, /*readOnly=*/true)) return false;
-    String s = prefs.getString(K_TZ, "");
-    prefs.end();
-    if (s.length() == 0) return false;
-    strncpy(out, s.c_str(), sz - 1);
-    return true;
 }
 
 // ── Last synced epoch ─────────────────────────────────────────────────────────
