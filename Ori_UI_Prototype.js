@@ -110,6 +110,13 @@ const SCREENS = {
     mode: 'clock',
     leftRender: () => clockHTML(),
   },
+  'calendar': {
+    label: 'Primary state', title: 'Calendar (month view)',
+    desc: 'Entered by long-pressing the time in the status bar for 1s (1.2s here). View-only month grid with today highlighted; left/right arrows navigate months. Mode-toggle (calendar-return icon) returns to the previous mode. Status-bar date/time is hidden since this view IS a calendar.',
+    statusBar: { ancsApps: ['gmail', 'facebook'], phoneConnected: true, hideDateTime: true },
+    mode: 'clock',
+    leftRender: () => calendarHTML(),
+  },
   'pto': {
     label: 'Primary state', title: 'PTO active',
     desc: 'Destination name is single-line (ellipsis on overflow). Tap the card to open the full PTO detail overlay.',
@@ -399,6 +406,67 @@ function clockHTML() {
   return '<div class="clock-face"><div class="clock-time"><span>' + h +
     '</span><span class="colon">:</span><span>' + m + '</span></div>' +
     '<div class="clock-date">' + dateStr.toUpperCase() + ' · ' + ampm + '</div></div>';
+}
+
+let _calViewDate = null; // first-of-month being viewed; null = current month
+
+function calendarHTML() {
+  const today = new Date();
+  const view = _calViewDate || new Date(today.getFullYear(), today.getMonth(), 1);
+  const year = view.getFullYear();
+  const month = view.getMonth();
+  const monthLabel = view.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  const weekdays = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+  // getDay() is 0=Sun..6=Sat; shift so Monday is column 0.
+  const firstDow = (new Date(year, month, 1).getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const daysInPrevMonth = new Date(year, month, 0).getDate();
+
+  const cells = [];
+  for (let i = 0; i < firstDow; i++) {
+    cells.push({ day: daysInPrevMonth - firstDow + 1 + i, outside: true });
+  }
+  for (let d = 1; d <= daysInMonth; d++) {
+    const isToday = d === today.getDate() && month === today.getMonth() && year === today.getFullYear();
+    cells.push({ day: d, outside: false, today: isToday });
+  }
+  let nextDay = 1;
+  while (cells.length % 7 !== 0) {
+    cells.push({ day: nextDay++, outside: true });
+  }
+
+  return '<div class="calendar-view">' +
+    '<div class="cal-header">' +
+    '<div class="cal-month">' + monthLabel + '</div>' +
+    '<div class="cal-nav">' +
+    '<div class="cal-nav-btn" id="cal-prev" title="Previous month"><svg viewBox="0 0 24 24"><use href="#i-chev-left"/></svg></div>' +
+    '<div class="cal-nav-btn" id="cal-next" title="Next month"><svg viewBox="0 0 24 24"><use href="#i-chev-right"/></svg></div>' +
+    '</div></div>' +
+    '<div class="cal-weekdays">' +
+    weekdays.map(w => '<div class="cal-weekday">' + w + '</div>').join('') +
+    '</div>' +
+    '<div class="cal-grid">' +
+    cells.map(c => '<div class="cal-day' + (c.outside ? ' outside' : '') + (c.today ? ' today' : '') + '">' +
+      '<div class="cal-day-num">' + c.day + '</div></div>').join('') +
+    '</div></div>';
+}
+
+function renderCalendar() {
+  document.getElementById('left-panel').innerHTML = calendarHTML();
+  bindCalendarNav();
+}
+
+function bindCalendarNav() {
+  const today = new Date();
+  const base = _calViewDate || new Date(today.getFullYear(), today.getMonth(), 1);
+  document.getElementById('cal-prev').onclick = () => {
+    _calViewDate = new Date(base.getFullYear(), base.getMonth() - 1, 1);
+    renderCalendar();
+  };
+  document.getElementById('cal-next').onclick = () => {
+    _calViewDate = new Date(base.getFullYear(), base.getMonth() + 1, 1);
+    renderCalendar();
+  };
 }
 
 let _ptoDestination = '';
@@ -1163,9 +1231,9 @@ function renderStatusBar(cfg) {
   dt.classList.toggle('hidden', !!cfg.hideDateTime);
   if (!cfg.hideDateTime) updateStatusDateTime();
 
-  // Make the date+time block tappable — enters Clock mode.
+  // Tap the date+time block to enter Clock mode; long-press to open the Calendar.
   dt.style.cursor = 'pointer';
-  dt.onclick = () => setScreen('clock');
+  bindTapAndLongPress(dt, () => setScreen('clock'), () => setScreen('calendar'));
 
   const pcConnected = cfg.pcConnected !== false;
   const screenMode = (SCREENS[currentScreenId] && SCREENS[currentScreenId].mode) || 'calendar';
@@ -1236,6 +1304,32 @@ function bindLongPress(el, action, ms) {
   ['mouseup', 'mouseleave', 'touchend', 'touchcancel'].forEach(ev => el.addEventListener(ev, stop));
 }
 
+// Like bindLongPress, but also handles a short tap — and suppresses the tap
+// action when the long-press already fired. Uses single-slot `on*` assignment
+// (not addEventListener) so re-binding on every renderStatusBar() call doesn't
+// stack duplicate handlers on the persistent status-bar element.
+function bindTapAndLongPress(el, onTap, onLongPress, ms) {
+  if (!el) return;
+  ms = ms || 1200;
+  let timer = null;
+  let longPressFired = false;
+  const start = () => {
+    longPressFired = false;
+    timer = setTimeout(() => { longPressFired = true; onLongPress(); }, ms);
+  };
+  const cancel = () => { clearTimeout(timer); };
+  el.onmousedown = start;
+  el.ontouchstart = start;
+  el.onmouseup = cancel;
+  el.onmouseleave = cancel;
+  el.ontouchend = cancel;
+  el.ontouchcancel = cancel;
+  el.onclick = (e) => {
+    if (longPressFired) { e.preventDefault(); return; }
+    onTap();
+  };
+}
+
 let currentScreenId = null;
 let previousScreenId = null;  // screen before entering Clock; used for the return tap
 let _setupDoneTimer = null;
@@ -1243,8 +1337,8 @@ let _setupDoneTimer = null;
 function setScreen(id) {
   const cfg = SCREENS[id];
   if (!cfg) return;
-  // Track previous screen so Clock's mode-toggle can return to it.
-  if (currentScreenId && currentScreenId !== 'clock') {
+  // Track previous screen so Clock/Calendar's mode-toggle can return to it.
+  if (currentScreenId && currentScreenId !== 'clock' && currentScreenId !== 'calendar') {
     previousScreenId = currentScreenId;
   }
   currentScreenId = id;
@@ -1281,11 +1375,13 @@ function setScreen(id) {
     setupLayer.innerHTML = '';
     setupLayer.style.display = 'none';
     body.style.visibility = 'visible';
+    if (id === 'calendar') _calViewDate = null; // always open on the current month
     left.innerHTML = cfg.leftRender ? cfg.leftRender() : '';
     if (cfg.mode === 'media') {
       bindAlbumArtGestures();
       bindSeekBar();
     }
+    if (id === 'calendar') bindCalendarNav();
   }
   const modalLayer = document.getElementById('modal-layer');
   if (cfg.modal) {
@@ -1324,6 +1420,8 @@ setScreen('meeting-list');
 setInterval(() => {
   if (currentScreenId === 'clock') {
     document.getElementById('left-panel').innerHTML = clockHTML();
+  } else if (currentScreenId === 'calendar') {
+    renderCalendar();
   }
   updateStatusDateTime();
 }, 30 * 1000);

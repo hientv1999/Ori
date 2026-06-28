@@ -62,7 +62,7 @@ static const BundleMap k_bundle_map[] = {
     { "net.whatsapp.WhatsApp",          "whatsapp",    "WhatsApp"    },
     { "com.tinyspeck.chatlyio",         "slack",       "Slack"       },
     { "com.atebits.Tweetie2",           "twitter",     "X"           },
-    { "com.microsoft.teams",            "teams",       "Teams"       },
+    { "com.microsoft.skype.teams",      "teams",       "Teams"       },
     { "com.apple.MobileSMS",            "sms",         "Messages"    },
     { "com.apple.mobilephone",          "phone",       "Phone"       },
     { "com.hammerandchisel.discord",    "discord",     "Discord"     },

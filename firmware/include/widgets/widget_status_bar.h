@@ -30,6 +30,10 @@ using ModeToggleCb = void (*)(void);
 // Callback fired when the user taps the date+time block to enter Clock mode.
 using TimeTapCb = void (*)(void);
 
+// Callback fired when the user long-presses the date+time block to enter
+// the Calendar (month view) screen.
+using TimeLongPressCb = void (*)(void);
+
 lv_obj_t* create(lv_obj_t* parent);
 
 // Toggle the left date/time block. The Clock screen hides it because the
@@ -59,6 +63,9 @@ void set_mode_toggle_cb(lv_obj_t* bar, ModeToggleCb cb);
 // Register a callback fired when the user taps the date+time block.
 void set_time_tap_cb(lv_obj_t* bar, TimeTapCb cb);
 
+// Register a callback fired when the user long-presses the date+time block.
+void set_time_long_press_cb(lv_obj_t* bar, TimeLongPressCb cb);
+
 // Defaults applied to newly-created status bars. Set before calling
 // create() so each new screen picks up the current state without the
 // screen-manager having to remember to call set_pc_connected / set_mode
@@ -75,6 +82,7 @@ void set_all_phone_connected(bool connected);
 void set_default_mode(Mode mode);
 void set_default_mode_toggle_cb(ModeToggleCb cb);
 void set_default_time_tap_cb(TimeTapCb cb);
+void set_default_time_long_press_cb(TimeLongPressCb cb);
 
 // Re-pull date / ANCS icons / phone state from app_state.
 void refresh(lv_obj_t* bar);

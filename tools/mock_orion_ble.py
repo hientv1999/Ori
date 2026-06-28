@@ -131,7 +131,7 @@ except ImportError:
 # Paths to source images resolved relative to this script.
 _SCRIPT_DIR        = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT         = os.path.dirname(_SCRIPT_DIR)
-_PROFILE_PHOTO_SRC = os.path.join(_REPO_ROOT, "firmware", "img", "profile_photo", "profile_photo.png")
+_PROFILE_PHOTO_SRC = os.path.join(_REPO_ROOT, "firmware", "img", "profile_photo", "profile_photo.jfif")
 _PTO_PHOTO_SRC     = os.path.join(_REPO_ROOT, "firmware", "img", "pto_photo",     "pto_photo.jpg")
 
 # Forced JPEG quality for the profile + PTO photos. None = pick the highest
@@ -454,15 +454,14 @@ def build_time_sync() -> bytes:
     return cbor2.dumps({"u": now_utc, "z": tz, "x": tx_ms})
 
 def build_profile() -> bytes:
-    # All fields maximized to their character limits (ble-protocol.md §10):
-    # name / title / email = 32 chars, phone = 16 chars. Slicing by characters
-    # (not bytes) mirrors the input cap Orion enforces.
-    # Keys are single chars: n=name, t=title, e=email, p=phone.
+    # Keys are single chars (ble-protocol.md §10): n=name, t=title, e=email,
+    # p=phone. name/title capped at 32 chars, phone at 16 chars (sliced by
+    # characters, mirroring the input cap Orion enforces).
     return cbor2.dumps({
-        "n": ("Stress-Test Name Padding " * 3)[:32],
-        "t": ("Stress-Test Title Padding " * 3)[:32],
-        "e": ("stress.test.email@example.com.org" * 2)[:32],
-        "p": ("+1-555-867-5309-000" * 2)[:16],
+        "n": "To Van Hien"[:32],
+        "t": "Electrical Engineer"[:32],
+        "e": "hientv1999@gmail.com"[:32],
+        "p": "+1-778-751-7347"[:16],
     })
 
 def _local_midnight_epoch() -> int:

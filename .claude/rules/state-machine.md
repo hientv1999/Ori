@@ -4,6 +4,8 @@ The left panel has **two user-selectable modes** via the status-bar mode-toggle 
 
 **Clock** is a third view entered by tapping the date/time in the status bar — not part of the toggle cycle. While in Clock, the mode-toggle becomes a **return** button (calendar icon, neutral style) that restores the previous mode.
 
+**Calendar (month view)** is a fourth view entered by long-pressing the date/time in the status bar — also not part of the toggle cycle, and view-only (no meeting data overlaid). It shares Clock's exit mechanics: the mode-toggle becomes the same return button and restores the previous mode.
+
 ## Priority Order (Highest → Lowest)
 
 1. **OTA-Updating** — firmware update in progress. Full-screen takeover; status bar and profile card hidden; touch inert. See `ota.md`.
@@ -13,6 +15,7 @@ The left panel has **two user-selectable modes** via the status-bar mode-toggle 
 5. **Mode-driven content** (when no higher-priority state is active):
    - **Calendar mode** — meeting list or "No meetings today." See `meeting-list.md`.
    - **Clock view** — digital clock, entered via status-bar time tap; status bar date/time hidden.
+   - **Calendar view** — month grid, entered via status-bar time long-press; status bar date/time hidden.
    - **Controls mode** — media-controller UI. Only available when Orion is connected; auto-reverts to Calendar on PC disconnect. See `media-mode.md`.
 
 The right panel and status bar remain visible in all states **except OTA-Updating**.
@@ -34,6 +37,16 @@ Left panel: PTO destination scenic image fills the full panel. A frosted-dark ca
 - Status bar date/time hidden; mode-toggle always visible (even when Orion is offline).
 - Countdown modal still fires on top of Clock when triggered.
 - High-priority states (OTA, PTO) override Clock; meeting list updates do not exit Clock.
+
+### Calendar (Month View)
+- **Entry:** long-press (1 s) the date/time text in the status bar — a custom, shorter-than-default hold timed off PRESSED/RELEASED on that widget only; the shared indev long-press threshold (3 s, set in `main.cpp`) still governs the profile-photo and phone-icon long-presses.
+- **Exit:** tap the mode-toggle button → returns to the mode active before entering Calendar (same `g_pre_clock_mode` restore as Clock).
+- Status bar date/time hidden; mode-toggle always visible (even when Orion is offline).
+- View-only: a 7-column month grid (weekday header + day cells), today highlighted in an accent-filled circle, with up/down chevrons in the header to navigate between months. No meeting data is overlaid — the meeting list is RAM-only (`meeting-list.md`), so there is nothing reliable to show beyond today even if it were.
+- Navigating months only re-renders the grid in place; it does not leave or re-enter the Calendar state.
+- Countdown modal still fires on top of Calendar when triggered.
+- High-priority states (OTA, PTO) override Calendar; meeting list updates do not exit Calendar.
+- Re-entering Calendar (after exiting and long-pressing again) always resets the view back to the current month.
 
 ### Reconnect-Syncing Overlay
 - Trigger: a real `SyncControl{op:"BEGIN"}` frame, NOT the underlying BLE

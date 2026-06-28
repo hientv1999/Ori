@@ -601,6 +601,101 @@
       letter-spacing: 0.6px;
     }
 
+    .calendar-view {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      user-select: none;
+    }
+
+    .calendar-view .cal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 4px 4px 18px;
+    }
+
+    .calendar-view .cal-month {
+      font-size: 30px;
+      font-weight: 500;
+      color: var(--text-1);
+      margin-left: 28px;
+    }
+
+    .calendar-view .cal-nav {
+      display: flex;
+      flex-direction: row;
+      gap: 4px;
+    }
+
+    .calendar-view .cal-nav-btn {
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-2);
+      cursor: pointer;
+    }
+
+    .calendar-view .cal-nav-btn svg {
+      width: 22px;
+      height: 22px;
+    }
+
+    .calendar-view .cal-nav-btn:hover {
+      background: var(--screen-elev);
+      color: var(--text-1);
+    }
+
+    .calendar-view .cal-weekdays {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+    }
+
+    .calendar-view .cal-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      flex: 1;
+      margin-top: -16px;
+    }
+
+    .calendar-view .cal-weekday {
+      text-align: center;
+      font-size: 18px;
+      color: var(--text-3);
+      padding-bottom: 10px;
+    }
+
+    .calendar-view .cal-day {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .calendar-view .cal-day-num {
+      width: 38px;
+      height: 38px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      font-size: 20px;
+      color: var(--text-1);
+    }
+
+    .calendar-view .cal-day.outside .cal-day-num {
+      color: var(--text-3);
+      opacity: 0.5;
+    }
+
+    .calendar-view .cal-day.today .cal-day-num {
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+    }
+
     .pto {
       position: relative;
       width: 100%;
@@ -1863,6 +1958,7 @@
         <button data-screen="meeting-list" class="active">Meeting list</button>
         <button data-screen="no-meetings">No meetings today</button>
         <button data-screen="clock">Digital Clock</button>
+        <button data-screen="calendar">Calendar (month view)</button>
         <button data-screen="pto">PTO active</button>
         <button data-screen="pto-long-dest">PTO — long destination</button>
         <button data-screen="kbd-mode">Media mode (BLE bridge)</button>
@@ -2074,6 +2170,22 @@
       <symbol id="i-pause" viewBox="0 0 24 24">
         <rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor" />
         <rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor" />
+      </symbol>
+      <symbol id="i-chev-up" viewBox="0 0 24 24">
+        <path d="M5 15l7-7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
+          stroke-linejoin="round" />
+      </symbol>
+      <symbol id="i-chev-down" viewBox="0 0 24 24">
+        <path d="M5 9l7 7 7-7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
+          stroke-linejoin="round" />
+      </symbol>
+      <symbol id="i-chev-left" viewBox="0 0 24 24">
+        <path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
+          stroke-linejoin="round" />
+      </symbol>
+      <symbol id="i-chev-right" viewBox="0 0 24 24">
+        <path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
+          stroke-linejoin="round" />
       </symbol>
       <symbol id="i-prev" viewBox="0 0 24 24">
         <rect x="5" y="5" width="2.6" height="14" rx="1" fill="currentColor" />

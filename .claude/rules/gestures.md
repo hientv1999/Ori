@@ -5,6 +5,7 @@
 | Gesture | Action | Available In |
 |---|---|---|
 | **Tap status-bar date/time** | Enter Clock view — tap mode-toggle button to return | Every runtime state (status bar hidden during setup + OTA) |
+| **Long-press status-bar date/time (1 s)** | Enter Calendar (month view) — tap mode-toggle button to return | Every runtime state (status bar hidden during setup + OTA) |
 | Long-press profile photo (3 s) | Open factory reset confirmation | Every state |
 | **Tap phone icon** (always visible; neutral = connected, red = disconnected) | Connected → Unpair iPhone modal; disconnected → re-pair iPhone screen (stale bond auto-wiped) | Every runtime state (not during setup) |
 | **Tap mode-toggle button** (rightmost status-bar element) | Cycle calendar ↔ Controls mode | Runtime only — hidden when Orion offline, during setup, and during OTA |

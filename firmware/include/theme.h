@@ -71,7 +71,7 @@ constexpr uint32_t COLOR_PRESENCE_OFFLINE_DARK    = 0x282826;  // near-black cha
 // Font getters — return pointers to Hanken Grotesk Medium fonts.
 // Sizes were selected to mirror the prototype's CSS scale.
 const lv_font_t* font_body();         // 20 px — default text
-const lv_font_t* font_meta();         // 24 px — meeting meta line, status bar date/sep
+const lv_font_t* font_meta();         // 24 px — meeting meta line, status bar date/sep, calendar day numbers
 const lv_font_t* font_title();        // 26 px — meeting title, headings
 const lv_font_t* font_h2();           // 28 px — setup section headings
 const lv_font_t* font_time();         // 30 px — status bar time

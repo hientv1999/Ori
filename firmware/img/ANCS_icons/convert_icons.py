@@ -29,6 +29,12 @@ SIZE        = (60, 60)      # status-bar icon tile size
 COLOR_FMT   = "ARGB8888"    # RGB565 | ARGB8888 | RGB888
 COMPRESS    = "NONE"        # NONE | RLE | LZ4
 ALIGN       = 1             # stride alignment in bytes
+
+# Ori's screen background (theme.h COLOR_BG) is pure black, so a black pixel
+# inside an icon disappears into it and the icon's round tile edge vanishes.
+# Any near-black opaque pixel is remapped to COLOR_ELEV (theme.h) instead.
+BLACK_THRESHOLD   = 10               # max R/G/B value still treated as "black"
+DARK_REPLACEMENT  = (0x16, 0x1B, 0x23)  # theme.h COLOR_ELEV
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Filename stem → firmware token when they differ (e.g. rebranded app names).
@@ -47,10 +53,24 @@ DEFAULT_LVGL_SCRIPT = os.path.join(
 )
 
 
+def recolor_black(img: Image.Image) -> Image.Image:
+    """Remap near-black opaque pixels to DARK_REPLACEMENT so they don't vanish
+    into Ori's black screen background. Transparent pixels are left alone."""
+    pixels = img.load()
+    w, h = img.size
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = pixels[x, y]
+            if a > 0 and r <= BLACK_THRESHOLD and g <= BLACK_THRESHOLD and b <= BLACK_THRESHOLD:
+                pixels[x, y] = (*DARK_REPLACEMENT, a)
+    return img
+
+
 def resize(src: str) -> str:
-    """Resize to SIZE, preserve transparency. Saves to CROPPED_DIR as PNG. Returns dest path."""
+    """Resize to SIZE, preserve transparency, recolor black pixels. Saves to CROPPED_DIR as PNG. Returns dest path."""
     img  = Image.open(src).convert("RGBA")
     img  = img.resize(SIZE, Image.LANCZOS)
+    img  = recolor_black(img)
     stem = os.path.splitext(os.path.basename(src))[0]
     dest = os.path.join(CROPPED_DIR, stem + ".png")
     img.save(dest)

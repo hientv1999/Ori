@@ -14,6 +14,7 @@
 #include "screens/modal_factory_reset.h"
 #include "screens/modal_incoming_call.h"
 #include "screens/modal_unpair_phone.h"
+#include "screens/screen_calendar.h"
 #include "screens/screen_clock.h"
 #include "screens/screen_media_mode.h"
 #include "screens/screen_meeting_list.h"
@@ -137,6 +138,7 @@ void print_keymap() {
     LOG("  m   Meeting list\n");
     LOG("  n   No meetings today\n");
     LOG("  c   Digital clock (entered via time tap)\n");
+    LOG("  v   Calendar month view (entered via time long-press)\n");
     LOG("  p   PTO scenic\n");
     LOG("  k   Media mode\n");
     LOG("  C   5-minute countdown modal\n");
@@ -181,6 +183,10 @@ void debug_handle_key(char c) {
             break;
         case 'c':
                 debug_load(screen_clock::create());
+            break;
+        case 'v':
+                screen_calendar::reset_view();
+                debug_load(screen_calendar::create());
             break;
         case 'p':
                 debug_load(screen_pto::create());

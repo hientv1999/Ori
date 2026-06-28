@@ -65,6 +65,8 @@ struct StatusBarState {
     lv_obj_t*   date_label;
     lv_obj_t*   right_row;
     lv_timer_t* clock_timer;  // 1 s self-update timer
+    lv_timer_t* time_long_press_timer; // custom-duration press-and-hold timer (datetime_row only)
+    bool        time_long_press_fired; // true once the timer above has fired, until the next press
     lv_obj_t* ancs_row;
     lv_obj_t* phone_icon;
     lv_obj_t* mode_toggle;       // 60x60 button at the right edge
@@ -76,6 +78,7 @@ struct StatusBarState {
     widget_status_bar::Mode mode;
     widget_status_bar::ModeToggleCb mode_cb;
     widget_status_bar::TimeTapCb    time_tap_cb;
+    widget_status_bar::TimeLongPressCb time_long_press_cb;
 };
 
 // Update just the time/date labels — what the 1-second clock timer calls. The
@@ -556,7 +559,16 @@ void on_mode_toggle_tap(lv_event_t* e) {
 void on_time_tap(lv_event_t* e) {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
     auto* state = static_cast<StatusBarState*>(lv_event_get_user_data(e));
-    if (!state || !state->time_tap_cb) return;
+    if (!state) return;
+    // A long-press already fired Calendar entry for this same press — LVGL
+    // would otherwise still dispatch CLICKED on release (its own long-press
+    // threshold is the indev-wide 3 s set in main.cpp; ours fires at 1 s, so
+    // by release time LVGL's internal long_pr_sent flag is still false).
+    if (state->time_long_press_fired) {
+        state->time_long_press_fired = false;
+        return;
+    }
+    if (!state->time_tap_cb) return;
     s_deferred_time_tap_cb = state->time_tap_cb;
     lv_timer_t* t = lv_timer_create([](lv_timer_t* t) {
         lv_timer_delete(t);
@@ -567,6 +579,43 @@ void on_time_tap(lv_event_t* e) {
         }
     }, 1, nullptr);
     lv_timer_set_repeat_count(t, 1);
+}
+
+// Custom-duration press-and-hold for the date+time block only. The shared
+// LVGL indev long-press threshold (set once, globally, in main.cpp) is 3 s —
+// tuned for the profile-photo factory-reset gesture and the phone icon. The
+// Calendar entry gesture wants a shorter 1 s hold, so it can't reuse
+// LV_EVENT_LONG_PRESSED (indev-wide) and instead times the press itself via
+// LV_EVENT_PRESSED/RELEASED/PRESS_LOST and a one-shot lv_timer.
+constexpr uint32_t TIME_LONG_PRESS_MS = 1000;
+
+void on_time_press_start(lv_event_t* e) {
+    if (lv_event_get_code(e) != LV_EVENT_PRESSED) return;
+    auto* state = static_cast<StatusBarState*>(lv_event_get_user_data(e));
+    if (!state) return;
+    if (state->time_long_press_timer) {
+        lv_timer_delete(state->time_long_press_timer);
+        state->time_long_press_timer = nullptr;
+    }
+    state->time_long_press_fired = false;
+    if (!state->time_long_press_cb) return;
+    state->time_long_press_timer = lv_timer_create([](lv_timer_t* t) {
+        auto* st = static_cast<StatusBarState*>(lv_timer_get_user_data(t));
+        lv_timer_delete(t);
+        st->time_long_press_timer = nullptr;
+        st->time_long_press_fired = true;
+        if (st->time_long_press_cb) st->time_long_press_cb();
+    }, TIME_LONG_PRESS_MS, state);
+    lv_timer_set_repeat_count(state->time_long_press_timer, 1);
+}
+
+void on_time_press_end(lv_event_t* e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code != LV_EVENT_RELEASED && code != LV_EVENT_PRESS_LOST) return;
+    auto* state = static_cast<StatusBarState*>(lv_event_get_user_data(e));
+    if (!state || !state->time_long_press_timer) return;
+    lv_timer_delete(state->time_long_press_timer);
+    state->time_long_press_timer = nullptr;
 }
 
 lv_obj_t* make_mode_toggle(lv_obj_t* parent, StatusBarState* state) {
@@ -601,6 +650,7 @@ bool g_default_phone_connected = false;
 Mode g_default_mode           = Mode::Calendar;
 ModeToggleCb g_default_mode_cb  = nullptr;
 TimeTapCb    g_default_time_tap_cb = nullptr;
+TimeLongPressCb g_default_time_long_press_cb = nullptr;
 
 lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_t* bar = lv_obj_create(parent);
@@ -629,6 +679,9 @@ lv_obj_t* create(lv_obj_t* parent) {
     state->mode              = g_default_mode;
     state->mode_cb        = g_default_mode_cb;
     state->time_tap_cb    = g_default_time_tap_cb;
+    state->time_long_press_cb = g_default_time_long_press_cb;
+    state->time_long_press_timer = nullptr;
+    state->time_long_press_fired = false;
     state->mode_toggle    = nullptr;
 
     // ===== Date/time block — tappable to enter Clock mode =====
@@ -641,6 +694,9 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_add_flag(state->datetime_row, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_opa(state->datetime_row, LV_OPA_60, LV_STATE_PRESSED);
     lv_obj_add_event_cb(state->datetime_row, on_time_tap, LV_EVENT_CLICKED, state);
+    lv_obj_add_event_cb(state->datetime_row, on_time_press_start, LV_EVENT_PRESSED, state);
+    lv_obj_add_event_cb(state->datetime_row, on_time_press_end, LV_EVENT_RELEASED, state);
+    lv_obj_add_event_cb(state->datetime_row, on_time_press_end, LV_EVENT_PRESS_LOST, state);
     lv_obj_set_flex_flow(state->datetime_row, LV_FLEX_FLOW_ROW);
     // Cross-axis CENTER so the 30 px time and 22 px sep/date are vertically
     // centered to each other; the row as a whole is then centered in the
@@ -745,6 +801,7 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_add_event_cb(bar, [](lv_event_t* e) {
         auto* st = static_cast<StatusBarState*>(lv_event_get_user_data(e));
         if (st->clock_timer) { lv_timer_delete(st->clock_timer); st->clock_timer = nullptr; }
+        if (st->time_long_press_timer) { lv_timer_delete(st->time_long_press_timer); st->time_long_press_timer = nullptr; }
         if (g_active_bar == (lv_obj_t*)lv_event_get_target(e)) g_active_bar = nullptr;
         delete st;
     }, LV_EVENT_DELETE, state);
@@ -808,6 +865,12 @@ void set_time_tap_cb(lv_obj_t* bar, TimeTapCb cb) {
     s->time_tap_cb = cb;
 }
 
+void set_time_long_press_cb(lv_obj_t* bar, TimeLongPressCb cb) {
+    auto* s = static_cast<StatusBarState*>(lv_obj_get_user_data(bar));
+    if (!s) return;
+    s->time_long_press_cb = cb;
+}
+
 void set_phone_bonded(lv_obj_t* bar, bool bonded) {
     auto* s = static_cast<StatusBarState*>(lv_obj_get_user_data(bar));
     if (!s) return;
@@ -834,6 +897,7 @@ void set_all_phone_connected(bool connected) {
 void set_default_mode(Mode mode)                    { g_default_mode = mode; }
 void set_default_mode_toggle_cb(ModeToggleCb cb)    { g_default_mode_cb = cb; }
 void set_default_time_tap_cb(TimeTapCb cb)          { g_default_time_tap_cb = cb; }
+void set_default_time_long_press_cb(TimeLongPressCb cb) { g_default_time_long_press_cb = cb; }
 
 void refresh_active() {
     if (g_active_bar) refresh(g_active_bar);

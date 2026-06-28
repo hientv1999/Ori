@@ -18,6 +18,7 @@
 #include "screens/modal_countdown.h"
 #include "screens/modal_factory_reset.h"
 #include "screens/modal_unpair_phone.h"
+#include "screens/screen_calendar.h"
 #include "screens/screen_clock.h"
 #include "screens/screen_media_mode.h"
 #include "screens/screen_meeting_list.h"
@@ -36,8 +37,9 @@
 // Left-panel priority logic per state-machine.md. 1 s tick drives the
 // 5-min countdown and meeting-list refresh. Two user-selectable modes:
 // Calendar (0, default) and Media (1, requires PC link).
-// Clock is a separate state entered by tapping the status-bar time;
-// not part of the mode-toggle cycle; exits via the mode-toggle button.
+// Clock and Calendar (month view) are separate states entered by tapping /
+// long-pressing the status-bar time respectively; neither is part of the
+// mode-toggle cycle; both exit via the mode-toggle button.
 
 namespace {
 
@@ -51,7 +53,7 @@ constexpr uint32_t RECONNECT_MIN_MS = 300; // minimum overlay visibility
 
 AppState g_state           = AppState::NO_MEETINGS; // current rendered state
 uint8_t  g_mode            = 0;                     // 0=Calendar, 1=Media
-uint8_t  g_pre_clock_mode  = 0;                     // mode to restore when leaving Clock
+uint8_t  g_pre_clock_mode  = 0;                     // mode to restore when leaving Clock/Calendar
 bool     g_pc_connected    = false; // true only once Orion's BLE link is confirmed
 bool     g_phone_connected = false;
 bool     g_phone_bonded    = false; // true when an iPhone bond exists in NVS
@@ -240,17 +242,18 @@ void apply_widget_defaults() {
             ? static_cast<widget_profile_card::Presence>(g_presence_byte)
             : widget_profile_card::Presence::Offline);
 
-    // Mode-toggle is shown when PC is connected OR when in Clock mode
-    // (the toggle acts as a "return" button in Clock, works even offline).
-    bool show_toggle = g_pc_connected || (g_state == AppState::CLOCK);
+    // Mode-toggle is shown when PC is connected OR when in Clock/Calendar
+    // (the toggle acts as a "return" button there, works even offline).
+    bool in_clock_like = (g_state == AppState::CLOCK || g_state == AppState::CALENDAR_VIEW);
+    bool show_toggle = g_pc_connected || in_clock_like;
     widget_status_bar::set_default_pc_connected(show_toggle);
     widget_status_bar::set_default_phone_bonded(g_phone_bonded);
     widget_status_bar::set_default_phone_connected(g_phone_connected);
 
-    // In Clock state the bar shows Mode::Clock so the toggle glyph reads
-    // "return to previous mode"; otherwise reflect the current g_mode.
+    // In Clock/Calendar state the bar shows Mode::Clock so the toggle glyph
+    // reads "return to previous mode"; otherwise reflect the current g_mode.
     widget_status_bar::Mode bar_mode;
-    if (g_state == AppState::CLOCK) {
+    if (in_clock_like) {
         bar_mode = widget_status_bar::Mode::Clock;
     } else {
         bar_mode = (g_mode == 1) ? widget_status_bar::Mode::Keyboard
@@ -258,7 +261,7 @@ void apply_widget_defaults() {
     }
     widget_status_bar::set_default_mode(bar_mode);
 
-    // Mode-toggle callback: advance mode or exit Clock.
+    // Mode-toggle callback: advance mode or exit Clock/Calendar.
     widget_status_bar::set_default_mode_toggle_cb([]() {
         state_machine::on_mode_toggle();
     });
@@ -266,6 +269,11 @@ void apply_widget_defaults() {
     // Time-tap callback: enter Clock mode.
     widget_status_bar::set_default_time_tap_cb([]() {
         state_machine::on_clock_enter();
+    });
+
+    // Time-long-press callback: enter the Calendar (month view).
+    widget_status_bar::set_default_time_long_press_cb([]() {
+        state_machine::on_calendar_enter();
     });
 }
 
@@ -331,6 +339,10 @@ lv_obj_t* build_clock_screen() {
     return screen_clock::create();
 }
 
+lv_obj_t* build_calendar_screen() {
+    return screen_calendar::create();
+}
+
 lv_obj_t* build_controls_screen() {
     return screen_media_mode::create();
 }
@@ -379,9 +391,10 @@ AppState compute_target_state() {
     if (is_pto_active())             return AppState::PTO_ACTIVE;
     // Countdown is handled inline in tick() before evaluate() is called for
     // state changes, so if we reach here it has already been cleared.
-    // Note: CLOCK is never returned here — it is entered exclusively via
-    // on_clock_enter() (user taps the status-bar time) and protected in
-    // evaluate() from being overwritten by normal Calendar state changes.
+    // Note: CLOCK and CALENDAR_VIEW are never returned here — they are
+    // entered exclusively via on_clock_enter() / on_calendar_enter() (user
+    // taps / long-presses the status-bar time) and protected in evaluate()
+    // from being overwritten by normal Calendar state changes.
 
     app_state::MeetingList list = filtered_meetings();
     if (list.count > 0)              return AppState::MEETING_LIST;
@@ -467,12 +480,14 @@ AppState evaluate() {
         return g_state;
     }
 
-    // CLOCK: user-entered by tapping the time; persists through normal
-    // Calendar state changes (meeting list updates, etc.). Only overridden
-    // by high-priority states or an explicit on_mode_toggle() call.
+    // CLOCK / CALENDAR_VIEW: user-entered by tapping/long-pressing the time;
+    // persists through normal Calendar state changes (meeting list updates,
+    // etc.). Only overridden by high-priority states or an explicit
+    // on_mode_toggle() call.
     bool force = g_force_rebuild;
     g_force_rebuild = false;
-    if (!force && g_state == AppState::CLOCK &&
+    if (!force &&
+        (g_state == AppState::CLOCK || g_state == AppState::CALENDAR_VIEW) &&
         target != AppState::SETUP &&
         target != AppState::OTA_UPDATING &&
         target != AppState::PTO_ACTIVE) {
@@ -533,6 +548,10 @@ AppState evaluate() {
 
         case AppState::CLOCK:
             new_screen = build_clock_screen();
+            break;
+
+        case AppState::CALENDAR_VIEW:
+            new_screen = build_calendar_screen();
             break;
     }
 
@@ -784,12 +803,13 @@ void request_phone_bond_wipe() {
 }
 
 void on_mode_toggle() {
-    if (g_state == AppState::CLOCK) {
-        // In Clock: return to the mode that was active before the time tap.
+    if (g_state == AppState::CLOCK || g_state == AppState::CALENDAR_VIEW) {
+        // In Clock/Calendar: return to the mode that was active before the
+        // time tap/long-press.
         g_mode = g_pre_clock_mode;
-        LOG("[sm] clock exit -> mode=%d\n", (int)g_mode);
+        LOG("[sm] clock/calendar exit -> mode=%d\n", (int)g_mode);
         g_force_rebuild = true;
-        g_state = AppState::NO_MEETINGS;  // break Clock protection in evaluate()
+        g_state = AppState::NO_MEETINGS;  // break Clock/Calendar protection in evaluate()
         evaluate();
         return;
     }
@@ -823,6 +843,16 @@ void on_clock_enter() {
     apply_widget_defaults();
     load_screen(build_clock_screen());
     LOG("[sm] clock enter (pre_mode=%d)\n", (int)g_pre_clock_mode);
+}
+
+void on_calendar_enter() {
+    if (g_state == AppState::CALENDAR_VIEW) return;  // already in Calendar, no-op
+    g_pre_clock_mode = g_mode;
+    g_state = AppState::CALENDAR_VIEW;
+    screen_calendar::reset_view();  // always open on the current month
+    apply_widget_defaults();
+    load_screen(build_calendar_screen());
+    LOG("[sm] calendar enter (pre_mode=%d)\n", (int)g_pre_clock_mode);
 }
 
 void on_ota_begin() {

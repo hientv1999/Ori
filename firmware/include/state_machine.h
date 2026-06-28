@@ -24,9 +24,12 @@ typedef struct _lv_obj_t lv_obj_t;
 //   7.  CLOCK — user-entered by tapping the status-bar time; not in the
 //       mode-toggle cycle; exits via the mode-toggle button (returns to the
 //       mode that was active before the tap).
+//   8.  CALENDAR_VIEW — user-entered by long-pressing the status-bar time;
+//       same exit mechanics as CLOCK (mode-toggle returns to the prior mode).
 //
 // The state machine also owns the long-press handlers that fire on the profile
-// photo (factory reset) and phone-disconnect icon (re-pair phone).
+// photo (factory reset), the phone-disconnect icon (re-pair phone), and the
+// status-bar time (Calendar month view).
 
 enum class AppState : uint8_t {
     SETUP,
@@ -38,6 +41,7 @@ enum class AppState : uint8_t {
     MEETING_LIST,
     NO_MEETINGS,
     CLOCK,
+    CALENDAR_VIEW,
 };
 
 namespace state_machine {
@@ -137,6 +141,11 @@ AppState current_state();
 // User tapped the status-bar time — enter Clock mode.
 // Saves the current mode so on_mode_toggle() can return to it.
 void on_clock_enter();
+
+// User long-pressed the status-bar time — enter the Calendar (month view).
+// Saves the current mode so on_mode_toggle() can return to it, same as
+// on_clock_enter().
+void on_calendar_enter();
 
 // Query the current mode.
 // Returns 0 = Calendar (meeting list), 1 = Media.

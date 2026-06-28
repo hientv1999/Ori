@@ -23,10 +23,10 @@ Pixel dimensions: 800 × 480. Left panel: 528 px wide. Right panel: 269 px wide.
 - **Always visible** in every runtime state. Hidden only during first-time setup flow and the runtime re-pair iPhone screen.
 - Height: 84 px.
 - Contents left → right:
-  - **Date and time** — tappable: single tap enters Clock view. Hidden on the Clock screen itself, and **hidden entirely when there is no local time yet** (e.g. after a cold power cycle, before Orion or the iPhone supplies the clock) — no "--:--" placeholder. Time comes from Orion (primary) or the iPhone's Current Time Service (backup); see `connectivity.md`.
+  - **Date and time** — tappable: single tap enters Clock view; long-press enters Calendar (month view). Hidden on the Clock and Calendar screens themselves, and **hidden entirely when there is no local time yet** (e.g. after a cold power cycle, before Orion or the iPhone supplies the clock) — no "--:--" placeholder (and consequently no way to reach Clock or Calendar until a clock source connects). Time comes from Orion (primary) or the iPhone's Current Time Service (backup); see `connectivity.md`.
   - ANCS notification icons — up to **5 visible** (layout hard cap; 6 would overflow the bar). Right-to-left order. Queue depth is 50 (each entry's full detail is cached in PSRAM, not SRAM) — notifications beyond the 5th are hidden but shift left as earlier ones are dismissed. Tap opens a full-screen detail overlay (title + body); **Close** button only. No replying — read-only.
   - **Phone icon** — always visible. Neutral colour when the iPhone is connected, danger red when disconnected (no slash glyph). Tap: connected → Unpair iPhone modal (shows the phone's GAP device name); disconnected → re-pair iPhone screen (stale bond wiped automatically).
-  - **Mode-toggle button** — rightmost element always. Cycles left panel between **Calendar** and **Controls**. **Hidden when Orion is offline** — except in Clock view, where it acts as a return button (calendar icon, neutral style). Icon always shows the destination. See `media-mode.md`.
+  - **Mode-toggle button** — rightmost element always. Cycles left panel between **Calendar** and **Controls**. **Hidden when Orion is offline** — except in Clock or Calendar view, where it acts as a return button (calendar icon, neutral style). Icon always shows the destination. See `media-mode.md`.
 
 ## Right Panel — Profile Card
 
