@@ -715,6 +715,10 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_add_event_cb(state->phone_icon, on_phone_icon_tap, LV_EVENT_CLICKED, state);
     lv_obj_add_event_cb(state->phone_icon, on_phone_icon_tap, LV_EVENT_LONG_PRESSED, state);
 
+    // user_data must be set before any public setter that reads it via
+    // lv_obj_get_user_data() — set_phone_connected() returns early if null.
+    lv_obj_set_user_data(bar, state);
+
     // Paint the glyph colour + ANCS-row visibility for the inherited connection
     // state (make_phone_icon only draws the disconnected glyph).
     set_phone_connected(bar, state->phone_connected);
@@ -728,8 +732,6 @@ lv_obj_t* create(lv_obj_t* parent) {
     // phone, mode). Spacer takes flex_grow=1 → absorbs slack so the
     // right cluster stays anchored to the right edge.
     lv_obj_set_style_pad_column(bar, 16, 0);
-
-    lv_obj_set_user_data(bar, state);
 
     // 1-second timer keeps the clock live without needing the state machine
     // to call refresh() externally. Deleted explicitly on LV_EVENT_DELETE

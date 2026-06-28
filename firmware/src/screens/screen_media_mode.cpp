@@ -2,6 +2,7 @@
 
 #include <lvgl.h>
 #include <cstdlib>
+#include <cstring>
 
 #include "assets/shortcut_icons.h"
 #include "ble/gatt_server.h"
@@ -94,6 +95,10 @@ static lv_timer_t* g_pos_timer = nullptr;
 // Cleared when a new track arrives or the media screen is rebuilt.
 static uint16_t*      g_art_buf = nullptr;
 static lv_image_dsc_t g_art_dsc = {};
+
+// Last title pushed to the labels — used to detect track changes so album art
+// is cleared immediately when a new track arrives (before its art lands).
+static char g_displayed_title[193] = {};
 
 // Build the paused-state play-triangle widget on top of the album art.
 // Matches the HTML #i-play SVG path `M7 5v14l12-7z` at viewBox 24x24,
@@ -346,7 +351,7 @@ lv_obj_t* make_art_block(lv_obj_t* parent, ArtState* s) {
     lv_obj_align(bar_bg, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_style_radius(bar_bg, 5, LV_PART_MAIN);
     lv_obj_set_style_bg_color(bar_bg, lv_color_white(), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(bar_bg, LV_OPA_20, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(bar_bg, LV_OPA_50, LV_PART_MAIN);
     lv_obj_set_style_border_width(bar_bg, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(bar_bg, 0, LV_PART_MAIN);
     lv_obj_clear_flag(bar_bg, LV_OBJ_FLAG_SCROLLABLE);
@@ -358,7 +363,7 @@ lv_obj_t* make_art_block(lv_obj_t* parent, ArtState* s) {
     lv_obj_align(s->hud_fill, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_set_style_radius(s->hud_fill, 5, LV_PART_MAIN);
     lv_obj_set_style_bg_color(s->hud_fill, theme::color(theme::COLOR_ACCENT), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(s->hud_fill, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s->hud_fill, LV_OPA_90, LV_PART_MAIN);
     lv_obj_set_style_border_width(s->hud_fill, 0, LV_PART_MAIN);
     lv_obj_clear_flag(s->hud_fill, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(s->hud_fill, LV_OBJ_FLAG_CLICKABLE);
@@ -675,6 +680,18 @@ void update_meta(const char* title, const char* artist) {
     app_state::set_media_meta(title, artist, app_state::media().can_seek);
     if (!g_active_art) return;
     const bool has = title && title[0];
+
+    // When the track changes (or playback stops), clear the previous album art
+    // immediately so the default gradient shows while waiting for new art to
+    // arrive. Play/pause updates share the same metadata path but keep the same
+    // title, so comparing titles limits the clear to real track changes.
+    const char* new_title = has ? title : "";
+    if (strcmp(new_title, g_displayed_title) != 0) {
+        clear_album_art();
+        strncpy(g_displayed_title, new_title, sizeof(g_displayed_title) - 1);
+        g_displayed_title[sizeof(g_displayed_title) - 1] = '\0';
+    }
+
     lv_label_set_text(g_active_art->title_label, has ? title : "Nothing playing");
     lv_obj_set_style_text_color(g_active_art->title_label,
         theme::color(has ? theme::COLOR_TEXT_PRIMARY : theme::COLOR_TEXT_TERTIARY), 0);
