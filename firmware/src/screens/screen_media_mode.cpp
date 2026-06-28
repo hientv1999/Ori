@@ -65,7 +65,8 @@ struct ArtState {
     lv_obj_t* hud_pct_label;   // "NN%" text
     lv_obj_t* title_label;
     lv_obj_t* artist_label;
-    // Timeline seek widgets (nullptr when nothing playing)
+    // Timeline seek widgets — always created, shown/hidden by update_seek().
+    lv_obj_t* tl_overlay;      // semi-transparent bar at art bottom — hidden until can_seek+dur arrive
     lv_obj_t* tl_fill;         // accent fill bar — width tracks playhead
     lv_obj_t* tl_thumb;        // playhead dot — x tracks playhead
     lv_obj_t* tl_cur_label;    // current-time text — updated live during seek
@@ -83,6 +84,11 @@ struct ArtState {
 // below. Anonymous-namespace scope keeps it TU-local (same as g_active_card
 // in widget_profile_card.cpp).
 ArtState* g_active_art = nullptr;
+
+// 1-second dead-reckoning timer — advances position_s while playing so the
+// scrubber moves smoothly between BLE position pushes from Orion.
+// Created in create(), destroyed in the screen's LV_EVENT_DELETE handler.
+static lv_timer_t* g_pos_timer = nullptr;
 
 // RAM-only PSRAM cache for the current album art (not persisted to LittleFS).
 // Cleared when a new track arrives or the media screen is rebuilt.
@@ -368,18 +374,22 @@ lv_obj_t* make_art_block(lv_obj_t* parent, ArtState* s) {
     lv_obj_set_style_text_font(s->hud_pct_label, theme::font_meta(), 0);
     lv_obj_align(s->hud_pct_label, LV_ALIGN_TOP_MID, 0, -28);
 
-    // Timeline bar — sits on top of everything in wrap (last child = highest
-    // z-order) so it stays at full brightness even when the art dims on pause.
-    // Hidden when nothing is playing OR the active app doesn't support seeking
-    // (MediaMetadata.can_seek = false). tl_fill/tl_thumb/tl_cur_label stay
-    // null in that case so on_seek_gesture's early-out guard is always correct.
-    if (has_media && m.can_seek) {
+    // Timeline bar — always created so update_seek() can show it later when
+    // Orion pushes can_seek=true + position/duration. Starts hidden; shown by
+    // update_seek() once we have a valid duration. This avoids the "built before
+    // media arrived" problem where tl_fill was null and update_seek was a no-op.
+    {
         const uint32_t pos_s  = m.position_s;
         const uint32_t dur_s  = m.duration_s > 0 ? m.duration_s : 1;
         const int16_t  bar_w  = ART_W - TL_BAR_PAD * 2;
         const int16_t  fill_w = (int16_t)((int32_t)bar_w * (int32_t)pos_s / (int32_t)dur_s);
 
         lv_obj_t* overlay = lv_obj_create(wrap);
+        // Hide until Orion confirms can_seek=true and pushes a valid duration.
+        // update_seek() manages visibility from that point on.
+        if (!(has_media && m.can_seek && m.duration_s > 0))
+            lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);
+        s->tl_overlay = overlay;
         lv_obj_set_size(overlay, ART_W, TL_OVERLAY_H);
         lv_obj_align(overlay, LV_ALIGN_BOTTOM_MID, 0, 0);
         lv_obj_set_style_bg_color(overlay, lv_color_black(), LV_PART_MAIN);
@@ -629,6 +639,22 @@ lv_obj_t* create() {
     // Register as the active media screen so update_* functions can reach live widgets.
     g_active_art = state;
 
+    // Dead-reckoning position timer: fires every 1 s and advances position_s
+    // by 1 while the track is playing — keeps the scrubber moving between
+    // Orion's BLE position pushes. Orion resets the anchor on track change or
+    // seek; the firmware advances from there on its own.
+    // Guard against a stale timer from a previous screen (shouldn't happen
+    // with auto_del screens, but be safe).
+    if (g_pos_timer) { lv_timer_delete(g_pos_timer); g_pos_timer = nullptr; }
+    g_pos_timer = lv_timer_create([](lv_timer_t*) {
+        if (!app_state::media_playing()) return;
+        const auto& m = app_state::media();
+        if (m.duration_s == 0) return;
+        uint32_t new_pos = m.position_s + 1;
+        if (new_pos > m.duration_s) new_pos = m.duration_s;
+        screen_media_mode::update_seek(new_pos, m.duration_s);
+    }, 1000, nullptr);
+
     // Store the ArtState pointer and free it when the screen is destroyed.
     // load_screen() uses lv_scr_load_anim(..., auto_del=true), which defers
     // the OLD screen's deletion until after the NEW screen is already built
@@ -639,6 +665,7 @@ lv_obj_t* create() {
     lv_obj_add_event_cb(screen, [](lv_event_t* e) {
         ArtState* mine = static_cast<ArtState*>(lv_event_get_user_data(e));
         if (g_active_art == mine) g_active_art = nullptr;
+        if (g_pos_timer) { lv_timer_delete(g_pos_timer); g_pos_timer = nullptr; }
         delete mine;
     }, LV_EVENT_DELETE, state);
     return screen;
@@ -653,6 +680,10 @@ void update_meta(const char* title, const char* artist) {
         theme::color(has ? theme::COLOR_TEXT_PRIMARY : theme::COLOR_TEXT_TERTIARY), 0);
     lv_label_set_text(g_active_art->artist_label,
         (has && artist && artist[0]) ? artist : "No artist");
+    // Force-hide timeline when nothing is playing — update_seek() re-shows it
+    // when valid position+duration arrive for a new track.
+    if (!has && g_active_art->tl_overlay)
+        lv_obj_add_flag(g_active_art->tl_overlay, LV_OBJ_FLAG_HIDDEN);
 }
 
 void update_playing(bool playing) {
@@ -726,7 +757,15 @@ void clear_album_art() {
 
 void update_seek(uint32_t position_s, uint32_t duration_s) {
     app_state::set_media_seek(position_s, duration_s);
-    if (!g_active_art || !g_active_art->tl_fill) return;
+    if (!g_active_art) return;
+    // Show the timeline overlay only when we have a valid duration AND the
+    // OS supports seeking; hide it otherwise (no media, or non-seekable stream).
+    const bool show = (duration_s > 0 && app_state::media().can_seek);
+    if (g_active_art->tl_overlay) {
+        if (show) lv_obj_clear_flag(g_active_art->tl_overlay, LV_OBJ_FLAG_HIDDEN);
+        else       lv_obj_add_flag(g_active_art->tl_overlay,   LV_OBJ_FLAG_HIDDEN);
+    }
+    if (!g_active_art->tl_fill || !show) return;
     const uint32_t dur    = duration_s > 0 ? duration_s : 1;
     const int16_t  bar_w  = ART_W - TL_BAR_PAD * 2;
     const int16_t  fill_w = (int16_t)((int32_t)bar_w * (int32_t)position_s / (int32_t)dur);

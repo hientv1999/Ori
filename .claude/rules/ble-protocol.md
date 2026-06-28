@@ -211,7 +211,15 @@ HostVolumeState = {              // Orion → Ori, write (+ Orion can read it ba
 MediaMetadata = {                // Orion → Ori, write (+ Ori can notify on it)
   "t": text,           // title
   "a": text,           // artist
-  "c": bool            // can_seek. optional; absent = false. Ori hides scrubber when false.
+  "c": bool,           // can_seek. optional; absent = false. Ori hides scrubber when false.
+  "p": bool,           // playing. optional; absent = no change. True = playing, false = paused.
+                       // Orion MUST push this on every track change and every play/pause toggle
+                       // so Ori's icon and local position timer stay in sync with the OS.
+  "o": uint,           // position_s. optional; present only on track change or seek. Seconds
+                       // from the start of the track. Always paired with "d".
+  "d": uint            // duration_s. optional; paired with "o". Total track duration in seconds.
+                       // Ori uses "o"+"d" to reset its dead-reckoning position timer; between
+                       // pushes Ori advances position_s on its own 1-second tick.
 }
 
 // Media Album Art — raw JPEG bytes (not CBOR), via §5 chunking. Orion resizes to 484×216.

@@ -836,9 +836,14 @@ private:
         if (cbor_parser_init(data, len, 0, &parser, &root) != CborNoError) return;
         if (!cbor_value_is_map(&root)) return;
 
-        char  title[193]  = {};
-        char  artist[97]  = {};
-        bool  can_seek    = false;
+        char     title[193]  = {};
+        char     artist[97]  = {};
+        bool     can_seek    = false;
+        bool     playing     = false;
+        bool     has_playing = false;
+        uint64_t position_s  = 0;
+        uint64_t duration_s  = 0;
+        bool     has_seek    = false;
 
         cbor_value_enter_container(&root, &map_val);
         while (!cbor_value_at_end(&map_val)) {
@@ -857,12 +862,22 @@ private:
                 cbor_value_copy_text_string(&map_val, artist, &sz, nullptr);
             } else if (strcmp(key, "c") == 0 && cbor_value_is_boolean(&map_val)) {
                 cbor_value_get_boolean(&map_val, &can_seek);
+            } else if (strcmp(key, "p") == 0 && cbor_value_is_boolean(&map_val)) {
+                cbor_value_get_boolean(&map_val, &playing);
+                has_playing = true;
+            } else if (strcmp(key, "o") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
+                cbor_value_get_uint64(&map_val, &position_s);
+                has_seek = true;
+            } else if (strcmp(key, "d") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
+                cbor_value_get_uint64(&map_val, &duration_s);
             }
             if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
         }
 
-        LOG("[gatt] MediaMetadata: title='%s' artist='%s' can_seek=%d\n",
-                       title, artist, (int)can_seek);
+        LOG("[gatt] MediaMetadata: title='%s' artist='%s' can_seek=%d playing=%d%s\n",
+                       title, artist, (int)can_seek,
+                       has_playing ? (int)playing : -1,
+                       has_seek ? " (seek)" : "");
         // Drop glyphs the UI font can't render (emoji, CJK, …) — track titles
         // routinely contain them.
         char ftitle[193] = {};
@@ -870,8 +885,13 @@ private:
         ui::sanitize_text(title,  ftitle,  sizeof(ftitle));
         ui::sanitize_text(artist, fartist, sizeof(fartist));
         app_state::set_media_meta(ftitle, fartist, can_seek);
-        // app_state write is a plain struct copy (safe from this NimBLE host
-        // task), but painting it onto the live screen touches LVGL labels —
+        if (has_playing) app_state::set_media_playing(playing);
+        // "o" without "d" is meaningless — require both to be present and
+        // duration > 0 before updating the seek position.
+        if (has_seek && duration_s > 0)
+            app_state::set_media_seek((uint32_t)position_s, (uint32_t)duration_s);
+        // app_state writes are plain struct copies (safe from this NimBLE host
+        // task), but painting them onto the live screen touches LVGL labels —
         // defer that to the main task.
         ble_post_media_meta_event();
     }

@@ -8,8 +8,10 @@ restarting the script.
 
 Requirements:
     pip install bleak cbor2 Pillow
-    pip install winsdk   # optional, Windows only — needed for the 'm' command
+    pip install winsdk   # optional, Windows only — needed for media commands
                           # (reads the current Windows now-playing media session)
+    pip install pycaw    # optional, Windows only — needed for volume control
+                          # (IAudioEndpointVolume — bidirectional volume sync)
 
 Usage:
     python tools/mock_orion_ble.py
@@ -36,6 +38,18 @@ Windows bridge reacts to OS media-change notifications. 'm' is just for
 forcing an immediate push without waiting for the next poll. Windows only;
 requires winsdk — degrades to a one-time warning (and the watcher silently
 does nothing) if it isn't installed.
+
+Volume (Host Volume State, ble-protocol.md §12) is also bidirectional:
+- On connect: the current Windows master volume is immediately pushed to Ori
+  (HostVolumeState) so Ori's swipe bar starts at the correct level.
+- Volume watcher: polls Windows master volume every ~1 s and pushes
+  HostVolumeState to Ori whenever it changes (e.g. system volume slider,
+  other apps). Windows only; requires pycaw — degrades silently if not
+  installed.
+- vol_set from Ori: when Ori sends KeyboardCommand{op:"vol_set", arg:N} after
+  a vertical-swipe release, the mock sets Windows master volume to N% and
+  writes HostVolumeState{N} back to Ori as confirmation. Ori ignores the
+  write-back during its 800 ms swipe-override window (ble-protocol.md §12).
 
 On connect the mock runs ONE unified sync: it sends Ori a manifest of every
 section's hash (time/profile/photo/meetings/PTO), Ori replies with the subset
@@ -102,6 +116,17 @@ try:
 except ImportError:
     _WINRT_AVAILABLE = False
 
+# Windows master-volume control (pycaw — wraps IAudioEndpointVolume).
+# Windows-only, optional — only needed for volume sync. Degrades silently if
+# pycaw isn't installed (pip install pycaw).
+try:
+    from pycaw.pycaw import AudioUtilities as _AudioUtils, IAudioEndpointVolume as _IAudioEPVol
+    from ctypes import cast as _ctypes_cast, POINTER as _POINTER
+    from comtypes import CLSCTX_ALL as _CLSCTX_ALL
+    _PYCAW_AVAILABLE = True
+except ImportError:
+    _PYCAW_AVAILABLE = False
+
 # Paths to source images resolved relative to this script.
 _SCRIPT_DIR        = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT         = os.path.dirname(_SCRIPT_DIR)
@@ -139,6 +164,8 @@ UUID_PTO          = _uuid(0x0007)   # Write chunked         — encrypted
 UUID_SYNC_CTRL    = _uuid(0x0008)   # Write, Notify         — encrypted
 UUID_FACTORY_RST  = _uuid(0x0009)   # Write (response)      — encrypted
 UUID_MANIFEST     = _uuid(0x000A)   # Write, Notify         — encrypted
+UUID_KEYBOARD_CMD = _uuid(0x000B)   # Notify only               — encrypted (Ori → Orion)
+UUID_HOST_VOLUME  = _uuid(0x000C)   # Read, Write (response)   — encrypted
 UUID_MEDIA_META   = _uuid(0x000D)   # Write (response), Notify — encrypted
 UUID_ALBUM_ART    = _uuid(0x000E)   # Write NO RESPONSE only   — encrypted
 UUID_PRESENCE     = _uuid(0x000F)   # Write (response)      — encrypted
@@ -296,21 +323,39 @@ async def _read_thumbnail_bytes(thumb_ref) -> bytes:
     await stream.read_async(buf, size, _WinInputStreamOptions.READ_AHEAD)
     return bytes(buf)
 
+def _timespan_to_seconds(ts) -> Optional[int]:
+    """Convert a WinRT TimeSpan to whole seconds.
+
+    The winsdk Python binding maps Windows.Foundation.TimeSpan to
+    datetime.timedelta — NOT a plain int. The plain-int path (100-ns ticks)
+    is kept as a fallback for any winsdk build that differs.
+    """
+    if ts is None:
+        return None
+    try:
+        if hasattr(ts, 'total_seconds'):          # datetime.timedelta (typical)
+            return max(0, int(ts.total_seconds()))
+        return int(ts) // 10_000_000              # raw 100-ns ticks (fallback)
+    except (TypeError, ValueError):
+        return None
+
 async def read_now_playing_media(quiet: bool = False,
                                   fetch_art: bool = True) -> Optional[dict]:
     """Query the Windows GlobalSystemMediaTransportControlsSessionManager for
     the current now-playing session — the same OS API the real Orion app's
     Windows media bridge uses (ble-protocol.md §12). Returns
-    {"title", "artist", "can_seek", "art_jpeg"} (art_jpeg already
-    resized/recompressed to Ori's 484×216 target via build_album_art_jpeg()),
-    or None if winsdk isn't installed.
+    {"title", "artist", "can_seek", "is_playing", "position_s", "duration_s",
+    "art_jpeg"} (art_jpeg already resized/recompressed to Ori's 484×216 target
+    via build_album_art_jpeg()), or None if winsdk isn't installed.
 
-    quiet=True suppresses the per-call status prints — used by media_watcher()'s
-    polling loop so it doesn't spam the console every interval.
-    fetch_art=False skips reading/re-encoding the thumbnail entirely (art_jpeg
-    comes back b"") — also for the polling loop, which only needs title/artist/
-    can_seek to detect a change; the thumbnail is fetched separately once a
-    change is confirmed."""
+    quiet=True suppresses the per-call status prints.
+    fetch_art=False skips reading/re-encoding the thumbnail (art_jpeg comes
+    back b"") — used by the polling loop which only needs lightweight fields to
+    detect changes; the thumbnail is fetched separately once a change is
+    confirmed.
+
+    position_s / duration_s are always fetched (they're cheap — no I/O) and
+    are None when the OS doesn't expose timeline info for the session."""
     if not _WINRT_AVAILABLE:
         if not quiet:
             print("  [warn] winsdk not installed — can't read Windows now-playing "
@@ -321,13 +366,43 @@ async def read_now_playing_media(quiet: bool = False,
     if not session:
         if not quiet:
             print("  [info] No active media session on Windows (nothing playing)")
-        return {"title": "", "artist": "", "can_seek": False, "art_jpeg": b""}
+        return {"title": "", "artist": "", "can_seek": False,
+                "is_playing": False, "position_s": None, "duration_s": None,
+                "art_jpeg": b""}
 
     props    = await session.try_get_media_properties_async()
     playback = session.get_playback_info()
+
     can_seek = False
     try:
         can_seek = bool(playback.controls.is_playback_position_enabled)
+    except Exception:
+        pass
+
+    # MediaPlaybackStatus: 0=Closed 1=Opened 2=Changing 3=Stopped 4=Playing 5=Paused
+    # winsdk WinRT enums expose their integer value via .value, NOT via __int__,
+    # so int(status) raises TypeError and was silently swallowed — is_playing
+    # stayed False permanently, meaning Ori's dead-reckoning timer never ran.
+    is_playing = False
+    try:
+        status     = playback.playback_status
+        status_int = getattr(status, 'value', None)
+        if status_int is None:
+            status_int = int(status)    # fallback for older winsdk
+        is_playing = (status_int == 4)
+    except Exception:
+        pass
+
+    # Timeline position and duration — cheap synchronous read, always fetched.
+    position_s: Optional[int] = None
+    duration_s: Optional[int] = None
+    try:
+        tl = session.get_timeline_properties()
+        if tl is not None:
+            dur = _timespan_to_seconds(tl.end_time)
+            if dur and dur > 0:
+                duration_s = dur
+                position_s = _timespan_to_seconds(tl.position) or 0
     except Exception:
         pass
 
@@ -336,10 +411,13 @@ async def read_now_playing_media(quiet: bool = False,
         art_raw  = await _read_thumbnail_bytes(props.thumbnail)
         art_jpeg = build_album_art_jpeg(art_raw) if art_raw else b""
     return {
-        "title":    props.title or "",
-        "artist":   props.artist or "",
-        "can_seek": can_seek,
-        "art_jpeg": art_jpeg,
+        "title":      props.title or "",
+        "artist":     props.artist or "",
+        "can_seek":   can_seek,
+        "is_playing": is_playing,
+        "position_s": position_s,
+        "duration_s": duration_s,
+        "art_jpeg":   art_jpeg,
     }
 
 # ── Mock data ─────────────────────────────────────────────────────────────────
@@ -480,13 +558,29 @@ def build_shortcut_config(slot1: str = "vol-mute", slot2: str = "mic-mute",
     # Keys are single chars: "1"=slot1, "2"=slot2, "3"=slot3.
     return cbor2.dumps({"1": slot1, "2": slot2, "3": slot3})
 
-def build_media_metadata(title: str, artist: str, can_seek: bool = False) -> bytes:
-    # Keys are single chars (ble-protocol.md §4): t=title, a=artist, c=can_seek.
-    # c is optional; absent = false (Ori hides the scrubber) — only include it
-    # when true, matching every other optional field in this script.
-    d = {"t": (title or "")[:192], "a": (artist or "")[:96]}
+def build_host_volume_state(level: int, mute: bool = False) -> bytes:
+    # Single-char keys (ble-protocol.md §4): l=level (0..100), m=mute.
+    return cbor2.dumps({"l": max(0, min(100, int(level))), "m": bool(mute)})
+
+def build_media_metadata(title: str, artist: str, can_seek: bool = False,
+                          playing: bool = False,
+                          position_s: Optional[int] = None,
+                          duration_s: Optional[int] = None) -> bytes:
+    # Keys are single chars (ble-protocol.md §4):
+    #   t=title, a=artist, c=can_seek, p=playing, o=position_s, d=duration_s.
+    # "p" is always included so Ori's play icon stays in sync with the OS —
+    # the firmware treats absent "p" as "no change" (forward-compat), but the
+    # mock always sends it for clarity. "o"+"d" are included only when both
+    # are provided (track change or explicit seek), letting Ori reset its
+    # dead-reckoning timer to the correct anchor; otherwise Ori advances on
+    # its own 1-second tick.
+    d: dict = {"t": (title or "")[:192], "a": (artist or "")[:96]}
     if can_seek:
         d["c"] = True
+    d["p"] = bool(playing)
+    if position_s is not None and duration_s is not None and duration_s > 0:
+        d["o"] = int(position_s)
+        d["d"] = int(duration_s)
     return cbor2.dumps(d)
 
 def sha256(data: bytes) -> bytes:
@@ -528,6 +622,71 @@ class MockOrion:
         except Exception:
             print(f"\n  [notify] SyncManifest ← raw {data.hex()}")
         self._manifest_reply.set()
+
+    def _on_keyboard_command(self, _: BleakGATTCharacteristic, data: bytearray):
+        # ble-protocol.md §12 — Ori → Orion notify on char 000B.
+        # Dispatch to the async handler so we can call WinRT session APIs.
+        try:
+            msg = cbor2.loads(bytes(data))
+            op  = msg.get("o", "")
+            arg = int(msg.get("a", 0))
+            print(f"\n  [notify] KeyboardCommand ← op='{op}' arg={arg}")
+            asyncio.ensure_future(self._handle_keyboard_command(op, arg))
+        except Exception as exc:
+            print(f"\n  [notify] KeyboardCommand ← parse error: {exc}")
+
+    async def _handle_keyboard_command(self, op: str, arg: int):
+        """Bridge a Ori KeyboardCommand to the Windows media session API.
+
+        ble-protocol.md §12 command map:
+          play_pause → try_toggle_play_pause_async()
+          next       → try_skip_next_async()
+          prev       → try_skip_previous_async()
+          seek       → try_change_playback_position_async(arg * 10_000_000)
+          vol_set    → logged only (volume control requires pycaw/COM, out of
+                       scope for the mock tool — the real Orion app implements
+                       this via IAudioEndpointVolume)
+          shortcut   → logged only (Orion-side action, no OS equivalent here)
+        """
+        if not _WINRT_AVAILABLE:
+            return
+        try:
+            mgr     = await _MediaManager.request_async()
+            session = mgr.get_current_session()
+            if not session:
+                print("  [kbd] no active media session — command ignored")
+                return
+            if op == "play_pause":
+                await session.try_toggle_play_pause_async()
+                print("  [kbd] play_pause sent to OS")
+            elif op == "next":
+                await session.try_skip_next_async()
+                print("  [kbd] next sent to OS")
+            elif op == "prev":
+                await session.try_skip_previous_async()
+                print("  [kbd] prev sent to OS")
+            elif op == "seek":
+                # WinRT TimeSpan = 100-nanosecond ticks; arg is seconds.
+                await session.try_change_playback_position_async(arg * 10_000_000)
+                print(f"  [kbd] seek to {arg}s sent to OS")
+            elif op == "vol_set":
+                # Set Windows master volume, then write HostVolumeState back
+                # to Ori as confirmation. Ori ignores the write during its
+                # 800 ms swipe-override window (ble-protocol.md §12).
+                loop = asyncio.get_event_loop()
+                actual = await loop.run_in_executor(None, _set_windows_volume_sync, arg)
+                if actual is not None:
+                    print(f"  [kbd] vol_set → Windows volume = {actual}%")
+                    await self.push_host_volume(actual)
+                else:
+                    print(f"  [kbd] vol_set {arg}% — pycaw not installed "
+                          "(pip install pycaw; Windows only)")
+            elif op == "shortcut":
+                print(f"  [kbd] shortcut slot {arg} — no OS action in mock")
+            else:
+                print(f"  [kbd] unknown op '{op}'")
+        except Exception as exc:
+            print(f"  [kbd] error handling '{op}': {exc}")
 
     # ── helpers ──
 
@@ -591,9 +750,12 @@ class MockOrion:
                 await asyncio.sleep(0.02)
 
     async def subscribe(self):
-        await self.client.start_notify(UUID_DEV_STATUS, self._on_dev_status)
-        await self.client.start_notify(UUID_SYNC_CTRL,  self._on_sync_ctrl)
-        await self.client.start_notify(UUID_MANIFEST,   self._on_manifest)
+        await self.client.start_notify(UUID_DEV_STATUS,  self._on_dev_status)
+        await self.client.start_notify(UUID_SYNC_CTRL,   self._on_sync_ctrl)
+        await self.client.start_notify(UUID_MANIFEST,    self._on_manifest)
+        # Subscribe to Keyboard Command notifies — Ori sends play_pause / next /
+        # prev / seek / vol_set / shortcut here; we bridge them to OS APIs.
+        await self.client.start_notify(UUID_KEYBOARD_CMD, self._on_keyboard_command)
         raw = await self.client.read_gatt_char(UUID_DEV_STATUS)
         self._on_dev_status(None, raw)  # seed current value
 
@@ -627,6 +789,14 @@ class MockOrion:
             print(f"  [ok] Shortcuts applied (status {DS.get(self.last_status, '?')}).\n")
         else:
             print(f"  [warn] completion not seen (last: {DS.get(self.last_status, '?')})\n")
+
+    async def push_host_volume(self, level: int, mute: bool = False):
+        # HostVolumeState (char 000C) is Write (response) — Orion is the sole
+        # writer. Ori ignores writes during the 800 ms swipe-override window
+        # (ble-protocol.md §12 drag-wins rule) but accepts them afterwards.
+        payload = build_host_volume_state(level, mute)
+        await self.client.write_gatt_char(UUID_HOST_VOLUME, bytearray(payload), response=True)
+        print(f"  [vol]  HostVolumeState → Ori: level={level}% mute={mute}")
 
     async def push_time_sync(self):
         # TimeSync is also staged (ble-protocol.md §6.0) — Ori only applies it
@@ -665,13 +835,25 @@ class MockOrion:
         # manifest, no blackout (ble-protocol.md §12) — so this is just two
         # bare writes, no BEGIN/END session needed. Shared by push_media()
         # (manual 'm') and media_watcher() (auto-push on change).
+        is_playing = info.get("is_playing", False)
+        position_s = info.get("position_s")
+        duration_s = info.get("duration_s")
+        pos_str    = (f"  pos={position_s}s/{duration_s}s"
+                      if position_s is not None and duration_s else "")
         print(f"\n  [info] now playing: title='{info['title']}' "
-              f"artist='{info['artist']}' can_seek={info['can_seek']}")
-        meta_bytes = build_media_metadata(info["title"], info["artist"], info["can_seek"])
+              f"artist='{info['artist']}' can_seek={info['can_seek']} "
+              f"{'▶' if is_playing else '⏸'}{pos_str}")
+        meta_bytes = build_media_metadata(
+            info["title"], info["artist"], info["can_seek"],
+            playing=is_playing,
+            position_s=position_s,
+            duration_s=duration_s,
+        )
         await self.write(UUID_MEDIA_META, meta_bytes, "MediaMetadata")
 
-        if info["art_jpeg"]:
-            await self.write_chunked_nr(UUID_ALBUM_ART, info["art_jpeg"], "MediaAlbumArt")
+        art_jpeg = info.get("art_jpeg", b"")
+        if art_jpeg:
+            await self.write_chunked_nr(UUID_ALBUM_ART, art_jpeg, "MediaAlbumArt")
             print("  [ok] Media metadata + album art pushed.\n")
         else:
             print("  [info] no album art available — sent metadata only.\n")
@@ -832,6 +1014,44 @@ class MockOrion:
 
 # ── Background media watcher ───────────────────────────────────────────────────
 
+# ── Windows volume helpers (pycaw — IAudioEndpointVolume) ────────────────────
+# These are synchronous COM calls — always run via loop.run_in_executor() so
+# they don't block the asyncio event loop.
+
+def _vol_interface():
+    """Return IAudioEndpointVolume for the default render endpoint.
+
+    pycaw's AudioUtilities.GetSpeakers() returns either a raw COM IMMDevice
+    (older pycaw ≤ 5.x) or an AudioDevice wrapper whose ._dev attribute is the
+    raw IMMDevice (newer pycaw). getattr(…, '_dev', …) handles both cases.
+    """
+    devices = _AudioUtils.GetSpeakers()
+    dev     = getattr(devices, '_dev', devices)   # unwrap AudioDevice if needed
+    iface   = dev.Activate(_IAudioEPVol._iid_, _CLSCTX_ALL, None)
+    return _ctypes_cast(iface, _POINTER(_IAudioEPVol))
+
+def _get_windows_volume_sync() -> Optional[int]:
+    """Read Windows master volume as 0..100 (sync; call via run_in_executor)."""
+    if not _PYCAW_AVAILABLE:
+        return None
+    try:
+        return round(_vol_interface().GetMasterVolumeLevelScalar() * 100)
+    except Exception:
+        return None
+
+def _set_windows_volume_sync(level: int) -> Optional[int]:
+    """Set Windows master volume to 0..100 (sync; call via run_in_executor).
+    Returns the clamped level actually applied, or None on error."""
+    if not _PYCAW_AVAILABLE:
+        return None
+    try:
+        level = max(0, min(100, int(level)))
+        _vol_interface().SetMasterVolumeLevelScalar(level / 100.0, None)
+        return level
+    except Exception as exc:
+        print(f"  [vol] SetMasterVolumeLevelScalar error: {exc}")
+        return None
+
 # How often to poll Windows for a track change. winsdk/WinRT does expose native
 # change events (add_media_properties_changed), but those fire callbacks on a
 # non-asyncio COM thread — bridging them into this script's event loop reliably
@@ -842,30 +1062,113 @@ class MockOrion:
 MEDIA_WATCH_INTERVAL_S = 2.0
 
 async def media_watcher(orion: MockOrion):
-    """Background task (started in main(), alongside command_loop()): polls
-    the current Windows now-playing session and auto-pushes MediaMetadata +
-    MediaAlbumArt whenever the track actually changes — mirrors how the real
-    Orion app's Windows bridge reacts to OS now-playing change notifications
-    (ble-protocol.md §12), so you don't have to press 'm' on every track
-    change. The first check runs immediately (no initial sleep), so whatever
-    is already playing when you connect gets pushed right away — same as
-    Orion re-pushing the current track on reconnect (§12 cache semantics)."""
+    """Background task: polls Windows now-playing and pushes MediaMetadata +
+    MediaAlbumArt on three kinds of change:
+
+    1. Track change (title/artist/can_seek differ) — re-fetch with art.
+    2. Play-state change — push metadata+position immediately, skip art re-encode.
+    3. PC-side seek — detected when actual position deviates more than 5 s from
+       the dead-reckoned expected position (last_pos + elapsed) while both polls
+       show is_playing=True. Pushes updated position so Ori's dead-reckoning
+       timer resets to the correct anchor (ble-protocol.md §4 MediaMetadata)."""
     if not _WINRT_AVAILABLE:
-        return  # 'm' already warns once if the user tries it; stay quiet here
-    last = (None, None, None)  # (title, artist, can_seek) of the last push
+        return  # 'm' warns once if the user tries it; stay quiet here
+    loop = asyncio.get_event_loop()
+
+    last_track_key   = (None, None, None)  # (title, artist, can_seek)
+    last_play_key    = None                 # is_playing
+    last_position_s: Optional[int] = None  # position at last push / poll
+    last_poll_time:  float = 0.0           # loop.time() of last poll
+
     while not orion.disconnected and orion.client.is_connected:
-        info = await read_now_playing_media(quiet=True, fetch_art=False)
+        t_now = loop.time()
+        info  = await read_now_playing_media(quiet=True, fetch_art=False)
         if info is None:
             return
-        key = (info["title"], info["artist"], info["can_seek"])
-        if key != last:
-            last = key
-            print(f"\n  [watch] media changed → '{info['title']}' — {info['artist']}")
-            full = await read_now_playing_media(quiet=True, fetch_art=True)
-            if full is None:
-                return
-            await orion._send_media(full)
+        track_key = (info["title"], info["artist"], info["can_seek"])
+        play_key  = info["is_playing"]
+        cur_pos   = info.get("position_s")
+
+        track_changed = (track_key != last_track_key)
+        play_changed  = (play_key  != last_play_key)
+
+        # Seek detection: both this and the previous poll must be playing, and
+        # the actual position must deviate more than 5 s from what dead-
+        # reckoning predicts (last_pos + elapsed).  Only runs when the track
+        # hasn't changed — a new track resets everything via track_changed.
+        seek_detected = False
+        if (not track_changed
+                and last_play_key and play_key          # both polls: playing
+                and last_position_s is not None
+                and cur_pos is not None
+                and last_poll_time > 0):
+            expected = last_position_s + (t_now - last_poll_time)
+            if abs(cur_pos - expected) > 5:
+                seek_detected = True
+
+        # Advance tracking state before the (potentially slow) _send_media call.
+        last_poll_time = t_now
+        last_play_key  = play_key
+        if cur_pos is not None:
+            last_position_s = cur_pos
+
+        if track_changed or play_changed or seek_detected:
+            last_track_key = track_key
+            icon = '▶' if play_key else '⏸'
+            if track_changed:
+                print(f"\n  [watch] track → '{info['title']}' — {info['artist']} {icon}")
+                full = await read_now_playing_media(quiet=True, fetch_art=True)
+                if full is None:
+                    return
+                await orion._send_media(full)
+                # Update position anchor from the more accurate full-fetch result.
+                if full.get("position_s") is not None:
+                    last_position_s = full["position_s"]
+                    last_poll_time  = loop.time()
+            elif seek_detected:
+                print(f"\n  [watch] PC seek → {cur_pos}s {icon}")
+                await orion._send_media(info)
+            else:
+                print(f"\n  [watch] play state → {icon}")
+                await orion._send_media(info)
+
         await asyncio.sleep(MEDIA_WATCH_INTERVAL_S)
+
+# ── Background volume watcher ─────────────────────────────────────────────────
+
+# How often to poll Windows master volume for changes. pycaw's COM call is
+# lightweight (no I/O), so 1 s is fine. This is the same role as Orion's
+# IAudioEndpointVolumeCallback (debounced ~100 ms) — here we poll instead.
+VOLUME_WATCH_INTERVAL_S = 1.0
+
+async def volume_watcher(orion: MockOrion):
+    """Background task: polls Windows master volume and pushes HostVolumeState
+    to Ori on every change — mirrors how the real Orion app's
+    IAudioEndpointVolumeCallback detects OS volume changes and writes back
+    (ble-protocol.md §12). The first poll runs immediately (no initial sleep)
+    so the correct level is pushed on connect/reconnect before the user
+    starts swiping. Windows only; degrades silently if pycaw is not installed.
+
+    Ori ignores HostVolumeState writes during its 800 ms swipe-override window
+    (set when a vertical-swipe starts; cleared on release), so concurrent
+    watcher pushes during a drag are harmlessly dropped on the firmware side."""
+    if not _PYCAW_AVAILABLE:
+        return
+    loop = asyncio.get_event_loop()
+    last_level: Optional[int] = None
+    while not orion.disconnected and orion.client.is_connected:
+        level = await loop.run_in_executor(None, _get_windows_volume_sync)
+        if level is not None and level != last_level:
+            if last_level is None:
+                print(f"\n  [vol] initial volume: {level}%")
+            else:
+                print(f"\n  [vol] volume changed {last_level}% → {level}%")
+            last_level = level
+            try:
+                await orion.push_host_volume(level)
+            except Exception as exc:
+                print(f"  [vol] push HostVolumeState error: {exc}")
+        await asyncio.sleep(VOLUME_WATCH_INTERVAL_S)
 
 # ── Interactive command loop ──────────────────────────────────────────────────
 
@@ -1008,15 +1311,26 @@ async def main(args):
         # BEGIN handshake deadline. Re-run anytime with 's'.
         await orion.run_sync()
 
+        # Push media metadata (no art) immediately so Ori's Controls screen
+        # shows title/artist/position right away. Art arrives a few seconds
+        # later once the watcher completes its first full fetch+encode.
+        if _WINRT_AVAILABLE:
+            quick = await read_now_playing_media(quiet=True, fetch_art=False)
+            if quick:
+                await orion._send_media(quick)
+
         watcher_task = asyncio.create_task(media_watcher(orion))
+        vol_task     = asyncio.create_task(volume_watcher(orion))
         try:
             await command_loop(orion)
         finally:
             watcher_task.cancel()
-            try:
-                await watcher_task
-            except asyncio.CancelledError:
-                pass
+            vol_task.cancel()
+            for t in (watcher_task, vol_task):
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.WARNING)

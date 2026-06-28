@@ -555,13 +555,18 @@ void poll() {
 
             case BleEventType::MediaMetaUpdated: {
                 // gatt_server::handle_media_metadata() already wrote the new
-                // title/artist/can_seek into app_state (a plain struct copy,
-                // safe from the NimBLE host task) but couldn't call
-                // screen_media_mode::update_meta() itself — it touches LVGL
-                // labels, which must only happen on the main task. Re-read
-                // the now-current value and paint it.
+                // title/artist/can_seek/playing/position into app_state (plain
+                // struct copies, safe from the NimBLE host task) but couldn't
+                // touch LVGL — defer that to here (main task only).
                 const auto& m = app_state::media();
                 screen_media_mode::update_meta(m.title, m.artist);
+                // Sync play/pause icon + paused-overlay with whatever the OS
+                // reported — this is the authoritative source of truth, so it
+                // overrides any local toggle the user made via tap.
+                screen_media_mode::update_playing(app_state::media_playing());
+                // Always call update_seek — it controls tl_overlay visibility
+                // and hides the bar when duration_s == 0 or can_seek is false.
+                screen_media_mode::update_seek(m.position_s, m.duration_s);
                 break;
             }
 
