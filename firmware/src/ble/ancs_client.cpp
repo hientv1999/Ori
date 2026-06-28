@@ -69,6 +69,7 @@ static const BundleMap k_bundle_map[] = {
     { "ph.telegra.Telegraph",           "telegram",    "Telegram"    },
     { "com.google.ios.youtube",         "youtube",     "YouTube"     },
     { "com.zhiliaoapp.musically",       "tiktok",      "TikTok"      },
+    { "com.ss.iphone.ugc.Ame",          "tiktok",      "TikTok"      },
     { "com.spotify.client",             "spotify",     "Spotify"     },
     { "com.tencent.xin",                "wechat",      "WeChat"      },
     { "jp.naver.line",                  "line",        "LINE"        },
