@@ -1,4 +1,7 @@
-import math, sys
+import math, sys, os
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+ASSETS_DIR = os.path.join(SCRIPT_DIR, "..", "src", "assets")
 
 W=H=60; SS=4
 GREY=(0x3A,0x3F,0x47); WHITE=(0xF2,0xF2,0xF2)
@@ -51,12 +54,7 @@ def g_social(x,y):
     body=rrect_inside(x,y,11,15,49,39,9) or tri(x,y,(18,36),(31,36),(17,48))
     dots=disk(x,y,22,27,2) or disk(x,y,30,27,2) or disk(x,y,38,27,2)
     return body and not dots
-def g_call(x,y):
-    # Filled handset = a thick crescent (boomerang) hugging the upper-left and
-    # opening toward the lower-right — the classic phone-receiver silhouette.
-    return disk(x,y,31,31,15) and not disk(x,y,42,42,15.5)
-
-GLYPHS=[("call",g_call),("social",g_social),("schedule",g_schedule),
+GLYPHS=[("social",g_social),("schedule",g_schedule),
         ("email",g_email),("news",g_news),("health",g_health),
         ("finance",g_finance),("location",g_location),("entertainment",g_play)]
 
@@ -79,14 +77,7 @@ def ascii_preview(name,fn):
             row += ("#" if gc>0.5 else ("." if tc>0.5 else " "))
         print(row)
 
-def emit_c(name,fn):
-    flat=[]
-    for py in range(60):
-        for px in range(60):
-            tc,gc=coverage(fn,px,py)
-            r=round(GREY[0]+(WHITE[0]-GREY[0])*gc); g=round(GREY[1]+(WHITE[1]-GREY[1])*gc)
-            b=round(GREY[2]+(WHITE[2]-GREY[2])*gc); a=round(tc*255)
-            flat+=[b,g,r,a]
+def _write_c(name, flat):
     sym=f"cat_{name}"; up=sym.upper()
     L=["","#if defined(LV_LVGL_H_INCLUDE_SIMPLE)",'#include "lvgl.h"',
        "#elif defined(LV_LVGL_H_INCLUDE_SYSTEM)","#include <lvgl.h>",
@@ -106,10 +97,86 @@ def emit_c(name,fn):
         "    .flags = 0,","    .w = 60,","    .h = 60,","    .stride = 240,",
         "    .reserved_2 = 0,","  },",f"  .data_size = sizeof({sym}_map),",
         f"  .data = {sym}_map,","  .reserved = NULL,","};",""]
-    with open(f"src/assets/ancs_{name}.c","w") as f: f.write("\n".join(L))
+    out = os.path.join(ASSETS_DIR, f"ancs_{name}.c")
+    with open(out, "w") as f: f.write("\n".join(L))
 
-mode = sys.argv[1] if len(sys.argv)>1 else "preview"
-for name,fn in GLYPHS:
-    if mode=="preview": ascii_preview(name,fn)
-    else: emit_c(name,fn)
-if mode!="preview": print("wrote %d category icon .c files"%len(GLYPHS))
+def emit_c(name,fn):
+    flat=[]
+    for py in range(H):
+        for px in range(W):
+            tc,gc=coverage(fn,px,py)
+            r=round(GREY[0]+(WHITE[0]-GREY[0])*gc); g=round(GREY[1]+(WHITE[1]-GREY[1])*gc)
+            b=round(GREY[2]+(WHITE[2]-GREY[2])*gc); a=round(tc*255)
+            flat+=[b,g,r,a]
+    _write_c(name,flat)
+
+def emit_c_from_image(name, img_path, invert=False):
+    """Recolour a PNG to the GREY/WHITE category-icon palette and emit the C array.
+
+    The PNG glyph should be WHITE on a DARK background (or use --invert for the
+    opposite). Transparency is respected: fully transparent pixels are treated as
+    background. The rounded-square tile mask is applied for the alpha channel.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        print("ERROR: Pillow not installed — run: pip install pillow"); return
+
+    img = Image.open(img_path).convert("RGBA").resize((W, H), Image.LANCZOS)
+    pix = img.load()
+
+    # Auto-detect polarity: if opaque pixels are mostly dark, the glyph is dark
+    # on a light/transparent background and needs inverting.
+    opaque = [(r+g+b)/765.0 for x in range(W) for y in range(H)
+              if (lambda p: p[3] > 10)(pix[x, y])
+              for r, g, b, _ in [pix[x, y]]]
+    avg_brightness = sum(opaque) / len(opaque) if opaque else 0.5
+    if not invert and avg_brightness < 0.5:
+        invert = True
+        print(f"  auto-detected dark glyph (avg brightness {avg_brightness:.2f}) — inverting")
+
+    flat = []
+    for py in range(H):
+        for px_ in range(W):
+            # Tile alpha via supersampling
+            tc = sum(1 for sy in range(SS) for sx in range(SS)
+                     if tile(px_+(sx+.5)/SS, py+(sy+.5)/SS)) / (SS*SS)
+
+            ri, gi, bi, ai = pix[px_, py]
+            if ai < 10:               # fully transparent → background
+                gc = 0.0
+            else:
+                gc = (ri+gi+bi) / 765.0   # brightness 0..1
+                if invert: gc = 1.0 - gc
+
+            r = round(GREY[0]+(WHITE[0]-GREY[0])*gc)
+            g = round(GREY[1]+(WHITE[1]-GREY[1])*gc)
+            b = round(GREY[2]+(WHITE[2]-GREY[2])*gc)
+            a = round(tc*255)
+            flat += [b, g, r, a]
+
+    _write_c(name, flat)
+    print(f"wrote src/assets/ancs_{name}.c  (from {img_path})")
+
+# ── dispatch ──────────────────────────────────────────────────────────────────
+mode = sys.argv[1] if len(sys.argv) > 1 else "preview"
+
+if mode == "preview":
+    for name, fn in GLYPHS: ascii_preview(name, fn)
+
+elif mode == "emit":
+    for name, fn in GLYPHS: emit_c(name, fn)
+    print("wrote %d category icon .c files" % len(GLYPHS))
+
+elif mode == "from_image":
+    # Usage: gen_category_icons.py from_image <name> <image_path> [--invert]
+    if len(sys.argv) < 4:
+        print("Usage: gen_category_icons.py from_image <name> <image_path> [--invert]")
+        sys.exit(1)
+    invert = "--invert" in sys.argv
+    emit_c_from_image(sys.argv[2], sys.argv[3], invert=invert)
+
+else:
+    # Legacy: any other arg triggers full emit (backward-compat)
+    for name, fn in GLYPHS: emit_c(name, fn)
+    print("wrote %d category icon .c files" % len(GLYPHS))

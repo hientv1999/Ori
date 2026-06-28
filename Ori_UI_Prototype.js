@@ -31,6 +31,7 @@ const ANCS_NOTIFICATIONS = {
     title: 'New activity',
     body: 'oridevice and 47 others liked your photo.',
     time: '18 min ago',
+    silent: true,   // EventFlags SILENT bit — badge shown in the overlay
   },
   facebook: {
     displayName: 'Facebook',
@@ -134,6 +135,13 @@ const SCREENS = {
     statusBar: { ancsApps: ['gmail', 'messenger', 'instagram'], phoneConnected: true },
     leftRender: () => meetingListHTML(TODAY_MEETINGS),
     modal: () => ancsDetailHTML('gmail'),
+  },
+  'ancs-notification-silent': {
+    label: 'Modal popup', title: 'ANCS silent notification detail',
+    desc: 'When the notification\'s ANCS EventFlags SILENT bit is set (iOS delivered it without sound/vibration), the overlay shows a small pill badge in the top-left corner. Whether the notification appears at all depends on the Orion "show silent notifications" toggle. This demo uses Instagram — marked silent in the mock data — to show the badge design.',
+    statusBar: { ancsApps: ['gmail', 'messenger', 'instagram'], phoneConnected: true },
+    leftRender: () => meetingListHTML(TODAY_MEETINGS),
+    modal: () => ancsDetailHTML('instagram'),
   },
   'profile-detail': {
     label: 'Modal popup', title: 'Profile detail overlay',
@@ -1030,6 +1038,15 @@ function ancsDetailHTML(app) {
     body: 'No preview available.',
     time: 'Just now',
   };
+  // Silent badge — shown in the top-left corner of the overlay when the
+  // notification's ANCS EventFlags SILENT bit is set (iOS delivered it silently;
+  // whether it even appears depends on the Orion "show silent" toggle setting).
+  const silentBadge = n.silent
+    ? '<div class="ad-silent-badge">' +
+      '<svg viewBox="0 0 24 24"><use href="#i-bell-off"/></svg>' +
+      'Silent</div>'
+    : '';
+  const detailClass = 'ancs-detail' + (n.silent ? ' has-silent' : '');
   // Layout mirrors the meeting-detail overlay:
   //   app icon  ← visual anchor (no meeting equivalent)
   //   title     ← md-title (28px weight 500) — sender / notification subject
@@ -1037,7 +1054,8 @@ function ancsDetailHTML(app) {
   //   timestamp ← md-org  (18px tertiary)    — how long ago
   //   app name  ← md-time (22px weight 500)  — definitive source identifier
   //   buttons   ← replaces "Tap to dismiss" hint
-  return '<div class="ancs-detail" onclick="event.stopPropagation()">' +
+  return '<div class="' + detailClass + '" onclick="event.stopPropagation()">' +
+    silentBadge +
     '<div class="ad-app-icon"><svg viewBox="0 0 24 24"><use href="#i-' + app + '"/></svg></div>' +
     '<div class="ad-title">' + escapeHtml(n.title) + '</div>' +
     '<div class="ad-body">' + escapeHtml(n.body) + '</div>' +

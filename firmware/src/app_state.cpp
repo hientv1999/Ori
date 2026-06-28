@@ -13,7 +13,7 @@ namespace {
 // Generic fallback for the ANCS notification detail modal — used only before a
 // notification's attributes have arrived. Empty time_ago so no fake time shows.
 static const AncsNotification k_ancs_fallback = {
-    "Notification", "Notification", "", "No preview available.", ""
+    "Notification", "Notification", "", "No preview available.", "", "", "", false, false
 };
 
 // ── ANCS notification detail store ─────────────────────────────────────────
@@ -31,9 +31,13 @@ struct AncsDetailEntry {
     time_t   recv_epoch;     // phone's notification time; 0 = unknown
     char     hhmm[6];        // "HH:MM" from ANCS Date (TZ-free); "" = unknown
     char     time_ago[24];   // formatted on lookup (fresh when the modal opens)
-    uint8_t  category;       // AncsCategory::*
-    bool     important;      // EventFlags Important bit
-    uint32_t seq;            // insertion order — higher = more recent
+    uint8_t  category;        // AncsCategory::*
+    bool     important;       // EventFlags Important bit
+    char     pos_label[33];   // ANCS PositiveActionLabel; "" if absent
+    char     neg_label[33];   // ANCS NegativeActionLabel; "" if absent
+    bool     has_neg_action;  // EventFlags NEGATIVE_ACTION bit
+    bool     silent;          // EventFlags SILENT bit
+    uint32_t seq;             // insertion order — higher = more recent
     bool     used;
 };
 // Backing storage lives in PSRAM (allocated by app_state::init()) — at
@@ -185,7 +189,8 @@ void dismiss_ancs_notification(const char* token) {
 void set_ancs_detail(uint32_t uid, const char* token, const char* display_name,
                      const char* title, const char* subtitle, const char* body,
                      time_t recv_epoch, const char* hhmm,
-                     const char* bundle, uint8_t category, bool important) {
+                     const char* bundle, uint8_t category, bool important, bool silent,
+                     const char* pos_label, const char* neg_label, bool neg_action) {
     // Reuse the slot for this uid (Modified), else a free slot, else evict the
     // oldest (lowest seq) so a full queue keeps the most recent detail.
     AncsDetailEntry* slot = nullptr;
@@ -193,20 +198,24 @@ void set_ancs_detail(uint32_t uid, const char* token, const char* display_name,
     if (!slot) for (auto& e : k_detail) if (!e.used) { slot = &e; break; }
     if (!slot) { slot = &k_detail[0]; for (auto& e : k_detail) if (e.seq < slot->seq) slot = &e; }
 
-    slot->used       = true;
-    slot->uid        = uid;
-    slot->seq        = ++k_detail_seq;
-    slot->recv_epoch = recv_epoch;
-    slot->category   = category;
-    slot->important  = important;
+    slot->used           = true;
+    slot->uid            = uid;
+    slot->seq            = ++k_detail_seq;
+    slot->recv_epoch     = recv_epoch;
+    slot->category       = category;
+    slot->important      = important;
+    slot->silent         = silent;
+    slot->has_neg_action = neg_action;
     snprintf(slot->token,        sizeof(slot->token),        "%s", token ? token : "unknown");
     snprintf(slot->bundle,       sizeof(slot->bundle),       "%s", bundle ? bundle : "");
     snprintf(slot->display_name, sizeof(slot->display_name), "%s",
              (display_name && display_name[0]) ? display_name : "Notification");
-    snprintf(slot->title,        sizeof(slot->title),        "%s", title    ? title    : "");
-    snprintf(slot->subtitle,     sizeof(slot->subtitle),     "%s", subtitle ? subtitle : "");
-    snprintf(slot->body,         sizeof(slot->body),         "%s", body     ? body     : "");
-    snprintf(slot->hhmm,         sizeof(slot->hhmm),         "%s", hhmm     ? hhmm     : "");
+    snprintf(slot->title,        sizeof(slot->title),        "%s", title     ? title     : "");
+    snprintf(slot->subtitle,     sizeof(slot->subtitle),     "%s", subtitle  ? subtitle  : "");
+    snprintf(slot->body,         sizeof(slot->body),         "%s", body      ? body      : "");
+    snprintf(slot->hhmm,         sizeof(slot->hhmm),         "%s", hhmm      ? hhmm      : "");
+    snprintf(slot->pos_label,    sizeof(slot->pos_label),    "%s", pos_label ? pos_label : "");
+    snprintf(slot->neg_label,    sizeof(slot->neg_label),    "%s", neg_label ? neg_label : "");
 }
 
 void set_ancs_display_name_for_bundle(const char* bundle, const char* name) {
@@ -319,11 +328,15 @@ static void format_notif_time(time_t when, time_t now,
 static const AncsNotification& fill_detail_view(AncsDetailEntry* d) {
     format_notif_time(d->recv_epoch, time(nullptr), d->hhmm,
                       d->time_ago, sizeof(d->time_ago));
-    k_detail_view.display_name = d->display_name;
-    k_detail_view.title        = d->title[0] ? d->title : "Notification";
-    k_detail_view.subtitle     = d->subtitle;  // "" → modal hides the line
-    k_detail_view.body         = d->body[0]  ? d->body  : "No preview available.";
-    k_detail_view.time_ago     = d->time_ago;  // "" → modal hides the line
+    k_detail_view.display_name   = d->display_name;
+    k_detail_view.title          = d->title[0] ? d->title : "Notification";
+    k_detail_view.subtitle       = d->subtitle;  // "" → modal hides the line
+    k_detail_view.body           = d->body[0]  ? d->body  : "No preview available.";
+    k_detail_view.time_ago       = d->time_ago;  // "" → modal hides the line
+    k_detail_view.pos_label      = d->pos_label;
+    k_detail_view.neg_label      = d->neg_label;
+    k_detail_view.has_neg_action = d->has_neg_action;
+    k_detail_view.silent         = d->silent;
     return k_detail_view;
 }
 

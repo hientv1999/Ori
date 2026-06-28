@@ -241,7 +241,8 @@ void debug_handle_key(char c) {
             app_state::set_ancs_detail(0xCA11u, "phone", "Phone",
                 "Jane Appleseed", "", "mobile",
                 /*recv_epoch=*/0, /*hhmm=*/"", "com.apple.mobilephone",
-                app_state::AncsCategory::INCOMING_CALL, /*important=*/false);
+                app_state::AncsCategory::INCOMING_CALL, /*important=*/false, /*silent=*/false,
+                /*pos_label=*/"Answer", /*neg_label=*/"Decline", /*neg_action=*/true);
             modal_incoming_call::show(0xCA11u);
             break;
         }

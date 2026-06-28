@@ -734,13 +734,16 @@ void on_data_source(const uint8_t* data, uint16_t len) {
     uint32_t resp_uid = (uint32_t)(g_ds_buf[1] | (g_ds_buf[2] << 8) |
                                     (g_ds_buf[3] << 16) | (g_ds_buf[4] << 24));
 
-    // Requested: AppIdentifier(0), Title(1), Subtitle(2), Message(3), Date(5)
-    char app_id[128]   = {};
-    char title[193]    = {};
-    char subtitle[129] = {};
-    char body[513]     = {};
-    char date[24]      = {};
-    bool got_app_id    = false;
+    // Requested: AppIdentifier(0), Title(1), Subtitle(2), Message(3), Date(5),
+    //            PositiveActionLabel(6), NegativeActionLabel(7)
+    char app_id[128]    = {};
+    char title[193]     = {};
+    char subtitle[129]  = {};
+    char body[513]      = {};
+    char date[24]       = {};
+    char pos_label[33]  = {};
+    char neg_label[33]  = {};
+    bool got_app_id     = false;
 
     size_t pos = 5;
     while (pos + 3 <= g_ds_len) {
@@ -751,11 +754,13 @@ void on_data_source(const uint8_t* data, uint16_t len) {
 
         char*  dst = nullptr;
         size_t dst_sz = 0;
-        if      (attr_id == 0x00) { dst = app_id;   dst_sz = sizeof(app_id)   - 1; got_app_id = true; }
-        else if (attr_id == 0x01) { dst = title;    dst_sz = sizeof(title)    - 1; }
-        else if (attr_id == 0x02) { dst = subtitle; dst_sz = sizeof(subtitle) - 1; }
-        else if (attr_id == 0x03) { dst = body;     dst_sz = sizeof(body)     - 1; }
-        else if (attr_id == 0x05) { dst = date;     dst_sz = sizeof(date)     - 1; }
+        if      (attr_id == 0x00) { dst = app_id;    dst_sz = sizeof(app_id)    - 1; got_app_id = true; }
+        else if (attr_id == 0x01) { dst = title;     dst_sz = sizeof(title)     - 1; }
+        else if (attr_id == 0x02) { dst = subtitle;  dst_sz = sizeof(subtitle)  - 1; }
+        else if (attr_id == 0x03) { dst = body;      dst_sz = sizeof(body)      - 1; }
+        else if (attr_id == 0x05) { dst = date;      dst_sz = sizeof(date)      - 1; }
+        else if (attr_id == 0x06) { dst = pos_label; dst_sz = sizeof(pos_label) - 1; }
+        else if (attr_id == 0x07) { dst = neg_label; dst_sz = sizeof(neg_label) - 1; }
 
         if (dst) {
             size_t copy = attr_len < dst_sz ? attr_len : dst_sz;
@@ -770,8 +775,10 @@ void on_data_source(const uint8_t* data, uint16_t len) {
     // Recover the NS-event metadata stashed for this UID (flags + category).
     uint8_t flags = 0, cat = app_state::AncsCategory::OTHER;
     pmeta_take(resp_uid, &flags, &cat);
-    bool important   = (flags & EvtFlag::IMPORTANT)   != 0;
-    bool preexisting = (flags & EvtFlag::PREEXISTING) != 0;
+    bool silent      = (flags & EvtFlag::SILENT)            != 0;
+    bool important   = (flags & EvtFlag::IMPORTANT)        != 0;
+    bool preexisting = (flags & EvtFlag::PREEXISTING)      != 0;
+    bool neg_action  = (flags & EvtFlag::NEGATIVE_ACTION)  != 0;
 
     // Resolve icon token + human-readable app name. Built-in map first (instant),
     // then the GetAppAttributes cache; if still unknown, fire a one-off fetch —
@@ -787,14 +794,18 @@ void on_data_source(const uint8_t* data, uint16_t len) {
 
     // Drop glyphs the UI font can't render (emoji, CJK, …) before storing.
     char ftitle[193] = {}, fsub[129] = {}, fbody[257] = {};
-    ui::sanitize_text(title,    ftitle, sizeof(ftitle));
-    ui::sanitize_text(subtitle, fsub,   sizeof(fsub));
-    ui::sanitize_text(body,     fbody,  sizeof(fbody));
+    char fpos[33] = {}, fneg[33] = {};
+    ui::sanitize_text(title,     ftitle, sizeof(ftitle));
+    ui::sanitize_text(subtitle,  fsub,   sizeof(fsub));
+    ui::sanitize_text(body,      fbody,  sizeof(fbody));
+    ui::sanitize_text(pos_label, fpos,   sizeof(fpos));
+    ui::sanitize_text(neg_label, fneg,   sizeof(fneg));
 
     // Store detail BEFORE queue_add so the status-bar tile built during the
     // queue_add → publish_queue → refresh can read this UID's category/importance.
     app_state::set_ancs_detail(resp_uid, token, display_name, ftitle, fsub, fbody,
-                               recv_epoch, hhmm, app_id, cat, important);
+                               recv_epoch, hhmm, app_id, cat, important, silent,
+                               fpos, fneg, neg_action);
 
     // Genuinely-new notifications animate in; the backlog iOS replays on connect
     // (PreExisting flag) populates silently.
@@ -841,21 +852,23 @@ void request_attributes(uint32_t notif_uid) {
 
     // GetNotificationAttributes command:
     //   CommandID=0x00, UID(4B), AppID(0x00), Title(0x01,192), Subtitle(0x02,128),
-    //   Message(0x03,512), Date(0x05).
-    // Only Title/Subtitle/Message carry a 2-byte max-length; AppIdentifier and
-    // Date are fixed-format and take no length field (per the ANCS spec).
-    uint8_t cmd[24];
+    //   Message(0x03,512), Date(0x05), PositiveActionLabel(0x06,32), NegativeActionLabel(0x07,32).
+    // Only variable-length string attributes carry a 2-byte max-length; AppIdentifier
+    // and Date are fixed-format and take no length field (per the ANCS spec).
+    uint8_t cmd[30];
     size_t  n = 0;
     cmd[n++] = 0x00; // GetNotificationAttributes
     cmd[n++] = (uint8_t)(notif_uid & 0xFF);
     cmd[n++] = (uint8_t)((notif_uid >> 8) & 0xFF);
     cmd[n++] = (uint8_t)((notif_uid >> 16) & 0xFF);
     cmd[n++] = (uint8_t)((notif_uid >> 24) & 0xFF);
-    cmd[n++] = 0x00;                       // AppIdentifier
-    cmd[n++] = 0x01; cmd[n++] = 192 & 0xFF; cmd[n++] = (192 >> 8) & 0xFF;  // Title
-    cmd[n++] = 0x02; cmd[n++] = 128 & 0xFF; cmd[n++] = (128 >> 8) & 0xFF;  // Subtitle
-    cmd[n++] = 0x03; cmd[n++] = 512 & 0xFF; cmd[n++] = (512 >> 8) & 0xFF;  // Message
-    cmd[n++] = 0x05;                       // Date (no length field)
+    cmd[n++] = 0x00;                        // AppIdentifier (no length)
+    cmd[n++] = 0x01; cmd[n++] = 192; cmd[n++] = 0;  // Title
+    cmd[n++] = 0x02; cmd[n++] = 128; cmd[n++] = 0;  // Subtitle
+    cmd[n++] = 0x03; cmd[n++] = 255; cmd[n++] = 1;  // Message (512 LE)
+    cmd[n++] = 0x05;                        // Date (no length)
+    cmd[n++] = 0x06; cmd[n++] = 32;  cmd[n++] = 0;  // PositiveActionLabel
+    cmd[n++] = 0x07; cmd[n++] = 32;  cmd[n++] = 0;  // NegativeActionLabel
 
     g_cp_char->writeValue(cmd, n, true);
     LOG("[ancs] GetNotificationAttributes uid=%u\n", (unsigned)notif_uid);
@@ -873,6 +886,12 @@ void dismiss_notification(uint32_t notif_uid) {
         cmd[5] = 0x01; // ActionID Negative
         g_cp_char->writeValue(cmd, 6, true);
     }
+    queue_remove(notif_uid);
+}
+
+void drop_notification(uint32_t notif_uid) {
+    // Remove from Ori's queue without sending any ANCS action — used when the
+    // notification has no negative action (has_neg_action = false).
     queue_remove(notif_uid);
 }
 

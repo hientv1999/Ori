@@ -81,6 +81,7 @@ Factory reset note:
 
 import asyncio
 import argparse
+import ctypes
 import hashlib
 import io
 import logging
@@ -597,6 +598,9 @@ class MockOrion:
         self.needed: list[str] = []
         self.disconnected     = False
         self._seq             = 0   # SyncControl seq, bumped each run_sync()
+        # Slot → token map, mirroring what was last sent to Ori via ShortcutConfig.
+        # Initialized to firmware defaults; updated by run_sync() and push_shortcuts().
+        self._shortcut_slots: dict[int, str] = {1: "vol-mute", 2: "mic-mute", 3: "screenshot"}
 
     # ── notification handlers ──
 
@@ -636,21 +640,57 @@ class MockOrion:
             print(f"\n  [notify] KeyboardCommand ← parse error: {exc}")
 
     async def _handle_keyboard_command(self, op: str, arg: int):
-        """Bridge a Ori KeyboardCommand to the Windows media session API.
+        """Bridge an Ori KeyboardCommand to OS APIs (ble-protocol.md §12).
 
-        ble-protocol.md §12 command map:
-          play_pause → try_toggle_play_pause_async()
-          next       → try_skip_next_async()
-          prev       → try_skip_previous_async()
-          seek       → try_change_playback_position_async(arg * 10_000_000)
-          vol_set    → logged only (volume control requires pycaw/COM, out of
-                       scope for the mock tool — the real Orion app implements
-                       this via IAudioEndpointVolume)
-          shortcut   → logged only (Orion-side action, no OS equivalent here)
+          shortcut   → look up token for slot arg in _shortcut_slots, run action
+          vol_set    → set Windows master volume via pycaw, write HostVolumeState back
+          play_pause → GlobalSystemMediaTransportControls (winsdk required)
+          next / prev / seek → same
         """
-        if not _WINRT_AVAILABLE:
-            return
+        loop = asyncio.get_event_loop()
         try:
+            if op == "shortcut":
+                token = self._shortcut_slots.get(arg, "")
+                print(f"  [kbd] shortcut slot {arg} ({token!r})")
+                if token == "vol-mute":
+                    state = await loop.run_in_executor(None, _toggle_master_mute_sync)
+                    print(f"  [kbd] vol-mute → {state}")
+                elif token == "mic-mute":
+                    state = await loop.run_in_executor(None, _toggle_mic_mute_sync)
+                    print(f"  [kbd] mic-mute → {state}")
+                elif token == "screenshot":
+                    await loop.run_in_executor(None, _trigger_screenshot_sync)
+                    print("  [kbd] screenshot → Print Screen sent")
+                elif token == "lock-screen":
+                    await loop.run_in_executor(None, _lock_screen_sync)
+                    print("  [kbd] lock-screen → LockWorkStation called")
+                elif token == "calculator":
+                    await loop.run_in_executor(None, _open_calculator_sync)
+                    print("  [kbd] calculator → Calculator launched")
+                elif token == "favorite":
+                    print("  [kbd] favorite → user-configured action (no-op in mock)")
+                elif not token:
+                    print(f"  [kbd] slot {arg} not configured")
+                else:
+                    print(f"  [kbd] unknown token '{token}'")
+                return
+
+            if op == "vol_set":
+                # Set Windows master volume, then write HostVolumeState back to Ori
+                # as confirmation. Ori ignores the write during its 800 ms
+                # swipe-override window (ble-protocol.md §12).
+                actual = await loop.run_in_executor(None, _set_windows_volume_sync, arg)
+                if actual is not None:
+                    print(f"  [kbd] vol_set → Windows volume = {actual}%")
+                    await self.push_host_volume(actual)
+                else:
+                    print(f"  [kbd] vol_set {arg}% — pycaw not installed "
+                          "(pip install pycaw; Windows only)")
+                return
+
+            # Media transport ops require winsdk.
+            if not _WINRT_AVAILABLE:
+                return
             mgr     = await _MediaManager.request_async()
             session = mgr.get_current_session()
             if not session:
@@ -669,20 +709,6 @@ class MockOrion:
                 # WinRT TimeSpan = 100-nanosecond ticks; arg is seconds.
                 await session.try_change_playback_position_async(arg * 10_000_000)
                 print(f"  [kbd] seek to {arg}s sent to OS")
-            elif op == "vol_set":
-                # Set Windows master volume, then write HostVolumeState back
-                # to Ori as confirmation. Ori ignores the write during its
-                # 800 ms swipe-override window (ble-protocol.md §12).
-                loop = asyncio.get_event_loop()
-                actual = await loop.run_in_executor(None, _set_windows_volume_sync, arg)
-                if actual is not None:
-                    print(f"  [kbd] vol_set → Windows volume = {actual}%")
-                    await self.push_host_volume(actual)
-                else:
-                    print(f"  [kbd] vol_set {arg}% — pycaw not installed "
-                          "(pip install pycaw; Windows only)")
-            elif op == "shortcut":
-                print(f"  [kbd] shortcut slot {arg} — no OS action in mock")
             else:
                 print(f"  [kbd] unknown op '{op}'")
         except Exception as exc:
@@ -776,6 +802,7 @@ class MockOrion:
         # NVS write) and the full-rebuild path (update_shortcuts() handles it
         # in place), so this should land with no screen flicker at all.
         shortcut_bytes = build_shortcut_config(slot1, slot2, slot3)
+        self._shortcut_slots = {1: slot1, 2: slot2, 3: slot3}
         print(f"\n  [info] pushing shortcuts: {slot1}, {slot2}, {slot3}")
         self._seq += 1
         seq = self._seq
@@ -891,6 +918,7 @@ class MockOrion:
         pto_image       = build_pto_photo_jpeg()
         pto_bytes       = build_pto(image=pto_image)
         shortcut_bytes  = build_shortcut_config()
+        self._shortcut_slots = {1: "vol-mute", 2: "mic-mute", 3: "screenshot"}
 
         # Ask Ori which sections differ from what it already holds.
         print("\n── Sync Manifest (section hashes) ──")
@@ -1051,6 +1079,58 @@ def _set_windows_volume_sync(level: int) -> Optional[int]:
     except Exception as exc:
         print(f"  [vol] SetMasterVolumeLevelScalar error: {exc}")
         return None
+
+# ── Shortcut action helpers (sync; call via run_in_executor) ──────────────────
+# These implement the five shortcut tokens from ble-protocol.md §12 / media-mode.md.
+
+def _toggle_master_mute_sync() -> str:
+    """Toggle Windows master mute. Returns a short description of the new state."""
+    if not _PYCAW_AVAILABLE:
+        return "pycaw not installed (pip install pycaw; Windows only)"
+    try:
+        iface    = _vol_interface()
+        new_mute = not iface.GetMute()
+        iface.SetMute(new_mute, None)
+        return "muted" if new_mute else "unmuted"
+    except Exception as exc:
+        return f"error: {exc}"
+
+def _toggle_mic_mute_sync() -> str:
+    """Toggle the default Windows microphone mute via pycaw."""
+    if not _PYCAW_AVAILABLE:
+        return "pycaw not installed (pip install pycaw; Windows only)"
+    try:
+        mic = _AudioUtils.GetMicrophone()
+        if mic is None:
+            return "no microphone found"
+        iface     = mic.Activate(_IAudioEPVol._iid_, _CLSCTX_ALL, None)
+        mic_iface = _ctypes_cast(iface, _POINTER(_IAudioEPVol))
+        new_mute  = not mic_iface.GetMute()
+        mic_iface.SetMute(new_mute, None)
+        return "muted" if new_mute else "unmuted"
+    except Exception as exc:
+        return f"error: {exc}"
+
+def _trigger_screenshot_sync() -> None:
+    """Open Snipping Tool via Win+Shift+S (Windows 10/11)."""
+    VK_LWIN         = 0x5B
+    VK_SHIFT        = 0x10
+    VK_S            = 0x53
+    KEYEVENTF_KEYUP = 0x0002
+    ctypes.windll.user32.keybd_event(VK_LWIN,  0, 0,                0)
+    ctypes.windll.user32.keybd_event(VK_SHIFT, 0, 0,                0)
+    ctypes.windll.user32.keybd_event(VK_S,     0, 0,                0)
+    ctypes.windll.user32.keybd_event(VK_S,     0, KEYEVENTF_KEYUP, 0)
+    ctypes.windll.user32.keybd_event(VK_SHIFT, 0, KEYEVENTF_KEYUP, 0)
+    ctypes.windll.user32.keybd_event(VK_LWIN,  0, KEYEVENTF_KEYUP, 0)
+
+def _lock_screen_sync() -> None:
+    """Lock the Windows workstation (equivalent to Win+L)."""
+    ctypes.windll.user32.LockWorkStation()
+
+def _open_calculator_sync() -> None:
+    """Launch Windows Calculator."""
+    os.startfile("calc.exe")
 
 # How often to poll Windows for a track change. winsdk/WinRT does expose native
 # change events (add_media_properties_changed), but those fire callbacks on a

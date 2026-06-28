@@ -133,11 +133,15 @@ void              dismiss_ancs_notification(const char* token);
 // Fields are populated from ANCS Notification Attribute commands (M5):
 // Title, Message, Date, DisplayName. Returns a generic fallback until M5.
 struct AncsNotification {
-    const char* display_name;  // human-readable app name ("Gmail", "Messenger")
-    const char* title;         // notification title / sender name
-    const char* subtitle;      // ANCS Subtitle (e.g. mail subject, thread) — "" if none
-    const char* body;          // message body (may be long — UI clips to 3 lines)
-    const char* time_ago;      // relative timestamp ("2 min ago", "1 hr ago")
+    const char* display_name;   // human-readable app name ("Gmail", "Messenger")
+    const char* title;          // notification title / sender name
+    const char* subtitle;       // ANCS Subtitle (e.g. mail subject, thread) — "" if none
+    const char* body;           // message body (may be long — UI clips to 3 lines)
+    const char* time_ago;       // relative timestamp ("2 min ago", "1 hr ago")
+    const char* pos_label;      // ANCS PositiveActionLabel ("Answer", "Reply", …); "" if absent
+    const char* neg_label;      // ANCS NegativeActionLabel ("Decline", "Clear", …); "" if absent
+    bool        has_neg_action; // true when EventFlags NEGATIVE_ACTION bit is set
+    bool        silent;         // true when EventFlags SILENT bit is set
 };
 
 // ANCS notification categories (ble Notification Source CategoryID).
@@ -178,7 +182,8 @@ size_t ancs_collect_same_title(uint32_t uid, uint32_t* out_uids, size_t max);
 void set_ancs_detail(uint32_t uid, const char* token, const char* display_name,
                      const char* title, const char* subtitle, const char* body,
                      time_t recv_epoch, const char* hhmm,
-                     const char* bundle, uint8_t category, bool important);
+                     const char* bundle, uint8_t category, bool important, bool silent,
+                     const char* pos_label, const char* neg_label, bool neg_action);
 
 // Update the stored display name for every notification from a given app
 // bundle (used when GetAppAttributes resolves a previously-unknown app name).

@@ -261,11 +261,15 @@ void show(uint32_t uid) {
     lv_obj_set_size(sp_bot, 0, 0);
     lv_obj_set_flex_grow(sp_bot, 1);
 
-    lv_obj_t* answer = ui::make_btn(actions, "Answer", ui::BtnStyle::Primary,
+    // Use iOS-provided action labels when available; fall back to generic text.
+    const char* answer_label  = (n.pos_label && n.pos_label[0]) ? n.pos_label : "Answer";
+    const char* decline_label = (n.neg_label && n.neg_label[0]) ? n.neg_label : "Decline";
+
+    lv_obj_t* answer = ui::make_btn(actions, answer_label, ui::BtnStyle::Primary,
                                     nullptr, nullptr, 12, 26, theme::font_meta());
     lv_obj_add_event_cb(answer, on_answer, LV_EVENT_CLICKED, ctx);
 
-    lv_obj_t* decline = ui::make_btn(actions, "Decline", ui::BtnStyle::Danger,
+    lv_obj_t* decline = ui::make_btn(actions, decline_label, ui::BtnStyle::Danger,
                                      nullptr, nullptr, 12, 26, theme::font_meta());
     lv_obj_add_event_cb(decline, on_decline, LV_EVENT_CLICKED, ctx);
 

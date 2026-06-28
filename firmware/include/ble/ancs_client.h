@@ -51,9 +51,14 @@ void on_data_source(const uint8_t* data, uint16_t len);
 // Posts the ANCS GetNotificationAttributes command over BLE.
 void request_attributes(uint32_t notif_uid);
 
-// Dismiss a notification from the live queue by UID (after user taps Close).
-// Also sends ANCS PerformNotificationAction(Negative) to clear it on the phone.
+// Dismiss a notification from the live queue by UID and send ANCS
+// PerformNotificationAction(Negative) to clear it on the phone.
+// Only call when the notification has a negative action (has_neg_action = true).
 void dismiss_notification(uint32_t notif_uid);
+
+// Remove a notification from Ori's queue without sending any ANCS action to
+// the phone — used when the notification has no negative action available.
+void drop_notification(uint32_t notif_uid);
 
 // Accept/answer a notification's positive action via ANCS
 // PerformNotificationAction(Positive) — used to answer an incoming call. Does

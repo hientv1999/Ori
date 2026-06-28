@@ -57,6 +57,7 @@ constexpr int16_t TL_OVERLAY_H = 46;
 constexpr int16_t TL_THUMB_SZ  = 8;
 
 struct ArtState {
+    lv_obj_t* wrap;          // gesture surface / animation target for the whole art block
     lv_obj_t* art;           // gradient fallback — always visible behind art_img
     lv_obj_t* art_img;       // lv_image showing decoded JPEG; hidden until art arrives
     lv_obj_t* shortcuts_row; // row of 3 shortcut buttons — updated by update_shortcuts()
@@ -207,6 +208,38 @@ void on_seek_gesture(lv_event_t* e) {
     }
 }
 
+// Animation callback for the horizontal-swipe slide + snap-back effect.
+// Must be a plain function pointer — lv_anim_exec_xcb_t is not compatible with lambdas.
+static void art_translate_x_cb(void* obj, int32_t val) {
+    lv_obj_set_style_translate_x(static_cast<lv_obj_t*>(obj), (int16_t)val, 0);
+}
+
+// Slide the art block ~40 px in the swipe direction then snap it back to centre.
+// Matches media-mode.md: "Art shifts right/left ~40 px then snaps back".
+static void animate_art_swipe(lv_obj_t* wrap, int direction /* +1=right, -1=left */) {
+    constexpr uint32_t SLIDE_MS    = 120;
+    constexpr uint32_t SNAPBACK_MS = 200;
+    constexpr int16_t  SLIDE_PX    = 40;
+
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, wrap);
+    lv_anim_set_exec_cb(&a, art_translate_x_cb);
+    lv_anim_set_values(&a, 0, direction * SLIDE_PX);
+    lv_anim_set_duration(&a, SLIDE_MS);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+    lv_anim_start(&a);
+
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, wrap);
+    lv_anim_set_exec_cb(&a, art_translate_x_cb);
+    lv_anim_set_values(&a, direction * SLIDE_PX, 0);
+    lv_anim_set_duration(&a, SNAPBACK_MS);
+    lv_anim_set_delay(&a, SLIDE_MS);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_in);
+    lv_anim_start(&a);
+}
+
 void on_art_gesture(lv_event_t* e) {
     auto* s = static_cast<ArtState*>(lv_event_get_user_data(e));
     if (!s) return;
@@ -266,19 +299,19 @@ void on_art_gesture(lv_event_t* e) {
             apply_paused_visual(s, !playing);
             gatt_server::notify_keyboard_command("play_pause", 0);
         } else if (abs_dx > H_SWIPE_MIN && abs_dx > abs_dy) {
-            // Horizontal swipe — emit prev or next KeyboardCommand.
-            if (dx > 0) {
-                gatt_server::notify_keyboard_command("next", 0);
-            } else {
-                gatt_server::notify_keyboard_command("prev", 0);
-            }
+            // Horizontal swipe — slide art ~40 px in the swipe direction then
+            // snap back, and emit the next/prev KeyboardCommand.
+            const int dir = (dx > 0) ? 1 : -1;
+            animate_art_swipe(s->wrap, dir);
+            gatt_server::notify_keyboard_command(dx > 0 ? "next" : "prev", 0);
         }
     }
 }
 
 lv_obj_t* make_art_block(lv_obj_t* parent, ArtState* s) {
-    // Outer wrapper — fixed size, used as the gesture surface.
+    // Outer wrapper — fixed size, used as the gesture surface and animation target.
     lv_obj_t* wrap = lv_obj_create(parent);
+    s->wrap = wrap;
     lv_obj_set_size(wrap, ART_W, ART_H);
     lv_obj_set_style_pad_all(wrap, 0, LV_PART_MAIN);
     lv_obj_set_style_border_width(wrap, 0, LV_PART_MAIN);
