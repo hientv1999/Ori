@@ -39,7 +39,7 @@ Data pulled from Orion during initial pairing, stored in flash, persists across 
 
 ### Profile-photo border — Teams presence indicator
 
-6 px border encodes the user's Teams presence, pushed by Orion via the Presence Status characteristic (`ble-protocol.md` §3):
+12 px border encodes the user's Teams presence, pushed by Orion via the Presence Status characteristic (`ble-protocol.md` §3):
 
 | BLE byte | State | Border colour | Teams state |
 |---|---|---|---|

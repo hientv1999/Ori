@@ -539,8 +539,10 @@ lv_obj_t* make_meta_block(lv_obj_t* parent, ArtState* s) {
     // second line and the text wraps. Set both width AND a one-line height
     // for the title/artist to get the desired ellipsis behaviour.
     // Media title — font_title() (24 px) to match the meeting-list title size.
+    // Box height matches the font's real line_height (34) so descenders
+    // can't overflow into the artist label below.
     s->title_label = lv_label_create(meta);
-    lv_obj_set_size(s->title_label, META_W, 28);   // font_title = 24 px → one-line box (tight)
+    lv_obj_set_size(s->title_label, META_W, 34);
     lv_label_set_long_mode(s->title_label, LV_LABEL_LONG_DOT);
     lv_label_set_text(s->title_label, has ? m.title : "Nothing playing");
     lv_obj_set_style_text_color(s->title_label,
@@ -549,17 +551,19 @@ lv_obj_t* make_meta_block(lv_obj_t* parent, ArtState* s) {
     lv_obj_set_style_text_align(s->title_label, LV_TEXT_ALIGN_CENTER, 0);
 
     // Artist — font_meta() (22 px) to match meeting-location and profile-title.
+    // Box height matches the font's real line_height (32), same reasoning
+    // as the title box above. pad_top is the actual (flex-layout) gap from
+    // the title now — no more negative translate_y faking a tighter gap.
     s->artist_label = lv_label_create(meta);
-    lv_obj_set_size(s->artist_label, META_W, 26);  // font_meta = 22 px → one-line box
+    lv_obj_set_size(s->artist_label, META_W, 32);
     lv_label_set_long_mode(s->artist_label, LV_LABEL_LONG_DOT);
     lv_label_set_text(s->artist_label, has ? m.artist : "No artist");
     lv_obj_set_style_text_color(s->artist_label, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
     lv_obj_set_style_text_font(s->artist_label, theme::font_meta(), 0);
     lv_obj_set_style_text_align(s->artist_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_pad_top(s->artist_label, 2, 0);
-    // Pull the artist line 8 px closer to the title (visual only — does not
-    // affect the flex layout of the shortcut row below).
-    lv_obj_set_style_translate_y(s->artist_label, -8, 0);
+    // No extra pad_top — the title/artist box heights already match their
+    // fonts' real line_height (34/32), so the boxes alone give the two
+    // lines clean, non-overlapping room without any added gap.
 
     return meta;
 }
@@ -567,8 +571,11 @@ lv_obj_t* make_meta_block(lv_obj_t* parent, ArtState* s) {
 // User-assignable shortcut buttons. M5 wires tap → KeyboardCommand{op:"shortcut", arg:N}.
 lv_obj_t* make_shortcuts_row(lv_obj_t* parent, ArtState* s) {
     lv_obj_t* row = lv_obj_create(parent);
-    // Row box height = button height (82) + internal pad_top (8).
-    lv_obj_set_size(row, lv_pct(100), 90);
+    // Row box height = button height (72) + internal pad_top (8). Button
+    // height was 82 — shrunk to make room for the title/artist box-height
+    // fix above (see make_meta_block() and the vertical-budget comment in
+    // create()).
+    lv_obj_set_size(row, lv_pct(100), 80);
     lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, LV_PART_MAIN);
     lv_obj_set_style_border_width(row, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(row, 0, LV_PART_MAIN);
@@ -583,7 +590,8 @@ lv_obj_t* make_shortcuts_row(lv_obj_t* parent, ArtState* s) {
     for (size_t i = 0; i < app_state::SHORTCUT_COUNT; ++i) {
         lv_obj_t* btn = lv_obj_create(row);
         // Width: (484px available − 2×14px gap) ÷ 3 = 152px fills the row.
-        lv_obj_set_size(btn, 152, 82);
+        // Height: 72 (was 82) — see make_shortcuts_row()'s row-height comment.
+        lv_obj_set_size(btn, 152, 72);
         lv_obj_set_style_radius(btn, 14, LV_PART_MAIN);
         lv_obj_set_style_bg_color(btn, theme::color(theme::COLOR_CARD), LV_PART_MAIN);
         lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_PART_MAIN);
@@ -647,9 +655,15 @@ lv_obj_t* create() {
     lv_obj_set_style_pad_left(left, 22, 0);
     lv_obj_set_style_pad_right(left, 22, 0);
     // Body height is 396 (480 - 84 status bar). Vertical budget:
-    //   10 (pad_top)  +  216 (art h)  +  10 (meta pad_top)  +  28 (title box)  +
-    //   2 (artist pad_top)  +  26 (artist box)  +  8 (shortcuts pad_top)  +
-    //   82 (shortcuts)  +  10 (pad_bottom)  =  392  ✓ (4 px headroom)
+    //   10 (pad_top)  +  216 (art h)  +  10 (meta pad_top)  +  34 (title box)  +
+    //   32 (artist box, directly below — no added pad_top)  +
+    //   8 (shortcuts pad_top)  +  72 (shortcuts)  +  10 (pad_bottom)  =  392
+    //   ✓ (4 px headroom)
+    // Title/artist box heights match their fonts' real line_height (34/32)
+    // so descenders can't overflow into the next label — that alone gives
+    // clean separation, no extra pad_top needed between them. Shortcut
+    // button height dropped 82 → 72 to make room for that line_height-
+    // matched sizing — see make_meta_block() and make_shortcuts_row().
     // Art is 484 × 216 — fills the full usable panel width (528 − 22 pad each side).
     // The seek overlay is inside the art (zero extra vertical cost).
     // pad_row is forced to 0 — LVGL's default theme adds inter-child spacing that

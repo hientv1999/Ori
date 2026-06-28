@@ -44,7 +44,7 @@ Three vertical sections, centred. No transport buttons; no persistent volume sli
 
 ### 1. Album art — the interaction surface
 
-484 × 216 px, 14 px corner radius, full usable left-panel width (528 − 22 px padding each side). Vertical budget: 10 + 216 + ~66 + 90 + 10 = 392 px (4 px headroom in 396 px). Pushed by Orion via `Media Album Art` char on every track change — resized to 484 × 216, JPEG (~15–30 KB), chunked. Ori decodes and PSRAM-caches (not NVS; re-fetched on reconnect).
+484 × 216 px, 14 px corner radius, full usable left-panel width (528 − 22 px padding each side). Vertical budget: 10 + 216 + 76 (title/artist block) + 80 (shortcut row) + 10 = 392 px (4 px headroom in 396 px). Pushed by Orion via `Media Album Art` char on every track change — resized to 484 × 216, JPEG (~15–30 KB), chunked. Ori decodes and PSRAM-caches (not NVS; re-fetched on reconnect).
 
 | Gesture | Action | Threshold | Feedback |
 |---|---|---|---|
@@ -63,12 +63,12 @@ Volume sensitivity: ~200 px swipe = full 0..100 range. Swipe up = louder. Orion 
 
 Centred, ~10 px below art. Single-line ellipsis only — no wrapping.
 
-- **Title:** 24 px (`font_title`), weight 500, primary text. Source: `MediaMetadata.title`.
-- **Artist:** 22 px (`font_meta`), secondary text, 4 px below title. Source: `MediaMetadata.artist`.
+- **Title:** 24 px (`font_title`), weight 500, primary text. Box height matches the font's real line height (34 px) so descenders can't overflow into the artist line below. Source: `MediaMetadata.title`.
+- **Artist:** 22 px (`font_meta`), secondary text, directly below title with no added gap — each label's box height matches its font's real line height (34 px title / 32 px artist), which on its own gives clean separation without overlap. Source: `MediaMetadata.artist`.
 
 ### 3. Shortcut row
 
-Three icon-only square buttons, 82 px tall, 14 px gap, full row width (~152 px wide each in firmware). 8 px top padding, 10 px bottom padding. Each emits `KeyboardCommand{op:"shortcut", arg:1|2|3}`; Orion runs the configured action.
+Three icon-only square buttons, 72 px tall (was 82 px — shrunk to make room for the taller title/artist boxes above), 14 px gap, full row width (~152 px wide each in firmware). 8 px top padding, 10 px bottom padding. Each emits `KeyboardCommand{op:"shortcut", arg:1|2|3}`; Orion runs the configured action.
 
 **Icon assets are compiled into firmware flash.** Ori ships with a fixed set of icon glyphs. Orion's settings UI lets the user pick one per slot from that set and writes the selection to Ori as an icon token over **Shortcut Config** (`ble-protocol.md` §3/§12) — staged like Profile Info, but RAM-only and sent unconditionally on every sync, like Time Sync (no NVS, no hash, no manifest entry — see `ble-protocol.md` §6.0). Adding new icon types to the available set requires a firmware update — there is no runtime asset delivery path.
 

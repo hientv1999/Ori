@@ -158,8 +158,8 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
 
     lv_obj_t* photo_ring = lv_obj_create(right_col);
     lv_obj_set_size(photo_ring,
-        widget_profile_card::PHOTO_SIZE + 12,
-        widget_profile_card::PHOTO_SIZE + 12);
+        widget_profile_card::PHOTO_SIZE + 24,
+        widget_profile_card::PHOTO_SIZE + 24);
     lv_obj_set_style_radius(photo_ring, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(photo_ring, theme::color(pres_color_light), 0);
     lv_obj_set_style_bg_grad_color(photo_ring, theme::color(pres_color_dark), 0);

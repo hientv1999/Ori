@@ -131,13 +131,13 @@ lv_obj_t* create(lv_obj_t* parent) {
     g_active_card = card;
 
     // ── Gradient presence ring ────────────────────────────────────────────────
-    // A circle 12 px larger than the photo (PHOTO_SIZE + 12 = 6 px each side).
+    // A circle 24 px larger than the photo (PHOTO_SIZE + 24 = 12 px each side).
     // Its gradient background IS the "border" — top = presence colour,
     // bottom = darker shade. Replaces the old solid border_color approach so
     // the ring can be updated with a single bg_color / bg_grad_color call.
     // Tap / long-press events are on the inner photo; the ring is non-clickable.
     s->photo_ring = lv_obj_create(card);
-    lv_obj_set_size(s->photo_ring, PHOTO_SIZE + 12, PHOTO_SIZE + 12);
+    lv_obj_set_size(s->photo_ring, PHOTO_SIZE + 24, PHOTO_SIZE + 24);
     lv_obj_set_style_radius(s->photo_ring, LV_RADIUS_CIRCLE, LV_PART_MAIN);
     lv_obj_set_style_bg_color(s->photo_ring,
         theme::color(color_for_presence_light(g_default_presence)), LV_PART_MAIN);
@@ -151,7 +151,7 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_clear_flag(s->photo_ring, LV_OBJ_FLAG_CLICKABLE);
 
     // ── Inner photo circle ────────────────────────────────────────────────────
-    // The presence ring peeks 6 px around all edges of this circle.
+    // The presence ring peeks 12 px around all edges of this circle.
     // Tap opens the profile detail overlay; long-press (3 s) opens factory reset.
     s->photo = lv_obj_create(s->photo_ring);
     lv_obj_set_size(s->photo, PHOTO_SIZE, PHOTO_SIZE);
