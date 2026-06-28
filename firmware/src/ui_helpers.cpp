@@ -160,13 +160,22 @@ ModalLayout make_modal_layout(lv_obj_t* base_screen, lv_coord_t card_w, lv_coord
     lv_obj_set_size(layout.actions, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(layout.actions, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(layout.actions, 0, 0);
-    lv_obj_set_style_pad_left(layout.actions, 8, 0);
-    lv_obj_set_style_pad_right(layout.actions, 8, 0);
-    lv_obj_set_style_pad_bottom(layout.actions, 8, 0);
-    lv_obj_set_style_pad_top(layout.actions, 8, 0);
+    // actions is LV_SIZE_CONTENT, so its own padding sets the box size the
+    // buttons get clipped to. Each button's breathing glow extends
+    // shadow_width/2 + shadow_spread = font_h/2 + font_h/4 beyond its border
+    // box (make_btn) — for font_meta (line_height 32) that's 24 px. 8 px of
+    // padding clipped the outer buttons' glow on the left/right; 26 px gives
+    // it room on every side. LV_OBJ_FLAG_OVERFLOW_VISIBLE is kept as a
+    // backstop (same fix as the brand-mark glow bleed in screen_setup.cpp)
+    // but the padding is what actually guarantees the box is big enough.
+    lv_obj_set_style_pad_left(layout.actions, 26, 0);
+    lv_obj_set_style_pad_right(layout.actions, 26, 0);
+    lv_obj_set_style_pad_bottom(layout.actions, 26, 0);
+    lv_obj_set_style_pad_top(layout.actions, 26, 0);
     lv_obj_set_style_pad_column(layout.actions, 16, 0);
     lv_obj_clear_flag(layout.actions, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(layout.actions, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(layout.actions, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
     lv_obj_set_flex_flow(layout.actions, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(layout.actions, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
