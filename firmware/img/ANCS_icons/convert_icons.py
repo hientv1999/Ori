@@ -12,6 +12,12 @@ LVGLImage.py is auto-detected from the PlatformIO libdeps folder if not specifie
 Originals are never modified — resized copies go to ANCS_icons/cropped/.
 Output C arrays go to firmware/src/assets/ancs_{token}.c.
 
+After running this script, also run convert_ancs_indexed.py (same folder) to
+re-encode the freshly-generated ARGB8888 arrays down to LVGL indexed format
+(I1/I2/I4/I8, auto-picked per icon) — cuts flash usage by roughly 65-70%
+versus raw ARGB8888, since these icons only use a few hundred colors at most.
+Re-run it any time after touching this script's output.
+
 Dependencies:
     pip install pillow pypng lz4
 """

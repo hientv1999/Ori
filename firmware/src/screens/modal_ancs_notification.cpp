@@ -17,7 +17,10 @@
 // "Read all" clears the whole group on the iPhone at once. A lone notification
 // renders the same as before with a plain "Read".
 //
-//   title                         ← font_title (24px), shared, shown once
+//   header row: [Silent badge?] title (single-line, ellipsis) [gap for close-X]
+//     ← always visible, NOT part of the scrollable body (so it never scrolls
+//       out from under itself); single line with ellipsis, font_title (24px)
+//   ── scrollable body below the header row ──
 //   [N messages]                  ← font_meta, accent — only when stacked
 //   per message: subtitle/body/time, oldest→newest (top→bottom), divider-split
 //   app name                      ← font_h2 (28px), shared, shown once
@@ -152,10 +155,32 @@ lv_obj_t* create(lv_obj_t* base_screen, uint32_t uid) {
         delete c;
     }, LV_EVENT_DELETE, ctx);
 
-    // Silent badge — floats in the top-left corner of the card when the
-    // notification has the SILENT EventFlag set.
+    lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(card, [](lv_event_t*) {}, LV_EVENT_CLICKED, nullptr);
+
+    // Header row — Silent badge (if any), the always-visible title, and a
+    // reserved gap matching the close-X's footprint, all on one row. A real
+    // flex child (not IGNORE_LAYOUT) of `card`, so scroll_area is pushed down
+    // and shrunk by its height: scrolled text can never pass underneath the
+    // title/badge/close-X, and the title stays in place while the rest scrolls.
+    lv_obj_t* header_row = lv_obj_create(card);
+    ui::clear_container(header_row);
+    lv_obj_set_size(header_row, lv_pct(100), 56);
+    lv_obj_clear_flag(header_row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(header_row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_flex_flow(header_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(header_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    // Same left inset as the close-X's inset from its corner (ui_helpers.cpp
+    // add_close_x: card pad 16 - 12 = 4), so both sit a matching distance from
+    // their respective top corners.
+    lv_obj_set_style_pad_left(header_row, 4, 0);
+    lv_obj_set_style_pad_column(header_row, 8, 0);
+    lv_obj_move_to_index(header_row, 0);
+
+    // Silent badge — same look as before, now a real flex child of header_row
+    // (was an absolute overlay) so the title can size around it automatically.
     if (ref_nv_silent) {
-        lv_obj_t* badge = lv_obj_create(card);
+        lv_obj_t* badge = lv_obj_create(header_row);
         lv_obj_remove_style_all(badge);
         lv_obj_set_style_bg_color(badge, lv_color_hex(0x2A2A2A), 0);
         lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
@@ -166,10 +191,8 @@ lv_obj_t* create(lv_obj_t* base_screen, uint32_t uid) {
         lv_obj_set_style_pad_hor(badge, 10, 0);
         lv_obj_set_style_pad_ver(badge, 5, 0);
         lv_obj_set_size(badge, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-        lv_obj_add_flag(badge, LV_OBJ_FLAG_IGNORE_LAYOUT);
         lv_obj_clear_flag(badge, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_clear_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_align(badge, LV_ALIGN_TOP_LEFT, 14, 14);
 
         lv_obj_t* lbl = lv_label_create(badge);
         lv_label_set_text(lbl, "Silent");
@@ -177,18 +200,35 @@ lv_obj_t* create(lv_obj_t* base_screen, uint32_t uid) {
         lv_obj_set_style_text_color(lbl, theme::color(theme::COLOR_TEXT_TERTIARY), 0);
     }
 
-    lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(card, [](lv_event_t*) {}, LV_EVENT_CLICKED, nullptr);
+    // Title — shared, shown once, always visible (no longer part of the
+    // scrollable body). Single line with ellipsis, matching the meeting-list
+    // title truncation convention.
+    lv_obj_t* header_title = lv_label_create(header_row);
+    lv_label_set_text(header_title, title_buf);
+    lv_obj_set_style_text_font(header_title, theme::font_title(), 0);
+    lv_obj_set_style_text_color(header_title, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
+    lv_obj_set_style_text_align(header_title, LV_TEXT_ALIGN_CENTER, 0);
+    // SCROLL_CIRCULAR only animates when the text is actually wider than the
+    // label's box (lv_label.c) — short titles just sit centred and static;
+    // titles too long for the gap between the Silent badge and close-X roll
+    // continuously instead of being cut off with an ellipsis.
+    lv_label_set_long_mode(header_title, LV_LABEL_LONG_MODE_SCROLL_CIRCULAR);
+    lv_obj_set_height(header_title, theme::font_title()->line_height);
+    lv_obj_set_flex_grow(header_title, 1);
+
+    // Right-side reservation — matches the close-X's footprint (4px inset +
+    // 52px size) so the title's ellipsis point never runs under it.
+    lv_obj_t* right_gap = lv_obj_create(header_row);
+    ui::clear_container(right_gap);
+    lv_obj_set_size(right_gap, 56, 1);
+    lv_obj_clear_flag(right_gap, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(right_gap, LV_OBJ_FLAG_CLICKABLE);
 
     // Top spacer — centres content when it is shorter than scroll_area's height.
     lv_obj_t* sa_spacer_top = lv_obj_create(scroll_area);
     ui::clear_container(sa_spacer_top);
     lv_obj_set_size(sa_spacer_top, 0, 0);
     lv_obj_set_flex_grow(sa_spacer_top, 1);
-
-    // ── Shared title (shown once) ──
-    add_text(scroll_area, title_buf, theme::font_title(),
-             theme::COLOR_TEXT_PRIMARY, 8, /*wrap=*/true);
 
     // ── "N messages" count — only when stacked ──
     if (stacked) {

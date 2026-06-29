@@ -170,7 +170,12 @@ ModalLayout make_modal_layout(lv_obj_t* base_screen, lv_coord_t card_w, lv_coord
     // but the padding is what actually guarantees the box is big enough.
     lv_obj_set_style_pad_left(layout.actions, 26, 0);
     lv_obj_set_style_pad_right(layout.actions, 26, 0);
-    lv_obj_set_style_pad_bottom(layout.actions, 26, 0);
+    // Bottom is tighter than left/right — card's own 16px bottom padding adds
+    // back to the same ~26px total glow margin (10 + 16), so this also moves
+    // the button row down 16px and hands that height to scroll_area's
+    // flex_grow, since actions' box (and therefore its position, anchored
+    // right after scroll_area) shrinks by exactly that much.
+    lv_obj_set_style_pad_bottom(layout.actions, 10, 0);
     // Top is tighter than the other three sides — it borders scroll_area, not
     // a card edge, so there's less glow-clipping risk to guard against (only
     // a 24px glow extends upward into already-empty space above the buttons).
