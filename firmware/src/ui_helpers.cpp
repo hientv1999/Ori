@@ -136,10 +136,10 @@ ModalLayout make_modal_layout(lv_obj_t* base_screen, lv_coord_t card_w, lv_coord
     lv_obj_set_style_shadow_color(layout.card, theme::color(0x000000), 0);
     lv_obj_set_style_shadow_width(layout.card, 30, 0);
     lv_obj_set_style_shadow_opa(layout.card, LV_OPA_70, 0);
-    lv_obj_set_style_pad_left(layout.card, 32, 0);
-    lv_obj_set_style_pad_right(layout.card, 32, 0);
-    lv_obj_set_style_pad_top(layout.card, 32, 0);
-    lv_obj_set_style_pad_bottom(layout.card, 32, 0);
+    lv_obj_set_style_pad_left(layout.card, 16, 0);
+    lv_obj_set_style_pad_right(layout.card, 16, 0);
+    lv_obj_set_style_pad_top(layout.card, 16, 0);
+    lv_obj_set_style_pad_bottom(layout.card, 16, 0);
     lv_obj_clear_flag(layout.card, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(layout.card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(layout.card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -171,7 +171,10 @@ ModalLayout make_modal_layout(lv_obj_t* base_screen, lv_coord_t card_w, lv_coord
     lv_obj_set_style_pad_left(layout.actions, 26, 0);
     lv_obj_set_style_pad_right(layout.actions, 26, 0);
     lv_obj_set_style_pad_bottom(layout.actions, 26, 0);
-    lv_obj_set_style_pad_top(layout.actions, 26, 0);
+    // Top is tighter than the other three sides — it borders scroll_area, not
+    // a card edge, so there's less glow-clipping risk to guard against (only
+    // a 24px glow extends upward into already-empty space above the buttons).
+    lv_obj_set_style_pad_top(layout.actions, 8, 0);
     lv_obj_set_style_pad_column(layout.actions, 16, 0);
     lv_obj_clear_flag(layout.actions, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(layout.actions, LV_OBJ_FLAG_CLICKABLE);
@@ -186,7 +189,10 @@ lv_obj_t* add_close_x(lv_obj_t* card, lv_event_cb_t cb, void* user) {
     lv_obj_t* btn = lv_obj_create(card);
     lv_obj_add_flag(btn, LV_OBJ_FLAG_IGNORE_LAYOUT);   // not part of the card's flex flow
     lv_obj_set_size(btn, 52, 52);                      // 40 px +30%
-    lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, 20, -20);    // nudged toward the card corner
+    // Offset is relative to the card's padded content edge, so it must track
+    // the card's own padding (16 px, make_modal_layout) to land at the same
+    // ~12 px inset from the card's true outer corner: offset = pad - 12.
+    lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, 4, -4);
     lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(btn, theme::color(theme::COLOR_ELEV), 0);
     lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);

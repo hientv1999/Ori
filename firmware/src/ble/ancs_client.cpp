@@ -88,6 +88,22 @@ static const BundleMap k_bundle_map[] = {
     { "com.viber",                      "viber",       "Viber"       },
     { "com.anthropic.claude",           "claude",      "Claude"      },
     { "com.openai.chat",                "chatgpt",     "ChatGPT"     },
+    { "com.google.Maps",                "google_map",    "Google Maps"   },
+    { "com.google.photos",              "google_photos", "Google Photos" },
+    { "com.apple.Health",               "health",        "Health"        },
+    { "com.apple.mobilecal",            "apple_calendar",          "Calendar"               },
+    { "com.apple.findmy",               "apple_findmy",            "Find My"                },
+    { "com.apple.mobilemail",           "apple_mail",              "Mail"                   },
+    { "com.apple.Maps",                 "apple_maps",              "Maps"                   },
+    { "com.apple.reminders",            "apple_reminders",         "Reminders"              },
+    { "com.apple.Passbook",             "apple_wallet",            "Wallet"                 },
+    { "com.github.stormbreaker.prod",   "github",                  "GitHub"                 },
+    { "com.google.authenticator",       "google_authenticator",    "Google Authenticator"   },
+    { "com.azure.authenticator",        "microsoft_authenticator", "Microsoft Authenticator"},
+    { "notion.id",                      "notion",                  "Notion"                 },
+    { "com.venmo.Venmo",                "venmo",                   "Venmo"                  },
+    { "com.skype.skype",                "skype",                   "Skype"                  },
+    { "com.paypal.PPClient",            "paypal",                  "PayPal"                 },
 };
 static const size_t k_bundle_map_count =
     sizeof(k_bundle_map) / sizeof(k_bundle_map[0]);

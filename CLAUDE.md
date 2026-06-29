@@ -61,8 +61,8 @@ Open [Ori_UI_Prototype.html](Ori_UI_Prototype.html) directly in any modern brows
 - [x] **M4 — Firmware state machine + persistence** — locked 2026-05-23
   Left-panel priority logic, 1 s tick, 5-min pre-meeting alert, Calendar ↔ Media mode toggle with NVS persistence, OTA/reconnect hooks, long-press handlers, ANCS icon registry (23 apps). Post-lock: LVGL 9.5.0, Hanken Grotesk font, mode-toggle crash fix, shortcut button press feedback. Build state: RAM 7.1%, Flash 41.3% (of 3 MB OTA slot). **Deferred to M5:** factory reset `ESP.restart()` inside LVGL callback can trigger DMA ISR cache fault.
 
-- [ ] **M5 — Firmware BLE + USB CDC firmware update**
-  GATT server (15 chars, v1.0) + ANCS client, passkey bonding, dual-connection, Presence Status border, album-art JPEG decode, USB CDC OTA receiver. Use `h2zero/NimBLE-Arduino@2.5.0` (saves ~40 KB SRAM vs stock BLE). Agent: `esp32-connectivity`.
+- [x] **M5 — Firmware BLE + USB CDC firmware update** — locked 2026-06-28
+  GATT server (17 chars, v1.0 — includes the Clock Face char added post-lock) + ANCS client (48-app icon registry), passkey bonding, dual-connection (Orion + iPhone bond slots), Presence Status border, album-art JPEG decode (TJPGD), USB CDC OTA receiver. `h2zero/NimBLE-Arduino@2.5.0`. Build state: RAM 19.7%, Flash 84.4% (of 3 MB OTA slot).
 
 - [ ] **M6 — Orion PC app** *(parallel with M2–M5)*
   Flutter desktop (Windows + macOS): pairing wizard, calendar source selection, profile editor, PTO entry, background BLE central, USB CDC OTA sender. Agents: `flutter-frontend`, `orion-sync`, `calendar-integration`.

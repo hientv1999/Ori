@@ -38,6 +38,22 @@ extern "C" {
     extern const lv_image_dsc_t viber;
     extern const lv_image_dsc_t claude;
     extern const lv_image_dsc_t chatgpt;
+    extern const lv_image_dsc_t google_map;
+    extern const lv_image_dsc_t google_photos;
+    extern const lv_image_dsc_t health;
+    extern const lv_image_dsc_t apple_calendar;
+    extern const lv_image_dsc_t apple_findmy;
+    extern const lv_image_dsc_t apple_mail;
+    extern const lv_image_dsc_t apple_maps;
+    extern const lv_image_dsc_t apple_reminders;
+    extern const lv_image_dsc_t apple_wallet;
+    extern const lv_image_dsc_t github;
+    extern const lv_image_dsc_t google_authenticator;
+    extern const lv_image_dsc_t microsoft_authenticator;
+    extern const lv_image_dsc_t notion;
+    extern const lv_image_dsc_t venmo;
+    extern const lv_image_dsc_t skype;
+    extern const lv_image_dsc_t paypal;
     extern const lv_image_dsc_t unknown_app;  // generic fallback (bell on neutral tile)
     // Per-category fallback glyphs (white glyph on neutral tile).
     extern const lv_image_dsc_t cat_call;
@@ -92,6 +108,22 @@ static const Entry k_table[] = {
     { "viber",       0x7360F2 },
     { "claude",      0xD97757 },
     { "chatgpt",     0x10A37F },
+    { "google_map",    0x4285F4 },
+    { "google_photos", 0xF4B400 },
+    { "health",        0xFF2D55 },
+    { "apple_calendar",          0xFF3B30 },
+    { "apple_findmy",            0x00C7BE },
+    { "apple_mail",              0x0A84FF },
+    { "apple_maps",              0x6FCF66 },
+    { "apple_reminders",         0xFF9500 },
+    { "apple_wallet",            0x000000 },
+    { "github",                  0x181717 },
+    { "google_authenticator",    0x34A853 },
+    { "microsoft_authenticator", 0x0078D4 },
+    { "notion",                  0x000000 },
+    { "venmo",                   0x3D95CE },
+    { "skype",                   0x0078D4 },
+    { "paypal",                  0x003087 },
 };
 
 } // namespace
@@ -139,6 +171,22 @@ static const ImageEntry k_images[] = {
     { "viber",       &viber       },
     { "claude",      &claude      },
     { "chatgpt",     &chatgpt     },
+    { "google_map",    &google_map    },
+    { "google_photos", &google_photos },
+    { "health",        &health        },
+    { "apple_calendar",          &apple_calendar          },
+    { "apple_findmy",            &apple_findmy            },
+    { "apple_mail",              &apple_mail              },
+    { "apple_maps",              &apple_maps              },
+    { "apple_reminders",         &apple_reminders         },
+    { "apple_wallet",            &apple_wallet            },
+    { "github",                  &github                  },
+    { "google_authenticator",    &google_authenticator    },
+    { "microsoft_authenticator", &microsoft_authenticator },
+    { "notion",                  &notion                  },
+    { "venmo",                   &venmo                   },
+    { "skype",                   &skype                   },
+    { "paypal",                  &paypal                  },
 };
 } // namespace
 
