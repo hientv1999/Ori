@@ -49,6 +49,7 @@ enum class BleEventType : uint8_t {
     None = 0,
     FactoryReset,
     PresenceUpdate,
+    ClockFaceUpdate,   // Clock Face char write — 0=Digital, 1=Analog (state_machine::set_clock_face)
     MediaMetaUpdated,  // MediaMetadata write applied to app_state — repaint media screen
     AlbumArt,
     PhotoReceived,      // profile photo JPEG — forward to photo_cache::store()
@@ -73,6 +74,7 @@ struct BleEvent {
     union {
         uint32_t passkey;
         widget_profile_card::Presence presence;
+        uint8_t  clock_face;     // ClockFaceUpdate — 0=Digital, 1=Analog
         struct { uint8_t* buf; size_t len; } art;
         uint16_t conn_handle;
         uint8_t  pct;            // OrioningProgress
@@ -552,6 +554,12 @@ void poll() {
                 state_machine::set_presence(static_cast<uint8_t>(ev.data.presence));
                 break;
             }
+
+            case BleEventType::ClockFaceUpdate:
+                // set_clock_face() writes NVS and (if the Clock state is on
+                // screen) rebuilds it — both must run on the main task.
+                state_machine::set_clock_face(ev.data.clock_face);
+                break;
 
             case BleEventType::MediaMetaUpdated: {
                 // gatt_server::handle_media_metadata() already wrote the new
@@ -1225,6 +1233,14 @@ void ble_post_presence_event(widget_profile_card::Presence p) {
     BleEvent ev = {};
     ev.type = BleEventType::PresenceUpdate;
     ev.data.presence = p;
+    eq_push(ev);
+}
+
+// Deferred clock-face update (from Clock Face write handler).
+void ble_post_clock_face_event(uint8_t face) {
+    BleEvent ev = {};
+    ev.type = BleEventType::ClockFaceUpdate;
+    ev.data.clock_face = face;
     eq_push(ev);
 }
 

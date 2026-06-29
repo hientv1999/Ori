@@ -151,4 +151,11 @@ void on_calendar_enter();
 // Returns 0 = Calendar (meeting list), 1 = Media.
 uint8_t current_mode();
 
+// Clock-face preference (0 = Digital, 1 = Analog) — which screen
+// build_clock_screen() shows for the CLOCK state. Persists immediately to
+// NVS; safe to call from any non-LVGL-timer context (currently the
+// ORI_DEBUG_SERIAL cycler; eventually an Orion-driven BLE write).
+void    set_clock_face(uint8_t face);
+uint8_t current_clock_face();
+
 } // namespace state_machine

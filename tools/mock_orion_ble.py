@@ -27,6 +27,7 @@ Interactive commands (shown on connect):
     t  — resync time (manual TimeSync-only push, RAM-only, no blackout)
     m  — push media now (manual one-shot push of the current Windows
          now-playing session — title, artist, embedded album art)
+    k  — push clock face (toggles DIGITAL <-> ANALOG, char 0011)
     f  — factory reset           (§7.2)
     q  — quit
 
@@ -171,12 +172,19 @@ UUID_MEDIA_META   = _uuid(0x000D)   # Write (response), Notify — encrypted
 UUID_ALBUM_ART    = _uuid(0x000E)   # Write NO RESPONSE only   — encrypted
 UUID_PRESENCE     = _uuid(0x000F)   # Write (response)      — encrypted
 UUID_SHORTCUTS    = _uuid(0x0010)   # Write (response)      — encrypted
+UUID_CLOCK_FACE   = _uuid(0x0011)   # Write (response)      — encrypted
 
 FACTORY_RESET_MAGIC = bytes([0xFA, 0xC7, 0x5E, 0x5E])
 
 # Presence Status byte values (ble-protocol.md §4). Orion is the sole writer —
 # no Read property — so it must push a fresh value on every connect/reconnect.
 PRESENCE_NAMES = {0x00: "AVAILABLE", 0x01: "BUSY", 0x02: "AWAY", 0x03: "OFFLINE"}
+
+# Clock Face byte values (ble-protocol.md §3/§4, char 0011). Unlike Presence,
+# this IS persisted to NVS on Ori and applied immediately outside the
+# BEGIN/END staging pipeline — Orion only needs to write it when the user
+# changes the setting, not on every connect.
+CLOCK_FACE_NAMES = {0x00: "DIGITAL", 0x01: "ANALOG"}
 
 # Shortcut icon token combos to cycle through with 'c' (media-mode.md /
 # shortcut_icons.cpp). Last entry includes an unknown token deliberately, to
@@ -792,6 +800,13 @@ class MockOrion:
         name = PRESENCE_NAMES.get(value, f"0x{value:02X}")
         await self.write(UUID_PRESENCE, bytes([value]), f"PresenceStatus ({name})")
 
+    async def push_clock_face(self, value: int):
+        # Clock Face (char 0011) is Write-only, applied + persisted to NVS on
+        # Ori immediately — not staged through BEGIN/END (ble-protocol.md §3).
+        # No manifest/hash involved, so a bare write is all this needs.
+        name = CLOCK_FACE_NAMES.get(value, f"0x{value:02X}")
+        await self.write(UUID_CLOCK_FACE, bytes([value]), f"ClockFace ({name})")
+
     async def push_shortcuts(self, slot1: str, slot2: str, slot3: str):
         # Unlike Presence, Shortcut Config is still staged (ble-protocol.md
         # §6.0) — Ori only applies it at SyncControl{END}, so a bare write
@@ -1259,6 +1274,7 @@ Commands:
   t — resync time     (manual TimeSync-only push)
   m — push media now  (manual one-shot; media also auto-pushes in the
                         background on every track change — see media_watcher)
+  k — push clock face (toggle DIGITAL <-> ANALOG, char 0011)
   f — factory reset   (§7.2)
   q — quit
 """
@@ -1267,6 +1283,7 @@ async def command_loop(orion: MockOrion):
     loop = asyncio.get_event_loop()
     presence = [0x00]  # mutable cell so 'p' can cycle across iterations
     combo_idx = [0]    # mutable cell so 'c' can cycle across iterations
+    clock_face = [0x00]  # mutable cell so 'k' can toggle across iterations
     print(MENU)
     while not orion.disconnected:
         try:
@@ -1291,6 +1308,9 @@ async def command_loop(orion: MockOrion):
             await orion.push_time_sync()
         elif cmd == "m":
             await orion.push_media()
+        elif cmd == "k":
+            clock_face[0] = 0x00 if clock_face[0] else 0x01
+            await orion.push_clock_face(clock_face[0])
         elif cmd == "f":
             await orion.run_factory_reset()
             # Don't reprint menu — factory reset exits the loop.
@@ -1298,7 +1318,7 @@ async def command_loop(orion: MockOrion):
             print("  Goodbye.")
             break
         elif cmd:
-            print("  Unknown command. Type s / p / c / t / m / f / q")
+            print("  Unknown command. Type s / p / c / t / m / k / f / q")
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 

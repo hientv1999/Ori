@@ -20,6 +20,7 @@
 #include "screens/modal_unpair_phone.h"
 #include "screens/screen_calendar.h"
 #include "screens/screen_clock.h"
+#include "screens/screen_clock_analog.h"
 #include "screens/screen_media_mode.h"
 #include "screens/screen_meeting_list.h"
 #include "screens/screen_no_meetings.h"
@@ -54,6 +55,7 @@ constexpr uint32_t RECONNECT_MIN_MS = 300; // minimum overlay visibility
 AppState g_state           = AppState::NO_MEETINGS; // current rendered state
 uint8_t  g_mode            = 0;                     // 0=Calendar, 1=Media
 uint8_t  g_pre_clock_mode  = 0;                     // mode to restore when leaving Clock/Calendar
+uint8_t  g_clock_face      = 0;                     // 0=Digital, 1=Analog (nvs::get/set_clock_face)
 bool     g_pc_connected    = false; // true only once Orion's BLE link is confirmed
 bool     g_phone_connected = false;
 bool     g_phone_bonded    = false; // true when an iPhone bond exists in NVS
@@ -336,7 +338,7 @@ lv_obj_t* build_no_meetings_screen() {
 }
 
 lv_obj_t* build_clock_screen() {
-    return screen_clock::create();
+    return (g_clock_face == 1) ? screen_clock_analog::create() : screen_clock::create();
 }
 
 lv_obj_t* build_calendar_screen() {
@@ -445,8 +447,9 @@ void init() {
     nvs_sync::prime_pto_cache();
     nvs_sync::prime_hash_cache();
 
-    // Restore mode from NVS.
+    // Restore mode + clock-face preference from NVS.
     g_mode = nvs::get_mode();
+    g_clock_face = nvs::get_clock_face();
 
     // Check if an iPhone bond already exists in NVS (survives reboots).
     {
@@ -1009,6 +1012,22 @@ AppState current_state() {
 
 uint8_t current_mode() {
     return g_mode;
+}
+
+void set_clock_face(uint8_t face) {
+    g_clock_face = face;
+    nvs::set_clock_face(face);
+    LOG("[sm] clock_face -> %s\n", face ? "Analog" : "Digital");
+    // If the Clock state is currently on screen, rebuild it now with the new
+    // face. Called from serial-poll context (not an LVGL timer), so an NVS
+    // write here is safe — see the on_mode_toggle() deferred-write comment.
+    if (g_state == AppState::CLOCK) {
+        load_screen(build_clock_screen());
+    }
+}
+
+uint8_t current_clock_face() {
+    return g_clock_face;
 }
 
 } // namespace state_machine

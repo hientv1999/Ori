@@ -44,4 +44,15 @@ for sz in "${SIZES[@]}"; do
     --format lvgl -o "$out"
 done
 
+# ori_font_hanken_96 is the clock-face font (screen_clock.cpp) — digits + ':' + '-'
+# only (no "WAITING FOR ORION" text uses it, just "--:--"). Full-Latin RANGE above
+# would be wasteful at 96px; this narrow range keeps the bitmap small.
+out="$OUTDIR/ori_font_hanken_96.c"
+echo "  generating $out (size 96px, bpp 4, digits-only)"
+lv_font_conv \
+  --no-compress --no-prefilter --bpp 4 --size 96 \
+  --font "$FONT" \
+  -r "0x20,0x2D,0x3A,0x30-0x39" \
+  --format lvgl -o "$out"
+
 echo "done. Rebuild with: pio run -e ori"

@@ -39,7 +39,7 @@ Data pulled from Orion during initial pairing, stored in flash, persists across 
 
 ### Profile-photo border — Teams presence indicator
 
-12 px border encodes the user's Teams presence, pushed by Orion via the Presence Status characteristic (`ble-protocol.md` §3):
+6 px border + a static (non-animated) soft glow in the same colour encodes the user's Teams presence, pushed by Orion via the Presence Status characteristic (`ble-protocol.md` §3). **Offline shows the border with no glow** — a glow on the grey/no-signal state would read as a render glitch rather than a deliberate status:
 
 | BLE byte | State | Border colour | Teams state |
 |---|---|---|---|

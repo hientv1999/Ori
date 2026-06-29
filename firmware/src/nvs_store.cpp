@@ -13,6 +13,7 @@ constexpr const char* k_provisioned = "prov";       // bool: setup completed
 constexpr const char* k_sync_step   = "sync_step";  // bool: Orion bonded, awaiting first sync
 constexpr const char* k_phone_step  = "phone_step"; // bool: Orion synced, awaiting iPhone pair
 constexpr const char* k_mode        = "mode";       // uint8: 0=Calendar 1=Controls
+constexpr const char* k_clock_face  = "clock_face"; // uint8: 0=Digital 1=Analog
 constexpr const char* k_ota_ack     = "ota_ack";    // string: post-update version
 
 Preferences prefs;
@@ -116,6 +117,25 @@ void set_mode(uint8_t mode) {
         prefs.end();
     }
     LOG("[nvs] mode=%d\n", (int)mode);
+}
+
+// ── Clock-face preference ──────────────────────────────────────────────────
+
+uint8_t get_clock_face() {
+    uint8_t v = 0;  // default: Digital
+    if (prefs.begin(NAMESPACE, /*readOnly=*/true)) {
+        v = (uint8_t)prefs.getUChar(k_clock_face, 0);
+        prefs.end();
+    }
+    return v;
+}
+
+void set_clock_face(uint8_t face) {
+    if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
+        prefs.putUChar(k_clock_face, face);
+        prefs.end();
+    }
+    LOG("[nvs] clock_face=%d\n", (int)face);
 }
 
 // ── Factory reset ──────────────────────────────────────────────────────────

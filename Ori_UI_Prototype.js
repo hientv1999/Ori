@@ -110,6 +110,13 @@ const SCREENS = {
     mode: 'clock',
     leftRender: () => clockHTML(),
   },
+  'clock-analog': {
+    label: 'Primary state', title: 'Analog clock',
+    desc: 'Alternate Clock-state face — same entry/exit as the digital clock (tap status-bar time, mode-toggle to return). Proposed: a setting in Orion lets the user pick digital vs. analog; the device remembers the choice in NVS like the calendar/media mode-toggle preference.',
+    statusBar: { ancsApps: ['gmail', 'facebook'], phoneConnected: true, hideDateTime: true },
+    mode: 'clock',
+    leftRender: () => analogClockHTML(),
+  },
   'calendar': {
     label: 'Primary state', title: 'Calendar (month view)',
     desc: 'Entered by long-pressing the time in the status bar for 1s (1.2s here). View-only month grid with today highlighted; left/right arrows navigate months. Mode-toggle (calendar-return icon) returns to the previous mode. Status-bar date/time is hidden since this view IS a calendar.',
@@ -405,6 +412,49 @@ function clockHTML() {
   const dateStr = d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
   return '<div class="clock-face"><div class="clock-time"><span>' + h +
     '</span><span class="colon">:</span><span>' + m + '</span></div>' +
+    '<div class="clock-date">' + dateStr.toUpperCase() + ' · ' + ampm + '</div></div>';
+}
+
+// Analog face — same data source as clockHTML(), alternate rendering. Orion
+// setting (mocked here as a sidebar-selectable screen) picks which of the two
+// the device shows; both share the Clock state's entry/exit + status-bar rules.
+function analogClockHTML() {
+  const d = new Date();
+  const h = d.getHours();
+  const m = d.getMinutes();
+  const s = d.getSeconds();
+  const dateStr = d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+  const ampm = h >= 12 ? 'PM' : 'AM';
+
+  const cx = 140, cy = 140;
+  let ticks = '';
+  for (let i = 0; i < 12; i++) {
+    const deg = i * 30;
+    const major = i % 3 === 0; // 12, 3, 6, 9
+    const outer = 130, inner = major ? 110 : 119;
+    const w = major ? 4 : 2;
+    ticks += '<line class="analog-tick' + (major ? ' major' : '') + '" stroke-width="' + w + '" ' +
+      'transform="rotate(' + deg + ' ' + cx + ' ' + cy + ')" ' +
+      'x1="' + cx + '" y1="' + (cy - outer) + '" x2="' + cx + '" y2="' + (cy - inner) + '"/>';
+  }
+
+  const hourDeg = (h % 12) * 30 + m * 0.5;
+  const minuteDeg = m * 6 + s * 0.1;
+  const secondDeg = s * 6;
+  const hand = (cls, deg, length, width) =>
+    '<line class="analog-hand ' + cls + '" stroke-width="' + width + '" ' +
+    'transform="rotate(' + deg + ' ' + cx + ' ' + cy + ')" ' +
+    'x1="' + cx + '" y1="' + cy + '" x2="' + cx + '" y2="' + (cy - length) + '"/>';
+
+  const dial = '<svg class="analog-dial" viewBox="0 0 280 280">' +
+    ticks +
+    hand('hour', hourDeg, 68, 7) +
+    hand('minute', minuteDeg, 102, 5) +
+    hand('second', secondDeg, 112, 2) +
+    '<circle class="analog-hub" cx="' + cx + '" cy="' + cy + '" r="6"/>' +
+    '</svg>';
+
+  return '<div class="analog-clock-face">' + dial +
     '<div class="clock-date">' + dateStr.toUpperCase() + ' · ' + ampm + '</div></div>';
 }
 
@@ -1425,3 +1475,11 @@ setInterval(() => {
   }
   updateStatusDateTime();
 }, 30 * 1000);
+
+// Analog face has a sweeping second hand, so it refreshes once a second
+// rather than riding the 30s digital-clock/calendar interval above.
+setInterval(() => {
+  if (currentScreenId === 'clock-analog') {
+    document.getElementById('left-panel').innerHTML = analogClockHTML();
+  }
+}, 1000);

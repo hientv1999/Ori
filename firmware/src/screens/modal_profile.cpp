@@ -65,6 +65,9 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
     lv_obj_set_flex_flow(body_row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(body_row, LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    // OVERFLOW_VISIBLE so the presence ring's glow (below) isn't clipped to
+    // this row's box — same reasoning as widget_profile_card.cpp's card.
+    lv_obj_add_flag(body_row, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
 
     // ── Left column ───────────────────────────────────────────────────────────
     // Explicit height = full screen height so LVGL doesn't need to resolve it
@@ -155,11 +158,14 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
     lv_obj_set_flex_flow(right_col, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(right_col, LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    // OVERFLOW_VISIBLE so the presence ring's glow isn't clipped to this
+    // column's box — same reasoning as widget_profile_card.cpp's card.
+    lv_obj_add_flag(right_col, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
 
     lv_obj_t* photo_ring = lv_obj_create(right_col);
     lv_obj_set_size(photo_ring,
-        widget_profile_card::PHOTO_SIZE + 24,
-        widget_profile_card::PHOTO_SIZE + 24);
+        widget_profile_card::PHOTO_SIZE + 12,
+        widget_profile_card::PHOTO_SIZE + 12);
     lv_obj_set_style_radius(photo_ring, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(photo_ring, theme::color(pres_color_light), 0);
     lv_obj_set_style_bg_grad_color(photo_ring, theme::color(pres_color_dark), 0);
@@ -167,6 +173,15 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
     lv_obj_set_style_bg_opa(photo_ring, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(photo_ring, 0, 0);
     lv_obj_set_style_pad_all(photo_ring, 0, 0);
+    // Static presence glow — matches widget_profile_card.cpp's ring, no anim.
+    lv_obj_set_style_shadow_color(photo_ring, theme::color(pres_color), 0);
+    lv_obj_set_style_shadow_width(photo_ring, 40, 0);
+    lv_obj_set_style_shadow_spread(photo_ring, 8, 0);
+    // Offline gets no glow — see widget_profile_card.cpp's shadow_opa_for_presence().
+    lv_obj_set_style_shadow_opa(photo_ring,
+        pres == widget_profile_card::Presence::Offline ? LV_OPA_TRANSP : LV_OPA_50, 0);
+    lv_obj_set_style_shadow_ofs_x(photo_ring, 0, 0);
+    lv_obj_set_style_shadow_ofs_y(photo_ring, 0, 0);
     lv_obj_clear_flag(photo_ring, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(photo_ring, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_style_opa(photo_ring, LV_OPA_60, LV_STATE_PRESSED);

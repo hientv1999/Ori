@@ -95,6 +95,12 @@ uint32_t color_for_presence_dark(widget_profile_card::Presence p) {
     }
 }
 
+// Offline gets no glow — it's the "nothing to report" / fallback state, and a
+// grey glow reads as a render glitch rather than a deliberate status signal.
+lv_opa_t shadow_opa_for_presence(widget_profile_card::Presence p) {
+    return p == widget_profile_card::Presence::Offline ? LV_OPA_TRANSP : LV_OPA_50;
+}
+
 } // namespace
 
 namespace widget_profile_card {
@@ -118,8 +124,10 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_style_pad_left(card, 8, LV_PART_MAIN);
     lv_obj_set_style_pad_right(card, 8, LV_PART_MAIN);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-    // LV_OBJ_FLAG_OVERFLOW_VISIBLE is intentionally NOT set here — the solid
-    // border stays within the card bounds and does not need to bleed outward.
+    // OVERFLOW_VISIBLE so the presence ring's glow (drawn outside the ring's
+    // own box) isn't clipped to the card bounds — LVGL clips a child's draw,
+    // including its shadow, to its parent's box by default.
+    lv_obj_add_flag(card, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
 
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -131,13 +139,13 @@ lv_obj_t* create(lv_obj_t* parent) {
     g_active_card = card;
 
     // ── Gradient presence ring ────────────────────────────────────────────────
-    // A circle 24 px larger than the photo (PHOTO_SIZE + 24 = 12 px each side).
+    // A circle 12 px larger than the photo (PHOTO_SIZE + 12 = 6 px each side).
     // Its gradient background IS the "border" — top = presence colour,
     // bottom = darker shade. Replaces the old solid border_color approach so
     // the ring can be updated with a single bg_color / bg_grad_color call.
     // Tap / long-press events are on the inner photo; the ring is non-clickable.
     s->photo_ring = lv_obj_create(card);
-    lv_obj_set_size(s->photo_ring, PHOTO_SIZE + 24, PHOTO_SIZE + 24);
+    lv_obj_set_size(s->photo_ring, PHOTO_SIZE + 12, PHOTO_SIZE + 12);
     lv_obj_set_style_radius(s->photo_ring, LV_RADIUS_CIRCLE, LV_PART_MAIN);
     lv_obj_set_style_bg_color(s->photo_ring,
         theme::color(color_for_presence_light(g_default_presence)), LV_PART_MAIN);
@@ -150,8 +158,19 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_clear_flag(s->photo_ring, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(s->photo_ring, LV_OBJ_FLAG_CLICKABLE);
 
+    // Static presence glow — a fixed (non-animated) soft shadow in the
+    // presence colour, sitting outside the ring. No breathing/pulse anim,
+    // unlike the setup-screen button glow in ui_helpers.cpp.
+    lv_obj_set_style_shadow_color(s->photo_ring,
+        theme::color(color_for_presence(g_default_presence)), LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(s->photo_ring, 40, LV_PART_MAIN);
+    lv_obj_set_style_shadow_spread(s->photo_ring, 8, LV_PART_MAIN);
+    lv_obj_set_style_shadow_opa(s->photo_ring, shadow_opa_for_presence(g_default_presence), LV_PART_MAIN);
+    lv_obj_set_style_shadow_ofs_x(s->photo_ring, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_ofs_y(s->photo_ring, 0, LV_PART_MAIN);
+
     // ── Inner photo circle ────────────────────────────────────────────────────
-    // The presence ring peeks 12 px around all edges of this circle.
+    // The presence ring peeks 6 px around all edges of this circle.
     // Tap opens the profile detail overlay; long-press (3 s) opens factory reset.
     s->photo = lv_obj_create(s->photo_ring);
     lv_obj_set_size(s->photo, PHOTO_SIZE, PHOTO_SIZE);
@@ -248,6 +267,9 @@ void set_presence(lv_obj_t* card, Presence p) {
         theme::color(color_for_presence_light(p)), LV_PART_MAIN);
     lv_obj_set_style_bg_grad_color(s->photo_ring,
         theme::color(color_for_presence_dark(p)), LV_PART_MAIN);
+    lv_obj_set_style_shadow_color(s->photo_ring,
+        theme::color(color_for_presence(p)), LV_PART_MAIN);
+    lv_obj_set_style_shadow_opa(s->photo_ring, shadow_opa_for_presence(p), LV_PART_MAIN);
 }
 
 void set_default_presence(Presence p) {
@@ -258,6 +280,9 @@ void set_default_presence(Presence p) {
             theme::color(color_for_presence_light(p)), LV_PART_MAIN);
         lv_obj_set_style_bg_grad_color(g_modal_photo,
             theme::color(color_for_presence_dark(p)), LV_PART_MAIN);
+        lv_obj_set_style_shadow_color(g_modal_photo,
+            theme::color(color_for_presence(p)), LV_PART_MAIN);
+        lv_obj_set_style_shadow_opa(g_modal_photo, shadow_opa_for_presence(p), LV_PART_MAIN);
     }
     if (g_modal_labels.status_lbl) {
         const char* status_str;

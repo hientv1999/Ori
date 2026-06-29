@@ -53,7 +53,7 @@ Three vertical sections, centred. No transport buttons; no persistent volume sli
 | **Swipe left** | `{op:"prev"}` | mirror of swipe right | Art shifts left ~40 px then snaps back |
 | **Vertical swipe** | `{op:"vol_set", arg:N}` on release | > 25 px vertical, \|dy\| > \|dx\| | Volume HUD (bar + %) fades in, tracks live, lingers ~800 ms |
 
-Volume sensitivity: ~200 px swipe = full 0..100 range. Swipe up = louder. Orion applies volume via OS API and writes back `Host Volume State`; Ori ignores incoming pushes while a swipe is in progress (drag-wins override — see `ble-protocol.md` §12).
+Volume sensitivity: ~400 px swipe = full 0..100 range (firmware `V_SENS_NUM`/`V_SENS_DEN` in `screen_media_mode.cpp`). Swipe up = louder. Orion applies volume via OS API and writes back `Host Volume State`; Ori ignores incoming pushes while a swipe is in progress (drag-wins override — see `ble-protocol.md` §12).
 
 **Paused:** art dims to ~55% with centred play-triangle overlay.
 

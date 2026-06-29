@@ -32,10 +32,11 @@ constexpr int16_t ART_H             = 216;
 constexpr int16_t TAP_MAX           = 20;   // px in either axis = tap
 constexpr int16_t H_SWIPE_MIN       = 50;   // px horizontal to count as swipe
 constexpr int16_t V_SWIPE_ENGAGE    = 25;   // px vertical to engage volume HUD
-// Sensitivity: ~200 px of swipe = full 0..100 range (factor = 100/200 = 0.5).
-// Stored as integer scaled by 100 to keep math fixed-point.
+// Sensitivity: ~400 px of swipe = full 0..100 range (factor = 100/400 = 0.25).
+// 50% less sensitive than before (was 200 px / factor 0.5) — needs 2x the
+// swipe distance for the same volume change.
 constexpr int     V_SENS_NUM        = 1;
-constexpr int     V_SENS_DEN        = 2;
+constexpr int     V_SENS_DEN        = 4;
 
 // Play-triangle overlay — the paused-state indicator drawn on top of the
 // album art. The HTML demo uses an inline SVG (#i-play, a solid filled
@@ -396,7 +397,7 @@ lv_obj_t* make_art_block(lv_obj_t* parent, ArtState* s) {
     lv_obj_align(s->hud_fill, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_set_style_radius(s->hud_fill, 5, LV_PART_MAIN);
     lv_obj_set_style_bg_color(s->hud_fill, theme::color(theme::COLOR_ACCENT), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(s->hud_fill, LV_OPA_90, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s->hud_fill, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_border_width(s->hud_fill, 0, LV_PART_MAIN);
     lv_obj_clear_flag(s->hud_fill, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(s->hud_fill, LV_OBJ_FLAG_CLICKABLE);

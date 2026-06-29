@@ -16,6 +16,7 @@
 #include "screens/modal_unpair_phone.h"
 #include "screens/screen_calendar.h"
 #include "screens/screen_clock.h"
+#include "screens/screen_clock_analog.h"
 #include "screens/screen_media_mode.h"
 #include "screens/screen_meeting_list.h"
 #include "screens/screen_no_meetings.h"
@@ -137,7 +138,8 @@ void print_keymap() {
     LOG("=== Ori screen cycler (ORI_DEBUG_SERIAL) ===\n");
     LOG("  m   Meeting list\n");
     LOG("  n   No meetings today\n");
-    LOG("  c   Digital clock (entered via time tap)\n");
+    LOG("  c   Digital clock (entered via time tap; sets clock-face pref -> Digital)\n");
+    LOG("  a   Analog clock (entered via time tap; sets clock-face pref -> Analog)\n");
     LOG("  v   Calendar month view (entered via time long-press)\n");
     LOG("  p   PTO scenic\n");
     LOG("  k   Media mode\n");
@@ -182,7 +184,12 @@ void debug_handle_key(char c) {
                 debug_load(screen_no_meetings::create());
             break;
         case 'c':
+                state_machine::set_clock_face(0);
                 debug_load(screen_clock::create());
+            break;
+        case 'a':
+                state_machine::set_clock_face(1);
+                debug_load(screen_clock_analog::create());
             break;
         case 'v':
                 screen_calendar::reset_view();

@@ -13,5 +13,5 @@
 | **Tap album art** (movement < 20 px in both axes) | `KeyboardCommand{op:"play_pause"}` | Controls mode — see `media-mode.md` |
 | **Swipe right on album art** (|dx| > 50 px, |dx| > |dy|) | `KeyboardCommand{op:"next"}` | Controls mode |
 | **Swipe left on album art** | `KeyboardCommand{op:"prev"}` | Controls mode |
-| **Vertical swipe on album art** (|dy| > 25 px, |dy| > |dx|; ~200 px = full 0..100) | `KeyboardCommand{op:"vol_set", arg:N}` on release + momentary volume HUD | Controls mode |
+| **Vertical swipe on album art** (|dy| > 25 px, |dy| > |dx|; ~400 px = full 0..100) | `KeyboardCommand{op:"vol_set", arg:N}` on release + momentary volume HUD | Controls mode |
 | Tap shortcut button (1/2/3) | `KeyboardCommand{op:"shortcut", arg:1|2|3}` — Orion runs configured action | Controls mode |

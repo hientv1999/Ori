@@ -88,7 +88,7 @@ Orion uses the mode flag to detect "Ori factory-reset since last bond" without c
 
 ## 3. Service and characteristics
 
-**One service, sixteen characteristics.**
+**One service, seventeen characteristics.**
 
 ```
 Ori Sync Service:  6F726900-0000-4F72-9F00-000000000000
@@ -114,6 +114,7 @@ Each characteristic UUID replaces bytes 4–5 of the base with the offset below.
 | 14 | **Media Album Art** | `000E` | Write (no response) | Orion → Ori (chunked) | Yes |
 | 15 | **Presence Status** | `000F` | Write (response) | Orion → Ori | Yes |
 | 16 | **Shortcut Config** | `0010` | Write (response) | Orion → Ori | Yes |
+| 17 | **Clock Face** | `0011` | Write (response) | Orion → Ori | Yes |
 
 Reads/writes on encrypted characteristics over an unencrypted link return `INSUFFICIENT_AUTHENTICATION`.
 
@@ -230,6 +231,17 @@ MediaMetadata = {                // Orion → Ori, write (+ Ori can notify on it
 //   0x02  AWAY        — Teams "Be Right Back", "Appear Away"
 //   0x03  OFFLINE     — Teams "Appear Offline" (or unknown / null)
 // Any other value → NACK_CBOR_DECODE.
+
+// Clock Face — single byte (NOT CBOR):
+//   0x00  DIGITAL  — large-digit clock face (default)
+//   0x01  ANALOG   — tick-dial + hands face
+// Any other value → NACK_CBOR_DECODE. Unlike Presence Status, this IS
+// persisted to NVS on Ori (state-machine.md) — applied and saved immediately
+// on write, outside the BEGIN/END staging pipeline (§6.0 doesn't apply; same
+// immediate-side-effect treatment as Factory Reset Command). Orion doesn't
+// need to resend it on every reconnect; it only writes when the user changes
+// the setting in Orion's UI. No Read — Orion's settings UI is the source of
+// truth for what it last set; nothing to recover from Ori on (re)connect.
 ```
 
 ### Device Status (single-byte enum, no CBOR)
@@ -517,12 +529,13 @@ Link-layer encryption failure (`BLE_HS_ENC_FAIL`) signals a stale bond — see �
 | Media Album Art (JPEG, 484×216) | target 15–30 KB; hard cap 64 KB |
 | Presence Status | exactly 1 byte (0x00–0x03) |
 | `ShortcutConfig.slot1/2/3` | ≤ 19 chars each (firmware buffer) — icon token, e.g. "vol-mute" |
+| Clock Face | exactly 1 byte (0x00–0x01) |
 
 ---
 
 ## 11. Implementation owners
 
-- **`esp32-connectivity`** — GATT server, bonding, chunk reassembly, NVS persistence + hashes, factory-reset routine, ANCS client, chars 11–16. No HOGP.
+- **`esp32-connectivity`** — GATT server, bonding, chunk reassembly, NVS persistence + hashes, factory-reset routine, ANCS client, chars 11–17. No HOGP.
 - **`orion-sync`** — scanning + connection lifecycle, bonding storage, hash-manifest delta, chunked writes, background keep-alive, USB CDC OTA path (`ota.md`), media-mode OS bridge (§12).
 
 Pre-release: no need to bump a version header per change — just keep this file in sync with the firmware/Orion implementations as the contract evolves.

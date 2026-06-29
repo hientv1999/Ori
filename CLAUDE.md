@@ -71,4 +71,4 @@ Open [Ori_UI_Prototype.html](Ori_UI_Prototype.html) directly in any modern brows
   Full loop: calendar → Orion → BLE → Ori → screen. Cross-subsystem tests, offline cache, factory-reset round-trip. Agent: `integration-qa`.
 
 - [ ] **M8 — Hardening & polish**
-  Memory/animation tuning, signed installers, ori.app landing, factory-provisioning docs, Orion media-mode OS bridge. Carry-over: large clock font (~96 px digits-only, `font_clock_xl()` in [theme.cpp](firmware/src/theme.cpp), applied in [screen_clock.cpp](firmware/src/screens/screen_clock.cpp)).
+  Memory/animation tuning, signed installers, ori.app landing, factory-provisioning docs, Orion media-mode OS bridge.

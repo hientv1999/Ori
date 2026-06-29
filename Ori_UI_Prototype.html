@@ -316,7 +316,7 @@
       border-radius: 50%;
       overflow: hidden;
       background: linear-gradient(135deg, #2a3140 0%, #1a1f28 100%);
-      border: 12px solid var(--accent-line);
+      border: 6px solid var(--accent-line);
       display: flex;
       align-items: center;
       justify-content: center;
@@ -599,6 +599,52 @@
       font-size: 30px;
       color: var(--text-2);
       letter-spacing: 0.6px;
+    }
+
+    .analog-clock-face {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      user-select: none;
+    }
+
+    .analog-clock-face .clock-date {
+      margin-top: 26px;
+    }
+
+    .analog-dial {
+      width: 280px;
+      height: 280px;
+    }
+
+    .analog-tick {
+      stroke: var(--text-3);
+    }
+
+    .analog-tick.major {
+      stroke: var(--text-2);
+    }
+
+    .analog-hand {
+      stroke-linecap: round;
+    }
+
+    .analog-hand.hour {
+      stroke: var(--text-1);
+    }
+
+    .analog-hand.minute {
+      stroke: var(--text-1);
+    }
+
+    .analog-hand.second {
+      stroke: var(--accent);
+    }
+
+    .analog-hub {
+      fill: var(--accent);
     }
 
     .calendar-view {
@@ -1958,6 +2004,7 @@
         <button data-screen="meeting-list" class="active">Meeting list</button>
         <button data-screen="no-meetings">No meetings today</button>
         <button data-screen="clock">Digital Clock</button>
+        <button data-screen="clock-analog">Analog Clock</button>
         <button data-screen="calendar">Calendar (month view)</button>
         <button data-screen="pto">PTO active</button>
         <button data-screen="pto-long-dest">PTO — long destination</button>

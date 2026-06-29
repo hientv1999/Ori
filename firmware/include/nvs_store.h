@@ -4,8 +4,9 @@
 // NVS scaffolding (Arduino Preferences). Single namespace "ori".
 //
 // Key layout:
-//   "prov"  — bool: setup completed (first-boot flag)
-//   "mode"  — uint8: 0=Calendar, 1=Media (immediate write, infrequent)
+//   "prov"        — bool: setup completed (first-boot flag)
+//   "mode"        — uint8: 0=Calendar, 1=Media (immediate write, infrequent)
+//   "clock_face"  — uint8: 0=Digital, 1=Analog (immediate write, infrequent)
 //
 // Profile, photo, and meeting/PTO hashes are M5 scope — reserved slots.
 namespace nvs {
@@ -37,6 +38,13 @@ bool    is_awaiting_phone_pairing();
 // Mode toggle persistence (0 = Calendar, 1 = Media).
 uint8_t get_mode();
 void    set_mode(uint8_t mode);
+
+// Clock-face preference (0 = Digital, 1 = Analog). Drives which of
+// screen_clock / screen_clock_analog the Clock state shows. Currently set
+// only via the ORI_DEBUG_SERIAL cycler; intended to eventually be driven by
+// an Orion setting.
+uint8_t get_clock_face();
+void    set_clock_face(uint8_t face);
 
 // Factory reset — clears ALL keys in the "ori" namespace.
 // Does NOT reboot; caller is responsible for calling ESP.restart() after.

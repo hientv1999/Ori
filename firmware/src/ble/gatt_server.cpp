@@ -1,4 +1,4 @@
-﻿// Ori GATT Server — 16 characteristics, ble-protocol.md v1.0.
+﻿// Ori GATT Server — 17 characteristics, ble-protocol.md v1.0.
 //
 // Service UUID: 6F726900-0000-4F72-9F00-000000000000
 // Each char UUID replaces bytes 4-5 with the offset:
@@ -18,6 +18,7 @@
 //   000E Media Album Art     Write no-rsp (enc, chunked)
 //   000F Presence Status     Write (enc)
 //   0010 Shortcut Config     Write (enc)
+//   0011 Clock Face          Write (enc)
 
 #include "ble/gatt_server.h"
 #include "ble/ble_manager.h"
@@ -31,6 +32,7 @@
 
 void ble_post_factory_reset_event();
 void ble_post_presence_event(widget_profile_card::Presence p);
+void ble_post_clock_face_event(uint8_t face);
 void ble_post_media_meta_event();
 void ble_post_album_art_event(uint8_t* buf, size_t len);
 void ble_post_photo_event(uint8_t* buf, size_t len);
@@ -122,6 +124,7 @@ NimBLECharacteristic* c_media_meta  = nullptr; // 000D
 NimBLECharacteristic* c_album_art   = nullptr; // 000E
 NimBLECharacteristic* c_presence    = nullptr; // 000F
 NimBLECharacteristic* c_shortcuts   = nullptr; // 0010
+NimBLECharacteristic* c_clock_face  = nullptr; // 0011
 
 // Meeting list is RAM-only (not persisted to NVS — see state_machine). Its
 // delta-sync hash therefore also lives in RAM only: a power cycle drops the
@@ -429,6 +432,8 @@ public:
             handle_presence(data, len, info);
         } else if (c == c_shortcuts) {
             handle_shortcut_config(data, len, info);
+        } else if (c == c_clock_face) {
+            handle_clock_face(data, len, info);
         }
     }
 
@@ -950,6 +955,31 @@ private:
         // update runs safely on the LVGL task.
         ble_post_presence_event(p);
     }
+
+    // ── Clock Face (char 0011) — single byte ────────────────────────────────
+    // Unlike Presence Status this IS persisted to NVS, applied immediately
+    // outside the BEGIN/END staging pipeline (ble-protocol.md §3 Clock Face
+    // payload note) — same immediate-side-effect treatment as Factory Reset
+    // Command. state_machine::set_clock_face() does the NVS write, so it must
+    // run on the main task, not this NimBLE callback — deferred via the event
+    // queue like PresenceUpdate.
+    void handle_clock_face(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
+        if (!check_write_allowed(info, "ClockFace")) return;
+        if (len < 1) return;
+
+        uint8_t face = data[0];
+        if (face > 0x01) {
+            LOG("[gatt] ClockFace: invalid value 0x%02X\n", (unsigned)face);
+            uint8_t buf[64];
+            size_t  n = cbor_encode_sync_ctrl(buf, sizeof(buf),
+                                               "NACK", 0, "NACK_CBOR_DECODE");
+            if (c_sync_ctrl) c_sync_ctrl->notify(buf, n);
+            return;
+        }
+
+        LOG("[gatt] ClockFace: 0x%02X\n", (unsigned)face);
+        ble_post_clock_face_event(face);
+    }
 };
 
 static OriCharacteristicCallbacks s_char_cb;
@@ -1320,10 +1350,17 @@ void init() {
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
     c_shortcuts->setCallbacks(&s_char_cb);
 
+    // 0011 Clock Face — Write with response, encrypted. Applied + persisted
+    // immediately (not staged) — see the Clock Face payload note in §4.
+    c_clock_face = svc->createCharacteristic(
+        "6F726900-0011-4F72-9F00-000000000000",
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
+    c_clock_face->setCallbacks(&s_char_cb);
+
     // In NimBLE 2.5, services are started when NimBLEServer::start() is called.
     // svc->start() is deprecated and a no-op; omit it.
     // The server is started in ble_manager::init() after all characteristics are set up.
-    LOG("[gatt] Service registered: 15 characteristics\n");
+    LOG("[gatt] Service registered: 17 characteristics\n");
 }
 
 bool is_ota_active() { return g_ota_active; }

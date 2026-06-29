@@ -14,8 +14,6 @@
 // time. Status bar is present but its date/time is hidden because the clock
 // face IS the time. Mode-toggle acts as a return button (calendar glyph).
 //
-// TODO(M8): large-digit clock font — see CLAUDE.md M8 milestone for details.
-//
 // The colon blinks at the prototype's 1.5 s cadence via a simple LVGL
 // animation that toggles between full and 25% opacity.
 
@@ -111,22 +109,24 @@ lv_obj_t* create() {
 
     lv_obj_t* hour = lv_label_create(time_row);
     lv_obj_set_style_text_color(hour, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(hour, theme::font_large(), 0);
+    lv_obj_set_style_text_font(hour, theme::font_clock_xl(), 0);
+    lv_obj_set_style_text_letter_space(hour, -3, 0);
 
     lv_obj_t* colon = lv_label_create(time_row);
     lv_label_set_text(colon, ":");
     lv_obj_set_style_text_color(colon, theme::color(theme::COLOR_ACCENT), 0);
-    lv_obj_set_style_text_font(colon, theme::font_large(), 0);
+    lv_obj_set_style_text_font(colon, theme::font_clock_xl(), 0);
 
     lv_obj_t* minute = lv_label_create(time_row);
     lv_obj_set_style_text_color(minute, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
-    lv_obj_set_style_text_font(minute, theme::font_large(), 0);
+    lv_obj_set_style_text_font(minute, theme::font_clock_xl(), 0);
+    lv_obj_set_style_text_letter_space(minute, -3, 0);
 
     // Date strip below — "WEDNESDAY, MAY 14"
     lv_obj_t* date = lv_label_create(left);
     lv_obj_set_style_text_color(date, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
     lv_obj_set_style_text_font(date, theme::font_time(), 0);
-    lv_obj_set_style_pad_top(date, 18, 0);
+    lv_obj_set_style_pad_top(date, 22, 0);
 
     // Populate labels immediately with real time, then keep them live via a
     // 1-second timer. The colon blink runs independently at 42 ms cadence.
