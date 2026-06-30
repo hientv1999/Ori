@@ -7,6 +7,86 @@
 #include "ui_helpers.h"
 #include "widgets/widget_profile_card.h"
 
+// ── Hand-drawn detail icons ──────────────────────────────────────────────────
+// The UI fonts (Hanken Grotesk) carry no symbol glyphs and every Montserrat /
+// FontAwesome built-in is disabled (lv_conf.h), so icons are composed from
+// LVGL primitives — the same approach as make_cal_glyph()/add_close_x(). Each
+// glyph is centred inside a 44 px rounded "tile".
+namespace {
+
+constexpr lv_coord_t TILE_SZ = 44;
+
+// Filled decorative shape (non-interactive).
+lv_obj_t* shape(lv_obj_t* parent, lv_coord_t w, lv_coord_t h,
+                uint32_t col, lv_coord_t radius) {
+    lv_obj_t* o = lv_obj_create(parent);
+    lv_obj_set_size(o, w, h);
+    lv_obj_set_style_bg_color(o, theme::color(col), 0);
+    lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(o, 0, 0);
+    lv_obj_set_style_radius(o, radius, 0);
+    lv_obj_set_style_pad_all(o, 0, 0);
+    lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(o, LV_OBJ_FLAG_CLICKABLE);
+    return o;
+}
+
+// Hollow (outlined) rounded rect (non-interactive).
+lv_obj_t* outline(lv_obj_t* parent, lv_coord_t w, lv_coord_t h,
+                  uint32_t col, lv_coord_t bw, lv_coord_t radius) {
+    lv_obj_t* o = lv_obj_create(parent);
+    lv_obj_set_size(o, w, h);
+    lv_obj_set_style_bg_opa(o, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_color(o, theme::color(col), 0);
+    lv_obj_set_style_border_width(o, bw, 0);
+    lv_obj_set_style_radius(o, radius, 0);
+    lv_obj_set_style_pad_all(o, 0, 0);
+    lv_obj_clear_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(o, LV_OBJ_FLAG_CLICKABLE);
+    return o;
+}
+
+lv_obj_t* make_icon_tile(lv_obj_t* parent) {
+    lv_obj_t* tile = lv_obj_create(parent);
+    lv_obj_set_size(tile, TILE_SZ, TILE_SZ);
+    lv_obj_set_style_radius(tile, 12, 0);
+    lv_obj_set_style_bg_color(tile, theme::color(theme::COLOR_ELEV), 0);
+    lv_obj_set_style_bg_opa(tile, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(tile, 0, 0);
+    lv_obj_set_style_pad_all(tile, 0, 0);
+    lv_obj_clear_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(tile, LV_OBJ_FLAG_CLICKABLE);
+    return tile;
+}
+
+// Person/avatar: head circle over a rounded "shoulders" bar.
+void draw_person(lv_obj_t* tile, uint32_t col) {
+    lv_obj_align(shape(tile, 13, 13, col, LV_RADIUS_CIRCLE), LV_ALIGN_CENTER, 0, -7);
+    lv_obj_align(shape(tile, 24, 14, col, 7),                LV_ALIGN_CENTER, 0, 9);
+}
+
+// Envelope: outlined body + a "V" flap line.
+void draw_envelope(lv_obj_t* tile, uint32_t col) {
+    lv_obj_center(outline(tile, 28, 19, col, 2, 4));
+    static const lv_point_precise_t flap[] = {{0, 0}, {12, 8}, {24, 0}};
+    lv_obj_t* ln = lv_line_create(tile);
+    lv_line_set_points(ln, flap, 3);
+    lv_obj_set_style_line_width(ln, 2, 0);
+    lv_obj_set_style_line_color(ln, theme::color(col), 0);
+    lv_obj_set_style_line_rounded(ln, true, 0);
+    lv_obj_clear_flag(ln, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_align(ln, LV_ALIGN_CENTER, 0, -3);
+}
+
+// Smartphone: outlined body + speaker slit + home dot.
+void draw_phone(lv_obj_t* tile, uint32_t col) {
+    lv_obj_center(outline(tile, 18, 28, col, 2, 5));
+    lv_obj_align(shape(tile, 6, 2, col, 1),                LV_ALIGN_CENTER, 0, -9);
+    lv_obj_align(shape(tile, 3, 3, col, LV_RADIUS_CIRCLE), LV_ALIGN_CENTER, 0, 9);
+}
+
+} // namespace
+
 namespace modal_profile {
 
 lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
@@ -87,56 +167,93 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
     lv_obj_set_flex_align(left_col, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
+    // ── Name — the headline ───────────────────────────────────────────────────
     lv_obj_t* name_lbl = lv_label_create(left_col);
     lv_label_set_long_mode(name_lbl, LV_LABEL_LONG_WRAP);
     lv_label_set_text(name_lbl, p_name);
     lv_obj_set_width(name_lbl, lv_pct(100));
-    lv_obj_set_style_text_font(name_lbl, theme::font_h2(), 0);
+    lv_obj_set_style_text_font(name_lbl, theme::font_time(), 0);  // 30px (font_h2 28 + 2)
     lv_obj_set_style_text_color(name_lbl, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_align(name_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_pad_bottom(name_lbl, 16, 0);
 
-    lv_obj_t* title_lbl = lv_label_create(left_col);
-    lv_label_set_long_mode(title_lbl, LV_LABEL_LONG_WRAP);
+    // Short accent divider under the name.
+    shape(left_col, 132, 2, theme::COLOR_ACCENT_LINE, 1);
+
+    // ── Detail rows — icon tile + label ───────────────────────────────────────
+    lv_obj_t* info = lv_obj_create(left_col);
+    lv_obj_set_width(info, 360);
+    lv_obj_set_height(info, LV_SIZE_CONTENT);
+    ui::clear_container(info);
+    lv_obj_set_flex_flow(info, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(info, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_row(info, 14, 0);
+    lv_obj_set_style_pad_top(info, 22, 0);
+
+    // Build a row "[icon tile] [label]" and return the (empty, styled) label.
+    // `draw` paints the icon into the tile; pass nullptr to leave it for the
+    // caller (the status row paints a presence dot itself). `out_tile` returns
+    // the tile when the caller needs it.
+    auto add_row = [&](void (*draw)(lv_obj_t*, uint32_t), uint32_t icon_col,
+                       uint32_t text_col, lv_obj_t** out_tile) -> lv_obj_t* {
+        lv_obj_t* row = lv_obj_create(info);
+        lv_obj_set_width(row, lv_pct(100));
+        lv_obj_set_height(row, LV_SIZE_CONTENT);
+        ui::clear_container(row);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(row, 16, 0);
+
+        lv_obj_t* tile = make_icon_tile(row);
+        if (draw) draw(tile, icon_col);
+        if (out_tile) *out_tile = tile;
+
+        lv_obj_t* lbl = lv_label_create(row);
+        lv_obj_set_flex_grow(lbl, 1);
+        lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
+        lv_obj_set_style_text_font(lbl, theme::font_title(), 0);  // 26px (font_meta 24 + 2)
+        lv_obj_set_style_text_color(lbl, theme::color(text_col), 0);
+        lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_LEFT, 0);
+        return lbl;
+    };
+
+    // Job title — person icon.
+    lv_obj_t* title_lbl = add_row(draw_person, theme::COLOR_ACCENT,
+                                  theme::COLOR_TEXT_SECONDARY, nullptr);
     lv_label_set_text(title_lbl, p_title);
-    lv_obj_set_width(title_lbl, lv_pct(100));
-    lv_obj_set_style_text_font(title_lbl, theme::font_meta(), 0);
-    lv_obj_set_style_text_color(title_lbl, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
-    lv_obj_set_style_text_align(title_lbl, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_pad_top(title_lbl, 6, 0);
 
-    lv_obj_t* status_lbl = nullptr;
-
-    lv_obj_t* email_lbl = lv_label_create(left_col);
-    lv_label_set_long_mode(email_lbl, LV_LABEL_LONG_WRAP);
-    lv_label_set_text(email_lbl, (p_email && p_email[0]) ? p_email : "No email");
-    lv_obj_set_width(email_lbl, lv_pct(100));
-    lv_obj_set_style_text_font(email_lbl, theme::font_meta(), 0);
-    lv_obj_set_style_text_color(email_lbl, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
-    lv_obj_set_style_text_align(email_lbl, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_pad_top(email_lbl, 20, 0);
-
-    lv_obj_t* phone_lbl = lv_label_create(left_col);
-    lv_label_set_text(phone_lbl, (p_phone && p_phone[0]) ? p_phone : "No phone number");
-    lv_obj_set_style_text_font(phone_lbl, theme::font_meta(), 0);
-    lv_obj_set_style_text_color(phone_lbl, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
-    lv_obj_set_style_text_align(phone_lbl, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_pad_top(phone_lbl, 8, 0);
-
+    // Status — presence dot (colour + glow track presence; registered for live
+    // updates so a Presence Status write recolours it while the modal is open).
+    lv_obj_t* status_tile = nullptr;
+    lv_obj_t* status_lbl  = add_row(nullptr, 0, pres_color, &status_tile);
+    lv_obj_t* status_dot  = shape(status_tile, 18, 18, pres_color, LV_RADIUS_CIRCLE);
+    lv_obj_center(status_dot);
+    lv_obj_set_style_shadow_width(status_dot, 14, 0);
+    lv_obj_set_style_shadow_spread(status_dot, 2, 0);
+    lv_obj_set_style_shadow_color(status_dot, theme::color(pres_color), 0);
+    // Offline gets no glow — matches the photo ring's offline treatment.
+    lv_obj_set_style_shadow_opa(status_dot,
+        pres == widget_profile_card::Presence::Offline ? LV_OPA_TRANSP : LV_OPA_50, 0);
     {
         const char* status_str;
         switch (pres) {
-            case widget_profile_card::Presence::Available: status_str = "Status: Available"; break;
-            case widget_profile_card::Presence::Busy:      status_str = "Status: Busy";      break;
-            case widget_profile_card::Presence::Away:      status_str = "Status: Away";       break;
-            default:                                       status_str = "Status: Offline";    break;
+            case widget_profile_card::Presence::Available: status_str = "Available"; break;
+            case widget_profile_card::Presence::Busy:      status_str = "Busy";      break;
+            case widget_profile_card::Presence::Away:      status_str = "Away";       break;
+            default:                                       status_str = "Offline";    break;
         }
-        status_lbl = lv_label_create(left_col);
         lv_label_set_text(status_lbl, status_str);
-        lv_obj_set_style_text_font(status_lbl, theme::font_meta(), 0);
-        lv_obj_set_style_text_color(status_lbl, theme::color(pres_color), 0);
-        lv_obj_set_style_text_align(status_lbl, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_pad_top(status_lbl, 24, 0);
     }
+
+    // Email — envelope icon.
+    lv_obj_t* email_lbl = add_row(draw_envelope, theme::COLOR_ACCENT,
+                                  theme::COLOR_TEXT_SECONDARY, nullptr);
+    lv_label_set_text(email_lbl, (p_email && p_email[0]) ? p_email : "No email");
+
+    // Phone — smartphone icon.
+    lv_obj_t* phone_lbl = add_row(draw_phone, theme::COLOR_ACCENT,
+                                  theme::COLOR_TEXT_SECONDARY, nullptr);
+    lv_label_set_text(phone_lbl, (p_phone && p_phone[0]) ? p_phone : "No phone number");
 
     // ── Right column — photo pinned to the same absolute Y as in calendar mode ─
     // body_row now starts at y=0 (box has no pad_top), so photo_pad_top = coords.y1
@@ -211,6 +328,7 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
     modal_labels.title_lbl  = title_lbl;
     modal_labels.email_lbl  = email_lbl;
     modal_labels.phone_lbl  = phone_lbl;
+    modal_labels.status_dot = status_dot;
     widget_profile_card::register_modal_labels(modal_labels);
 
     // Always create the image (even with no photo yet) and register it so

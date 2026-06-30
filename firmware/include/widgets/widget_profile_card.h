@@ -65,11 +65,12 @@ void unregister_modal_photo_img();
 // set_default_presence() and set_profile() can push updates to the overlay
 // without it being closed and re-opened. Unregister on scrim LV_EVENT_DELETE.
 struct ModalLabels {
-    lv_obj_t* status_lbl;  // "Status: Available" — updated by set_default_presence()
+    lv_obj_t* status_lbl;  // presence word ("Available"…) — updated by set_default_presence()
     lv_obj_t* name_lbl;
     lv_obj_t* title_lbl;
     lv_obj_t* email_lbl;   // nullptr when email was empty at open time
     lv_obj_t* phone_lbl;   // nullptr when phone was empty at open time
+    lv_obj_t* status_dot;  // presence-coloured dot beside status_lbl; nullptr if absent
 };
 void register_modal_labels(const ModalLabels& labels);
 void unregister_modal_labels();

@@ -7,6 +7,7 @@
 #include "assets/shortcut_icons.h"
 #include "ble/gatt_server.h"
 #include "app_state.h"
+#include "lvgl_input.h"
 #include "ori_log.h"
 #include "photo_cache.h"
 #include "theme.h"
@@ -256,6 +257,9 @@ void on_art_gesture(lv_event_t* e) {
         s->start_volume = app_state::media().volume;
         s->tracking = true;
         s->vertical_engaged = false;
+        // This surface owns its drag distance (prev/next/volume), so exempt it
+        // from the global tap-slop guard that would otherwise cancel the gesture.
+        lvgl_input::suspend_tap_slop(true);
     } else if (code == LV_EVENT_PRESSING) {
         if (!s->tracking) return;
         int dx = p.x - s->start_x;
@@ -272,6 +276,7 @@ void on_art_gesture(lv_event_t* e) {
             set_volume_visual(s, new_vol);
         }
     } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        lvgl_input::suspend_tap_slop(false);  // restore the guard for other widgets
         if (!s->tracking) return;
         s->tracking = false;
         int dx = p.x - s->start_x;

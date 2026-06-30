@@ -21,4 +21,10 @@ void init();                                    // registers LVGL input device
 lv_indev_t* get();                              // returns the registered indev handle
 void feed(const TouchPoint* points, uint8_t n); // called once per loop tick
 
+// Temporarily suspend the tap-slop guard (read_cb cancels a tap when the finger
+// drifts > TAP_SLOP_PX from its touch-down point). Swipe surfaces — the media
+// album art — call this with `true` on PRESS and `false` on RELEASE/PRESS_LOST
+// so their intentional drags (prev/next/volume) are never cancelled.
+void suspend_tap_slop(bool suspend);
+
 } // namespace lvgl_input

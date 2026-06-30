@@ -31,7 +31,7 @@ int g_view_month = -1; // 0-based (0 = January)
 // Nav button callbacks rebuild into this; cleared on screen delete.
 lv_obj_t* g_left_panel = nullptr;
 
-constexpr int16_t BADGE_SIZE = 48; // 38 + 25%
+constexpr int16_t BADGE_SIZE = 44; // sized so a 6-week month's rows stay >= the badge (no clipping)
 constexpr int16_t NAV_BTN_SIZE = 36;
 
 void render_into(lv_obj_t* left);
@@ -174,7 +174,7 @@ void render_into(lv_obj_t* left) {
     ui::clear_container(header);
     lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(header, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_bottom(header, 18, 0);
+    lv_obj_set_style_pad_bottom(header, 12, 0);
 
     lv_obj_t* month_lbl = lv_label_create(header);
     lv_label_set_text(month_lbl, header_buf);
@@ -209,9 +209,7 @@ void render_into(lv_obj_t* left) {
     lv_obj_set_style_margin_right(btn_next_month, YEAR_GAP, 0);
 
     // ===== Weekday label row — its own grid, separate from the day grid
-    // below, so the upward shift applied to "the rows of days" only moves
-    // the date numbers closer to these labels rather than moving everything
-    // (including these labels) together. =====
+    // below, with a small pad_bottom for the gap down to the date numbers. =====
     static lv_coord_t col_dsc[8] = {
         LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1),
         LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST
@@ -221,7 +219,7 @@ void render_into(lv_obj_t* left) {
     lv_obj_t* weekday_row = lv_obj_create(left);
     ui::clear_container(weekday_row);
     lv_obj_set_size(weekday_row, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_translate_y(weekday_row, -8, 0);
+    lv_obj_set_style_pad_bottom(weekday_row, 4, 0);
     lv_obj_set_layout(weekday_row, LV_LAYOUT_GRID);
     lv_obj_set_grid_dsc_array(weekday_row, col_dsc, weekday_row_dsc);
 
@@ -235,8 +233,9 @@ void render_into(lv_obj_t* left) {
         lv_obj_set_grid_cell(wd, LV_GRID_ALIGN_CENTER, c, 1, LV_GRID_ALIGN_CENTER, 0, 1);
     }
 
-    // ===== Day grid: N rows, 7 columns — shifted up so the date numbers
-    // tuck in closer to the weekday row above. =====
+    // ===== Day grid: N rows, 7 columns. Rows are FR(1) so they divide the
+    // grid's height evenly; BADGE_SIZE is chosen so even a 6-week month keeps
+    // each row >= the badge, otherwise the grid would clip the top/bottom rows. =====
     int total_cells = first_dow + days_in_month;
     int day_rows = (total_cells + 6) / 7; // round up to a full week
 
@@ -249,11 +248,48 @@ void render_into(lv_obj_t* left) {
     ui::clear_container(grid);
     lv_obj_set_size(grid, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_grow(grid, 1);
-    lv_obj_set_style_translate_y(grid, -8, 0);
     lv_obj_set_layout(grid, LV_LAYOUT_GRID);
     lv_obj_set_grid_dsc_array(grid, col_dsc, row_dsc);
 
     int total_day_cells = day_rows * 7;
+
+    // Locate today within the grid. Today shows not only when its own month is
+    // viewed but also as a spillover (outside-month) day when paging one month
+    // either side — e.g. June 30 appears in July's leading week. Compare by real
+    // date so the year/month rollover of spillover days is handled correctly.
+    struct tm cell0_tm = view;          // view = day 1 of the viewed month @ noon
+    cell0_tm.tm_mday -= first_dow;      // back up to the grid's first (Monday) cell
+    cell0_tm.tm_hour = 12;
+    time_t cell0_tt = mktime(&cell0_tm);
+    struct tm today_noon = {};
+    today_noon.tm_year = today_year - 1900;
+    today_noon.tm_mon  = today_month;
+    today_noon.tm_mday = today_day;
+    today_noon.tm_hour = 12;
+    time_t today_tt = mktime(&today_noon);
+    long day_index = (long)((today_tt - cell0_tt + 43200) / 86400);  // +half day → nearest
+    int  today_cell = (day_index >= 0 && day_index < total_day_cells) ? (int)day_index : -1;
+    int  today_row  = (today_cell >= 0) ? today_cell / 7 : -1;
+    // Bright tier when today's own month is on screen; fainter when today is
+    // only a spillover day from the adjacent month being paged through.
+    bool today_in_month = (g_view_year == today_year && g_view_month == today_month);
+
+    // Faint-yellow band behind today's week. Added before the day badges so it
+    // sits behind them; today's circle reads as the brighter marker on top.
+    if (today_cell >= 0) {
+        lv_obj_t* week_bg = lv_obj_create(grid);
+        lv_obj_set_height(week_bg, BADGE_SIZE);
+        lv_obj_set_style_radius(week_bg, BADGE_SIZE / 2, 0);
+        lv_obj_set_style_bg_color(week_bg, theme::color(
+            today_in_month ? theme::COLOR_ACCENT_FAINT : theme::COLOR_ACCENT_SOFT), 0);
+        lv_obj_set_style_bg_opa(week_bg, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(week_bg, 0, 0);
+        lv_obj_set_style_pad_all(week_bg, 0, 0);
+        lv_obj_clear_flag(week_bg, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(week_bg, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_grid_cell(week_bg, LV_GRID_ALIGN_STRETCH, 0, 7,
+                                      LV_GRID_ALIGN_CENTER, today_row, 1);
+    }
     for (int i = 0; i < total_day_cells; ++i) {
         int row = i / 7;
         int col = i % 7;
@@ -261,7 +297,6 @@ void render_into(lv_obj_t* left) {
 
         int day_num;
         bool outside;
-        bool today = false;
         if (day_offset < 0) {
             day_num = days_in_prev_month + day_offset + 1;
             outside = true;
@@ -271,8 +306,8 @@ void render_into(lv_obj_t* left) {
         } else {
             day_num = day_offset + 1;
             outside = false;
-            today = (g_view_year == today_year && g_view_month == today_month && day_num == today_day);
         }
+        bool today = (i == today_cell);  // matches spillover days too (see today_cell)
 
         lv_obj_t* badge = lv_obj_create(grid);
         lv_obj_set_size(badge, BADGE_SIZE, BADGE_SIZE);
@@ -283,9 +318,10 @@ void render_into(lv_obj_t* left) {
         lv_obj_clear_flag(badge, LV_OBJ_FLAG_CLICKABLE);
         if (today) {
             lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
-            // Darker than the base accent gold — full-brightness COLOR_ACCENT
-            // behind the white day number reads too bright/low-contrast.
-            lv_obj_set_style_bg_color(badge, theme::color(theme::COLOR_ACCENT_LINE), 0);
+            // In-month today: darker-than-base accent gold behind a white number.
+            // Spillover today (paged to an adjacent month): one tier fainter.
+            lv_obj_set_style_bg_color(badge, theme::color(
+                today_in_month ? theme::COLOR_ACCENT_LINE : theme::COLOR_ACCENT_FAINT), 0);
         } else {
             lv_obj_set_style_bg_opa(badge, LV_OPA_TRANSP, 0);
         }
@@ -298,7 +334,10 @@ void render_into(lv_obj_t* left) {
         lv_obj_set_style_text_font(lbl, theme::font_title(), 0);
         lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
         if (today) {
-            lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
+            // Full-opacity number on the highlight (white in-month, near-white
+            // when faint) — kept readable even though spillover days are dimmed.
+            lv_obj_set_style_text_color(lbl,
+                today_in_month ? lv_color_white() : theme::color(theme::COLOR_TEXT_PRIMARY), 0);
         } else if (outside) {
             lv_obj_set_style_text_color(lbl, theme::color(theme::COLOR_TEXT_TERTIARY), 0);
             lv_obj_set_style_opa(lbl, LV_OPA_50, 0);
@@ -335,7 +374,8 @@ lv_obj_t* create() {
     lv_obj_t* left = lv_obj_create(body);
     lv_obj_set_size(left, 528, lv_pct(100));
     ui::clear_container(left);
-    lv_obj_set_style_pad_all(left, 24, 0);
+    lv_obj_set_style_pad_all(left, 16, 0);
+    lv_obj_set_style_pad_row(left, 0, 0);  // no default inter-row gap; spacing is explicit below
     lv_obj_set_flex_flow(left, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(left, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
 

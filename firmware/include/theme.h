@@ -36,6 +36,7 @@ constexpr uint32_t COLOR_TEXT_SECONDARY   = 0x9097A1;
 constexpr uint32_t COLOR_TEXT_TERTIARY    = 0x565B65;
 constexpr uint32_t COLOR_ACCENT           = 0xE0B86A;
 constexpr uint32_t COLOR_ACCENT_SOFT      = 0x1F1A0F;   // accent at 14% over black
+constexpr uint32_t COLOR_ACCENT_FAINT     = 0x3E331D;   // accent at ~28% over black — current-week highlight
 constexpr uint32_t COLOR_ACCENT_LINE      = 0x7B653A;   // accent at 55% over black
 constexpr uint32_t COLOR_DANGER           = 0xD86A6A;
 constexpr uint32_t COLOR_DANGER_SOFT      = 0x1E0F0F;   // danger at 14% over black

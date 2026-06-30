@@ -304,14 +304,23 @@ void set_default_presence(Presence p) {
     if (g_modal_labels.status_lbl) {
         const char* status_str;
         switch (p) {
-            case Presence::Available: status_str = "Status: Available"; break;
-            case Presence::Busy:      status_str = "Status: Busy";      break;
-            case Presence::Away:      status_str = "Status: Away";      break;
-            default:                  status_str = "Status: Offline";   break;
+            case Presence::Available: status_str = "Available"; break;
+            case Presence::Busy:      status_str = "Busy";      break;
+            case Presence::Away:      status_str = "Away";      break;
+            default:                  status_str = "Offline";   break;
         }
         lv_label_set_text(g_modal_labels.status_lbl, status_str);
         lv_obj_set_style_text_color(g_modal_labels.status_lbl,
             theme::color(color_for_presence(p)), LV_PART_MAIN);
+    }
+    // Presence dot beside the status word — track colour + glow with presence.
+    if (g_modal_labels.status_dot) {
+        lv_obj_set_style_bg_color(g_modal_labels.status_dot,
+            theme::color(color_for_presence(p)), LV_PART_MAIN);
+        lv_obj_set_style_shadow_color(g_modal_labels.status_dot,
+            theme::color(color_for_presence(p)), LV_PART_MAIN);
+        lv_obj_set_style_shadow_opa(g_modal_labels.status_dot,
+            shadow_opa_for_presence(p), LV_PART_MAIN);
     }
 }
 
