@@ -304,13 +304,20 @@ lv_obj_t* create(lv_obj_t* base_screen, uint32_t uid) {
         }
 
         int16_t body_pad = has_sub ? 4 : (pos > 0 ? 0 : (stacked ? 6 : 16));
-        add_text(scroll_area, nv.body, theme::font_meta(),
-                 theme::COLOR_TEXT_SECONDARY, body_pad, /*wrap=*/true);
+        lv_obj_t* body_lbl = add_text(scroll_area, nv.body, theme::font_meta(),
+                 theme::COLOR_TEXT_SECONDARY, body_pad, /*wrap=*/true,
+                 LV_TEXT_ALIGN_LEFT);
+        // Extra inset from the card's left edge, beyond whatever scroll_area
+        // already provides — keeps left-aligned body text from sitting flush
+        // against the side.
+        lv_obj_set_style_pad_left(body_lbl, 16, 0);
 
         if (nv.time_ago && nv.time_ago[0]) {
             ctx->time_labels[i] = add_text(scroll_area, nv.time_ago, theme::font_meta(),
                                             theme::COLOR_TEXT_TERTIARY, 4, /*wrap=*/false,
                                             LV_TEXT_ALIGN_RIGHT);
+            // Mirrors body_lbl's left inset above, on the right side.
+            lv_obj_set_style_pad_right(ctx->time_labels[i], 16, 0);
         }
     }
 

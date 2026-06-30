@@ -46,6 +46,11 @@ inline void clear_container(lv_obj_t* obj) {
 
 lv_obj_t* make_screen_body(lv_obj_t* screen);
 lv_obj_t* make_panel_divider(lv_obj_t* parent);
+
+// Ori wordmark — flanking gradient lines + "ori" label (lowercase, "r" in
+// accent gold, theme::font_time()). Used on every setup-flow screen and the
+// boot splash; mirrors brandMarkHTML() in the UI prototype.
+lv_obj_t* make_brand_mark(lv_obj_t* parent);
 ModalLayout make_modal_layout(lv_obj_t* base_screen,
                               lv_coord_t card_w = 520,
                               lv_coord_t card_h = 400);

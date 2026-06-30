@@ -177,40 +177,82 @@ uint8_t  g_ds_buf[1024];
 size_t   g_ds_len = 0;
 uint32_t g_pending_uid = 0;
 
-// ── NS/DS deferral queue (host task → main task) ──────────────────────────
+// ── NS/DS deferral queues (host task → main task) ──────────────────────────
 //
 // NimBLE invokes the NS/DS notify callbacks on the HOST task. Processing them
 // there is unsafe: on_notification_source() does a blocking CP write-with-
 // response (request_attributes) — which deadlocks, since the host task that
 // must process the write response is the one stuck in the callback — and the
 // queue_add/remove path calls into LVGL (refresh_active), which must only run
-// on the main task. So the callbacks just copy the raw bytes into this single-
-// producer/single-consumer ring; ancs_client::poll() drains it on the main
-// task, where blocking GATT ops and LVGL are both safe.
-struct AncsRaw {
-    uint8_t  kind;      // 0 = Notification Source, 1 = Data Source
+// on the main task. So the callbacks just copy the raw bytes into these
+// single-producer/single-consumer rings; ancs_client::poll() drains them on
+// the main task, where blocking GATT ops and LVGL are both safe.
+//
+// NS (tiny, fixed 8-byte events) and DS (larger, multi-fragment attribute
+// responses) get SEPARATE rings sized for their own traffic pattern, so a
+// burst of one kind can't starve out drops of the other — e.g. a string of
+// long-bodied DS responses filling every slot would otherwise crowd out a
+// concurrent NS "Added" event, permanently losing that notification (nothing
+// ever re-sends a dropped NS event). A shared monotonic sequence number lets
+// poll() merge-drain both rings back into true arrival order, matching what
+// the single combined ring used to guarantee.
+//
+// Backlog replay on reconnect can burst far more than a handful of frames
+// (10+ notifications × 1 NS event + 2-5 DS fragments each), so both rings are
+// sized well above steady-state single-notification traffic.
+struct NsRaw {
+    uint16_t len;
+    uint8_t  buf[8];    // NS event is always exactly 8 bytes (ANCS spec)
+    uint32_t seq;
+};
+struct DsRaw {
     uint16_t len;
     uint8_t  buf[256];  // ≥ one ATT_MTU (247) fragment
+    uint32_t seq;
 };
-constexpr uint8_t ANCS_Q_SIZE = 8;
-AncsRaw          g_aq[ANCS_Q_SIZE];
-volatile uint8_t g_aq_head = 0;   // consumer (main task)
-volatile uint8_t g_aq_tail = 0;   // producer (host task)
+constexpr uint8_t NS_Q_SIZE = 48;
+constexpr uint8_t DS_Q_SIZE = 64;
+NsRaw            g_nsq[NS_Q_SIZE];
+volatile uint8_t g_nsq_head = 0;   // consumer (main task)
+volatile uint8_t g_nsq_tail = 0;   // producer (host task)
+DsRaw            g_dsq[DS_Q_SIZE];
+volatile uint8_t g_dsq_head = 0;   // consumer (main task)
+volatile uint8_t g_dsq_tail = 0;   // producer (host task)
+uint32_t         g_aq_seq = 0;     // shared arrival counter — NS/DS callbacks
+                                    // both run on the host task, so this stays
+                                    // single-producer even though it's shared
 
-void aq_push(uint8_t kind, const uint8_t* data, size_t len) {
-    uint8_t next = (uint8_t)((g_aq_tail + 1) % ANCS_Q_SIZE);
-    if (next == g_aq_head) return;  // full → drop (next NS event re-adds it)
-    AncsRaw& e = g_aq[g_aq_tail];
-    e.kind = kind;
-    e.len  = (len > sizeof(e.buf)) ? (uint16_t)sizeof(e.buf) : (uint16_t)len;
+void ns_push(const uint8_t* data, size_t len) {
+    uint8_t next = (uint8_t)((g_nsq_tail + 1) % NS_Q_SIZE);
+    if (next == g_nsq_head) return;  // full → drop
+    NsRaw& e = g_nsq[g_nsq_tail];
+    e.len = (len > sizeof(e.buf)) ? (uint16_t)sizeof(e.buf) : (uint16_t)len;
     memcpy(e.buf, data, e.len);
-    g_aq_tail = next;               // publish only after the slot is filled
+    e.seq = g_aq_seq++;
+    g_nsq_tail = next;               // publish only after the slot is filled
 }
 
-bool aq_pop(AncsRaw& out) {
-    if (g_aq_head == g_aq_tail) return false;
-    out = g_aq[g_aq_head];
-    g_aq_head = (uint8_t)((g_aq_head + 1) % ANCS_Q_SIZE);
+bool ns_pop(NsRaw& out) {
+    if (g_nsq_head == g_nsq_tail) return false;
+    out = g_nsq[g_nsq_head];
+    g_nsq_head = (uint8_t)((g_nsq_head + 1) % NS_Q_SIZE);
+    return true;
+}
+
+void ds_push(const uint8_t* data, size_t len) {
+    uint8_t next = (uint8_t)((g_dsq_tail + 1) % DS_Q_SIZE);
+    if (next == g_dsq_head) return;  // full → drop
+    DsRaw& e = g_dsq[g_dsq_tail];
+    e.len = (len > sizeof(e.buf)) ? (uint16_t)sizeof(e.buf) : (uint16_t)len;
+    memcpy(e.buf, data, e.len);
+    e.seq = g_aq_seq++;
+    g_dsq_tail = next;               // publish only after the slot is filled
+}
+
+bool ds_pop(DsRaw& out) {
+    if (g_dsq_head == g_dsq_tail) return false;
+    out = g_dsq[g_dsq_head];
+    g_dsq_head = (uint8_t)((g_dsq_head + 1) % DS_Q_SIZE);
     return true;
 }
 
@@ -314,8 +356,18 @@ namespace EvtFlag {
 // ── Pending NS-event metadata ──────────────────────────────────────────────
 // EventFlags + CategoryID live in the NS event but aren't repeated in the DS
 // attribute response, so stash them by UID until the DS response arrives.
+// Sized to MAX_ANCS_NOTIFICATIONS: on a backlog-replay reconnect, every NS
+// "Added" event for the whole backlog is processed (and calls pmeta_put) before
+// any DS response is parsed (DS take only happens once GetNotificationAttributes
+// actually answers, which lags the burst of CP requests) — so the number of
+// simultaneously in-flight entries can reach the full backlog size, not just a
+// handful. Used to be 8, which silently clobbered slot 0 on the 9th+ pending
+// notification, corrupting that (and the previous occupant's) flags/category
+// to defaults — symptom: a notification's real ANCS negative action silently
+// turns into a generic "Close" button because PerformNotificationAction's
+// NEGATIVE_ACTION flag got reset to 0 along with everything else.
 struct PendingMeta { uint32_t uid; uint8_t flags; uint8_t cat; bool used; };
-static PendingMeta g_pmeta[8];
+static PendingMeta g_pmeta[app_state::MAX_ANCS_NOTIFICATIONS];
 
 static void pmeta_put(uint32_t uid, uint8_t flags, uint8_t cat) {
     PendingMeta* slot = nullptr;
@@ -559,11 +611,20 @@ void poll(bool orion_connected) {
 
     // Drain NS/DS notifications captured by the host-task callbacks. Runs on the
     // main loop task, so on_notification_source()'s blocking CP write and the
-    // queue_add/remove LVGL refresh are both safe here.
-    AncsRaw e;
-    while (aq_pop(e)) {
-        if (e.kind == 0) on_notification_source(e.buf, e.len);
-        else             on_data_source(e.buf, e.len);
+    // queue_add/remove LVGL refresh are both safe here. Merge-drain the two
+    // rings by sequence number so events are processed in true arrival order
+    // even though NS and DS now queue separately (see struct comment above).
+    NsRaw ns; bool have_ns = ns_pop(ns);
+    DsRaw ds; bool have_ds = ds_pop(ds);
+    while (have_ns || have_ds) {
+        bool take_ns = have_ns && (!have_ds || ns.seq < ds.seq);
+        if (take_ns) {
+            on_notification_source(ns.buf, ns.len);
+            have_ns = ns_pop(ns);
+        } else {
+            on_data_source(ds.buf, ds.len);
+            have_ds = ds_pop(ds);
+        }
     }
 }
 
@@ -952,15 +1013,15 @@ namespace {
 
 // Host-task context: ONLY copy the bytes into the ring. The actual work
 // (blocking CP write, LVGL refresh) is done later by ancs_client::poll() on
-// the main task — see the AncsRaw queue comment above.
+// the main task — see the NS/DS deferral queue comment above.
 static void notify_ns_cb(NimBLERemoteCharacteristic* /*c*/,
                           uint8_t* data, size_t len, bool /*is_notify*/) {
-    aq_push(0, data, len);
+    ns_push(data, len);
 }
 
 static void notify_ds_cb(NimBLERemoteCharacteristic* /*c*/,
                           uint8_t* data, size_t len, bool /*is_notify*/) {
-    aq_push(1, data, len);
+    ds_push(data, len);
 }
 
 } // namespace

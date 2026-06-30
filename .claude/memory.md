@@ -11,7 +11,12 @@ Stable facts with no better home. Only update if a fundamental decision changes.
 | Product name | **Ori** |
 | PC companion app name | **Orion** |
 | Orion installation URL | `ori.app/orion` |
-| Orion supported platforms | Windows, macOS |
+| Orion tech stack (Windows) | WinUI 3 (Windows App SDK), C#/XAML — chosen over Flutter 2026-06-29 for native BLE access + minimal background-service footprint |
+| Orion tech stack (macOS, planned) | SwiftUI (Swift), Core Bluetooth, EventKit, `MenuBarExtra` — chosen 2026-06-29 for the same native-BLE/minimal-footprint reasoning as Windows |
+| Orion supported platforms | Windows first (WinUI 3) — building now. macOS planned next as a **separate Swift/SwiftUI codebase**, not a shared one — not yet scheduled/started |
+| Orion UI model | **Compact flyout/panel anchored to the tray (Win) / menu bar (macOS) icon — never a full-size, resizable, taskbar-visible window.** No title bar, no min/max/resize chrome, no separate "main window." Every screen (pairing wizard, passkey confirm, settings, profile editor, calendar source picker, connection status) is a view inside this one panel, not a separate window. Decided 2026-06-29. |
+| Orion background requirement | **Must run continuously in the background — BLE connection, sync loop, and media/volume bridge all stay live — regardless of whether the tray/menu-bar panel is open, closed, or never opened at all.** The panel is purely a UI surface for the user to glance at or configure things; closing it must never pause or stop any of Orion's actual work. Implies: start at login (configurable), survive screen lock/sleep where the OS allows, and avoid any deployment/packaging model that lets the OS suspend the process when it's not in the foreground (e.g. prefer an unpackaged or Desktop-Bridge-style Win32 process over a lifecycle-managed UWP-style container) — see `orion-sync.md`'s "Background service lifecycle." |
+| Orion distribution channel | **Direct download + notarization only, on both platforms — never the Mac App Store or Microsoft Store.** Decided 2026-06-29. This is why macOS Controls mode can use the private `MediaRemote` framework for now-playing detection (`pc-app.md`, `ble-protocol.md` §12): App Store Review Guideline 2.5.1 bans private-API apps, but notarization (Gatekeeper) only scans for malicious code, not private-API usage — so a Developer-ID-signed, notarized direct download is fine. If this ever changes to Mac App Store distribution, the `MediaRemote`-dependent now-playing/seek features must be dropped or reworked first. |
 | BLE device name format | `Ori-XX-XX` (per-device suffix, e.g. `Ori-XT-9F`) |
 
 ---

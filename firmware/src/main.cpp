@@ -12,14 +12,29 @@
 //                            before the framebuffer has any content.
 //   4. lcd_panel::init()   — pulses LCD_RST via EXIO3, then brings up the
 //                            RGB16 bus and clears the framebuffer to black.
-//   5. LVGL init + display driver + input adapter.
-//   6. Long-press threshold — set to 3000 ms per memory.md before any widget
+//   5. LVGL init + display driver.
+//   6. Boot splash — load screen_boot_splash (the Ori wordmark) and force ONE
+//                    explicit lv_timer_handler() call to flush it to the
+//                    physical LCD right now. Everything from here through
+//                    ble_manager::init() below is blocking and runs entirely
+//                    inside setup(), before loop() ever calls
+//                    lv_timer_handler() on its own — without this the panel
+//                    would otherwise sit on a plain black screen for that
+//                    whole window. See screen_boot_splash.h.
+//   7. Input adapter init.
+//   8. Long-press threshold — set to 3000 ms per memory.md before any widget
 //                             is created so the profile-photo and phone-disconnect
 //                             long-press handlers fire at the right duration.
-//   7. screen_manager::init() — calls state_machine::init() then evaluate()
-//                               to pick the correct initial screen.
-//   8. ota_receiver::init()   — prepare USB CDC OTA framing state machine.
-//   9. ble_manager::init()    — NimBLE stack, GATT server, ANCS client, advertising.
+//   9. screen_manager::init() — calls state_machine::init() then evaluate() to
+//                               pick the real initial screen. This only builds
+//                               the screen object tree (no render/flush yet —
+//                               that's still gated behind loop()), so the
+//                               splash from step 6 stays the only thing
+//                               actually visible until loop() begins; the
+//                               eventual lv_scr_load_anim(..., auto_del=true)
+//                               that swaps it in also deletes the splash.
+//  10. ota_receiver::init()   — prepare USB CDC OTA framing state machine.
+//  11. ble_manager::init()    — NimBLE stack, GATT server, ANCS client, advertising.
 //                               Must be after screen_manager so passkey modal is ready.
 
 #include <Arduino.h>
@@ -39,6 +54,7 @@
 #include "assets/pto_placeholder.h"
 #include "photo_cache.h"
 #include "screen_manager.h"
+#include "screens/screen_boot_splash.h"
 #include "state_machine.h"
 #include "widgets/widget_profile_card.h"
 #include "touch_gt911.h"
@@ -105,6 +121,15 @@ void setup() {
 
     lvgl_display::init();
     mem_snapshot("after lvgl_display");
+
+    // Boot splash — see the boot-order comment above. One explicit
+    // lv_timer_handler() call forces the render + LCD_CAM flush right now
+    // (the same render path flush_area()/esp_cache_msync() that loop() uses
+    // every iteration) instead of waiting for loop() to get around to it
+    // after the rest of (blocking) setup() has already run.
+    lv_scr_load_anim(screen_boot_splash::create(), LV_SCR_LOAD_ANIM_NONE, 0, 0, /*auto_del=*/true);
+    lv_timer_handler();
+    mem_snapshot("after boot splash");
 
     lvgl_input::init();
 

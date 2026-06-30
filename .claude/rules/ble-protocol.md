@@ -14,7 +14,7 @@ This document defines the single BLE GATT contract between Ori and the Orion PC 
 | Side | Role |
 |---|---|
 | **Ori (Arduino on ESP32-S3)** | GATT server + Advertiser. Hosts every characteristic below. |
-| **Orion (Flutter, Windows/macOS)** | GATT client. The only side that can issue Read/Write requests. |
+| **Orion** — two native codebases, one contract: **WinUI 3 / Windows App SDK, C# (Windows, building now)**; **SwiftUI, Swift, Core Bluetooth (macOS, planned next)** | GATT client. The only side that can issue Read/Write requests. |
 
 LE Secure Connections with Passkey Entry (6-digit numeric, MITM-protected) is mandatory. After first pairing the device is bonded; subsequent reconnects are silent.
 
@@ -554,17 +554,19 @@ Pre-release: no need to bump a version header per change — just keep this file
 
 Ori uses chars 11–14 instead of HOGP. Orion bridges each `KeyboardCommand` notify to OS APIs and mirrors OS state changes back to Ori.
 
+Orion is two native codebases sharing this contract: **WinUI 3 / C# on Windows** (building now) and **SwiftUI / Swift on macOS** (planned next, not yet started) — see `memory.md`. The table below lists both; the macOS column is forward documentation to build against once that work starts, not yet implemented or verified.
+
 ### Command flow — Ori → Orion → OS
 
-| User action | `KeyboardCommand` | Windows | macOS |
+| User action | `KeyboardCommand` | Windows | macOS (planned) |
 |---|---|---|---|
 | Tap art | `{op:"play_pause"}` | `SendInput VK_MEDIA_PLAY_PAUSE` | `CGEventCreateMediaKeyEvent NX_KEYTYPE_PLAY` ¹ |
-| Swipe right | `{op:"next"}` | `SendInput VK_MEDIA_NEXT_TRACK` | `NX_KEYTYPE_NEXT` |
-| Swipe left | `{op:"prev"}` | `SendInput VK_MEDIA_PREV_TRACK` | `NX_KEYTYPE_PREVIOUS` |
+| Swipe right | `{op:"next"}` | `SendInput VK_MEDIA_NEXT_TRACK` | `NX_KEYTYPE_NEXT` ¹ |
+| Swipe left | `{op:"prev"}` | `SendInput VK_MEDIA_PREV_TRACK` | `NX_KEYTYPE_PREVIOUS` ¹ |
 | Vertical swipe release | `{op:"vol_set", arg:N}` | `IAudioEndpointVolume::SetMasterVolumeLevelScalar(N/100.0)` → write back `HostVolumeState` | `AudioObjectSetPropertyData kAudioHardwareServiceDeviceProperty_VirtualMainVolume` → write back |
 | Tap shortcut slot N | `{op:"shortcut", arg:N}` | Orion runs configured action — see supported tokens below | same |
 
-¹ Requires macOS Accessibility permission, granted on first launch.
+¹ Requires macOS Accessibility permission, granted on first launch; Controls-mode features stay inert until granted.
 
 Supported shortcut actions (configured per slot in Orion settings): `vol-mute`, `mic-mute`, `screenshot`, `lock-screen`, `favorite` (user-defined custom action). No dedicated `mute` op — mute is the `vol-mute` shortcut.
 
@@ -574,8 +576,8 @@ Which icon shows in each of the three slots is configured in Orion's settings UI
 
 ### State push flow — OS → Orion → Ori
 
-- **Volume change:** `IAudioEndpointVolumeCallback` (Win) / `AudioObjectAddPropertyListener` (macOS) → debounce ~100 ms → write `HostVolumeState`
-- **Track change:** `GlobalSystemMediaTransportControlsSessionManager` (Win) / `MRMediaRemoteRegisterForNowPlayingNotifications` (macOS) → write `MediaMetadata` + resize art to 484×216 JPEG (target 15–30 KB) → chunk-write `MediaAlbumArt`
+- **Volume change:** `IAudioEndpointVolumeCallback` (Win) / `AudioObjectAddPropertyListener` (macOS, planned) → debounce ~100 ms → write `HostVolumeState`
+- **Track change:** `GlobalSystemMediaTransportControlsSessionManager` (Win) / `MRMediaRemoteRegisterForNowPlayingNotifications` (macOS, planned — private `MediaRemote` framework; viable because Orion ships as a direct-download notarized app, never via the Mac App Store, see `memory.md` — but still re-verify it's usable when that work starts, since Apple can change private APIs between OS versions regardless of distribution channel) → write `MediaMetadata` + resize art to 484×216 JPEG (target 15–30 KB) → chunk-write `MediaAlbumArt`
 
 ### Swipe-vs-push race (vertical volume swipe)
 

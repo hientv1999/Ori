@@ -66,11 +66,14 @@ Open [Ori_UI_Prototype.html](Ori_UI_Prototype.html) directly in any modern brows
 - [x] **M4 — Firmware state machine + persistence** — locked 2026-05-23
   Left-panel priority logic, 1 s tick, 5-min pre-meeting alert, Calendar ↔ Media mode toggle with NVS persistence, OTA/reconnect hooks, long-press handlers, ANCS icon registry (23 apps). Post-lock: LVGL 9.5.0, Hanken Grotesk font, mode-toggle crash fix, shortcut button press feedback. Build state: RAM 7.1%, Flash 41.3% (of 3 MB OTA slot). **Deferred to M5:** factory reset `ESP.restart()` inside LVGL callback can trigger DMA ISR cache fault.
 
-- [x] **M5 — Firmware BLE + USB CDC firmware update** — locked 2026-06-28
-  GATT server (17 chars, v1.0, including Clock Face) + ANCS client (48-app icon registry, stored as LVGL indexed I1/I2/I4/I8 images via `firmware/img/ANCS_icons/convert_ancs_indexed.py` to keep flash usage down), passkey bonding, dual-connection (Orion + iPhone bond slots), Presence Status border, album-art JPEG decode (TJPGD), USB CDC OTA receiver. `h2zero/NimBLE-Arduino@2.5.0`. Build state: RAM 19.7%, Flash 66.1% (of 3 MB OTA slot).
+- [x] **M5 — Firmware BLE + USB CDC firmware update** — locked 2026-06-29
+  GATT server (17 chars, v1.0, including Clock Face) + ANCS client (48-app icon registry, stored as LVGL indexed I1/I2/I4/I8 images via `firmware/img/ANCS_icons/convert_ancs_indexed.py` to keep flash usage down), passkey bonding, dual-connection (Orion + iPhone bond slots), Presence Status border, album-art JPEG decode (TJPGD), USB CDC OTA receiver, boot splash screen (Ori wordmark shown immediately on boot while PSRAM/BLE init runs), separate NS/DS ANCS backlog-replay queues + `g_pmeta` sizing fix. `h2zero/NimBLE-Arduino@2.5.0`. Build state: RAM 24.5%, Flash 66.2% (of 3 MB OTA slot).
 
-- [ ] **M6 — Orion PC app** *(parallel with M2–M5)*
-  Flutter desktop (Windows + macOS): pairing wizard, calendar source selection, profile editor, PTO entry, background BLE central, USB CDC OTA sender. Agents: `flutter-frontend`, `orion-sync`, `calendar-integration`.
+- [ ] **M6 — Orion PC app (Windows)** *(parallel with M2–M5)*
+  WinUI 3 (Windows App SDK, C#/XAML), built as a single tray-anchored panel — never a full window (`memory.md` "Orion UI model"): pairing wizard, calendar source selection, profile editor, PTO entry, background BLE central, USB CDC OTA sender. Agents: `winui-frontend`, `orion-sync`, `calendar-integration`.
+
+- [ ] **M6b — Orion PC app (macOS)** *(not yet scheduled — separate Swift/SwiftUI codebase, built after M6 ships)*
+  Same feature set and same single-panel UI model as M6 (menu-bar-anchored, no main window), reimplemented native: SwiftUI UI, Core Bluetooth central, EventKit calendar access, `MenuBarExtra` background presence. Shares the protocol contract (`ble-protocol.md`, `pc-app.md`) with the Windows app but not its code. See `memory.md` for the platform-sequencing decision.
 
 - [ ] **M7 — End-to-end integration**
   Full loop: calendar → Orion → BLE → Ori → screen. Cross-subsystem tests, offline cache, factory-reset round-trip. Agent: `integration-qa`.

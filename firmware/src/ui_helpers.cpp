@@ -100,6 +100,58 @@ lv_obj_t* make_screen_body(lv_obj_t* screen) {
     return body;
 }
 
+// Accent at 58% over pure black: R=0.58*224=130→0x82, G=0.58*184=107→0x6B, B=0.58*106=61→0x3D
+constexpr uint32_t BRAND_MARK_ACCENT_58 = 0x826B3D;
+
+lv_obj_t* make_brand_mark(lv_obj_t* parent) {
+    lv_obj_t* root = lv_obj_create(parent);
+    lv_obj_set_size(root, LV_SIZE_CONTENT, 36);
+    lv_obj_set_style_bg_opa(root, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(root, 0, 0);
+    lv_obj_set_style_pad_all(root, 0, 0);
+    lv_obj_set_style_pad_column(root, 10, 0);
+    lv_obj_set_style_margin_top(root, -2, 0);
+    lv_obj_set_style_margin_bottom(root, 4, 0);
+    lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(root, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_flex_flow(root, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(root,
+        LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t* line_l = lv_obj_create(root);
+    lv_obj_set_size(line_l, 44, 2);
+    lv_obj_set_style_radius(line_l, 1, 0);
+    lv_obj_set_style_bg_color(line_l, theme::color(theme::COLOR_BG), 0);
+    lv_obj_set_style_bg_grad_color(line_l, theme::color(BRAND_MARK_ACCENT_58), 0);
+    lv_obj_set_style_bg_grad_dir(line_l, LV_GRAD_DIR_HOR, 0);
+    lv_obj_set_style_bg_opa(line_l, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(line_l, 0, 0);
+    lv_obj_set_style_pad_all(line_l, 0, 0);
+    lv_obj_clear_flag(line_l, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(line_l, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t* word = lv_label_create(root);
+    lv_label_set_text(word, "o#E0B86A r#i");
+    lv_label_set_recolor(word, true);
+    lv_obj_set_style_text_color(word, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
+    lv_obj_set_style_text_font(word, theme::font_time(), 0);
+    lv_obj_set_style_text_letter_space(word, 10, 0);
+
+    lv_obj_t* line_r = lv_obj_create(root);
+    lv_obj_set_size(line_r, 44, 2);
+    lv_obj_set_style_radius(line_r, 1, 0);
+    lv_obj_set_style_bg_color(line_r, theme::color(BRAND_MARK_ACCENT_58), 0);
+    lv_obj_set_style_bg_grad_color(line_r, theme::color(theme::COLOR_BG), 0);
+    lv_obj_set_style_bg_grad_dir(line_r, LV_GRAD_DIR_HOR, 0);
+    lv_obj_set_style_bg_opa(line_r, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(line_r, 0, 0);
+    lv_obj_set_style_pad_all(line_r, 0, 0);
+    lv_obj_clear_flag(line_r, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(line_r, LV_OBJ_FLAG_CLICKABLE);
+
+    return root;
+}
+
 lv_obj_t* make_panel_divider(lv_obj_t* parent) {
     lv_obj_t* div = lv_obj_create(parent);
     lv_obj_set_size(div, 5, lv_pct(100));

@@ -9,6 +9,7 @@ extern const lv_font_t ori_font_hanken_30;
 extern const lv_font_t ori_font_hanken_42;
 extern const lv_font_t ori_font_hanken_48;
 extern const lv_font_t ori_font_hanken_96;
+extern const lv_font_t ori_font_hanken_90;
 }
 
 namespace theme {
@@ -21,6 +22,7 @@ const lv_font_t* font_time()    { return &ori_font_hanken_30; }
 const lv_font_t* font_display() { return &ori_font_hanken_42; }
 const lv_font_t* font_large()   { return &ori_font_hanken_48; }
 const lv_font_t* font_clock_xl() { return &ori_font_hanken_96; }
+const lv_font_t* font_wordmark_xl() { return &ori_font_hanken_90; }
 
 void apply_to_screen(lv_obj_t* screen) {
     lv_obj_set_style_bg_color(screen, color(COLOR_BG), LV_PART_MAIN);
