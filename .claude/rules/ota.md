@@ -175,7 +175,7 @@ If USB CDC won't enumerate or won't respond to `BEGIN`: open the enclosure, conn
 
 ## Orion (sender) implementation guide
 
-This is the end-to-end algorithm `orion-sync` implements to push an update. It is the authoritative how-to for the host side; the firmware side is in `ota_receiver.cpp`. A working reference sender lives in `tools/mock_orion_ota.py`.
+This is the end-to-end algorithm `orion-sync` implements to push an update. It is the authoritative how-to for the host side; the firmware side is in `ota_receiver.cpp`. A working reference sender lives in `tools/mock_orion_ota.py`, which also scripts 9 failure-mode scenarios (broken cable / wrong version / oversized image / corrupted hash / truncated transfer / declared-size overflow / concurrent BEGIN / malformed BEGIN, plus the happy path) against the reason table in step 6 below — useful as an end-to-end checklist for Orion's error handling.
 
 ### 0. Read the .bin (before opening the port)
 
@@ -189,7 +189,7 @@ This is the end-to-end algorithm `orion-sync` implements to push an update. It i
 
 ### 1. Open the port
 
-- Find Ori's CDC port (ESP32-S3 native USB, VID `0x303A`). If none: prompt *"Plug Ori into this PC, then try again."*
+- Find Ori's CDC port (ESP32-S3 native USB, VID `0x303A`). If none: prompt *"Plug Ori into this PC, then try again."* If more than one port matches the VID (e.g. another ESP32-S3 dev board attached), don't guess — list the candidates and ask the user to pick one.
 - Open it and **assert DTR = true** (HWCDC only transmits when DTR is asserted), RTS = false. Baud is irrelevant over USB CDC.
 
 ### 2. Frame reader — robust to log noise (production vs dev)
@@ -216,6 +216,7 @@ Every device→host response is a framed message (`§ Framing`): magic `0x4F54`,
 The device RX buffer is 32 KB and it acks via `PROGRESS { bytes_received }` every ≤ 8 KB. Orion must never run more than the buffer ahead of the acks:
 
 - Keep `(bytes_sent − bytes_acked) ≤ WINDOW` (16 KB works well). Send `DATA` frames (raw bytes, e.g. 4 KB each); after each send, drain any response frames and update `bytes_acked` from `PROGRESS`.
+- **Keep draining while you send, not just between phases.** Every device→host frame — including `PROGRESS` — is followed by a blocking `Serial.flush()` on the firmware side (`ota_receiver.cpp`'s `send_frame()`). If Orion only reads responses after it finishes writing a batch of `DATA`, both ends can sit waiting on a full buffer at once; draining inside the same loop that sends `DATA` (as the window check above already requires) avoids this.
 - Drive the host-side progress bar from `PROGRESS`.
 - If a `FAILED { size_overflow }` arrives mid-stream, stop.
 

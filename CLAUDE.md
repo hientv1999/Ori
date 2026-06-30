@@ -11,6 +11,9 @@ Ori/
 │   └── rules/               # Topic-scoped behavioral rules
 ├── firmware/                # ESP32-S3 firmware — PlatformIO + Arduino
 ├── PC_app/                  # Orion PC companion app — Windows + macOS
+├── tools/                   # Standalone test scripts — mock the Orion side
+│                            # of BLE sync (mock_orion_ble.py) and USB CDC
+│                            # OTA (mock_orion_ota.py) against real hardware
 ├── Ori_UI_Prototype.html    # Browser-based UI simulator
 ├── Ori_UI_Prototype.js      # Prototype logic, screen catalogue, renderers
 ├── Device Description.docx  # Authoritative product / behavior specification
@@ -38,6 +41,8 @@ Ori/
 | UI prototype internals (loads when editing the prototype) | [.claude/rules/ui-prototype.md](.claude/rules/ui-prototype.md) |
 | Firmware build system and scope (loads under `firmware/`) | [.claude/rules/firmware.md](.claude/rules/firmware.md) |
 | Orion PC app scope (loads under `PC_app/`) | [.claude/rules/pc-app.md](.claude/rules/pc-app.md) |
+| Hand-test BLE sync against real Ori hardware (no Orion build needed) | [tools/mock_orion_ble.py](tools/mock_orion_ble.py) |
+| Hand-test USB CDC firmware update against real Ori hardware | [tools/mock_orion_ota.py](tools/mock_orion_ota.py) |
 | Full authoritative product spec | `Device Description.docx` |
 | Catalogue of every UI screen / state | Open `Ori_UI_Prototype.html` in a browser |
 

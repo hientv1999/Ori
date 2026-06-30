@@ -11,11 +11,9 @@ Pull calendar data on the PC side and normalize it for the sync agent to push to
 
 ### Operations
 - Authenticate with the chosen calendar source
-- Fetch today's meetings (start, end, title, location, organizer)
+- Fetch today's meetings and identify the next PTO entry; normalize into the `Meeting`/`PtoEntry` schemas in `ble-protocol.md` §4 (field names, lengths, and caps are defined there — don't redefine them here)
 - Detect cancellations and removals
-- Identify the next PTO entry (start datetime, end datetime, destination metadata if available)
-- Detect changes (additions, edits, cancellations) and notify the **Orion Sync Agent**
-- Normalize events into the data model defined by the **Product/System Architect Agent**
+- Detect changes (additions, edits, cancellations) and notify the **Orion Sync Agent** — you detect and normalize, you don't push; that's Orion Sync's job over BLE
 
 ### ⚠ Open scope decision
 

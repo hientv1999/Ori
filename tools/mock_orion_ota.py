@@ -55,10 +55,7 @@ DEFAULT_FIRMWARE = (
     r"..\firmware\.pio\build\ori\firmware.bin"
 )  # default build output; pass a path to override
 
-# Must match ORI_FW_VERSION in firmware/include/fw_version.h — used by the
-# "wrong version" scenario to trigger REJECT{already_current}.
-RUNNING_FW_VERSION = "1.0.0"
-ESPRESSIF_VID      = 0x303A   # serial-port autodetect
+ESPRESSIF_VID = 0x303A   # serial-port autodetect
 
 # ── Framing (matches firmware src/ota_receiver.cpp) ──────────────────────────
 #   Offset  Size  Field
@@ -509,7 +506,8 @@ def scenario_broken_cable(image, digest, args) -> bool:
         state = {}
         s.stream(image[:cut], args.chunk, _stream_handler(len(image), state), state)
         print(f"\n  [test] stopped after {min(cut, len(image))} bytes — no more "
-              "DATA. Firmware stall watchdog should abort in ~10 s.\n")
+              "DATA. Firmware stall watchdog (OTA_STALL_TIMEOUT_MS) should abort "
+              "in ~3 s.\n")
 
         # Watch for the firmware's stall-abort (ota_abort → FAILED{usb_timeout}).
         fr = s.wait({OTA_OP_FAILED, OTA_OP_REJECT}, 15.0)
@@ -752,8 +750,8 @@ SCENARIO_MAP = {key: fn for key, _, fn in SCENARIOS}
 
 EXPECTED = {
     "1": "VALIDATED (device reboots)",
-    "2": "FAILED { usb_timeout } after ~10 s",
-    "3": "REJECT { already_current }",
+    "2": "FAILED { usb_timeout } after ~3 s",
+    "3": "FAILED { version_mismatch }",
     "4": "REJECT { too_large }",
     "5": "FAILED { hash_mismatch }",
     "6": "FAILED { truncated }",

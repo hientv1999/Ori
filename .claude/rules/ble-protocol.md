@@ -138,7 +138,15 @@ ProfileInfo = {
 
 TimeSync = {
   "u": uint,           // epoch_utc. seconds since 1970-01-01 UTC
-  "z": text,           // tz. IANA timezone, e.g. "Europe/Lisbon"
+  "z": text,           // tz. POSIX TZ string, e.g. "PST8PDT" or a fixed-offset
+                       // form like "LOC-2" — Ori feeds this straight into
+                       // newlib's setenv("TZ", tz)/tzset() (gatt_server.cpp
+                       // apply_time_sync()), which does NOT understand IANA
+                       // names ("America/Los_Angeles" silently falls back to
+                       // UTC). Orion must convert the local UTC offset to a
+                       // POSIX TZ string before sending — see
+                       // tools/mock_orion_ble.py's _local_posix_tz() for a
+                       // reference implementation.
   "x": uint            // tx_ms. sender's monotonic ms at send time (round-trip correction)
 }
 
@@ -504,8 +512,8 @@ Link-layer encryption failure (`BLE_HS_ENC_FAIL`) signals a stale bond — see �
 ## 9. Versioning
 
 - Protocol Version characteristic: `{ proto_major, proto_minor, fw_version }`. Pre-release — this contract isn't finalized, so no changelog is kept here; just edit the relevant section in place when something changes.
-- Once the protocol is finalized/released, switch to: **Major bump** = breaking (Orion refuses sync, shows "Update Ori firmware"); **Minor bump** = additive (unknown CBOR keys silently ignored).
-- `fw_version` (semver) used by Orion to detect available updates; update runs over USB CDC (`ota.md`).
+- Once the protocol is finalized/released, switch to: **Major bump** = breaking. On a `proto_major` mismatch, Orion must not attempt the hash-manifest sync at all — a different `proto_major` means the GATT layout/CBOR schema can't be trusted. Instead Orion **automatically** starts a USB CDC firmware update (`ota.md`) to bring Ori onto a `proto_major` Orion supports, provided Ori is reachable over USB CDC at that moment; if not, Orion shows a blocking "Ori needs a firmware update — connect it to this PC" prompt and re-checks once a serial port appears. This replaces a passive "show a message, user clicks Install" flow with an automatic one — see `pc-app.md`'s "Protocol compatibility gate." **Minor bump** = additive (unknown CBOR keys silently ignored) — a minor-only difference is not a sync blocker.
+- `fw_version` (semver) drives a separate, optional check: Orion polls `ori.app` for the latest released version and offers a user-initiated "Install update" in Settings when a newer (but still `proto_major`-compatible) build exists. This is independent of the mandatory `proto_major` gate above — see `pc-app.md`.
 
 ---
 

@@ -274,6 +274,18 @@ def build_profile_photo_jpeg() -> bytes:
     print(f"  [info] profile photo: 228×228 JPEG, {len(data):,} B")
     return data
 
+def _crop_resize_to_aspect(img, tw: int, th: int):
+    """Center-crop img to the tw:th aspect ratio (cropping whichever axis is
+    oversized), then resize to exactly tw×th."""
+    w, h = img.size
+    if w / h > tw / th:                      # source too wide — crop sides
+        nw = int(h * tw / th)
+        img = img.crop(((w - nw) // 2, 0, (w + nw) // 2, h))
+    else:                                    # source too tall — crop top/bottom
+        nh = int(w * th / tw)
+        img = img.crop((0, (h - nh) // 2, w, (h + nh) // 2))
+    return img.resize((tw, th), _PILImage.LANCZOS)
+
 def build_pto_photo_jpeg() -> bytes:
     """Crop PTO photo to 528:396 aspect ratio, resize to 528×396, compress to ≤ 64 KB."""
     if not _PIL_AVAILABLE:
@@ -282,18 +294,10 @@ def build_pto_photo_jpeg() -> bytes:
     if not os.path.exists(_PTO_PHOTO_SRC):
         print(f"  [warn] PTO photo not found: {_PTO_PHOTO_SRC}")
         return b""
-    img = _PILImage.open(_PTO_PHOTO_SRC).convert("RGB")
-    w, h   = img.size
-    tw, th = 528, 396
-    if w / h > tw / th:                      # source too wide — crop sides
-        nw = int(h * tw / th)
-        img = img.crop(((w - nw) // 2, 0, (w + nw) // 2, h))
-    else:                                    # source too tall — crop top/bottom
-        nh = int(w * th / tw)
-        img = img.crop((0, (h - nh) // 2, w, (h + nh) // 2))
-    img  = img.resize((tw, th), _PILImage.LANCZOS)
+    img  = _PILImage.open(_PTO_PHOTO_SRC).convert("RGB")
+    img  = _crop_resize_to_aspect(img, 528, 396)
     data = _jpeg_max_quality(img, hard_cap=512 * 1024)
-    print(f"  [info] PTO photo: {tw}×{th} JPEG, {len(data):,} B")
+    print(f"  [info] PTO photo: 528×396 JPEG, {len(data):,} B")
     return data
 
 def build_album_art_jpeg(raw_image_bytes: bytes) -> bytes:
@@ -303,18 +307,10 @@ def build_album_art_jpeg(raw_image_bytes: bytes) -> bytes:
     (ble-protocol.md §10)."""
     if not _PIL_AVAILABLE or not raw_image_bytes:
         return b""
-    img = _PILImage.open(io.BytesIO(raw_image_bytes)).convert("RGB")
-    w, h   = img.size
-    tw, th = 484, 216
-    if w / h > tw / th:                      # source too wide — crop sides
-        nw = int(h * tw / th)
-        img = img.crop(((w - nw) // 2, 0, (w + nw) // 2, h))
-    else:                                    # source too tall — crop top/bottom
-        nh = int(w * th / tw)
-        img = img.crop((0, (h - nh) // 2, w, (h + nh) // 2))
-    img  = img.resize((tw, th), _PILImage.LANCZOS)
+    img  = _PILImage.open(io.BytesIO(raw_image_bytes)).convert("RGB")
+    img  = _crop_resize_to_aspect(img, 484, 216)
     data = _jpeg_max_quality(img, hard_cap=64 * 1024)
-    print(f"  [info] album art: {tw}×{th} JPEG, {len(data):,} B")
+    print(f"  [info] album art: 484×216 JPEG, {len(data):,} B")
     return data
 
 # ── Windows now-playing media (ble-protocol.md §12) ────────────────────────────
@@ -723,9 +719,6 @@ class MockOrion:
 
     # ── helpers ──
 
-    async def wait_status(self, target: int, timeout: float = 30.0) -> bool:
-        return await self.wait_status_in({target}, timeout)
-
     async def wait_status_in(self, targets, timeout: float = 30.0) -> bool:
         deadline = time.monotonic() + timeout
         while True:
@@ -807,29 +800,32 @@ class MockOrion:
         name = CLOCK_FACE_NAMES.get(value, f"0x{value:02X}")
         await self.write(UUID_CLOCK_FACE, bytes([value]), f"ClockFace ({name})")
 
-    async def push_shortcuts(self, slot1: str, slot2: str, slot3: str):
-        # Unlike Presence, Shortcut Config is still staged (ble-protocol.md
-        # §6.0) — Ori only applies it at SyncControl{END}, so a bare write
-        # here would sit in g_stage and never reach app_state. Run a minimal
-        # BEGIN→write→END session just for this one item. RAM-only, no hash,
-        # no manifest involved — this Ori commit also skips blackout() (no
-        # NVS write) and the full-rebuild path (update_shortcuts() handles it
-        # in place), so this should land with no screen flicker at all.
-        shortcut_bytes = build_shortcut_config(slot1, slot2, slot3)
-        self._shortcut_slots = {1: slot1, 2: slot2, 3: slot3}
-        print(f"\n  [info] pushing shortcuts: {slot1}, {slot2}, {slot3}")
+    async def _run_single_item_sync(self, uuid: str, payload: bytes,
+                                     label: str, ok_label: str):
+        """Minimal BEGIN→write→END→wait session for one RAM-only, hash-less
+        staged item (Time Sync, Shortcut Config) — both are applied only at
+        SyncControl{END}, so a bare write would sit in g_stage and never
+        reach app_state. No NVS write involved, so this also skips
+        blackout() — no screen flicker."""
         self._seq += 1
         seq = self._seq
         await self.write(UUID_SYNC_CTRL,
-            cbor2.dumps({"o": "BEGIN", "s": seq, "t": len(shortcut_bytes)}),
+            cbor2.dumps({"o": "BEGIN", "s": seq, "t": len(payload)}),
             f"SyncControl BEGIN seq={seq}")
-        await self.write(UUID_SHORTCUTS, shortcut_bytes, "ShortcutConfig")
+        await self.write(uuid, payload, label)
         await self.write(UUID_SYNC_CTRL,
             cbor2.dumps({"o": "END", "s": seq}), f"SyncControl END seq={seq}")
         if await self.wait_status_in({0x03, 0x10}, timeout=10.0):
-            print(f"  [ok] Shortcuts applied (status {DS.get(self.last_status, '?')}).\n")
+            print(f"  [ok] {ok_label} applied (status {DS.get(self.last_status, '?')}).\n")
         else:
             print(f"  [warn] completion not seen (last: {DS.get(self.last_status, '?')})\n")
+
+    async def push_shortcuts(self, slot1: str, slot2: str, slot3: str):
+        shortcut_bytes = build_shortcut_config(slot1, slot2, slot3)
+        self._shortcut_slots = {1: slot1, 2: slot2, 3: slot3}
+        print(f"\n  [info] pushing shortcuts: {slot1}, {slot2}, {slot3}")
+        await self._run_single_item_sync(UUID_SHORTCUTS, shortcut_bytes,
+                                          "ShortcutConfig", "Shortcuts")
 
     async def push_host_volume(self, level: int, mute: bool = False):
         # HostVolumeState (char 000C) is Write (response) — Orion is the sole
@@ -840,26 +836,10 @@ class MockOrion:
         print(f"  [vol]  HostVolumeState → Ori: level={level}% mute={mute}")
 
     async def push_time_sync(self):
-        # TimeSync is also staged (ble-protocol.md §6.0) — Ori only applies it
-        # (settimeofday + setenv("TZ",...)) at SyncControl{END}, so a bare
-        # write here would sit in g_stage and never take effect. Run a
-        # minimal BEGIN→write→END session just for this one item. RAM-only
-        # (epoch AND tz, as of the latest firmware), no NVS, so this commit
-        # skips blackout() entirely — no screen flicker for a manual resync.
         time_sync_bytes = build_time_sync()
         print(f"\n  [info] pushing time sync")
-        self._seq += 1
-        seq = self._seq
-        await self.write(UUID_SYNC_CTRL,
-            cbor2.dumps({"o": "BEGIN", "s": seq, "t": len(time_sync_bytes)}),
-            f"SyncControl BEGIN seq={seq}")
-        await self.write(UUID_TIME_SYNC, time_sync_bytes, "TimeSync")
-        await self.write(UUID_SYNC_CTRL,
-            cbor2.dumps({"o": "END", "s": seq}), f"SyncControl END seq={seq}")
-        if await self.wait_status_in({0x03, 0x10}, timeout=10.0):
-            print(f"  [ok] Time sync applied (status {DS.get(self.last_status, '?')}).\n")
-        else:
-            print(f"  [warn] completion not seen (last: {DS.get(self.last_status, '?')})\n")
+        await self._run_single_item_sync(UUID_TIME_SYNC, time_sync_bytes,
+                                          "TimeSync", "Time sync")
 
     async def push_media(self):
         info = await read_now_playing_media()
@@ -1097,15 +1077,18 @@ def _set_windows_volume_sync(level: int) -> Optional[int]:
 # ── Shortcut action helpers (sync; call via run_in_executor) ──────────────────
 # These implement the five shortcut tokens from ble-protocol.md §12 / media-mode.md.
 
+def _toggle_mute(iface) -> str:
+    """Flip GetMute()/SetMute() on an IAudioEndpointVolume. Returns the new state."""
+    new_mute = not iface.GetMute()
+    iface.SetMute(new_mute, None)
+    return "muted" if new_mute else "unmuted"
+
 def _toggle_master_mute_sync() -> str:
     """Toggle Windows master mute. Returns a short description of the new state."""
     if not _PYCAW_AVAILABLE:
         return "pycaw not installed (pip install pycaw; Windows only)"
     try:
-        iface    = _vol_interface()
-        new_mute = not iface.GetMute()
-        iface.SetMute(new_mute, None)
-        return "muted" if new_mute else "unmuted"
+        return _toggle_mute(_vol_interface())
     except Exception as exc:
         return f"error: {exc}"
 
@@ -1117,11 +1100,8 @@ def _toggle_mic_mute_sync() -> str:
         mic = _AudioUtils.GetMicrophone()
         if mic is None:
             return "no microphone found"
-        iface     = mic.Activate(_IAudioEPVol._iid_, _CLSCTX_ALL, None)
-        mic_iface = _ctypes_cast(iface, _POINTER(_IAudioEPVol))
-        new_mute  = not mic_iface.GetMute()
-        mic_iface.SetMute(new_mute, None)
-        return "muted" if new_mute else "unmuted"
+        iface = mic.Activate(_IAudioEPVol._iid_, _CLSCTX_ALL, None)
+        return _toggle_mute(_ctypes_cast(iface, _POINTER(_IAudioEPVol)))
     except Exception as exc:
         return f"error: {exc}"
 
