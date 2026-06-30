@@ -406,6 +406,16 @@ AppState compute_target_state() {
 // ─── Periodic tick ────────────────────────────────────────────────────────
 
 static void tick_cb(lv_timer_t* /*t*/) {
+    // First clock source after a cold boot (Orion Time Sync or iPhone CTS):
+    // force one rebuild so the current screen repaints with a valid date — in
+    // particular the "No meetings today" calendar glyph, which falls back to a
+    // generic grid (no today / no week highlight) while the clock is unset and
+    // would otherwise stay stale once the time arrives.
+    static bool s_clock_was_set = false;
+    bool clock_now = app_state::clock_is_set();
+    if (clock_now && !s_clock_was_set) g_force_rebuild = true;
+    s_clock_was_set = clock_now;
+
     // 5-minute pre-meeting alert.
     if (g_state != AppState::COUNTDOWN   &&
         g_state != AppState::SETUP       &&
