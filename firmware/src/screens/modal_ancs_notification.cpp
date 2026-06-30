@@ -17,12 +17,24 @@
 // "Read all" clears the whole group on the iPhone at once. A lone notification
 // renders the same as before with a plain "Read".
 //
+// When every stacked message also shares the same (non-empty) Subtitle (e.g.
+// all messages in one mail thread), that subtitle is likewise hoisted out of
+// the per-message blocks and shown once, just under the title — instead of
+// being repeated on each message. Subtitles that differ across the group stay
+// per-message as before.
+//
 //   header row: [Silent badge?] title (single-line, ellipsis) [gap for close-X]
 //     ← always visible, NOT part of the scrollable body (so it never scrolls
 //       out from under itself); single line with ellipsis, font_title (24px)
 //   ── scrollable body below the header row ──
+//   [shared subtitle]             ← font_meta, secondary — only when every
+//                                    stacked message shares the same subtitle
 //   [N messages]                  ← font_meta, accent — only when stacked
 //   per message: subtitle/body/time, oldest→newest (top→bottom), divider-split
+//     (subtitle omitted here when hoisted to the shared line above)
+//     time is right-aligned (tertiary) under its message's body, and is
+//     re-formatted from recv_epoch every kTimeAgoRefreshMs while the overlay
+//     stays open, so a lingering "2m ago" doesn't go stale
 //   app name                      ← font_h2 (28px), shared, shown once
 //   Buttons (dynamic, based on ANCS EventFlags of the reference notification):
 //     stacked                     → "Read all" (Danger)
@@ -33,10 +45,17 @@
 
 namespace {
 
+// How often the per-message "X ago" labels are re-formatted while the overlay
+// stays open. Matches the coarsest granularity format_notif_time() renders
+// (minutes), so a label can never look stale by more than this long.
+constexpr uint32_t kTimeAgoRefreshMs = 30000;
+
 struct ModalCtx {
     lv_obj_t* scrim;
-    uint32_t  uids[app_state::MAX_ANCS_NOTIFICATIONS];  // every UID in the group
+    uint32_t  uids[app_state::MAX_ANCS_NOTIFICATIONS];        // every UID in the group
+    lv_obj_t* time_labels[app_state::MAX_ANCS_NOTIFICATIONS]; // per-uid "X ago" label, or nullptr
     size_t    count;
+    lv_timer_t* refresh_timer;  // re-formats time_labels[]; deleted on scrim LV_EVENT_DELETE
 };
 
 // The single currently-open detail overlay (only one can be open at a time —
@@ -77,18 +96,22 @@ void on_positive(lv_event_t* e) {
     lv_obj_delete(ctx->scrim);
 }
 
-// One body line (font_meta, secondary, wrapping).
+// One body line (font_meta, secondary, wrapping by default). Pass a non-CENTER
+// align (e.g. for the per-message timestamp) to right/left-align within the
+// full row width instead — that needs the same lv_pct(100) width as wrap, so
+// it's forced on whenever align isn't CENTER even if wrap is false.
 lv_obj_t* add_text(lv_obj_t* parent, const char* text, const lv_font_t* font,
-                   uint32_t color, int16_t pad_top, bool wrap) {
+                   uint32_t color, int16_t pad_top, bool wrap,
+                   lv_text_align_t align = LV_TEXT_ALIGN_CENTER) {
     lv_obj_t* lbl = lv_label_create(parent);
-    if (wrap) {
+    if (wrap || align != LV_TEXT_ALIGN_CENTER) {
         lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
         lv_obj_set_width(lbl, lv_pct(100));
     }
     lv_label_set_text(lbl, text);
     lv_obj_set_style_text_font(lbl, font, 0);
     lv_obj_set_style_text_color(lbl, theme::color(color), 0);
-    lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_align(lbl, align, 0);
     lv_obj_set_style_pad_top(lbl, pad_top, 0);
     return lbl;
 }
@@ -125,12 +148,15 @@ lv_obj_t* create(lv_obj_t* base_screen, uint32_t uid) {
     if (ctx->count == 0) { ctx->uids[0] = uid; ctx->count = 1; }
     const bool stacked = ctx->count > 1;
 
-    // The reference (newest) supplies the shared title + app name. Copy them now
-    // — ancs_notification_by_uid() returns a shared view overwritten on each call
-    // (the per-message loop below reuses it).
-    char title_buf[193] = {};
-    char app_buf[40]    = {};
-    bool ref_nv_silent  = false;
+    // The reference (newest) supplies the shared title + app name, and — when
+    // every stacked notification carries the identical subtitle — the shared
+    // subtitle too. Copy them now — ancs_notification_by_uid() returns a shared
+    // view overwritten on each call (the per-message loop below reuses it).
+    char title_buf[193]    = {};
+    char app_buf[40]       = {};
+    char subtitle_buf[129] = {};
+    bool ref_nv_silent     = false;
+    bool shared_subtitle   = false;
     {
         const app_state::AncsNotification& ref =
             app_state::ancs_notification_by_uid(ctx->uids[0]);
@@ -138,6 +164,19 @@ lv_obj_t* create(lv_obj_t* base_screen, uint32_t uid) {
                 sizeof(title_buf) - 1);
         strncpy(app_buf, ref.display_name ? ref.display_name : "", sizeof(app_buf) - 1);
         ref_nv_silent = ref.silent;
+
+        if (stacked && ref.subtitle && ref.subtitle[0]) {
+            strncpy(subtitle_buf, ref.subtitle, sizeof(subtitle_buf) - 1);
+            shared_subtitle = true;
+            for (size_t i = 1; i < ctx->count; ++i) {
+                const app_state::AncsNotification& other =
+                    app_state::ancs_notification_by_uid(ctx->uids[i]);
+                if (!other.subtitle || strcmp(other.subtitle, subtitle_buf) != 0) {
+                    shared_subtitle = false;
+                    break;
+                }
+            }
+        }
     }
 
     ui::ModalLayout layout = ui::make_modal_layout(base_screen, 660, 400);
@@ -152,6 +191,7 @@ lv_obj_t* create(lv_obj_t* base_screen, uint32_t uid) {
     lv_obj_add_event_cb(scrim, [](lv_event_t* e) {
         auto* c = static_cast<ModalCtx*>(lv_event_get_user_data(e));
         if (g_open_scrim == c->scrim) { g_open_scrim = nullptr; g_open_uid = 0; }
+        if (c->refresh_timer) lv_timer_delete(c->refresh_timer);
         delete c;
     }, LV_EVENT_DELETE, ctx);
 
@@ -230,11 +270,19 @@ lv_obj_t* create(lv_obj_t* base_screen, uint32_t uid) {
     lv_obj_set_size(sa_spacer_top, 0, 0);
     lv_obj_set_flex_grow(sa_spacer_top, 1);
 
+    // ── Shared subtitle — only when every stacked message has the same one.
+    // Hoisted here, right under the title, so it isn't repeated per message. ──
+    if (shared_subtitle) {
+        add_text(scroll_area, subtitle_buf, theme::font_meta(),
+                 theme::COLOR_TEXT_SECONDARY, 4, /*wrap=*/true);
+    }
+
     // ── "N messages" count — only when stacked ──
     if (stacked) {
         char cnt[24];
         lv_snprintf(cnt, sizeof(cnt), "%u messages", (unsigned)ctx->count);
-        add_text(scroll_area, cnt, theme::font_meta(), theme::COLOR_ACCENT, 4, /*wrap=*/false);
+        add_text(scroll_area, cnt, theme::font_meta(), theme::COLOR_ACCENT,
+                 shared_subtitle ? 8 : 4, /*wrap=*/false);
     }
 
     // ── Each message: subtitle (if any) / body / timestamp ──
@@ -247,7 +295,8 @@ lv_obj_t* create(lv_obj_t* base_screen, uint32_t uid) {
 
         if (stacked && pos > 0) add_divider(scroll_area);
 
-        bool has_sub = nv.subtitle && nv.subtitle[0];
+        // Subtitle already shown once above when every message shares it.
+        bool has_sub = !shared_subtitle && nv.subtitle && nv.subtitle[0];
         if (has_sub) {
             int16_t pad = (pos > 0) ? 0 : 6;
             add_text(scroll_area, nv.subtitle, theme::font_meta(),
@@ -259,10 +308,26 @@ lv_obj_t* create(lv_obj_t* base_screen, uint32_t uid) {
                  theme::COLOR_TEXT_SECONDARY, body_pad, /*wrap=*/true);
 
         if (nv.time_ago && nv.time_ago[0]) {
-            add_text(scroll_area, nv.time_ago, theme::font_meta(),
-                     theme::COLOR_TEXT_TERTIARY, 4, /*wrap=*/false);
+            ctx->time_labels[i] = add_text(scroll_area, nv.time_ago, theme::font_meta(),
+                                            theme::COLOR_TEXT_TERTIARY, 4, /*wrap=*/false,
+                                            LV_TEXT_ALIGN_RIGHT);
         }
     }
+
+    // Re-format each message's "X ago" label from its recv_epoch periodically
+    // so a timestamp can't go stale if the user leaves this overlay open —
+    // format_notif_time() (app_state.cpp) is otherwise only re-run when
+    // something else triggers a lookup of that UID.
+    ctx->refresh_timer = lv_timer_create([](lv_timer_t* t) {
+        auto* c = static_cast<ModalCtx*>(lv_timer_get_user_data(t));
+        for (size_t i = 0; i < c->count; ++i) {
+            if (!c->time_labels[i]) continue;
+            const app_state::AncsNotification& nv =
+                app_state::ancs_notification_by_uid(c->uids[i]);
+            if (nv.time_ago && nv.time_ago[0])
+                lv_label_set_text(c->time_labels[i], nv.time_ago);
+        }
+    }, kTimeAgoRefreshMs, ctx);
 
     // ── Shared app name (shown once, bottom) ──
     add_text(scroll_area, app_buf, theme::font_h2(),

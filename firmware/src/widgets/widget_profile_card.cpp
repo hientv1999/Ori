@@ -101,6 +101,23 @@ lv_opa_t shadow_opa_for_presence(widget_profile_card::Presence p) {
     return p == widget_profile_card::Presence::Offline ? LV_OPA_TRANSP : LV_OPA_50;
 }
 
+// The name label's box is sized in whole lines (1 or 2) of font_time() so
+// long names that wrap to a second line get room for it. Without this, a
+// fixed 2-line box left a spare blank line above the job title whenever the
+// name fit on one line — name and title looked too far apart. Sizing to the
+// text's actual wrapped line count closes that gap for short names while
+// still expanding for long ones.
+void fit_name_label_height(lv_obj_t* label, const char* text) {
+    const lv_font_t* font = theme::font_time();
+    lv_point_t size;
+    lv_text_get_size(&size, text, font, 0, 0,
+                      widget_profile_card::WIDTH - 16, LV_TEXT_FLAG_NONE);
+    int32_t lines = (size.y + font->line_height / 2) / font->line_height;
+    if (lines < 1) lines = 1;
+    if (lines > 2) lines = 2;
+    lv_obj_set_height(label, lines * font->line_height);
+}
+
 } // namespace
 
 namespace widget_profile_card {
@@ -224,14 +241,14 @@ lv_obj_t* create(lv_obj_t* parent) {
     // screen-layout.md ("Full name — single line, ellipsis on overflow").
     // Orion enforces name ≤ 32 chars at input so truncation is rare.
     s->name_label = lv_label_create(card);
-    lv_label_set_text(s->name_label, display_name());
     lv_label_set_long_mode(s->name_label, LV_LABEL_LONG_DOT);
     lv_obj_set_width(s->name_label, WIDTH - 16);
-    lv_obj_set_height(s->name_label, 2 * theme::font_time()->line_height);
+    lv_label_set_text(s->name_label, display_name());
+    fit_name_label_height(s->name_label, display_name());
     lv_obj_set_style_text_color(s->name_label, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(s->name_label, theme::font_time(), 0);
     lv_obj_set_style_text_align(s->name_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_pad_top(s->name_label, 14, 0);
+    lv_obj_set_style_pad_top(s->name_label, 6, 0);
 
     // Title. Same single-line / ellipsis treatment; Orion limit ≤ 32 chars.
     // font_body() (20 px) matches the meeting-location and media-artist
@@ -353,7 +370,10 @@ void set_profile(const char* name, const char* title,
     if (g_active_card) {
         auto* s = static_cast<CardState*>(lv_obj_get_user_data(g_active_card));
         if (s) {
-            if (s->name_label)  lv_label_set_text(s->name_label,  display_name());
+            if (s->name_label) {
+                lv_label_set_text(s->name_label, display_name());
+                fit_name_label_height(s->name_label, display_name());
+            }
             if (s->title_label) lv_label_set_text(s->title_label, display_title());
         }
     }
