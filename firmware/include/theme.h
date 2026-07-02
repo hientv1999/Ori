@@ -81,6 +81,11 @@ const lv_font_t* font_large();        // 48 px — passkey modal
 const lv_font_t* font_clock_xl();      // 96 px, digits + ':' + '-' only — clock face hour/minute
 const lv_font_t* font_wordmark_xl();   // 90 px, glyphs 'o'/'r'/'i'/space ONLY — boot splash wordmark
 
+// Build the color-emoji fallback and attach it to the user-text fonts
+// (font_body/meta/title/h2). Call once at boot after lv_init(). Safe no-op if
+// the emoji set is empty. Until called, those getters return plain Hanken.
+void init_emoji_fallback();
+
 // Apply default page styling (background color, no padding, no border) to
 // a top-level screen object.
 void apply_to_screen(lv_obj_t* screen);

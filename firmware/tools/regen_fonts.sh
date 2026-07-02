@@ -8,8 +8,10 @@
 # generous range below resolves to Hanken's ~550 Latin glyphs — Latin +
 # Latin Extended A/B, Vietnamese, combining diacritics, punctuation, currency,
 # math/arrow/geometric symbols, and fi/fl ligatures). Characters outside that
-# set (emoji, CJK, Cyrillic, Arabic, …) are not in the font and cannot be added;
-# they are dropped at runtime by ui::sanitize_text().
+# set (emoji, CJK, Cyrillic, Arabic, …) are not in the font and are
+# dropped at runtime by ui::sanitize_text(). EXCEPTION: a curated set of color
+# emoji IS supported — not via this font, but as compiled-in images wired in as
+# an LVGL imgfont .fallback (img/emoji/convert_emoji.py, src/emoji_font.cpp).
 #
 # REQUIRES: lv_font_conv (Node).  Install once with:  npm i -g lv_font_conv
 # RUN from the firmware/ directory:  bash tools/regen_fonts.sh

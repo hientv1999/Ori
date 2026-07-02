@@ -56,6 +56,7 @@
 #include "screen_manager.h"
 #include "screens/screen_boot_splash.h"
 #include "state_machine.h"
+#include "theme.h"
 #include "widgets/widget_profile_card.h"
 #include "touch_gt911.h"
 
@@ -138,6 +139,10 @@ void setup() {
     // lv_indev_t object directly (the driver struct no longer exists).
     lv_indev_set_long_press_time(lvgl_input::get(), 3000);
     LOG("[ori] long press threshold set to 3000 ms\n");
+
+    // Build the color-emoji fallback and attach it to the user-text fonts before
+    // any runtime screen (or ANCS text) is built. Needs LVGL initialized.
+    theme::init_emoji_fallback();
 
     screen_manager::init();
     mem_snapshot("after screen_manager");

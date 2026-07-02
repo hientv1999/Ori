@@ -4,6 +4,7 @@
 #include <time.h>
 
 #include "app_state.h"
+#include "state_machine.h"
 #include "theme.h"
 #include "ui_helpers.h"
 #include "widgets/widget_profile_card.h"
@@ -170,6 +171,14 @@ lv_obj_t* create() {
 
     lv_obj_t* glyph = make_cal_glyph(left);
     lv_obj_set_style_pad_bottom(glyph, 0, 0);
+    // Tapping the calendar symbol opens the month (Calendar) view — same entry
+    // point as long-pressing the status-bar time. The glyph's child shapes are
+    // non-clickable, so the tap lands on this container.
+    lv_obj_add_flag(glyph, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_opa(glyph, LV_OPA_60, LV_STATE_PRESSED);  // press feedback
+    lv_obj_add_event_cb(glyph, [](lv_event_t*) {
+        state_machine::on_calendar_enter();
+    }, LV_EVENT_CLICKED, nullptr);
 
     lv_obj_t* headline = lv_label_create(left);
     lv_label_set_text_static(headline, "No meetings today");

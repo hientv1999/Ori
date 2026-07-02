@@ -17,4 +17,10 @@ lv_obj_t* create();
 // session's navigation left off.
 void reset_view();
 
+// Re-render the calendar in place — recomputing today + the current-week
+// highlight for the *currently viewed* month (navigation is preserved) — if the
+// calendar is on screen. Called on a day rollover so an open month grid updates
+// at midnight without leaving the view. No-op when the calendar isn't shown.
+void refresh_today();
+
 } // namespace screen_calendar

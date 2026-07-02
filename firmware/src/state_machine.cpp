@@ -416,6 +416,29 @@ static void tick_cb(lv_timer_t* /*t*/) {
     if (clock_now && !s_clock_was_set) g_force_rebuild = true;
     s_clock_was_set = clock_now;
 
+    // Day rollover (e.g. past midnight): the calendar glyph and month grid pin
+    // "today" and the current-week highlight at build time, so refresh when the
+    // local date advances.
+    //   • CALENDAR_VIEW — re-render the open month grid in place (keeps the
+    //     user's navigation; just recomputes the highlight).
+    //   • CLOCK — nothing to do (it shows the time, not the date).
+    //   • everything else — force a normal rebuild of the current screen.
+    static int s_last_day_key = -1;
+    if (clock_now) {
+        time_t now = time(nullptr);
+        struct tm lt;
+        localtime_r(&now, &lt);
+        int day_key = (lt.tm_year + 1900) * 1000 + lt.tm_yday;  // unique per calendar day
+        if (s_last_day_key != -1 && day_key != s_last_day_key) {
+            if (g_state == AppState::CALENDAR_VIEW) {
+                screen_calendar::refresh_today();
+            } else if (g_state != AppState::CLOCK) {
+                g_force_rebuild = true;
+            }
+        }
+        s_last_day_key = day_key;
+    }
+
     // 5-minute pre-meeting alert.
     if (g_state != AppState::COUNTDOWN   &&
         g_state != AppState::SETUP       &&

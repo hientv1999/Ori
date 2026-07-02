@@ -78,7 +78,7 @@ lv_obj_t* make_chevron_line(lv_obj_t* btn, const lv_point_precise_t* pts) {
     lv_obj_t* chev = lv_line_create(btn);
     lv_line_set_points(chev, pts, 3);
     lv_obj_set_style_line_color(chev, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
-    lv_obj_set_style_line_width(chev, 3, 0);
+    lv_obj_set_style_line_width(chev, 4, 0);  // scaled with the +50% chevron glyphs
     lv_obj_set_style_line_rounded(chev, true, 0);
     lv_obj_clear_flag(chev, LV_OBJ_FLAG_CLICKABLE);
     return chev;
@@ -91,8 +91,11 @@ lv_obj_t* make_chevron_line(lv_obj_t* btn, const lv_point_precise_t* pts) {
 // tick in screen_ota_updating.cpp).
 lv_obj_t* make_chevron_btn(lv_obj_t* parent, bool pointing_left, lv_event_cb_t cb) {
     lv_obj_t* btn = make_nav_btn(parent, cb);
-    static lv_point_precise_t left_pts[3]  = {{21, 11}, {14, 18}, {21, 25}};
-    static lv_point_precise_t right_pts[3] = {{14, 11}, {21, 18}, {14, 25}};
+    // Chevron glyph enlarged 50% (scaled about the 36px button's centre 18,18);
+    // still fits within the button so the header height — and the day grid
+    // below it — are unaffected.
+    static lv_point_precise_t left_pts[3]  = {{23, 8}, {12, 18}, {23, 29}};
+    static lv_point_precise_t right_pts[3] = {{12, 8}, {23, 18}, {12, 29}};
     make_chevron_line(btn, pointing_left ? left_pts : right_pts);
     return btn;
 }
@@ -101,10 +104,11 @@ lv_obj_t* make_chevron_btn(lv_obj_t* parent, bool pointing_left, lv_event_cb_t c
 // side inside the same square button.
 lv_obj_t* make_double_chevron_btn(lv_obj_t* parent, bool pointing_left, lv_event_cb_t cb) {
     lv_obj_t* btn = make_nav_btn(parent, cb);
-    static lv_point_precise_t left_a[3]  = {{18, 11}, {11, 18}, {18, 25}};
-    static lv_point_precise_t left_b[3]  = {{26, 11}, {19, 18}, {26, 25}};
-    static lv_point_precise_t right_a[3] = {{10, 11}, {17, 18}, {10, 25}};
-    static lv_point_precise_t right_b[3] = {{18, 11}, {25, 18}, {18, 25}};
+    // Enlarged 50% (scaled about centre 18,18), same as the single chevron.
+    static lv_point_precise_t left_a[3]  = {{18, 8}, {8, 18}, {18, 29}};
+    static lv_point_precise_t left_b[3]  = {{30, 8}, {20, 18}, {30, 29}};
+    static lv_point_precise_t right_a[3] = {{6, 8}, {17, 18}, {6, 29}};
+    static lv_point_precise_t right_b[3] = {{18, 8}, {29, 18}, {18, 29}};
     make_chevron_line(btn, pointing_left ? left_a : right_a);
     make_chevron_line(btn, pointing_left ? left_b : right_b);
     return btn;
@@ -178,7 +182,7 @@ void render_into(lv_obj_t* left) {
 
     lv_obj_t* month_lbl = lv_label_create(header);
     lv_label_set_text(month_lbl, header_buf);
-    lv_obj_set_style_text_font(month_lbl, theme::font_title(), 0);
+    lv_obj_set_style_text_font(month_lbl, theme::font_time(), 0);  // 30px
     lv_obj_set_style_text_color(month_lbl, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
     lv_obj_set_style_translate_x(month_lbl, 20, 0);
 
@@ -187,26 +191,16 @@ void render_into(lv_obj_t* left) {
     ui::clear_container(nav);
     lv_obj_set_flex_flow(nav, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(nav, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    // Gaps are set per-button below (not via a uniform flex pad_column) so the
-    // double-/single-chevron pairs can be spaced wider than the two
-    // single-chevron (month) buttons are from each other.
-    lv_obj_set_style_pad_column(nav, 0, 0);
+    // Uniform gap between every chevron button (one flex pad_column applies the
+    // same spacing to all four).
+    constexpr int16_t CHEVRON_GAP = 35;  // -10% from 39
+    lv_obj_set_style_pad_column(nav, CHEVRON_GAP, 0);
 
     // Order, left to right: year-back, month-back, month-forward, year-forward.
-    lv_obj_t* btn_prev_year  = make_double_chevron_btn(nav, /*pointing_left=*/true,  on_prev_year);
-    lv_obj_t* btn_prev_month = make_chevron_btn(nav, /*pointing_left=*/true,  on_prev_month);
-    lv_obj_t* btn_next_month = make_chevron_btn(nav, /*pointing_left=*/false, on_next_month);
-    /*btn_next_year*/ make_double_chevron_btn(nav, /*pointing_left=*/false, on_next_year);
-
-    // Was a uniform 4px (too tight, easy to mis-tap), then 14px/21px, then
-    // bumped another 50% across the board: 21px between the two
-    // single-month chevrons, 31px between each double-chevron (year) button
-    // and its neighboring single-chevron (month) button.
-    constexpr int16_t MONTH_GAP = 21;
-    constexpr int16_t YEAR_GAP  = MONTH_GAP * 3 / 2; // 31
-    lv_obj_set_style_margin_right(btn_prev_year, YEAR_GAP, 0);
-    lv_obj_set_style_margin_right(btn_prev_month, MONTH_GAP, 0);
-    lv_obj_set_style_margin_right(btn_next_month, YEAR_GAP, 0);
+    make_double_chevron_btn(nav, /*pointing_left=*/true,  on_prev_year);
+    make_chevron_btn(nav, /*pointing_left=*/true,  on_prev_month);
+    make_chevron_btn(nav, /*pointing_left=*/false, on_next_month);
+    make_double_chevron_btn(nav, /*pointing_left=*/false, on_next_year);
 
     // ===== Weekday label row — its own grid, separate from the day grid
     // below, with a small pad_bottom for the gap down to the date numbers. =====
@@ -358,6 +352,13 @@ void reset_view() {
     localtime_r(&now, &tm_now);
     g_view_year  = tm_now.tm_year + 1900;
     g_view_month = tm_now.tm_mon;
+}
+
+void refresh_today() {
+    // Re-render the currently-viewed month (navigation preserved); render_into()
+    // re-reads the clock, so today + the current-week band recompute. No-op when
+    // the calendar screen isn't up (g_left_panel is cleared on its delete).
+    if (g_left_panel) render_into(g_left_panel);
 }
 
 lv_obj_t* create() {
