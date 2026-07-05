@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 mock_orion_ble.py — Mock Orion BLE central for testing Ori's setup flow.
 
@@ -27,7 +27,7 @@ Interactive commands (shown on connect):
     t  — resync time (manual TimeSync-only push, RAM-only, no blackout)
     m  — push media now (manual one-shot push of the current Windows
          now-playing session — title, artist, embedded album art)
-    k  — push clock face (toggles DIGITAL <-> ANALOG, char 0011)
+    k  — push clock face (toggles DIGITAL <-> ANALOG, char 000F Device Settings)
     f  — factory reset           (§7.2)
     q  — quit
 
@@ -53,15 +53,17 @@ Volume (Host Volume State, ble-protocol.md §12) is also bidirectional:
   write-back during its 800 ms swipe-override window (ble-protocol.md §12).
 
 On connect the mock runs ONE unified sync: it sends Ori a manifest of every
-section's hash (time/profile/photo/meetings/PTO), Ori replies with the subset
+section's hash (time/profile/photo/meetings/Time Off), Ori replies with the subset
 that differs, and only those are sent — everything on a first pair, or just the
 changed/dropped sections on a reconnect (e.g. meetings + time after a power
 cycle). Time Sync is always sent.
 
-Presence Status is pushed separately from the sync flow — it has no manifest,
-no hash, and no Read property, so this script always writes
-a fresh value right after connecting (--presence, default AVAILABLE), then
-lets you re-push a different value anytime with 'p'.
+Presence is pushed separately from the sync flow — it has no manifest, no hash,
+and is not returned by Device Settings read (Orion is the sole source of truth).
+A fresh value is written right after connecting (--presence, default AVAILABLE);
+re-push anytime with 'p'. Clock face and ANCS filter ARE recovered via a Device
+Settings read on connect ('r' to re-read manually), so 'k' starts from Ori's
+actual persisted value rather than a script-side assumption.
 
 Pairing note:
     BLE bonding (LE Secure Connections, Passkey Entry) is handled by the OS.
@@ -133,9 +135,9 @@ except ImportError:
 _SCRIPT_DIR        = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT         = os.path.dirname(_SCRIPT_DIR)
 _PROFILE_PHOTO_SRC = os.path.join(_REPO_ROOT, "firmware", "img", "profile_photo", "profile_photo.jfif")
-_PTO_PHOTO_SRC     = os.path.join(_REPO_ROOT, "firmware", "img", "pto_photo",     "pto_photo.jpg")
+_TIME_OFF_PHOTO_SRC = os.path.join(_REPO_ROOT, "firmware", "img", "time_off_photo", "time_off_photo.jpg")
 
-# Forced JPEG quality for the profile + PTO photos. None = pick the highest
+# Forced JPEG quality for the profile + Time Off photos. None = pick the highest
 # quality that fits the hard cap (default). Set via --photo-quality to send
 # deliberately lower-quality (smaller) images — useful for exercising the
 # firmware JPEG decoder and shortening chunked transfers during testing.
@@ -162,7 +164,7 @@ UUID_TIME_SYNC    = _uuid(0x0003)   # Write (response)      — encrypted
 UUID_PROFILE      = _uuid(0x0004)   # Write (response)      — encrypted
 UUID_PHOTO        = _uuid(0x0005)   # Write chunked         — encrypted
 UUID_MEETINGS     = _uuid(0x0006)   # Write chunked         — encrypted
-UUID_PTO          = _uuid(0x0007)   # Write chunked         — encrypted
+UUID_TIME_OFF     = _uuid(0x0007)   # Write chunked         — encrypted
 UUID_SYNC_CTRL    = _uuid(0x0008)   # Write, Notify         — encrypted
 UUID_FACTORY_RST  = _uuid(0x0009)   # Write (response)      — encrypted
 UUID_MANIFEST     = _uuid(0x000A)   # Write, Notify         — encrypted
@@ -170,21 +172,15 @@ UUID_KEYBOARD_CMD = _uuid(0x000B)   # Notify only               — encrypted (O
 UUID_HOST_VOLUME  = _uuid(0x000C)   # Read, Write (response)   — encrypted
 UUID_MEDIA_META   = _uuid(0x000D)   # Write (response), Notify — encrypted
 UUID_ALBUM_ART    = _uuid(0x000E)   # Write NO RESPONSE only   — encrypted
-UUID_PRESENCE     = _uuid(0x000F)   # Write (response)      — encrypted
-UUID_SHORTCUTS    = _uuid(0x0010)   # Write (response)      — encrypted
-UUID_CLOCK_FACE   = _uuid(0x0011)   # Write (response)      — encrypted
+UUID_DEV_SETTINGS = _uuid(0x000F)   # Write (response)      — encrypted
+                                    # Merges: presence | shortcut slots | clock face | ANCS filter
 
 FACTORY_RESET_MAGIC = bytes([0xFA, 0xC7, 0x5E, 0x5E])
 
-# Presence Status byte values (ble-protocol.md §4). Orion is the sole writer —
-# no Read property — so it must push a fresh value on every connect/reconnect.
-PRESENCE_NAMES = {0x00: "AVAILABLE", 0x01: "BUSY", 0x02: "AWAY", 0x03: "OFFLINE"}
-
-# Clock Face byte values (ble-protocol.md §3/§4, char 0011). Unlike Presence,
-# this IS persisted to NVS on Ori and applied immediately outside the
-# BEGIN/END staging pipeline — Orion only needs to write it when the user
-# changes the setting, not on every connect.
+# Device Settings field value names (ble-protocol.md §4 DeviceSettings schema).
+PRESENCE_NAMES   = {0x00: "AVAILABLE", 0x01: "BUSY", 0x02: "AWAY", 0x03: "OFFLINE"}
 CLOCK_FACE_NAMES = {0x00: "DIGITAL", 0x01: "ANALOG"}
+ANCS_FILTER_NAMES = {0x00: "DISABLED", 0x01: "CALL_ONLY", 0x02: "IMPORTANT", 0x03: "ALL"}
 
 # Shortcut icon token combos to cycle through with 'c' (media-mode.md /
 # shortcut_icons.cpp). Last entry includes an unknown token deliberately, to
@@ -286,18 +282,18 @@ def _crop_resize_to_aspect(img, tw: int, th: int):
         img = img.crop((0, (h - nh) // 2, w, (h + nh) // 2))
     return img.resize((tw, th), _PILImage.LANCZOS)
 
-def build_pto_photo_jpeg() -> bytes:
-    """Crop PTO photo to 528:396 aspect ratio, resize to 528×396, compress to ≤ 64 KB."""
+def build_time_off_photo_jpeg() -> bytes:
+    """Crop Time Off photo to 528:396 aspect ratio, resize to 528×396, compress to ≤ 64 KB."""
     if not _PIL_AVAILABLE:
-        print("  [warn] Pillow not installed — PTO photo empty  (pip install Pillow)")
+        print("  [warn] Pillow not installed — Time Off photo empty  (pip install Pillow)")
         return b""
-    if not os.path.exists(_PTO_PHOTO_SRC):
-        print(f"  [warn] PTO photo not found: {_PTO_PHOTO_SRC}")
+    if not os.path.exists(_TIME_OFF_PHOTO_SRC):
+        print(f"  [warn] Time Off photo not found: {_TIME_OFF_PHOTO_SRC}")
         return b""
-    img  = _PILImage.open(_PTO_PHOTO_SRC).convert("RGB")
+    img  = _PILImage.open(_TIME_OFF_PHOTO_SRC).convert("RGB")
     img  = _crop_resize_to_aspect(img, 528, 396)
     data = _jpeg_max_quality(img, hard_cap=512 * 1024)
-    print(f"  [info] PTO photo: 528×396 JPEG, {len(data):,} B")
+    print(f"  [info] Time Off photo: 528×396 JPEG, {len(data):,} B")
     return data
 
 def build_album_art_jpeg(raw_image_bytes: bytes) -> bytes:
@@ -536,14 +532,14 @@ def build_meetings_stress() -> bytes:
             f"meetings CBOR too large: {len(data)} B (firmware boot buffer limit 4096 B)")
     return data
 
-def build_pto(image: bytes = b"") -> bytes:
+def build_time_off(image: bytes = b"") -> bytes:
     # destination maximized to its 128-byte wire cap (ble-protocol.md §10).
     # Keys are single chars: s=start, e=end, d=destination, m=image.
     #
     # Anchored to local midnight (not raw "now") for the same reason as
     # build_meetings_realistic(): a live wall-clock second makes start/end
     # — and therefore the whole entry's hash — different on every call, so
-    # Ori's manifest correctly (but unhelpfully, for testing) reports PTO as
+    # Ori's manifest correctly (but unhelpfully, for testing) reports Time Off as
     # changed on every single resync even though nothing actually changed.
     midnight    = _local_midnight_epoch()
     week        = 7 * 86400
@@ -555,12 +551,29 @@ def build_pto(image: bytes = b"") -> bytes:
         "m": image,
     })
 
-def build_shortcut_config(slot1: str = "vol-mute", slot2: str = "mic-mute",
-                          slot3: str = "screenshot") -> bytes:
-    # Matches firmware's compiled-in defaults (app_state.cpp k_slot_tokens) so
-    # a first sync round-trips the same value Ori already shows.
-    # Keys are single chars: "1"=slot1, "2"=slot2, "3"=slot3.
-    return cbor2.dumps({"1": slot1, "2": slot2, "3": slot3})
+def build_device_settings(presence: Optional[int] = None,
+                          slot1: Optional[str] = None,
+                          slot2: Optional[str] = None,
+                          slot3: Optional[str] = None,
+                          clock_face: Optional[int] = None,
+                          ancs_filter: Optional[int] = None) -> bytes:
+    # Device Settings (char 000F) — all fields optional; absent keys leave
+    # Ori's current state unchanged. Applied immediately outside BEGIN/END.
+    # Keys: "p"=presence, "1"/"2"/"3"=shortcut slots, "c"=clock_face, "f"=ancs_filter.
+    d: dict = {}
+    if presence is not None:
+        d["p"] = presence
+    if slot1 is not None:
+        d["1"] = slot1
+    if slot2 is not None:
+        d["2"] = slot2
+    if slot3 is not None:
+        d["3"] = slot3
+    if clock_face is not None:
+        d["c"] = clock_face
+    if ancs_filter is not None:
+        d["f"] = ancs_filter
+    return cbor2.dumps(d)
 
 def build_host_volume_state(level: int, mute: bool = False) -> bytes:
     # Single-char keys (ble-protocol.md §4): l=level (0..100), m=mute.
@@ -786,46 +799,53 @@ class MockOrion:
         self._on_dev_status(None, raw)  # seed current value
 
     async def push_presence(self, value: int):
-        # Presence Status is Write-only (ble-protocol.md §6.4) — Orion is the
-        # sole source of truth and must push a fresh byte on every connect,
-        # since Ori has no Read property to fall back on and no way to
-        # recover a value on its own after a disconnect.
+        # Presence is "p" in Device Settings (char 000F) — write-only, applied
+        # immediately outside BEGIN/END. Must push fresh on every connect.
         name = PRESENCE_NAMES.get(value, f"0x{value:02X}")
-        await self.write(UUID_PRESENCE, bytes([value]), f"PresenceStatus ({name})")
+        payload = build_device_settings(presence=value)
+        await self.write(UUID_DEV_SETTINGS, payload, f"DeviceSettings presence={name}")
 
     async def push_clock_face(self, value: int):
-        # Clock Face (char 0011) is Write-only, applied + persisted to NVS on
-        # Ori immediately — not staged through BEGIN/END (ble-protocol.md §3).
-        # No manifest/hash involved, so a bare write is all this needs.
+        # Clock Face is "c" in Device Settings — persisted to NVS; only write
+        # when the user changes it, not on every reconnect.
         name = CLOCK_FACE_NAMES.get(value, f"0x{value:02X}")
-        await self.write(UUID_CLOCK_FACE, bytes([value]), f"ClockFace ({name})")
+        payload = build_device_settings(clock_face=value)
+        await self.write(UUID_DEV_SETTINGS, payload, f"DeviceSettings clock_face={name}")
 
-    async def _run_single_item_sync(self, uuid: str, payload: bytes,
-                                     label: str, ok_label: str):
-        """Minimal BEGIN→write→END→wait session for one RAM-only, hash-less
-        staged item (Time Sync, Shortcut Config) — both are applied only at
-        SyncControl{END}, so a bare write would sit in g_stage and never
-        reach app_state. No NVS write involved, so this also skips
-        blackout() — no screen flicker."""
-        self._seq += 1
-        seq = self._seq
-        await self.write(UUID_SYNC_CTRL,
-            cbor2.dumps({"o": "BEGIN", "s": seq, "t": len(payload)}),
-            f"SyncControl BEGIN seq={seq}")
-        await self.write(uuid, payload, label)
-        await self.write(UUID_SYNC_CTRL,
-            cbor2.dumps({"o": "END", "s": seq}), f"SyncControl END seq={seq}")
-        if await self.wait_status_in({0x03, 0x10}, timeout=10.0):
-            print(f"  [ok] {ok_label} applied (status {DS.get(self.last_status, '?')}).\n")
-        else:
-            print(f"  [warn] completion not seen (last: {DS.get(self.last_status, '?')})\n")
+    async def push_ancs_filter(self, value: int):
+        # ANCS filter is "f" in Device Settings — persisted to NVS; only write
+        # when the user changes it.
+        name = ANCS_FILTER_NAMES.get(value, f"0x{value:02X}")
+        payload = build_device_settings(ancs_filter=value)
+        await self.write(UUID_DEV_SETTINGS, payload, f"DeviceSettings ancs_filter={name}")
+
+    async def read_device_settings(self) -> dict:
+        # Read Device Settings (char 000F) to recover the two NVS-persisted fields:
+        #   "c" = clock_face (0=Digital, 1=Analog)
+        #   "f" = ancs_filter (0=Disabled, 1=CallOnly, 2=Important, 3=All)
+        # Presence and shortcuts are NOT returned — Orion is the source of truth
+        # for both. ble-protocol.md §6.4 / §4 DeviceSettings schema.
+        try:
+            raw = await self.client.read_gatt_char(UUID_DEV_SETTINGS)
+            msg = cbor2.loads(bytes(raw))
+            cf  = msg.get("c")
+            af  = msg.get("f")
+            cf_name = CLOCK_FACE_NAMES.get(cf,   f"0x{cf:02X}" if isinstance(cf, int) else "?")
+            af_name = ANCS_FILTER_NAMES.get(af,   f"0x{af:02X}" if isinstance(af, int) else "?")
+            print(f"  [read] DeviceSettings: clock_face={cf_name}  ancs_filter={af_name}")
+            return msg
+        except Exception as exc:
+            print(f"  [read] DeviceSettings: error {exc}")
+            return {}
 
     async def push_shortcuts(self, slot1: str, slot2: str, slot3: str):
-        shortcut_bytes = build_shortcut_config(slot1, slot2, slot3)
+        # Shortcut slots are "1"/"2"/"3" in Device Settings — written outside
+        # the BEGIN/END staging pipeline; applied immediately on Ori.
         self._shortcut_slots = {1: slot1, 2: slot2, 3: slot3}
+        payload = build_device_settings(slot1=slot1, slot2=slot2, slot3=slot3)
         print(f"\n  [info] pushing shortcuts: {slot1}, {slot2}, {slot3}")
-        await self._run_single_item_sync(UUID_SHORTCUTS, shortcut_bytes,
-                                          "ShortcutConfig", "Shortcuts")
+        await self.write(UUID_DEV_SETTINGS, payload,
+                         f"DeviceSettings shortcuts={slot1},{slot2},{slot3}")
 
     async def push_host_volume(self, level: int, mute: bool = False):
         # HostVolumeState (char 000C) is Write (response) — Orion is the sole
@@ -836,10 +856,24 @@ class MockOrion:
         print(f"  [vol]  HostVolumeState → Ori: level={level}% mute={mute}")
 
     async def push_time_sync(self):
+        # Time Sync is inside the BEGIN/END pipeline (RAM-only on Ori, no hash,
+        # but still staged — ble-protocol.md §6.0). Wrap it in its own session.
         time_sync_bytes = build_time_sync()
         print(f"\n  [info] pushing time sync")
-        await self._run_single_item_sync(UUID_TIME_SYNC, time_sync_bytes,
-                                          "TimeSync", "Time sync")
+        self._seq += 1
+        seq   = self._seq
+        total = len(time_sync_bytes)
+        await self.write(UUID_SYNC_CTRL,
+            cbor2.dumps({"o": "BEGIN", "s": seq, "t": total}),
+            f"SyncControl BEGIN seq={seq} total={total}")
+        await self.write(UUID_TIME_SYNC, time_sync_bytes, "TimeSync")
+        await self.write(UUID_SYNC_CTRL,
+            cbor2.dumps({"o": "END", "s": seq}),
+            f"SyncControl END seq={seq}")
+        if await self.wait_status_in({0x10, 0x03}, timeout=15.0):
+            print("  [ok] Time sync complete.\n")
+        else:
+            print("  [warn] Time sync completion not seen.\n")
 
     async def push_media(self):
         info = await read_now_playing_media()
@@ -849,7 +883,7 @@ class MockOrion:
 
     async def _send_media(self, info: dict):
         # Media Metadata (000D) and Media Album Art (000E) are applied
-        # immediately on write — unlike Time/Profile/Photo/Meetings/PTO, they
+        # immediately on write — unlike Time/Profile/Photo/Meetings/Time Off, they
         # are NOT staged behind SyncControl{BEGIN..END} (gatt_server.cpp's
         # handle_media_metadata/handle_album_art call straight into app_state,
         # no g_stage involved). PSRAM-cached only, no NVS, no hash, no
@@ -879,14 +913,14 @@ class MockOrion:
         else:
             print("  [info] no album art available — sent metadata only.\n")
 
-    def _print_hashes(self, profile, photo, meetings, pto):
-        # No Shortcut Config entry — it's RAM-only and always resent
-        # unconditionally (like Time Sync), so there's nothing to hash-compare.
+    def _print_hashes(self, profile, photo, meetings, time_off):
+        # Device Settings (shortcuts/presence) has no hash entry — written
+        # outside BEGIN/END, never staged, so there's nothing to hash-compare.
         print("── SHA-256 hashes (reference for next reconnect) ──")
         print(f"  profile:  {sha256(profile).hex()}")
         print(f"  photo:    {sha256(photo).hex()}")
         print(f"  meetings: {sha256(meetings).hex()}")
-        print(f"  pto:      {sha256(pto).hex()}")
+        print(f"  time_off: {sha256(time_off).hex()}")
 
     # ── Unified sync (hash-driven delta) — §6.1 + §6.2 in one flow ────────────
     #
@@ -909,25 +943,30 @@ class MockOrion:
         profile_bytes   = build_profile()
         photo_bytes     = build_profile_photo_jpeg()
         meetings_bytes  = build_meetings()
-        pto_image       = build_pto_photo_jpeg()
-        pto_bytes       = build_pto(image=pto_image)
-        shortcut_bytes  = build_shortcut_config()
+        time_off_image  = build_time_off_photo_jpeg()
+        time_off_bytes  = build_time_off(image=time_off_image)
         self._shortcut_slots = {1: "vol-mute", 2: "mic-mute", 3: "screenshot"}
+
+        # Device Settings: write shortcuts (+ presence already pushed by caller)
+        # OUTSIDE the BEGIN/END pipeline — applied immediately on Ori (§6.4).
+        dev_settings_bytes = build_device_settings(
+            slot1="vol-mute", slot2="mic-mute", slot3="screenshot")
+        await self.write(UUID_DEV_SETTINGS, dev_settings_bytes,
+                         "DeviceSettings shortcuts")
 
         # Ask Ori which sections differ from what it already holds.
         print("\n── Sync Manifest (section hashes) ──")
         self._manifest_reply.clear()
         self.needed = []
         # Keys are single chars (ble-protocol.md §4):
-        # p=profile_sha, h=photo_sha, m=meetings_sha, t=pto_sha.
-        # No shortcut_sha — Shortcut Config is RAM-only and always resent
-        # unconditionally (like Time Sync), same as Meeting List's exclusion
-        # rationale minus the hash check (it has neither NVS nor a hash).
+        # p=profile_sha, h=photo_sha, m=meetings_sha, t=to_sha.
+        # No Device Settings entry — shortcuts/presence are written outside
+        # BEGIN/END (char 000F, applied immediately), so they have no hash entry.
         await self.write(UUID_MANIFEST, cbor2.dumps({
             "p": sha256(profile_bytes),
             "h": sha256(photo_bytes),
             "m": sha256(meetings_bytes),
-            "t": sha256(pto_bytes),
+            "t": sha256(time_off_bytes),
         }), "SyncManifest")
         print("── Waiting for Ori manifest reply ──")
         manifest_timed_out = False
@@ -936,13 +975,13 @@ class MockOrion:
         except asyncio.TimeoutError:
             manifest_timed_out = True
             print("  [warn] No manifest reply — assuming all sections needed")
-            self.needed = ["profile", "photo", "meetings", "pto"]
+            self.needed = ["profile", "photo", "meetings", "to"]
 
         item_bytes = {
-            "profile":  profile_bytes,
-            "photo":    photo_bytes,
-            "meetings": meetings_bytes,
-            "pto":      pto_bytes,
+            "profile":   profile_bytes,
+            "photo":     photo_bytes,
+            "meetings":  meetings_bytes,
+            "to":        time_off_bytes,
         }
 
         # Stale vs. up-to-date breakdown — what Ori actually said it needs,
@@ -962,13 +1001,13 @@ class MockOrion:
         else:
             print("  UP TO DATE (skipping): none")
 
-        # Time Sync and Shortcut Config both ride inside every BEGIN→END
-        # unconditionally (RAM-only on Ori, no hash, no manifest gating) —
-        # their bytes always count toward total. Only the mismatching
-        # hash-gated sections (profile/photo/meetings/pto) are conditional.
-        total = len(time_sync_bytes) + len(shortcut_bytes) + sum(
+        # Time Sync rides inside every BEGIN→END unconditionally (RAM-only on
+        # Ori, no hash, no manifest gating). Shortcuts now go via Device Settings
+        # outside BEGIN/END (already sent above). Only mismatching hash-gated
+        # sections (profile/photo/meetings/time_off) are conditional.
+        total = len(time_sync_bytes) + sum(
             len(item_bytes[k]) for k in self.needed if k in item_bytes)
-        print(f"\n  [info] syncing: time + shortcut({len(shortcut_bytes):,}B)"
+        print(f"\n  [info] syncing: time"
               + "".join(f" + {k}({len(item_bytes[k]):,}B)"
                         for k in self.needed if k in item_bytes)
               + f"   → total {total:,} B")
@@ -981,15 +1020,14 @@ class MockOrion:
             cbor2.dumps({"o": "BEGIN", "s": seq, "t": total}),
             f"SyncControl BEGIN seq={seq} total={total:,}")
         await self.write(UUID_TIME_SYNC, time_sync_bytes, "TimeSync")
-        await self.write(UUID_SHORTCUTS, shortcut_bytes, "ShortcutConfig")
         if "profile"  in self.needed:
             await self.write(UUID_PROFILE, profile_bytes, "ProfileInfo")
         if "photo"    in self.needed:
             await self.write_chunked(UUID_PHOTO, photo_bytes, "ProfilePhoto")
         if "meetings" in self.needed:
             await self.write_chunked(UUID_MEETINGS, meetings_bytes, "MeetingList")
-        if "pto"      in self.needed:
-            await self.write_chunked(UUID_PTO, pto_bytes, "PtoEntry")
+        if "to"       in self.needed:
+            await self.write_chunked(UUID_TIME_OFF, time_off_bytes, "TimeOffEntry")
         await self.write(UUID_SYNC_CTRL,
             cbor2.dumps({"o": "END", "s": seq}), f"SyncControl END seq={seq}")
 
@@ -1001,7 +1039,7 @@ class MockOrion:
             print(f"  [warn] completion not seen "
                   f"(last: {DS.get(self.last_status, '?')})\n")
 
-        self._print_hashes(profile_bytes, photo_bytes, meetings_bytes, pto_bytes)
+        self._print_hashes(profile_bytes, photo_bytes, meetings_bytes, time_off_bytes)
 
     # ── factory reset §7.2 ───────────────────────────────────────────────────
 
@@ -1250,20 +1288,25 @@ MENU = """
 Commands:
   s — sync now        (hash-driven delta; also runs automatically on connect)
   p — push presence   (cycle AVAILABLE -> BUSY -> AWAY -> OFFLINE -> ...)
-  c — push shortcuts   (cycle through SHORTCUT_COMBOS test sets)
-  t — resync time     (manual TimeSync-only push)
+  c — push shortcuts  (cycle through SHORTCUT_COMBOS test sets)
+  t — resync time     (manual TimeSync-only push, inside BEGIN/END)
   m — push media now  (manual one-shot; media also auto-pushes in the
                         background on every track change — see media_watcher)
-  k — push clock face (toggle DIGITAL <-> ANALOG, char 0011)
+  k — push clock face (toggle DIGITAL <-> ANALOG, char 000F Device Settings)
+  n — push ANCS filter (cycle DISABLED -> CALL_ONLY -> IMPORTANT -> ALL -> ...)
+  r — read Device Settings (show Ori's current clock_face + ancs_filter from NVS)
   f — factory reset   (§7.2)
   q — quit
 """
 
-async def command_loop(orion: MockOrion):
-    loop = asyncio.get_event_loop()
-    presence = [0x00]  # mutable cell so 'p' can cycle across iterations
-    combo_idx = [0]    # mutable cell so 'c' can cycle across iterations
-    clock_face = [0x00]  # mutable cell so 'k' can toggle across iterations
+async def command_loop(orion: MockOrion, initial_settings: Optional[dict] = None):
+    loop      = asyncio.get_event_loop()
+    presence  = [0x00]   # mutable cell so 'p' can cycle across iterations
+    combo_idx = [0]       # mutable cell so 'c' can cycle across iterations
+    ancs_idx  = [0]       # mutable cell so 'n' can cycle across iterations
+    # Seed clock_face from Ori's actual NVS value (read on connect) so 'k'
+    # toggles relative to what the device is actually showing, not a guess.
+    clock_face = [int(initial_settings.get("c", 0x00)) if initial_settings else 0x00]
     print(MENU)
     while not orion.disconnected:
         try:
@@ -1291,6 +1334,11 @@ async def command_loop(orion: MockOrion):
         elif cmd == "k":
             clock_face[0] = 0x00 if clock_face[0] else 0x01
             await orion.push_clock_face(clock_face[0])
+        elif cmd == "n":
+            ancs_idx[0] = (ancs_idx[0] + 1) % 4
+            await orion.push_ancs_filter(ancs_idx[0])
+        elif cmd == "r":
+            await orion.read_device_settings()
         elif cmd == "f":
             await orion.run_factory_reset()
             # Don't reprint menu — factory reset exits the loop.
@@ -1298,7 +1346,7 @@ async def command_loop(orion: MockOrion):
             print("  Goodbye.")
             break
         elif cmd:
-            print("  Unknown command. Type s / p / c / t / m / k / f / q")
+            print("  Unknown command. Type s / p / c / t / m / k / n / r / f / q")
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -1382,8 +1430,13 @@ async def main(args):
 
         orion = MockOrion(client)
         await orion.subscribe()
-        # Presence has no manifest/hash and no Read fallback — push it fresh
-        # on every connect, independent of the sync flow below.
+        # Read Device Settings on connect to recover the two NVS-persisted fields
+        # (clock_face + ancs_filter) so command_loop()'s 'k' toggle starts from
+        # Ori's actual state, not a guess. Presence and shortcuts are NOT returned
+        # by the read — Orion is their sole source of truth (ble-protocol.md §6.4).
+        initial_settings = await orion.read_device_settings()
+        # Push presence fresh on every connect via char 000F, outside the sync
+        # pipeline. run_sync() pushes shortcuts (also char 000F) right before BEGIN.
         await orion.push_presence(args.presence)
         # Sync automatically on connect — Ori reports which sections differ and we
         # send only those. Running it immediately also satisfies Ori's first-pair
@@ -1401,7 +1454,7 @@ async def main(args):
         watcher_task = asyncio.create_task(media_watcher(orion))
         vol_task     = asyncio.create_task(volume_watcher(orion))
         try:
-            await command_loop(orion)
+            await command_loop(orion, initial_settings=initial_settings)
         finally:
             watcher_task.cancel()
             vol_task.cancel()
@@ -1421,7 +1474,7 @@ if __name__ == "__main__":
     parser.add_argument("--address", metavar="AA:BB:CC:DD:EE:FF",
                         help="BLE address of Ori (skips scan)")
     parser.add_argument("--photo-quality", type=int, metavar="1-95",
-                        help="force JPEG quality for the profile + PTO photos "
+                        help="force JPEG quality for the profile + Time Off photos "
                              "(lower = smaller/worse). Default: highest that fits the cap.")
     parser.add_argument("--presence", type=int, default=0x00, choices=[0x00, 0x01, 0x02, 0x03],
                         help="Presence Status to push on connect: "

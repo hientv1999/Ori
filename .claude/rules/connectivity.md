@@ -5,7 +5,7 @@ Ori has **three logical channels**:
 | Channel | Direction | Carries |
 |---|---|---|
 | **USB CDC** (USB-C power cable) | Orion → Ori | Firmware update only — see `ota.md` |
-| **BLE Ori Sync Service** (custom UUID, encrypted+bonded, 16 chars) | bidirectional | Profile, photo, meetings, PTO, time, backlight, factory reset, sync manifest, Controls-mode commands, host volume state, media metadata, media album art |
+| **BLE Ori Sync Service** (custom UUID, encrypted+bonded, 16 chars) | bidirectional | Profile, photo, meetings, Time Off, time, backlight, factory reset, sync manifest, Controls-mode commands, host volume state, media metadata, media album art |
 | **iPhone ANCS** (BLE, separate bond) | iPhone → Ori | Notification-icon awareness (read-only) |
 
 No standard BLE HOGP — all Controls-mode interactions ride the custom Ori Sync Service; Orion bridges to OS-level APIs. The mode-toggle is **hidden whenever the BLE link to Orion is down**. Full GATT contract: `ble-protocol.md`. Controls-mode UI: `media-mode.md`.
@@ -25,16 +25,16 @@ Source: `PC_app/`. See `pc-app.md` for app details.
 | Sub-state | What it means |
 |---|---|
 | BLE connected only | Link exists; Orion not running. Cached data displayed; nothing refreshed. |
-| Orion running and synced | Authoritative. Refreshes calendar, PTO, profile, time. |
+| Orion running and synced | Authoritative. Refreshes calendar, Time Off, profile, time. |
 
 **Data synced by Orion:**
 - Full name and job title
 - Profile photo
 - Today's meeting list
-- Next PTO entry (start, end, destination image) — only the next entry, not full history
+- Next Time Off entry (start, end, destination image) — only the next entry, not full history
 - Current local time
 
-Profile, photo, PTO, and pairing bonds are cached in NVS and survive power cycles and connection loss. **The meeting list and local time are RAM-only** — a power cycle clears them. Meetings are re-pushed by Orion on reconnect; the clock is re-supplied by Orion (primary) or the iPhone (secondary backup, see §2). See `meeting-list.md` for why meetings aren't persisted.
+Profile, photo, Time Off, and pairing bonds are cached in NVS and survive power cycles and connection loss. **The meeting list and local time are RAM-only** — a power cycle clears them. Meetings are re-pushed by Orion on reconnect; the clock is re-supplied by Orion (primary) or the iPhone (secondary backup, see §2). See `meeting-list.md` for why meetings aren't persisted.
 
 **Reconnect:** hash-manifest delta sync — Orion sends SHA-256 of each item; Ori replies with what it needs. Typical reconnect ~300 ms when nothing changed. See `ble-protocol.md` §6.2 for the wire flow and `state-machine.md` for the overlay UX.
 

@@ -1,24 +1,23 @@
-﻿// Ori GATT Server — 17 characteristics, ble-protocol.md v1.0.
+﻿// Ori GATT Server — 16 characteristics, ble-protocol.md v1.0.
 //
 // Service UUID: 6F726900-0000-4F72-9F00-000000000000
 // Each char UUID replaces bytes 4-5 with the offset:
-//   0001 Protocol Version    Read
-//   0002 Device Status       Read+Notify
-//   0003 Time Sync           Write (enc)
-//   0004 Profile Info        Write (enc)
-//   0005 Profile Photo       Write + Write-NR (enc, chunked)
-//   0006 Meeting List        Write + Write-NR (enc, chunked)
-//   0007 PTO Entry           Write + Write-NR (enc, chunked)
-//   0008 Sync Control        Write+Notify (enc)
-//   0009 Factory Reset Cmd   Write (enc)
-//   000A Sync Manifest       Write+Notify (enc)
-//   000B Keyboard Command    Notify (enc)
-//   000C Host Volume State   Read+Write (enc)
-//   000D Media Metadata      Write+Notify (enc)
-//   000E Media Album Art     Write no-rsp (enc, chunked)
-//   000F Presence Status     Write (enc)
-//   0010 Shortcut Config     Write (enc)
-//   0011 Clock Face          Write (enc)
+//   0001 Protocol Version        Read
+//   0002 Device Status           Read+Notify
+//   0003 Time Sync               Write (enc)
+//   0004 Profile Info            Write (enc)
+//   0005 Profile Photo           Write + Write-NR (enc, chunked)
+//   0006 Meeting List            Write + Write-NR (enc, chunked)
+//   0007 Time Off Entry          Write + Write-NR (enc, chunked)
+//   0008 Sync Control            Write+Notify (enc)
+//   0009 Device Command          Write (enc)  — magic-routed: factory reset | unpair phone
+//   000A Sync Manifest           Write+Notify (enc)
+//   000B Keyboard Command        Notify (enc)
+//   000C Host Volume State       Read+Write (enc)
+//   000D Media Metadata          Write+Notify (enc)
+//   000E Media Album Art         Write no-rsp (enc, chunked)
+//   000F Device Settings         Read+Write (enc) — presence | shortcuts | clock face | ANCS filter
+//   0012 Phone Bond Status       Read+Notify (enc)
 
 #include "ble/gatt_server.h"
 #include "ble/ble_manager.h"
@@ -33,14 +32,17 @@
 void ble_post_factory_reset_event();
 void ble_post_presence_event(widget_profile_card::Presence p);
 void ble_post_clock_face_event(uint8_t face);
+void ble_post_unpair_phone_event();
+void ble_post_ancs_filter_event(uint8_t level);
+void ble_post_shortcut_update_event();
 void ble_post_media_meta_event();
 void ble_post_album_art_event(uint8_t* buf, size_t len);
 void ble_post_photo_event(uint8_t* buf, size_t len);
 void ble_post_sync_begin_event(uint32_t total_bytes);
 void ble_post_sync_commit_event();
-void ble_post_sync_end_event(bool light_refresh);
+void ble_post_sync_end_event(bool unused);
 void ble_post_orioning_progress(uint8_t pct);
-void ble_post_pto_photo_event(uint8_t* buf, size_t len);
+void ble_post_time_off_photo_event(uint8_t* buf, size_t len);
 
 #include <Arduino.h>
 #include "ori_log.h"
@@ -96,8 +98,7 @@ void ble_post_pto_photo_event(uint8_t* buf, size_t len);
 // Single source of truth in include/fw_version.h — shared with ota_receiver.
 #define FIRMWARE_VERSION ORI_FW_VERSION
 #define PROTO_MAJOR 1
-#define PROTO_MINOR 2  // 1.2: Photo/Meetings/PTO chars also accept Write-No-Response
-                       // (additive — Write-with-response still works for old centrals)
+#define PROTO_MINOR 0
 
 namespace {
 
@@ -114,39 +115,35 @@ NimBLECharacteristic* c_time_sync   = nullptr; // 0003
 NimBLECharacteristic* c_profile     = nullptr; // 0004
 NimBLECharacteristic* c_photo       = nullptr; // 0005
 NimBLECharacteristic* c_meetings    = nullptr; // 0006
-NimBLECharacteristic* c_pto         = nullptr; // 0007
+NimBLECharacteristic* c_time_off     = nullptr; // 0007
 NimBLECharacteristic* c_sync_ctrl   = nullptr; // 0008
-NimBLECharacteristic* c_factory_rst = nullptr; // 0009
+NimBLECharacteristic* c_dev_cmd      = nullptr; // 0009
 NimBLECharacteristic* c_manifest    = nullptr; // 000A
 NimBLECharacteristic* c_kbd_cmd     = nullptr; // 000B
 NimBLECharacteristic* c_host_vol    = nullptr; // 000C
 NimBLECharacteristic* c_media_meta  = nullptr; // 000D
 NimBLECharacteristic* c_album_art   = nullptr; // 000E
-NimBLECharacteristic* c_presence    = nullptr; // 000F
-NimBLECharacteristic* c_shortcuts   = nullptr; // 0010
-NimBLECharacteristic* c_clock_face  = nullptr; // 0011
+NimBLECharacteristic* c_dev_settings = nullptr; // 000F
+NimBLECharacteristic* c_phone_status = nullptr; // 0012
 
 // Meeting list is RAM-only (not persisted to NVS — see state_machine). Its
 // delta-sync hash therefore also lives in RAM only: a power cycle drops the
 // meetings AND this hash together, so the next reconnect's manifest reports
 // "meetings" as needed and Orion re-pushes them (instead of wrongly assuming
-// they're still cached). Profile/photo/PTO hashes stay in NVS (that data does
-// persist). Set on each MeetingList commit; consulted in handle_manifest_write.
+// they're still cached). Profile/photo/Time Off hashes stay in NVS (that data
+// does persist). Set on each MeetingList commit; consulted in handle_manifest_write.
 uint8_t g_meetings_hash[32]  = {};
 bool    g_meetings_hash_valid = false;
 
 // ── Chunked transfer contexts ─────────────────────────────────────────────
 chunked_transfer::Context g_photo_ctx;
 chunked_transfer::Context g_meetings_ctx;
-chunked_transfer::Context g_pto_ctx;
+chunked_transfer::Context g_time_off_ctx;
 chunked_transfer::Context g_art_ctx;
 
 // ── Sync sequence tracking ────────────────────────────────────────────────
 uint32_t g_sync_seq = 0;
 bool     g_sync_in_progress = false;
-
-// ── Presence state ────────────────────────────────────────────────────────
-uint8_t g_presence_byte = 0x03; // OFFLINE default
 
 // ── Volume state ─────────────────────────────────────────────────────────
 uint8_t g_volume_level = 50;
@@ -279,13 +276,10 @@ struct SyncStage {
     uint8_t* meetings_cbor = nullptr; // owned (PSRAM, from chunked_transfer)
     size_t   meetings_len  = 0;
 
-    bool     have_pto = false;
-    uint8_t* pto_cbor = nullptr;     // owned (PSRAM, from chunked_transfer)
-    size_t   pto_len  = 0;
+    bool     have_time_off = false;
+    uint8_t* time_off_cbor = nullptr; // owned (PSRAM, from chunked_transfer)
+    size_t   time_off_len  = 0;
 
-    bool     have_shortcuts = false;
-    uint8_t* shortcut_cbor  = nullptr; // owned
-    size_t   shortcut_len   = 0;
 };
 
 SyncStage g_stage;
@@ -296,16 +290,14 @@ static void apply_time_sync(uint64_t epoch_utc, const char* tz);
 static void apply_profile_cbor(const uint8_t* data, size_t len);
 static void apply_photo_jpeg(uint8_t* buf, size_t n);
 static void apply_meetings_cbor(uint8_t* buf, size_t n);
-static void apply_shortcuts_cbor(const uint8_t* data, size_t len);
-static void apply_pto_cbor(uint8_t* buf, size_t n);
+static void apply_time_off_cbor(uint8_t* buf, size_t n);
 
 // Free any owned staging buffers and zero the struct.
 static void stage_reset() {
     if (g_stage.profile_cbor)  heap_caps_free(g_stage.profile_cbor);
     if (g_stage.photo_jpeg)    heap_caps_free(g_stage.photo_jpeg);
     if (g_stage.meetings_cbor) heap_caps_free(g_stage.meetings_cbor);
-    if (g_stage.pto_cbor)      heap_caps_free(g_stage.pto_cbor);
-    if (g_stage.shortcut_cbor) heap_caps_free(g_stage.shortcut_cbor);
+    if (g_stage.time_off_cbor) heap_caps_free(g_stage.time_off_cbor);
     g_stage = SyncStage{};
 }
 
@@ -341,15 +333,8 @@ static void stage_add_bytes(uint16_t n) {
 }
 
 // Apply every staged item to NVS / live state in one burst, then reset.
-// Called on SyncControl{END}. Returns true when Shortcut Config was the only
-// staged item with a screen-visible effect (Time alone never needs a screen
-// refresh) — the caller can then do a cheap redraw instead of a full rebuild,
-// since apply_shortcuts_cbor() already updates the shortcuts row in place.
-static bool stage_commit() {
-    bool only_shortcuts = g_stage.have_shortcuts &&
-        !g_stage.have_profile && !g_stage.have_photo &&
-        !g_stage.have_meetings && !g_stage.have_pto;
-
+// Called on SyncControl{END}.
+static void stage_commit() {
     if (g_stage.have_time) {
         apply_time_sync(g_stage.epoch_utc, g_stage.tz);
     }
@@ -364,12 +349,9 @@ static bool stage_commit() {
         apply_meetings_cbor(g_stage.meetings_cbor, g_stage.meetings_len);
         g_stage.meetings_cbor = nullptr; // freed by apply_meetings_cbor
     }
-    if (g_stage.have_pto) {
-        apply_pto_cbor(g_stage.pto_cbor, g_stage.pto_len);
-        g_stage.pto_cbor = nullptr; // freed by apply_pto_cbor
-    }
-    if (g_stage.have_shortcuts) {
-        apply_shortcuts_cbor(g_stage.shortcut_cbor, g_stage.shortcut_len);
+    if (g_stage.have_time_off) {
+        apply_time_off_cbor(g_stage.time_off_cbor, g_stage.time_off_len);
+        g_stage.time_off_cbor = nullptr; // freed by apply_time_off_cbor
     }
 
     if (g_stage.total_bytes > 0) {
@@ -377,7 +359,22 @@ static bool stage_commit() {
     }
 
     stage_reset();
-    return only_shortcuts;
+}
+
+// Encode PhoneBondStatus CBOR: { "b": bonded, "c": connected, "n": name }
+static size_t encode_phone_status(uint8_t* buf, size_t buf_sz,
+                                   bool bonded, bool connected, const char* name) {
+    CborEncoder enc, map;
+    cbor_encoder_init(&enc, buf, buf_sz, 0);
+    cbor_encoder_create_map(&enc, &map, 3);
+    cbor_encode_text_stringz(&map, "b");
+    cbor_encode_boolean(&map, bonded);
+    cbor_encode_text_stringz(&map, "c");
+    cbor_encode_boolean(&map, connected);
+    cbor_encode_text_stringz(&map, "n");
+    cbor_encode_text_stringz(&map, name ? name : "");
+    cbor_encoder_close_container(&enc, &map);
+    return cbor_encoder_get_buffer_size(&enc, buf);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -414,12 +411,12 @@ public:
             handle_photo(data, len, info);
         } else if (c == c_meetings) {
             handle_meetings(data, len, info);
-        } else if (c == c_pto) {
-            handle_pto(data, len, info);
+        } else if (c == c_time_off) {
+            handle_time_off(data, len, info);
         } else if (c == c_sync_ctrl) {
             handle_sync_ctrl(data, len, info);
-        } else if (c == c_factory_rst) {
-            handle_factory_reset(data, len, info);
+        } else if (c == c_dev_cmd) {
+            handle_device_cmd(data, len, info);
         } else if (c == c_manifest) {
             handle_manifest_write(data, len, info);
         } else if (c == c_host_vol) {
@@ -428,12 +425,8 @@ public:
             handle_media_metadata(data, len, info);
         } else if (c == c_album_art) {
             handle_album_art(data, len, info);
-        } else if (c == c_presence) {
-            handle_presence(data, len, info);
-        } else if (c == c_shortcuts) {
-            handle_shortcut_config(data, len, info);
-        } else if (c == c_clock_face) {
-            handle_clock_face(data, len, info);
+        } else if (c == c_dev_settings) {
+            handle_device_settings(data, len, info);
         }
     }
 
@@ -447,6 +440,9 @@ public:
         } else if (c == c_host_vol) {
             if (!info.isEncrypted()) return;
             handle_host_volume_read(c);
+        } else if (c == c_dev_settings) {
+            if (!info.isEncrypted()) return;
+            handle_device_settings_read(c);
         }
     }
 
@@ -515,26 +511,6 @@ private:
         stage_add_bytes(len);
     }
 
-    // ── Shortcut Config (char 0010) ─────────────────────────────────────────
-    // Staged — parsed and applied at SyncControl{END} via apply_shortcuts_cbor() (§6.0).
-    void handle_shortcut_config(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
-        if (!check_write_allowed(info, "ShortcutConfig")) return;
-
-        if (g_stage.shortcut_cbor) {
-            heap_caps_free(g_stage.shortcut_cbor);
-            g_stage.shortcut_cbor = nullptr;
-        }
-        g_stage.shortcut_cbor = static_cast<uint8_t*>(
-            heap_caps_malloc(len > 0 ? len : 1, MALLOC_CAP_8BIT));
-        if (g_stage.shortcut_cbor) {
-            memcpy(g_stage.shortcut_cbor, data, len);
-            g_stage.shortcut_len    = len;
-            g_stage.have_shortcuts  = true;
-        }
-
-        stage_add_bytes(len);
-    }
-
     // ── Profile Photo (char 0005) — chunked ────────────────────────────────
     // Staged — hashed and posted at SyncControl{END} via apply_photo_jpeg() (§6.0).
     void handle_photo(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
@@ -579,26 +555,26 @@ private:
         chunked_transfer::feed(&g_meetings_ctx, data, len);
     }
 
-    // ── PTO Entry (char 0007) — chunked ────────────────────────────────────
-    // Staged — hashed, parsed, and applied at SyncControl{END} via apply_pto_cbor() (§6.0).
-    void handle_pto(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
-        if (!check_write_allowed(info, "PtoEntry")) return;
+    // ── Time Off Entry (char 0007) — chunked ───────────────────────────────
+    // Staged — hashed, parsed, and applied at SyncControl{END} via apply_time_off_cbor() (§6.0).
+    void handle_time_off(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
+        if (!check_write_allowed(info, "TimeOffEntry")) return;
 
-        if (!g_pto_ctx.on_complete) {
-            g_pto_ctx.on_complete = [](uint8_t* buf, size_t n, const char* nack) {
+        if (!g_time_off_ctx.on_complete) {
+            g_time_off_ctx.on_complete = [](uint8_t* buf, size_t n, const char* nack) {
                 if (nack) {
-                    LOG("[gatt] PTO NACK: %s\n", nack);
+                    LOG("[gatt] Time Off NACK: %s\n", nack);
                     return;
                 }
-                g_stage.have_pto = true;
-                g_stage.pto_cbor = buf; // ownership moves to SyncStage
-                g_stage.pto_len  = n;
+                g_stage.have_time_off = true;
+                g_stage.time_off_cbor = buf; // ownership moves to SyncStage
+                g_stage.time_off_len  = n;
             };
-            g_pto_ctx.on_fragment = [](uint16_t seq, uint16_t total, uint16_t plen) {
+            g_time_off_ctx.on_fragment = [](uint16_t seq, uint16_t total, uint16_t plen) {
                 stage_add_bytes(plen);
             };
         }
-        chunked_transfer::feed(&g_pto_ctx, data, len);
+        chunked_transfer::feed(&g_time_off_ctx, data, len);
     }
 
     // ── Sync Control (char 0008) ────────────────────────────────────────────
@@ -665,23 +641,26 @@ private:
         }
     }
 
-    // ── Factory Reset Command (char 0009) ───────────────────────────────────
-    void handle_factory_reset(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
-        if (!check_write_allowed(info, "FactoryReset")) return;
+    // ── Device Command (char 0009) — magic-routed ──────────────────────────
+    // Accepts two 4-byte magic payloads; all others → NACK_BAD_MAGIC.
+    //   0xFA 0xC7 0x5E 0x5E  Factory Reset
+    //   0x55 0x4E 0x50 0x52  Unpair Phone ("UNPR")
+    // IMPORTANT: do not touch NVS or LVGL from this NimBLE host-task callback.
+    // Both actions are deferred to the main-task event queue.
+    void handle_device_cmd(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
+        if (!check_write_allowed(info, "DeviceCommand")) return;
         if (len < 4) return;
 
-        // Magic: 0xFA 0xC7 0x5E 0x5E
         if (data[0] == 0xFA && data[1] == 0xC7 &&
             data[2] == 0x5E && data[3] == 0x5E) {
-            LOG("[gatt] Remote factory reset triggered\n");
-            // IMPORTANT: do not wipe or touch NVS from this BLE callback (host
-            // task). factory_reset::execute() on the main loop wipes both bonds
-            // + the NVS namespaces and reboots — opening Preferences here would
-            // race the main task's NVS access. Just post the event.
+            LOG("[gatt] DeviceCommand: factory reset\n");
             ble_post_factory_reset_event();
+        } else if (data[0] == 0x55 && data[1] == 0x4E &&
+                   data[2] == 0x50 && data[3] == 0x52) {
+            LOG("[gatt] DeviceCommand: iPhone unpair\n");
+            ble_post_unpair_phone_event();
         } else {
-            LOG("[gatt] FactoryReset: bad magic\n");
-            // Send NACK back to Orion via SyncControl.
+            LOG("[gatt] DeviceCommand: bad magic\n");
             uint8_t buf[64];
             size_t  n = cbor_encode_sync_ctrl(buf, sizeof(buf),
                                                "NACK", g_sync_seq, "NACK_BAD_MAGIC");
@@ -698,14 +677,14 @@ private:
         if (cbor_parser_init(data, len, 0, &parser, &root) != CborNoError) return;
         if (!cbor_value_is_map(&root)) return;
 
-        // Received hashes from Orion. Shortcut Config has no entry here — it's
-        // RAM-only and always resent unconditionally, like Time Sync (§6.0).
+        // Received hashes from Orion. Device Settings (shortcuts + presence) has
+        // no entry here — written outside BEGIN/END, never staged (§6.0/§6.4).
         uint8_t recv_profile[32]   = {};
         uint8_t recv_photo[32]     = {};
         uint8_t recv_meetings[32]  = {};
-        uint8_t recv_pto[32]       = {};
-        bool    got_profile  = false, got_photo = false;
-        bool    got_meetings = false, got_pto   = false;
+        uint8_t recv_time_off[32]  = {};
+        bool    got_profile  = false, got_photo    = false;
+        bool    got_meetings = false, got_time_off = false;
 
         cbor_value_enter_container(&root, &map_val);
         while (!cbor_value_at_end(&map_val)) {
@@ -728,8 +707,8 @@ private:
                     cbor_value_copy_byte_string(&map_val, recv_meetings, &sz, nullptr);
                     got_meetings = (sz == 32);
                 } else if (strcmp(key, "t") == 0) {
-                    cbor_value_copy_byte_string(&map_val, recv_pto, &sz, nullptr);
-                    got_pto = (sz == 32);
+                    cbor_value_copy_byte_string(&map_val, recv_time_off, &sz, nullptr);
+                    got_time_off = (sz == 32);
                 }
             }
             if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
@@ -757,10 +736,10 @@ private:
                          && memcmp(g_meetings_hash, recv_meetings, 32) == 0;
             if (!match) needed[needed_count++] = "meetings";
         }
-        if (got_pto) {
-            bool match = nvs_sync::load_hash(nvs_sync::HASH_KEY_PTO, stored)
-                         && memcmp(stored, recv_pto, 32) == 0;
-            if (!match) needed[needed_count++] = "pto";
+        if (got_time_off) {
+            bool match = nvs_sync::load_hash(nvs_sync::HASH_KEY_TIME_OFF, stored)
+                         && memcmp(stored, recv_time_off, 32) == 0;
+            if (!match) needed[needed_count++] = "to";
         }
 
         // Notify Orion what we need.
@@ -920,66 +899,124 @@ private:
         chunked_transfer::feed(&g_art_ctx, data, len);
     }
 
-    // ── Presence Status (char 000F) — single byte ──────────────────────────
-    void handle_presence(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
-        if (!check_write_allowed(info, "PresenceStatus")) return;
-        if (len < 1) return;
+    // ── Device Settings read ────────────────────────────────────────────────────
+    // Returns only the NVS-persisted fields Orion can't track itself: "c"
+    // (clock_face) and "f" (ancs_filter). Presence and shortcuts are ephemeral
+    // and Orion is the source of truth for both — no value reading them back.
+    void handle_device_settings_read(NimBLECharacteristic* c) {
+        CborEncoder enc, map;
+        uint8_t buf[32];
+        cbor_encoder_init(&enc, buf, sizeof(buf), 0);
+        cbor_encoder_create_map(&enc, &map, 2);
+        cbor_encode_text_stringz(&map, "c");
+        cbor_encode_uint(&map, (uint64_t)nvs::get_clock_face());
+        cbor_encode_text_stringz(&map, "f");
+        cbor_encode_uint(&map, (uint64_t)nvs::get_notif_filter());
+        cbor_encoder_close_container(&enc, &map);
+        size_t n = cbor_encoder_get_buffer_size(&enc, buf);
+        c->setValue(buf, n);
+    }
 
-        uint8_t presence = data[0];
-        if (presence > 0x03) {
-            LOG("[gatt] PresenceStatus: invalid value 0x%02X\n", (unsigned)presence);
-            // NACK via SyncControl
+    // ── Device Settings (char 000F) — CBOR map, partial-update ───────────────
+    // Merges Presence Status, Shortcut Config, Clock Face, and ANCS Filter into
+    // one characteristic. All fields are optional; absent keys leave state
+    // unchanged. All present fields are validated before any are applied (atomic).
+    // Applied immediately, outside the BEGIN/END staging pipeline — same treatment
+    // as Clock Face (persisted) and Presence (not persisted) individually.
+    void handle_device_settings(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
+        if (!check_write_allowed(info, "DeviceSettings")) return;
+        if (len == 0) return;
+
+        CborParser parser; CborValue root, map_val;
+        if (cbor_parser_init(data, len, 0, &parser, &root) != CborNoError ||
+            !cbor_value_is_map(&root)) {
             uint8_t buf[64];
-            size_t  n = cbor_encode_sync_ctrl(buf, sizeof(buf),
-                                               "NACK", 0, "NACK_CBOR_DECODE");
+            size_t n = cbor_encode_sync_ctrl(buf, sizeof(buf), "NACK", 0, "NACK_CBOR_DECODE");
             if (c_sync_ctrl) c_sync_ctrl->notify(buf, n);
             return;
         }
 
-        g_presence_byte = presence;
-        LOG("[gatt] PresenceStatus: 0x%02X\n", (unsigned)presence);
+        bool    has_presence = false; uint8_t presence_val = 0;
+        bool    has_slots    = false;
+        char    slot1[20] = {}, slot2[20] = {}, slot3[20] = {};
+        bool    has_clock    = false; uint8_t clock_val = 0;
+        bool    has_filter   = false; uint8_t filter_val = 0;
+        bool    parse_error  = false;
 
-        // Map byte to widget_profile_card::Presence and update the UI.
-        widget_profile_card::Presence p;
-        switch (presence) {
-            case 0x00: p = widget_profile_card::Presence::Available; break;
-            case 0x01: p = widget_profile_card::Presence::Busy;      break;
-            case 0x02: p = widget_profile_card::Presence::Away;      break;
-            default:   p = widget_profile_card::Presence::Offline;   break;
+        cbor_value_enter_container(&root, &map_val);
+        while (!cbor_value_at_end(&map_val) && !parse_error) {
+            char key[4] = {}; size_t key_len = sizeof(key) - 1;
+            if (cbor_value_is_text_string(&map_val)) {
+                cbor_value_copy_text_string(&map_val, key, &key_len, &map_val);
+            } else { cbor_value_advance(&map_val); continue; }
+            if (cbor_value_at_end(&map_val)) break;
+
+            if (strcmp(key, "p") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
+                uint64_t v; cbor_value_get_uint64(&map_val, &v);
+                if (v > 3) { parse_error = true; break; }
+                presence_val = (uint8_t)v; has_presence = true;
+            } else if (strcmp(key, "1") == 0 && cbor_value_is_text_string(&map_val)) {
+                size_t sz = sizeof(slot1) - 1;
+                cbor_value_copy_text_string(&map_val, slot1, &sz, nullptr);
+                has_slots = true;
+            } else if (strcmp(key, "2") == 0 && cbor_value_is_text_string(&map_val)) {
+                size_t sz = sizeof(slot2) - 1;
+                cbor_value_copy_text_string(&map_val, slot2, &sz, nullptr);
+                has_slots = true;
+            } else if (strcmp(key, "3") == 0 && cbor_value_is_text_string(&map_val)) {
+                size_t sz = sizeof(slot3) - 1;
+                cbor_value_copy_text_string(&map_val, slot3, &sz, nullptr);
+                has_slots = true;
+            } else if (strcmp(key, "c") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
+                uint64_t v; cbor_value_get_uint64(&map_val, &v);
+                if (v > 1) { parse_error = true; break; }
+                clock_val = (uint8_t)v; has_clock = true;
+            } else if (strcmp(key, "f") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
+                uint64_t v; cbor_value_get_uint64(&map_val, &v);
+                if (v > 3) { parse_error = true; break; }
+                filter_val = (uint8_t)v; has_filter = true;
+            }
+            if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
         }
 
-        // Update the default presence so new screens pick it up.
-        widget_profile_card::set_default_presence(p);
-
-        // Post event to main-task queue so the profile card widget
-        // update runs safely on the LVGL task.
-        ble_post_presence_event(p);
-    }
-
-    // ── Clock Face (char 0011) — single byte ────────────────────────────────
-    // Unlike Presence Status this IS persisted to NVS, applied immediately
-    // outside the BEGIN/END staging pipeline (ble-protocol.md §3 Clock Face
-    // payload note) — same immediate-side-effect treatment as Factory Reset
-    // Command. state_machine::set_clock_face() does the NVS write, so it must
-    // run on the main task, not this NimBLE callback — deferred via the event
-    // queue like PresenceUpdate.
-    void handle_clock_face(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
-        if (!check_write_allowed(info, "ClockFace")) return;
-        if (len < 1) return;
-
-        uint8_t face = data[0];
-        if (face > 0x01) {
-            LOG("[gatt] ClockFace: invalid value 0x%02X\n", (unsigned)face);
+        if (parse_error) {
             uint8_t buf[64];
-            size_t  n = cbor_encode_sync_ctrl(buf, sizeof(buf),
-                                               "NACK", 0, "NACK_CBOR_DECODE");
+            size_t n = cbor_encode_sync_ctrl(buf, sizeof(buf), "NACK", 0, "NACK_CBOR_DECODE");
             if (c_sync_ctrl) c_sync_ctrl->notify(buf, n);
             return;
         }
 
-        LOG("[gatt] ClockFace: 0x%02X\n", (unsigned)face);
-        ble_post_clock_face_event(face);
+        if (has_presence) {
+            widget_profile_card::Presence p;
+            switch (presence_val) {
+                case 0x00: p = widget_profile_card::Presence::Available; break;
+                case 0x01: p = widget_profile_card::Presence::Busy;      break;
+                case 0x02: p = widget_profile_card::Presence::Away;      break;
+                default:   p = widget_profile_card::Presence::Offline;   break;
+            }
+            widget_profile_card::set_default_presence(p);
+            ble_post_presence_event(p);
+            LOG("[gatt] DeviceSettings: presence=0x%02X\n", (unsigned)presence_val);
+        }
+        if (has_slots) {
+            // app_state write is safe from NimBLE host task (plain struct copy);
+            // screen_media_mode::update_shortcuts() touches LVGL — deferred.
+            app_state::set_shortcuts(slot1, slot2, slot3);
+            ble_post_shortcut_update_event();
+            LOG("[gatt] DeviceSettings: shortcuts=%s,%s,%s\n", slot1, slot2, slot3);
+        }
+        if (has_clock) {
+            // NVS write + LVGL deferred to main task via event.
+            ble_post_clock_face_event(clock_val);
+            LOG("[gatt] DeviceSettings: clock_face=0x%02X\n", (unsigned)clock_val);
+        }
+        if (has_filter) {
+            // NVS write + ancs_client::set_filter() deferred to main task via event.
+            ble_post_ancs_filter_event(filter_val);
+            LOG("[gatt] DeviceSettings: ancs_filter=0x%02X\n", (unsigned)filter_val);
+        }
     }
+
 };
 
 static OriCharacteristicCallbacks s_char_cb;
@@ -1070,50 +1107,6 @@ static void apply_profile_cbor(const uint8_t* data, size_t len) {
     LOG("[gatt] ProfileInfo: name=%s title=%s\n", fname, ftitle);
 }
 
-// Schema: { "1": text, "2": text, "3": text } — slot1/slot2/slot3 icon tokens
-// matching shortcut_icons::image() (e.g. "vol-mute"); unknown tokens fall
-// back to a neutral icon in the UI rather than failing the sync.
-//
-// RAM-only, like Meeting List — NOT persisted to NVS and NOT in the hash
-// manifest. Orion just re-sends it on every sync unconditionally (like Time
-// Sync), so there's nothing worth hash-checking against, and skipping NVS
-// means this commit never needs gatt_server::run_staged_commit()'s blackout().
-static void apply_shortcuts_cbor(const uint8_t* data, size_t len) {
-    CborParser parser;
-    CborValue  root, map_val;
-    if (cbor_parser_init(data, len, 0, &parser, &root) != CborNoError) return;
-    if (!cbor_value_is_map(&root)) return;
-
-    char slot1[20] = {}, slot2[20] = {}, slot3[20] = {};
-
-    cbor_value_enter_container(&root, &map_val);
-    while (!cbor_value_at_end(&map_val)) {
-        char key[8] = {};
-        size_t key_len = sizeof(key) - 1;
-        if (cbor_value_is_text_string(&map_val)) {
-            cbor_value_copy_text_string(&map_val, key, &key_len, &map_val);
-        } else { cbor_value_advance(&map_val); continue; }
-        if (cbor_value_at_end(&map_val)) break;
-
-        if (strcmp(key, "1") == 0 && cbor_value_is_text_string(&map_val)) {
-            size_t sz = sizeof(slot1) - 1;
-            cbor_value_copy_text_string(&map_val, slot1, &sz, nullptr);
-        } else if (strcmp(key, "2") == 0 && cbor_value_is_text_string(&map_val)) {
-            size_t sz = sizeof(slot2) - 1;
-            cbor_value_copy_text_string(&map_val, slot2, &sz, nullptr);
-        } else if (strcmp(key, "3") == 0 && cbor_value_is_text_string(&map_val)) {
-            size_t sz = sizeof(slot3) - 1;
-            cbor_value_copy_text_string(&map_val, slot3, &sz, nullptr);
-        }
-        if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
-    }
-
-    app_state::set_shortcuts(slot1, slot2, slot3);
-    screen_media_mode::update_shortcuts();
-
-    LOG("[gatt] ShortcutConfig: %s, %s, %s\n", slot1, slot2, slot3);
-}
-
 static void apply_photo_jpeg(uint8_t* buf, size_t n) {
     uint8_t hash[32];
     sha256_of_buf(buf, n, hash);
@@ -1132,17 +1125,17 @@ static void apply_meetings_cbor(uint8_t* buf, size_t n) {
     heap_caps_free(buf);
 }
 
-static void apply_pto_cbor(uint8_t* buf, size_t n) {
+static void apply_time_off_cbor(uint8_t* buf, size_t n) {
     // Hash the full CBOR payload for delta-sync manifest.
     uint8_t hash[32];
     sha256_of_buf(buf, n, hash);
-    nvs_sync::save_hash(nvs_sync::HASH_KEY_PTO, hash);
+    nvs_sync::save_hash(nvs_sync::HASH_KEY_TIME_OFF, hash);
 
-    // ── Parse PtoEntry CBOR ────────────────────────────────────
+    // ── Parse TimeOffEntry CBOR ────────────────────────────────
     // Schema: { s:start, e:end, d:destination, m:image }
     CborParser parser;
     CborValue  root, map_val;
-    uint32_t   pto_start = 0, pto_end = 0;
+    uint32_t   time_off_start = 0, time_off_end = 0;
     char       dest[129] = {};
     uint8_t*   img_buf   = nullptr;
     size_t     img_len   = 0;
@@ -1165,13 +1158,13 @@ static void apply_pto_cbor(uint8_t* buf, size_t n) {
                 cbor_value_is_unsigned_integer(&map_val)) {
                 uint64_t v = 0;
                 cbor_value_get_uint64(&map_val, &v);
-                pto_start = (uint32_t)v;
+                time_off_start = (uint32_t)v;
 
             } else if (strcmp(key, "e") == 0 &&
                        cbor_value_is_unsigned_integer(&map_val)) {
                 uint64_t v = 0;
                 cbor_value_get_uint64(&map_val, &v);
-                pto_end = (uint32_t)v;
+                time_off_end = (uint32_t)v;
 
             } else if (strcmp(key, "d") == 0 &&
                        cbor_value_is_text_string(&map_val)) {
@@ -1205,17 +1198,17 @@ static void apply_pto_cbor(uint8_t* buf, size_t n) {
     heap_caps_free(buf); // free staged CBOR blob
 
     // Drop glyphs the UI font can't render (emoji, CJK, …) from the displayed
-    // destination. PTO hash (if any) is over raw bytes, so this doesn't desync.
+    // destination. Time Off hash (if any) is over raw bytes, so this doesn't desync.
     char fdest[129] = {};
     ui::sanitize_text(dest, fdest, sizeof(fdest));
 
-    nvs_sync::save_pto_meta(pto_start, pto_end, fdest);
-    LOG("[gatt] PTO: start=%u end=%u dest=%s img=%u bytes\n",
-                   (unsigned)pto_start, (unsigned)pto_end,
+    nvs_sync::save_time_off_meta(time_off_start, time_off_end, fdest);
+    LOG("[gatt] Time Off: start=%u end=%u dest=%s img=%u bytes\n",
+                   (unsigned)time_off_start, (unsigned)time_off_end,
                    fdest, (unsigned)img_len);
 
     // Post photo event (img_buf=nullptr, img_len=0 → clear cache).
-    ble_post_pto_photo_event(img_buf, img_len);
+    ble_post_time_off_photo_event(img_buf, img_len);
 }
 
 } // namespace
@@ -1280,11 +1273,11 @@ void init() {
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC);
     c_meetings->setCallbacks(&s_char_cb);
 
-    // 0007 PTO Entry — Write + Write-No-Response, encrypted (chunked)
-    c_pto = svc->createCharacteristic(
+    // 0007 Time Off Entry — Write + Write-No-Response, encrypted (chunked)
+    c_time_off = svc->createCharacteristic(
         "6F726900-0007-4F72-9F00-000000000000",
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC);
-    c_pto->setCallbacks(&s_char_cb);
+    c_time_off->setCallbacks(&s_char_cb);
 
     // 0008 Sync Control — Write + Notify, encrypted
     c_sync_ctrl = svc->createCharacteristic(
@@ -1293,11 +1286,12 @@ void init() {
         NIMBLE_PROPERTY::NOTIFY);
     c_sync_ctrl->setCallbacks(&s_char_cb);
 
-    // 0009 Factory Reset Command — Write with response, encrypted
-    c_factory_rst = svc->createCharacteristic(
+    // 0009 Device Command — Write with response, encrypted.
+    // Magic-routed: 0xFA C7 5E 5E = factory reset; 0x55 4E 50 52 = unpair phone.
+    c_dev_cmd = svc->createCharacteristic(
         "6F726900-0009-4F72-9F00-000000000000",
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
-    c_factory_rst->setCallbacks(&s_char_cb);
+    c_dev_cmd->setCallbacks(&s_char_cb);
 
     // 000A Sync Manifest — Write + Notify, encrypted
     c_manifest = svc->createCharacteristic(
@@ -1333,34 +1327,38 @@ void init() {
         NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC);
     c_album_art->setCallbacks(&s_char_cb);
 
-    // 000F Presence Status — Write only, encrypted. Orion is the sole writer
-    // and re-pushes fresh on every connect, so there's nothing for a Read to
-    // recover that Orion doesn't already know (ble-protocol.md §6.4).
-    c_presence = svc->createCharacteristic(
+    // 000F Device Settings — Read + Write, encrypted. CBOR map with optional
+    // write fields: "p"=presence (0-3), "1"/"2"/"3"=shortcut tokens,
+    // "c"=clock face (0-1), "f"=ANCS filter (0-3). Absent keys leave current
+    // state unchanged. Read returns {"c":<clock_face>, "f":<ancs_filter>} —
+    // the NVS-persisted fields Orion reads on (re)connect to sync its UI state.
+    c_dev_settings = svc->createCharacteristic(
         "6F726900-000F-4F72-9F00-000000000000",
+        NIMBLE_PROPERTY::READ  | NIMBLE_PROPERTY::READ_ENC |
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
-    c_presence->setCallbacks(&s_char_cb);
-    c_presence->setValue(&g_presence_byte, 1);
+    c_dev_settings->setCallbacks(&s_char_cb);
 
-    // 0010 Shortcut Config — Write with response, encrypted. Small + rarely
-    // changed like Profile Info, so it's staged + NVS-persisted + hashed into
-    // the manifest rather than treated as ephemeral push-only state.
-    c_shortcuts = svc->createCharacteristic(
-        "6F726900-0010-4F72-9F00-000000000000",
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
-    c_shortcuts->setCallbacks(&s_char_cb);
-
-    // 0011 Clock Face — Write with response, encrypted. Applied + persisted
-    // immediately (not staged) — see the Clock Face payload note in §4.
-    c_clock_face = svc->createCharacteristic(
-        "6F726900-0011-4F72-9F00-000000000000",
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
-    c_clock_face->setCallbacks(&s_char_cb);
+    // 0012 Phone Bond Status — Read + Notify, encrypted.
+    // Ori notifies Orion whenever the iPhone bond/connection state changes.
+    // CBOR: { "b": bool (bonded), "c": bool (connected), "n": text (phone name) }
+    // Orion reads on (re)connect for initial state; Ori notifies on every change.
+    // NimBLE 2.5 has no NOTIFY_ENC; READ_ENC enforces encryption on subscriptions.
+    c_phone_status = svc->createCharacteristic(
+        "6F726900-0012-4F72-9F00-000000000000",
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_ENC |
+        NIMBLE_PROPERTY::NOTIFY);
+    c_phone_status->setCallbacks(&s_char_cb);
+    {
+        // Seed with "not bonded, not connected" — updated by notify_phone_bond_status().
+        uint8_t buf[64];
+        size_t  n = encode_phone_status(buf, sizeof(buf), false, false, "");
+        c_phone_status->setValue(buf, n);
+    }
 
     // In NimBLE 2.5, services are started when NimBLEServer::start() is called.
     // svc->start() is deprecated and a no-op; omit it.
     // The server is started in ble_manager::init() after all characteristics are set up.
-    LOG("[gatt] Service registered: 17 characteristics\n");
+    LOG("[gatt] Service registered: 16 characteristics\n");
 }
 
 bool is_ota_active() { return g_ota_active; }
@@ -1398,6 +1396,16 @@ void notify_keyboard_command(const char* op, uint32_t arg) {
     LOG("[gatt] KeyboardCommand: op=%s arg=%u\n", op, (unsigned)arg);
 }
 
+void notify_phone_bond_status(bool bonded, bool connected, const char* name) {
+    if (!c_phone_status) return;
+    uint8_t buf[128];
+    size_t  n = encode_phone_status(buf, sizeof(buf), bonded, connected, name ? name : "");
+    c_phone_status->setValue(buf, n);
+    c_phone_status->notify();
+    LOG("[gatt] PhoneBondStatus: bonded=%d connected=%d name='%s'\n",
+        (int)bonded, (int)connected, name ? name : "");
+}
+
 void abort_sync_stage() {
     if (!g_stage.active && !g_sync_in_progress) return;
     LOG("[gatt] Sync aborted (disconnect) — discarding staged data\n");
@@ -1410,10 +1418,10 @@ void abort_sync_stage() {
 // then transitions Device Status and signals SyncEnd for the UI advance.
 void run_staged_commit() {
     // Only blank the display ahead of items that actually hit flash: Profile,
-    // Photo, and PTO call into nvs_sync::save_*(). Time, Meetings, and
+    // Photo, and Time Off call into nvs_sync::save_*(). Time, Meetings, and
     // Shortcuts are all RAM-only — no flash write, so no glitch window to
     // guard against. Read g_stage here, before stage_commit() resets it.
-    bool needs_nvs = g_stage.have_profile || g_stage.have_photo || g_stage.have_pto;
+    bool needs_nvs = g_stage.have_profile || g_stage.have_photo || g_stage.have_time_off;
     if (needs_nvs) {
         // Blank the display immediately before the flash write burst. LCD_CAM
         // DMA keeps scanning the (now black) framebuffer, so there are no
@@ -1423,7 +1431,7 @@ void run_staged_commit() {
         lcd_panel::blackout();
     }
 
-    bool light_refresh = stage_commit();
+    stage_commit();
 
     time_t now = time(nullptr);
     nvs_sync::save_epoch((uint32_t)now);
@@ -1434,7 +1442,7 @@ void run_staged_commit() {
                           ? DS_SETUP_SYNC_COMPLETE
                           : DS_RUNTIME_READY;
     set_device_status(new_status);
-    ble_post_sync_end_event(light_refresh);
+    ble_post_sync_end_event(false);
 }
 
 } // namespace gatt_server

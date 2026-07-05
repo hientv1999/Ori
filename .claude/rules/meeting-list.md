@@ -41,7 +41,7 @@ clears it; the list is rebuilt only when Orion reconnects and re-pushes it.
 | Orion connected & synced | Live meeting list |
 | Orion disconnected at runtime (meetings still in RAM) | Cached meeting list + "SYNCED · X min ago" pill |
 | After a power cycle (RAM cleared), before re-sync | "No meetings today" |
-| Within PTO window | PTO destination visual (overrides Calendar) |
+| Within Time Off window | Time Off destination visual (overrides Calendar) |
 
 **Why RAM-only:** local time is also not restored from flash on a cold boot
 (there is no battery-backed RTC). Without a valid clock the time-based logic

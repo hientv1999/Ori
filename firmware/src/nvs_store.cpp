@@ -12,9 +12,10 @@ constexpr const char* NAMESPACE = "ori";
 constexpr const char* k_provisioned = "prov";       // bool: setup completed
 constexpr const char* k_sync_step   = "sync_step";  // bool: Orion bonded, awaiting first sync
 constexpr const char* k_phone_step  = "phone_step"; // bool: Orion synced, awaiting iPhone pair
-constexpr const char* k_mode        = "mode";       // uint8: 0=Calendar 1=Controls
-constexpr const char* k_clock_face  = "clock_face"; // uint8: 0=Digital 1=Analog
-constexpr const char* k_ota_ack     = "ota_ack";    // string: post-update version
+constexpr const char* k_mode         = "mode";        // uint8: 0=Calendar 1=Controls
+constexpr const char* k_clock_face   = "clock_face";  // uint8: 0=Digital 1=Analog
+constexpr const char* k_notif_filter = "notif_filt";  // uint8: 0=Disabled 1=CallOnly 2=Important 3=All
+constexpr const char* k_ota_ack      = "ota_ack";     // string: post-update version
 
 Preferences prefs;
 
@@ -136,6 +137,25 @@ void set_clock_face(uint8_t face) {
         prefs.end();
     }
     LOG("[nvs] clock_face=%d\n", (int)face);
+}
+
+// ── ANCS notification filter ───────────────────────────────────────────────
+
+uint8_t get_notif_filter() {
+    uint8_t v = 0x03;  // default: All
+    if (prefs.begin(NAMESPACE, /*readOnly=*/true)) {
+        v = (uint8_t)prefs.getUChar(k_notif_filter, 0x03);
+        prefs.end();
+    }
+    return v;
+}
+
+void set_notif_filter(uint8_t level) {
+    if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
+        prefs.putUChar(k_notif_filter, level);
+        prefs.end();
+    }
+    LOG("[nvs] notif_filter=%u\n", (unsigned)level);
 }
 
 // ── Factory reset ──────────────────────────────────────────────────────────

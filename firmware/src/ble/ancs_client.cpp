@@ -353,6 +353,23 @@ namespace EvtFlag {
                       POSITIVE_ACTION = 0x08, NEGATIVE_ACTION = 0x10;
 }
 
+// ── Notification filter ───────────────────────────────────────────────────
+// 0x00 DISABLED, 0x01 CALL_ONLY, 0x02 IMPORTANT, 0x03 ALL (default).
+// Set via Device Settings (char 000F "f" field) by Orion; persisted to NVS.
+// Loaded at boot by state_machine::init() from NVS before the first iPhone
+// connection so the filter is active from the very first notification.
+static uint8_t g_filter = 0x03;  // default: ALL
+
+static bool passes_filter(uint8_t cat_id, uint8_t flags) {
+    switch (g_filter) {
+        case 0x00: return false;
+        case 0x01: return (cat_id == 1);                          // IncomingCall only
+        case 0x02: return (cat_id == 1) ||                        // IncomingCall OR Important flag
+                          ((flags & EvtFlag::IMPORTANT) != 0);
+        default:   return true;                                    // ALL
+    }
+}
+
 // ── Pending NS-event metadata ──────────────────────────────────────────────
 // EventFlags + CategoryID live in the NS event but aren't repeated in the DS
 // attribute response, so stash them by UID until the DS response arrives.
@@ -739,10 +756,17 @@ void on_notification_source(const uint8_t* data, uint16_t len) {
         (unsigned)event_id, (unsigned)cat_id, (unsigned)flags, (unsigned)uid);
 
     if (event_id == 0 || event_id == 1) {
-        // Added or Modified — stash flags+category (not echoed in the DS
-        // response) then (re)request attributes. queue_add dedups by UID so a
-        // Modified event keeps the existing icon, while set_ancs_detail
-        // refreshes the stored title/body/timestamp in place.
+        // Added or Modified — apply the notification filter before queuing.
+        // Removed events (event_id 2) are always processed so dismissals
+        // work correctly regardless of filter state.
+        if (!passes_filter(cat_id, flags)) {
+            LOG("[ancs] NS uid=%u filtered (level=%u cat=%u flags=0x%02X)\n",
+                (unsigned)uid, (unsigned)g_filter, (unsigned)cat_id, (unsigned)flags);
+            return;
+        }
+        // Stash flags+category (not echoed in the DS response) then (re)request
+        // attributes. queue_add dedups by UID so a Modified event keeps the
+        // existing icon, while set_ancs_detail refreshes title/body/timestamp.
         pmeta_put(uid, flags, cat_id);
         ancs_client::request_attributes(uid);
     } else if (event_id == 2) {
@@ -1003,6 +1027,17 @@ const QueueEntry* get_queue(size_t* count_out) {
 
 const char* phone_name() {
     return g_phone_name;
+}
+
+void set_filter(uint8_t level) {
+    g_filter = level;
+    LOG("[ancs] filter -> %u (%s)\n", (unsigned)level,
+        level == 0 ? "Disabled" : level == 1 ? "CallOnly" :
+        level == 2 ? "Important" : "All");
+}
+
+uint8_t get_filter() {
+    return g_filter;
 }
 
 } // namespace ancs_client

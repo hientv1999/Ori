@@ -14,7 +14,7 @@ Two independent BLE links, simultaneously:
 - Accept connection from the Orion PC app
 - 6-digit passkey bonding with secure connection
 - GATT server implementing the protocol spec defined by the **Product/System Architect Agent**
-- Receive data pushes: profile, meeting list, next PTO entry, current local time
+- Receive data pushes: profile, meeting list, next Time Off entry, current local time
 - Notify the **Firmware Core Agent** when new data arrives so it can persist + propagate
 - Report Orion-synced vs. BLE-only sub-state to the core
 

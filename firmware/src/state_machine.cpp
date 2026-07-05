@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "ble/ble_manager.h"
+#include "ble/ancs_client.h"
 #include "factory_reset.h"
 #include "app_state.h"
 #include "nvs_store.h"
@@ -25,7 +26,7 @@
 #include "screens/screen_meeting_list.h"
 #include "screens/screen_no_meetings.h"
 #include "screens/screen_ota_updating.h"
-#include "screens/screen_pto.h"
+#include "screens/screen_time_off.h"
 #include "screens/screen_reconnect_syncing.h"
 // #include "screens/screen_repair_phone.h" // removed obsolete repair screen
 #include "screens/screen_setup.h"
@@ -136,9 +137,9 @@ static void sanitize_inplace(char* buf, size_t sz) {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
-bool is_pto_active() {
+bool is_time_off_active() {
     uint32_t s = 0, e = 0;
-    if (!nvs_sync::load_pto_meta(&s, &e, nullptr, 0)) return false;
+    if (!nvs_sync::load_time_off_meta(&s, &e, nullptr, 0)) return false;
     if (!s || !e) return false;
     uint32_t now = (uint32_t)time(nullptr);
     return now >= s && now <= e;
@@ -319,8 +320,8 @@ lv_obj_t* build_ota_ack_screen() {
     return screen_ota_updating::create_updated_ack(g_ota_ack_version, ota_ack_close_cb);
 }
 
-lv_obj_t* build_pto_screen() {
-    return screen_pto::create();
+lv_obj_t* build_time_off_screen() {
+    return screen_time_off::create();
 }
 
 lv_obj_t* build_meeting_list_screen() {
@@ -390,7 +391,7 @@ AppState compute_target_state() {
     if (nvs::is_first_boot())        return AppState::SETUP;
     if (g_state == AppState::OTA_UPDATING) return AppState::OTA_UPDATING;
     if (g_state == AppState::RECONNECT_SYNCING) return AppState::RECONNECT_SYNCING;
-    if (is_pto_active())             return AppState::PTO_ACTIVE;
+    if (is_time_off_active())        return AppState::TIME_OFF_ACTIVE;
     // Countdown is handled inline in tick() before evaluate() is called for
     // state changes, so if we reach here it has already been cleared.
     // Note: CLOCK and CALENDAR_VIEW are never returned here — they are
@@ -444,7 +445,7 @@ static void tick_cb(lv_timer_t* /*t*/) {
         g_state != AppState::SETUP       &&
         g_state != AppState::OTA_UPDATING &&
         !ota_receiver::is_active()       &&
-        !is_pto_active()) {
+        !is_time_off_active()) {
 
         const char* title = nullptr;
         const char* org   = nullptr;
@@ -472,17 +473,18 @@ static void tick_cb(lv_timer_t* /*t*/) {
 namespace state_machine {
 
 void init() {
-    // Pre-load PTO metadata and sync hashes into RAM cache while the heap is
-    // clean (before any screen is created). This prevents the NVS handle
+    // Pre-load Time Off metadata and sync hashes into RAM cache while the heap
+    // is clean (before any screen is created). This prevents the NVS handle
     // allocator from landing on SRAM that was previously used by the media
     // screen's LVGL allocations, which would corrupt the NVSHandleSimple
     // vtable pointer and crash.
-    nvs_sync::prime_pto_cache();
+    nvs_sync::prime_time_off_cache();
     nvs_sync::prime_hash_cache();
 
-    // Restore mode + clock-face preference from NVS.
+    // Restore mode, clock-face preference, and ANCS filter from NVS.
     g_mode = nvs::get_mode();
     g_clock_face = nvs::get_clock_face();
+    ancs_client::set_filter(nvs::get_notif_filter());
 
     // Check if an iPhone bond already exists in NVS (survives reboots).
     {
@@ -526,7 +528,7 @@ AppState evaluate() {
         (g_state == AppState::CLOCK || g_state == AppState::CALENDAR_VIEW) &&
         target != AppState::SETUP &&
         target != AppState::OTA_UPDATING &&
-        target != AppState::PTO_ACTIVE) {
+        target != AppState::TIME_OFF_ACTIVE) {
         return g_state;
     }
 
@@ -552,8 +554,8 @@ AppState evaluate() {
             new_screen = build_ota_ack_screen();
             break;
 
-        case AppState::PTO_ACTIVE:
-            new_screen = build_pto_screen();
+        case AppState::TIME_OFF_ACTIVE:
+            new_screen = build_time_off_screen();
             break;
 
         case AppState::COUNTDOWN:
@@ -599,15 +601,15 @@ AppState evaluate() {
     return g_state;
 }
 
-void notify_pto_image_changed() {
-    // The PTO image arrives asynchronously, after the synchronous meetings
-    // commit has already rebuilt the panel with the placeholder. If PTO is the
-    // screen on display right now, force one rebuild so screen_pto::create()
-    // re-reads photo_cache::get_pto() and shows the real destination image
-    // (or reverts to the placeholder if the image was cleared). When PTO isn't
-    // the current screen the next entry into PTO_ACTIVE picks up the cached
+void notify_time_off_image_changed() {
+    // The Time Off image arrives asynchronously, after the synchronous meetings
+    // commit has already rebuilt the panel with the placeholder. If Time Off is the
+    // screen on display right now, force one rebuild so screen_time_off::create()
+    // re-reads photo_cache::get_time_off() and shows the real destination image
+    // (or reverts to the placeholder if the image was cleared). When Time Off isn't
+    // the current screen the next entry into TIME_OFF_ACTIVE picks up the cached
     // image on its own, so this is a no-op.
-    if (g_state == AppState::PTO_ACTIVE) {
+    if (g_state == AppState::TIME_OFF_ACTIVE) {
         g_force_rebuild = true;
         evaluate();
     }
@@ -928,7 +930,7 @@ void on_reconnect_begin() {
     LOG("[sm] on_reconnect_begin (meetings cached=%u)\n", (unsigned)g_rt_count);
     // Always show the overlay on every reconnect/resync — including the very
     // first sync after a fresh boot (meetings RAM-only, so g_rt_count==0 then).
-    // Profile, Photo, and PTO are NVS-backed and can be large enough that the
+    // Profile, Photo, and Time Off are NVS-backed and can be large enough that the
     // sync takes a while AND ends in a display blackout for the flash commit
     // (ble-protocol.md §6.0) — without this overlay the user would otherwise
     // sit on a static "No meetings today" screen and then have it go black

@@ -53,7 +53,7 @@ enum class BleEventType : uint8_t {
     MediaMetaUpdated,  // MediaMetadata write applied to app_state — repaint media screen
     AlbumArt,
     PhotoReceived,      // profile photo JPEG — forward to photo_cache::store()
-    PtoPhotoReceived,   // PTO destination JPEG (or len=0 = no photo)
+    TimeOffPhotoReceived,   // Time Off destination JPEG (or len=0 = no photo)
     PasskeyDisplay,
     AuthFailed,        // pairing handshake failed — hide passkey modal
     SyncBegin,         // SyncControl{op:"BEGIN"} — show orioning modal
@@ -67,6 +67,9 @@ enum class BleEventType : uint8_t {
     IphoneConnected,
     IphoneBonded,
     IphoneDisconnected,
+    UnpairPhone,       // Orion wrote the iPhone unpair magic to Device Command (char 0009)
+    AncsFilterUpdate,  // Orion wrote ANCS Notification Filter via Device Settings (char 000F)
+    ShortcutUpdate,    // Orion wrote shortcut slots via Device Settings (char 000F) — repaint shortcuts row
 };
 
 struct BleEvent {
@@ -75,10 +78,10 @@ struct BleEvent {
         uint32_t passkey;
         widget_profile_card::Presence presence;
         uint8_t  clock_face;     // ClockFaceUpdate — 0=Digital, 1=Analog
+        uint8_t  ancs_filter;   // AncsFilterUpdate — 0=Disabled..3=All
         struct { uint8_t* buf; size_t len; } art;
         uint16_t conn_handle;
         uint8_t  pct;            // OrioningProgress
-        bool     light_refresh;  // SyncEnd — see ble_post_sync_end_event()
         uint32_t total_bytes;    // SyncBegin — declared total from SyncControl{BEGIN}
     } data;
     uint8_t peer_addr[6]; // populated for bonded events
@@ -132,9 +135,10 @@ uint32_t g_passkey = 0;
 
 // Minimum SyncControl{BEGIN} declared total (bytes) to show the runtime
 // "Refreshing your day" overlay (see SyncBegin handling in poll()). Time Sync
-// + Shortcut Config alone — sent unconditionally on every periodic refresh,
-// ble-protocol.md §6.3 — run well under 100 bytes combined; any sync that
-// also carries Profile/Photo/Meetings/PTO is comfortably over this.
+// alone — sent unconditionally inside every BEGIN/END session (Device Settings
+// writes happen outside the pipeline and don't count toward total),
+// ble-protocol.md §6.3 — runs well under 100 bytes; any sync that also carries
+// Profile/Photo/Meetings/Time Off is comfortably over this.
 constexpr uint32_t RECONNECT_OVERLAY_MIN_BYTES = 200;
 
 // Flag for deferred restart (factory reset from BLE callback).
@@ -252,7 +256,7 @@ public:
         // Request maximum MTU.
         NimBLEDevice::setMTU(247);
 
-        // Throughput tuning for bulk sync (photo, meetings, PTO, album art):
+        // Throughput tuning for bulk sync (photo, meetings, Time Off, album art):
         //   • Data Length Extension — 251-octet LL PDUs so a full 247-byte ATT
         //     write rides in a single radio packet (less per-packet overhead).
         //   • Faster connection-interval range (15–30 ms vs the conservative
@@ -501,7 +505,7 @@ void init() {
     NimBLEDevice::setMTU(247);
 
     // Prefer the 2 Mbit PHY on every connection — roughly doubles on-air
-    // throughput for bulk sync (photo, meetings, PTO, album art). The link
+    // throughput for bulk sync (photo, meetings, Time Off, album art). The link
     // negotiates back to 1M automatically if the central doesn't support 2M,
     // so this is safe for any Orion PC / iPhone.
     NimBLEDevice::setDefaultPhy(BLE_GAP_LE_PHY_1M_MASK | BLE_GAP_LE_PHY_2M_MASK,
@@ -596,14 +600,14 @@ void poll() {
                 photo_cache::store(ev.data.art.buf, ev.data.art.len);
                 break;
 
-            case BleEventType::PtoPhotoReceived:
-                // len == 0 means no destination photo set — store_pto clears cache.
-                LOG("[ble] PtoPhotoReceived: %u bytes\n", (unsigned)ev.data.art.len);
-                photo_cache::store_pto(ev.data.art.buf, ev.data.art.len);
-                // store_pto() only updates the cache; the PTO screen (if shown)
+            case BleEventType::TimeOffPhotoReceived:
+                // len == 0 means no destination photo set — store_time_off clears cache.
+                LOG("[ble] TimeOffPhotoReceived: %u bytes\n", (unsigned)ev.data.art.len);
+                photo_cache::store_time_off(ev.data.art.buf, ev.data.art.len);
+                // store_time_off() only updates the cache; the Time Off screen (if shown)
                 // was built earlier with the placeholder, so ask the state
                 // machine to rebuild it now that the real image is decoded.
-                state_machine::notify_pto_image_changed();
+                state_machine::notify_time_off_image_changed();
                 break;
 
             case BleEventType::PasskeyDisplay:
@@ -638,6 +642,8 @@ void poll() {
             case BleEventType::IphoneConnected:
                 LOG("[ble:poll] iPhone connected — starting ANCS\n");
                 ancs_client::on_iphone_connected(ev.data.conn_handle);
+                // Phone name is read synchronously inside on_iphone_connected().
+                gatt_server::notify_phone_bond_status(true, true, ancs_client::phone_name());
                 break;
 
             case BleEventType::OrionBonded:
@@ -685,11 +691,11 @@ void poll() {
                     // connection (Orion's background service might not even
                     // be running yet). Show the "Refreshing your day" overlay
                     // now, but only for syncs big enough to actually be worth
-                    // it — Time Sync and Shortcut Config alone (sent
-                    // unconditionally every periodic refresh, §6.3) total well
-                    // under this, and those were deliberately built to be
-                    // invisible (no blackout, no rebuild). Any sync that also
-                    // carries Profile/Photo/Meetings/PTO is comfortably larger.
+                    // it — Time Sync alone (Device Settings is outside BEGIN/END
+                    // and doesn't count toward total, §6.3) runs well under
+                    // this, and was deliberately built to be invisible (no
+                    // blackout, no rebuild). Any sync that also carries
+                    // Profile/Photo/Meetings/Time Off is comfortably larger.
                     state_machine::on_reconnect_begin();
                 }
                 break;
@@ -710,13 +716,6 @@ void poll() {
                     screen_setup::update_orioning_progress(lv_scr_act(), 100);
                     screen_setup::hide_orioning_modal(lv_scr_act());
                     screen_setup::set_step(lv_scr_act(), screen_setup::Step::PhonePairing);
-                } else if (ev.data.light_refresh) {
-                    // Only Shortcut Config changed — apply_shortcuts_cbor()
-                    // already updated the shortcuts row in place. Skip the
-                    // disruptive full screen rebuild; just redraw the
-                    // existing (already-correct) screen to restore it from
-                    // run_staged_commit()'s blackout() before the NVS write.
-                    lv_obj_invalidate(lv_scr_act());
                 } else {
                     state_machine::on_reconnect_end();
                 }
@@ -751,6 +750,8 @@ void poll() {
                 // very first pairing no notifications arrived until the iPhone
                 // dropped and re-connected. Idempotent if already subscribed.
                 ancs_client::on_iphone_connected(ev.data.conn_handle);
+                // Phone name is read synchronously inside on_iphone_connected().
+                gatt_server::notify_phone_bond_status(true, true, ancs_client::phone_name());
                 restart_advertising();
                 // Pairing done → leave the phone-pairing screen: hides the
                 // passkey modal, then first-boot setup advances to the Setup
@@ -805,12 +806,35 @@ void poll() {
                 gatt_server::abort_sync_stage();
                 break;
 
-            case BleEventType::IphoneDisconnected:
+            case BleEventType::IphoneDisconnected: {
                 LOG("[ble:poll] iPhone disconnected\n");
                 ancs_client::on_iphone_disconnected();
                 // If an unpair is waiting on this disconnect, delete the bond +
                 // clear NVS now that the link is down (safe — see wipe_iphone_bond).
+                bool wipe_was_pending = g_iphone_wipe_pending;
                 finish_pending_iphone_wipe();
+                // If the wipe just completed, the bond is gone (bonded=false).
+                // A plain disconnect (e.g. phone out of range) keeps the bond.
+                gatt_server::notify_phone_bond_status(!wipe_was_pending, false, "");
+                break;
+            }
+
+            case BleEventType::UnpairPhone:
+                LOG("[ble:poll] remote iPhone unpair command\n");
+                // Delegate to the same path the UI uses: state_machine::on_unpair_phone()
+                // sets g_unpair_phone_pending → state_machine::poll() calls wipe_iphone_bond().
+                state_machine::on_unpair_phone();
+                break;
+
+            case BleEventType::AncsFilterUpdate:
+                LOG("[ble:poll] ANCS filter -> %u\n", (unsigned)ev.data.ancs_filter);
+                ancs_client::set_filter(ev.data.ancs_filter);
+                nvs::set_notif_filter(ev.data.ancs_filter);
+                break;
+
+            case BleEventType::ShortcutUpdate:
+                LOG("[ble:poll] shortcut update\n");
+                screen_media_mode::update_shortcuts();
                 break;
 
             default:
@@ -1138,6 +1162,8 @@ void wipe_iphone_bond() {
     g_iphone_connected = false;
     g_iphone_conn      = BLE_HS_CONN_HANDLE_NONE;
     restart_advertising();
+    // No IphoneDisconnected event fires for this path, so notify Orion here.
+    gatt_server::notify_phone_bond_status(false, false, "");
 }
 
 bool is_orion_connected()  { return g_orion_connected;  }
@@ -1244,6 +1270,21 @@ void ble_post_clock_face_event(uint8_t face) {
     eq_push(ev);
 }
 
+// Deferred iPhone unpair command (from Unpair Phone Command write handler).
+void ble_post_unpair_phone_event() {
+    BleEvent ev = {};
+    ev.type = BleEventType::UnpairPhone;
+    eq_push(ev);
+}
+
+// Deferred ANCS filter update (from ANCS Notification Filter write handler).
+void ble_post_ancs_filter_event(uint8_t level) {
+    BleEvent ev = {};
+    ev.type = BleEventType::AncsFilterUpdate;
+    ev.data.ancs_filter = level;
+    eq_push(ev);
+}
+
 // Deferred media-screen repaint after handle_media_metadata() updates
 // app_state on the NimBLE host task (no payload — the main task re-reads
 // app_state::media()).
@@ -1272,10 +1313,10 @@ void ble_post_photo_event(uint8_t* buf, size_t len) {
     eq_push(ev);
 }
 
-// Deferred PTO destination image (len==0 = no photo set; store_pto clears cache).
-void ble_post_pto_photo_event(uint8_t* buf, size_t len) {
+// Deferred Time Off destination image (len==0 = no photo set; store_time_off clears cache).
+void ble_post_time_off_photo_event(uint8_t* buf, size_t len) {
     BleEvent ev = {};
-    ev.type         = BleEventType::PtoPhotoReceived;
+    ev.type         = BleEventType::TimeOffPhotoReceived;
     ev.data.art.buf = buf;
     ev.data.art.len = len;
     eq_push(ev);
@@ -1301,13 +1342,18 @@ void ble_post_sync_commit_event() {
 }
 
 // Posted by gatt_server::run_staged_commit() — advance setup step or dismiss
-// reconnect overlay now that staged data has been committed. light_refresh
-// is true when Shortcut Config was the only item with a screen-visible
-// effect in this sync — see stage_commit()'s doc comment.
-void ble_post_sync_end_event(bool light_refresh) {
+// reconnect overlay now that staged data has been committed.
+void ble_post_sync_end_event(bool /*unused*/) {
     BleEvent ev = {};
     ev.type = BleEventType::SyncEnd;
-    ev.data.light_refresh = light_refresh;
+    eq_push(ev);
+}
+
+// Deferred shortcut row repaint — update_shortcuts() touches LVGL labels and
+// must run on the main task, not the NimBLE host task.
+void ble_post_shortcut_update_event() {
+    BleEvent ev = {};
+    ev.type = BleEventType::ShortcutUpdate;
     eq_push(ev);
 }
 

@@ -47,20 +47,20 @@ void clear();
 void init_profile_placeholder(const uint8_t* jpeg, size_t len);
 const lv_image_dsc_t* get_profile_placeholder();
 
-// ── PTO destination image ─────────────────────────────────────────────────
+// ── Time Off destination image ────────────────────────────────────────────
 // Same decode-once pattern. len == 0 means the user set no destination image
-// in Orion — store_pto(jpeg, 0) clears the cache and get_pto() returns nullptr.
+// in Orion — store_time_off(jpeg, 0) clears the cache and get_time_off() returns nullptr.
 
-void init_pto();
-void store_pto(uint8_t* jpeg, size_t len);  // takes ownership; frees jpeg internally
-const lv_image_dsc_t* get_pto();
-void clear_pto();
+void init_time_off();
+void store_time_off(uint8_t* jpeg, size_t len);  // takes ownership; frees jpeg internally
+const lv_image_dsc_t* get_time_off();
+void clear_time_off();
 
-// Decode a compiled-in JPEG (from flash) into PSRAM as the PTO placeholder.
-// Call once at boot with the raw bytes from pto_placeholder.c.
-// get_pto_placeholder() returns nullptr until this is called successfully.
-void init_pto_placeholder(const uint8_t* jpeg, size_t len);
-const lv_image_dsc_t* get_pto_placeholder();
+// Decode a compiled-in JPEG (from flash) into PSRAM as the Time Off placeholder.
+// Call once at boot with the raw bytes from time_off_placeholder.c.
+// get_time_off_placeholder() returns nullptr until this is called successfully.
+void init_time_off_placeholder(const uint8_t* jpeg, size_t len);
+const lv_image_dsc_t* get_time_off_placeholder();
 
 // ── Shared decode utility ─────────────────────────────────────────────────
 // Decode a raw JPEG into a freshly PSRAM-allocated RGB565 buffer.

@@ -29,7 +29,7 @@
 #include "widgets/widget_status_bar.h"
 #include "screens/screen_no_meetings.h"
 #include "screens/screen_clock.h"
-#include "screens/screen_pto.h"
+#include "screens/screen_time_off.h"
 #include "screens/screen_repair_phone.h"
 #include "screens/screen_reconnect_syncing.h"
 #include "screens/screen_ota_updating.h"
@@ -238,7 +238,7 @@ static void render_all() {
 
     snapshot(screen_no_meetings::create(),       "screenshots/07_no_meetings.bmp");
     snapshot(screen_clock::create(),             "screenshots/08_clock.bmp");
-    snapshot(screen_pto::create(),               "screenshots/09_pto.bmp");
+    snapshot(screen_time_off::create(),          "screenshots/09_time_off.bmp");
 
     // --- Modals (overlay a base screen) --------------------------------
     {

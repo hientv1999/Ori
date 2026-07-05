@@ -1,4 +1,4 @@
-# Ori — BLE GATT Protocol Specification
+﻿# Ori — BLE GATT Protocol Specification
 
 **Protocol version:** 1.0 — pre-release; this contract isn't finalized, no version-history tracking needed yet.
 **Status:** Authoritative — `esp32-connectivity` (Ori firmware) and `orion-sync` (Orion app) must conform.
@@ -88,7 +88,7 @@ Orion uses the mode flag to detect "Ori factory-reset since last bond" without c
 
 ## 3. Service and characteristics
 
-**One service, seventeen characteristics.**
+**One service, sixteen characteristics.**
 
 ```
 Ori Sync Service:  6F726900-0000-4F72-9F00-000000000000
@@ -104,17 +104,16 @@ Each characteristic UUID replaces bytes 4–5 of the base with the offset below.
 | 4 | Profile Info | `0004` | Write (response) | Orion → Ori | Yes |
 | 5 | Profile Photo | `0005` | Write, **Write NR** | Orion → Ori (chunked) | Yes |
 | 6 | Meeting List | `0006` | Write, **Write NR** | Orion → Ori (chunked) | Yes |
-| 7 | PTO Entry | `0007` | Write, **Write NR** | Orion → Ori (chunked) | Yes |
+| 7 | Time Off Entry | `0007` | Write, **Write NR** | Orion → Ori (chunked) | Yes |
 | 8 | Sync Control | `0008` | Write, Notify | Orion ↔ Ori | Yes |
-| 9 | Factory Reset Command | `0009` | Write (response) | Orion → Ori | Yes |
+| 9 | **Device Command** | `0009` | Write (response) | Orion → Ori | Yes |
 | 10 | Sync Manifest | `000A` | Write, Notify | Orion ↔ Ori | Yes |
 | 11 | **Keyboard Command** | `000B` | Notify | Ori → Orion (notify) | Yes |
 | 12 | **Host Volume State** | `000C` | Read, Write (response) | Orion → Ori (+ Orion reads) | Yes |
 | 13 | **Media Metadata** | `000D` | Write, Notify | Orion → Ori | Yes |
 | 14 | **Media Album Art** | `000E` | Write (no response) | Orion → Ori (chunked) | Yes |
-| 15 | **Presence Status** | `000F` | Write (response) | Orion → Ori | Yes |
-| 16 | **Shortcut Config** | `0010` | Write (response) | Orion → Ori | Yes |
-| 17 | **Clock Face** | `0011` | Write (response) | Orion → Ori | Yes |
+| 15 | **Device Settings** | `000F` | Read, Write (response) | Orion → Ori (+ Orion reads) | Yes |
+| 16 | **Phone Bond Status** | `0012` | Read, Notify | Ori → Orion (notify) | Yes |
 
 Reads/writes on encrypted characteristics over an unencrypted link return `INSUFFICIENT_AUTHENTICATION`.
 
@@ -164,17 +163,11 @@ MeetingList = {
   "m": [Meeting, ...]  // items
 }
 
-PtoEntry = {
+TimeOffEntry = {
   "s": uint,           // start
   "e": uint,           // end
   "d": text,           // destination, e.g. "Lisbon, Portugal"
   "m": bytes           // image. JPEG (528×396 target); may be empty. Orion resizes before sending.
-}
-
-ShortcutConfig = {                // RAM-only, no hash — always sent, like TimeSync (§6.0)
-  "1": text,           // slot1. icon token, ≤ 19 chars — "vol-mute", "mic-mute", "screenshot",
-  "2": text,           // slot2. "lock-screen", or "favorite" (media-mode.md). Unknown tokens
-  "3": text            // slot3. fall back to a neutral icon rather than failing the sync.
 }
 
 SyncControl = {
@@ -182,22 +175,21 @@ SyncControl = {
   "s": uint,           // seq
   "r": text,           // reason. optional, populated for NACK
   "t": uint            // total. optional, BEGIN only — total application-payload bytes Orion
-                        // will write across Time Sync, Shortcut Config, Profile Info, Profile
-                        // Photo, Meeting List, PTO Entry for this sync session (Time Sync and
-                        // Shortcut Config unconditionally; the rest only the items actually
-                        // being sent — e.g. just the `needed` subset on a reconnect delta
-                        // sync). Absent or 0 = progress is indeterminate.
+                        // will write across Time Sync, Profile Info, Profile Photo, Meeting List,
+                        // and Time Off Entry (Time Sync unconditionally; the rest only the `needed`
+                        // subset on a delta sync). Absent or 0 = indeterminate.
+                        // Device Settings is outside the BEGIN/END pipeline and not counted here.
 }
 
-SyncManifest_Write = {           // Orion → Ori — no shortcut entry; RAM-only, always resent
+SyncManifest_Write = {           // Orion → Ori — Device Settings fields have no hash entry (written outside BEGIN/END)
   "p": bytes(32),      // profile_sha
   "h": bytes(32),      // photo_sha
   "m": bytes(32),      // meetings_sha
-  "t": bytes(32)       // pto_sha
+  "t": bytes(32)       // to_sha
 }
 
 SyncManifest_Notify = {          // Ori → Orion
-  "n": [text, ...]               // needed. subset of {"profile","photo","meetings","pto"}
+  "n": [text, ...]               // needed. subset of {"profile","photo","meetings","to"}
 }
 
 ProtocolVersion = {
@@ -233,23 +225,41 @@ MediaMetadata = {                // Orion → Ori, write (+ Ori can notify on it
 
 // Media Album Art — raw JPEG bytes (not CBOR), via §5 chunking. Orion resizes to 484×216.
 
-// Presence Status — single byte (NOT CBOR):
-//   0x00  AVAILABLE   — Teams "Available"
-//   0x01  BUSY        — Teams "Busy", "Do Not Disturb", "In a call", "In a meeting", "Presenting"
-//   0x02  AWAY        — Teams "Be Right Back", "Appear Away"
-//   0x03  OFFLINE     — Teams "Appear Offline" (or unknown / null)
-// Any other value → NACK_CBOR_DECODE.
+DeviceSettings = {             // Orion → Ori, write (response). All fields optional —
+                               // absent keys leave the current state unchanged. All present
+                               // fields are validated before any are applied (atomic).
+                               // Applied immediately, outside the BEGIN/END staging pipeline
+                               // (same as Clock Face / Presence individually — see §6.4).
+  "p": uint,           // presence. 0=Available 1=Busy 2=Away 3=Offline. Not persisted to NVS;
+                       // Orion re-writes on every (re)connect. Fallback to Offline on BLE drop.
+  "1": text,           // shortcut_slot1. icon token ≤ 19 chars — see §12 for supported tokens.
+  "2": text,           // shortcut_slot2. Unknown tokens hide the slot button in the UI.
+  "3": text,           // shortcut_slot3. RAM-only; Orion re-sends on every (re)connect.
+  "c": uint,           // clock_face. 0=Digital 1=Analog. Persisted to NVS; survives power cycles.
+                       // Orion writes only when the user changes the setting.
+  "f": uint            // ancs_filter. 0=Disabled 1=CallOnly 2=Important 3=All (default).
+                       // Persisted to NVS; Orion writes only when the user changes the setting.
+                       // Filter levels: Disabled=no notifications; CallOnly=ANCS CategoryID 1
+                       // only; Important=IncomingCall OR ANCS Important flag; All=all events.
+}
+// Any field value outside its valid range → NACK_CBOR_DECODE via SyncControl notify.
+//
+// Read (Orion → Ori): returns only the NVS-persisted fields — {"c": <clock_face>, "f": <ancs_filter>}.
+// Presence and shortcuts are ephemeral (Orion is source of truth); reading them back has no value.
+// Orion reads on (re)connect to restore its settings UI without having to cache what it last wrote.
 
-// Clock Face — single byte (NOT CBOR):
-//   0x00  DIGITAL  — large-digit clock face (default)
-//   0x01  ANALOG   — tick-dial + hands face
-// Any other value → NACK_CBOR_DECODE. Unlike Presence Status, this IS
-// persisted to NVS on Ori (state-machine.md) — applied and saved immediately
-// on write, outside the BEGIN/END staging pipeline (§6.0 doesn't apply; same
-// immediate-side-effect treatment as Factory Reset Command). Orion doesn't
-// need to resend it on every reconnect; it only writes when the user changes
-// the setting in Orion's UI. No Read — Orion's settings UI is the source of
-// truth for what it last set; nothing to recover from Ori on (re)connect.
+PhoneBondStatus = {            // Ori → Orion, notify + readable (CBOR)
+  "b": bool,     // bonded.    true = iPhone NVS slot is occupied (a bond exists).
+  "c": bool,     // connected. true = BLE link to iPhone is currently up.
+  "n": text      // name.      iPhone's GAP Device Name (e.g. "Xander's iPhone"),
+                 //            or "" when not connected / read failed. ≤ 63 UTF-8 bytes.
+}
+// Ori notifies Orion on every iPhone state change: bond formed, connected
+// (reconnect or first bond), disconnected (plain disconnect or after wipe).
+// Orion reads on (re)connect to recover initial state without waiting for a
+// notify. Value is always kept current; the stored characteristic value equals
+// the last-notified state.
+
 ```
 
 ### Device Status (single-byte enum, no CBOR)
@@ -267,19 +277,22 @@ MediaMetadata = {                // Orion → Ori, write (+ Ori can notify on it
 
 (`0x20` reserved — do not reuse. OTA screen is driven locally via USB CDC; see `ota.md`.)
 
-### Factory Reset Command (4-byte payload)
+### Device Command (4-byte payload, NOT CBOR)
+
+Magic-routed — the 4-byte value determines the action:
 
 ```
-0xFA 0xC7 0x5E 0x5E    // "FAC75E5E"
+0xFA 0xC7 0x5E 0x5E    // Factory Reset  — wipe both bonds + NVS, reboot into first-boot setup
+0x55 0x4E 0x50 0x52    // Unpair Phone   — wipe iPhone bond only, show re-pair screen on Ori
 ```
 
-Any other value → `NACK_BAD_MAGIC`.
+Any other value → `NACK_BAD_MAGIC` via SyncControl notify.
 
 ---
 
 ## 5. Chunking protocol
 
-Used by Profile Photo, Meeting List, PTO Entry, and Media Album Art.
+Used by Profile Photo, Meeting List, Time Off Entry, and Media Album Art.
 
 ### MTU strategy
 
@@ -304,7 +317,7 @@ Offset  Size  Field
 
 ### Write type and flow control (throughput)
 
-Profile Photo, Meeting List, and PTO Entry advertise **both** `Write` and
+Profile Photo, Meeting List, and Time Off Entry advertise **both** `Write` and
 `Write Without Response`; Media Album Art is `Write Without
 Response` only. Orion SHOULD stream fragments **Write-No-Response** — it
 avoids the per-fragment ATT round-trip, so many fragments ride each connection
@@ -340,45 +353,19 @@ items in PSRAM as they arrive and commits them to NVS **atomically at `SyncContr
 PSRAM before a single flash commit.
 
 - Between `BEGIN` and `END`, nothing is written to NVS and no cached state (profile
-  card, meeting list, PTO, hashes) changes. If the link drops mid-session, Ori discards
+  card, meeting list, Time Off, hashes) changes. If the link drops mid-session, Ori discards
   the staged data and keeps serving the previously cached data — a partial transfer
   can never corrupt or partially overwrite NVS.
 - At `END`, Ori parses each staged item, computes its SHA-256, and updates the live UI
-  — in one batch. **Profile, Profile Photo, and PTO Entry persist to NVS.**
-- **Time Sync, Meeting List, and Shortcut Config are all RAM-only on Ori** — staged
-  and applied (to RAM + live UI) at `END` like the rest, but NOT written to NVS.
-  Meeting List and Shortcut Config also have no manifest hash; Orion just resends
-  Shortcut Config unconditionally on every sync, the same way it always sends Time
-  Sync regardless of whether anything changed. A power cycle drops all three back to
-  their defaults; the next sync repopulates them. **The wire is unchanged** for
-  Meeting List — Orion sends it identically; this is purely Ori's storage choice (no
-  `proto` bump). Why Meeting List specifically: with no battery-backed RTC the local
-  clock isn't restored on a cold boot, so the meeting time logic can't run offline
-  anyway — see `meeting-list.md`. Why Time Sync: the epoch is inherently RAM-only
-  (`settimeofday()`, nothing to persist), and the `tz` string rides along — it used to
-  be persisted separately (`nvs_sync::save_tz()`), but nothing ever read it back at
-  boot, so it was a pure write with no benefit; now it's RAM-only too. Why Shortcut
-  Config: it's small enough, and changes rarely enough, that hash-checking it costs
-  more than just always sending it.
-- **Display blackout during the flash write.** Right before committing, Ori blanks the
-  whole framebuffer (`lcd_panel::blackout()`) so LCD_CAM DMA doesn't show glitches
-  while NVS flash writes briefly disable the CPU cache (`hardware.md`). This only runs
-  when the commit actually touches NVS — Profile, Profile Photo, or PTO Entry. A
-  commit containing only Time Sync, Meeting List, and/or Shortcut Config (all
-  RAM-only) skips it entirely, and the UI updates with no screen flicker.
-- **Progress.** If `BEGIN` includes `total` (> 0), Ori tracks cumulative bytes received
-  across Time Sync, Shortcut Config, Profile Info, Profile Photo, Meeting List, and
-  PTO Entry writes — for chunked characteristics, each fragment's `payload_len` (not
-  the 6-byte frame header) counts towards the total — and derives
-  `pct = received * 100 / total` (capped at 99 until `END` finishes the commit, then
-  100). This drives the **Step 2/3 "Orioning" progress ring** during first-time setup
-  (`setup-flow.md`) AND the runtime reconnect **"Refreshing your day"** overlay
-  (`state-machine.md`) — both are driven by the same `OrioningProgress` event;
-  whichever screen isn't actually live no-ops on it harmlessly. The runtime
-  overlay itself is only shown when `total` exceeds `RECONNECT_OVERLAY_MIN_BYTES`
-  (200 B) — see `state-machine.md`'s Reconnect-Syncing Overlay section.
-- If `total` is absent or 0, Ori still stages-then-commits as above, but the orioning
-  ring is not driven by byte progress (legacy/indeterminate).
+  — in one batch. **Profile, Profile Photo, and Time Off Entry persist to NVS.**
+- **Time Sync and Meeting List are RAM-only on Ori** — staged and applied at `END` but NOT written to NVS. Neither has a manifest hash; Orion always resends Time Sync unconditionally. A power cycle drops both; the next sync repopulates them. Orion sends Meeting List identically on the wire — the RAM-only choice is Ori's (no `proto` bump). See `meeting-list.md` for rationale.
+- **Shortcut Config is no longer part of the staged sync pipeline.** It is delivered
+  via the **Device Settings** characteristic (char `000F`) written outside the
+  BEGIN/END window — applied immediately on write, like Presence Status — and is
+  RAM-only on Ori (not persisted to NVS, no manifest hash). Orion writes Device
+  Settings with the current shortcut tokens on every (re)connect, before BEGIN.
+- **Display blackout during flash write.** Ori blanks the framebuffer before NVS writes (`hardware.md` — LCD_CAM DMA vs. cache). Only when the commit touches NVS (Profile, Photo, Time Off); RAM-only commits (Time Sync, Meeting List) skip it entirely.
+- **Progress.** If `BEGIN` includes `total` (> 0), Ori tracks cumulative bytes across all writes (chunked: `payload_len` per fragment, not the 6-byte header) and derives `pct = received * 100 / total` (capped at 99 until `END` commits, then 100). Drives both the Step 2/3 Orioning ring and the runtime "Refreshing your day" overlay (same `OrioningProgress` event). Overlay only shown when `total` > `RECONNECT_OVERLAY_MIN_BYTES` (200 B) — see `state-machine.md`. If `total` is absent or 0, staging still works but the ring is not byte-driven.
 
 ### 6.1 First-time pairing
 
@@ -392,8 +379,10 @@ Orion connects → ATT MTU exchange → BLE bonding (LE SC, Passkey Entry)
     slot is NOT written yet (see handshake note below)
 
 Ori notifies Device Status = SETUP_BONDED_AWAITING_SYNC
-Orion computes total = byte-length of (Time Sync + Shortcut Config + Profile Info
-                                        + Profile Photo + Meeting List + PTO Entry) payloads
+Orion writes Device Settings (shortcuts + clock face if non-default)
+  → Applied immediately on Ori — outside the BEGIN/END staging pipeline.
+Orion computes total = byte-length of (Time Sync + Profile Info
+                                        + Profile Photo + Meeting List + Time Off Entry) payloads
 Orion writes SyncControl{op:"BEGIN", seq:1, total:total}
   → HANDSHAKE: a valid SyncControl{BEGIN} on the encrypted link is Ori's proof
     that the bonded peer is the Orion app (not a phone or other PC someone paired
@@ -401,11 +390,10 @@ Orion writes SyncControl{op:"BEGIN", seq:1, total:total}
     to the orion_addr slot. A peer that bonds but never sends a valid BEGIN
     within ~5 s is disconnected and its LTK bond deleted — never saved as Orion.
 Orion writes Time Sync
-Orion writes Shortcut Config
 Orion writes Profile Info
 Orion writes Profile Photo (chunked)
 Orion writes Meeting List (chunked)
-Orion writes PTO Entry (chunked)
+Orion writes Time Off Entry (chunked)
 Orion writes SyncControl{op:"END", seq:1}
 
 Ori commits all staged items to NVS + computes per-item SHA-256 hashes (§6.0).
@@ -422,15 +410,17 @@ Orion sees adv → reconnects → encrypted via stored LTK
 Ori notifies Device Status = RUNTIME_RECONNECTING
   → Reconnecting overlay appears on left panel
 
+Orion writes Device Settings (shortcuts — always; clock face / ANCS filter if changed)
+  → Applied immediately on Ori — outside the BEGIN/END staging pipeline.
+Orion writes Presence Status (via Device Settings "p" field)
+  → Also applied immediately.
 Orion writes Time Sync (always — ~20 bytes, clock may drift)
-Orion writes Sync Manifest: { profile_sha, photo_sha, meetings_sha, pto_sha }
+Orion writes Sync Manifest: { profile_sha, photo_sha, meetings_sha, to_sha }
 Ori compares against NVS/RAM hashes → notifies Sync Manifest: { needed: [...] }
 
-Orion computes total = byte-length of (Time Sync + Shortcut Config + only the
-                                        `needed` items)
+Orion computes total = byte-length of (Time Sync + only the `needed` items)
 Orion writes SyncControl{op:"BEGIN", seq:N, total:total}
-Orion writes Shortcut Config (always — no hash, RAM-only on Ori, like Time Sync)
-Orion writes only requested items (profile → photo → meetings → pto)
+Orion writes only requested items (profile → photo → meetings → to)
 Orion writes SyncControl{op:"END", seq:N}
 
 Ori commits all staged items to NVS + hashes atomically (§6.0).
@@ -443,35 +433,34 @@ Ori notifies Device Status = RUNTIME_READY → overlay dismissed.
 
 | Trigger | Cadence | Effect |
 |---|---|---|
-| Time Sync | Every 10 min | Write Time Sync |
+| Time Sync | Every 10 min | Write Time Sync (inside BEGIN/END) |
 | Meeting List | Calendar event or every 15 min | Hash-check via Manifest, push if needed |
-| PTO Entry | Calendar event | Hash-check, push if needed |
+| Time Off Entry | Calendar event | Hash-check, push if needed |
 | Profile Info / Photo | User edit in Orion | Hash-check, push if needed |
-| Shortcut Config | Every sync (no hash) | Always sent, like Time Sync |
-| Presence Status | Teams change or ~60 s poll | Write Presence Status (only when value changes) |
+| Shortcut Config | Every (re)connect | Write Device Settings {"1","2","3"} outside BEGIN/END |
+| Presence Status | Teams change or ~60 s poll | Write Device Settings {"p"} (only when value changes) |
+| Clock Face / ANCS Filter | User changes setting | Write Device Settings {"c"} or {"f"} |
 
 Periodic refreshes set `RUNTIME_SYNCING` briefly but do **not** trigger the reconnecting overlay.
 
-### 6.4 Presence push (no manifest, no hash)
+### 6.4 Device Settings push (no manifest, no hash)
 
-Presence Status is ephemeral — not in the manifest flow, not persisted to NVS,
-and **Write-only** (no `Read`): Orion is the sole source of
-truth and always knows the live value, so there's nothing for Ori to recover
-that Orion doesn't already have — a Read would only ever echo back what Orion
-itself last wrote, and the write is already `Write (response)` so delivery is
-already confirmed without one.
+Device Settings (char `000F`) is outside the BEGIN/END pipeline. Each field is ephemeral or user-configured:
 
-- On (re)connect: Orion **writes** a fresh value immediately — Ori has no way
-  to recover presence on its own after a disconnect.
-- Between connects: Orion **writes** again on every Teams state change.
-- Before the first write: display `Offline`.
-- On BLE link drop: immediately render `Offline` (stale presence would lie about reality).
+- **Presence** (`"p"`): ephemeral. Orion writes on every (re)connect and on every Teams state change. Before the first write, Ori displays `Offline`. On BLE link drop, Ori immediately renders `Offline` — stale presence would lie about reality.
+- **Shortcuts** (`"1"/"2"/"3"`): RAM-only. Orion writes on every (re)connect so the shortcuts row always reflects the user's configured set.
+- **Clock Face** (`"c"`): persisted to NVS. Orion writes only when the user changes the setting in Orion's UI — not on every reconnect. Ori's NVS retains it across power cycles.
+- **ANCS Filter** (`"f"`): persisted to NVS. Same write-only-on-change policy as Clock Face.
+
+Orion can write any subset of fields in a single Device Settings write (e.g. presence-only on Teams state changes, shortcuts + presence on reconnect).
+
+**Read on (re)connect:** Orion reads Device Settings once per connection to recover `"c"` (clock_face) and `"f"` (ancs_filter) — the two NVS-persisted fields whose ground truth lives on Ori. This lets Orion's settings UI show the correct current values without Orion having to cache what it last wrote across app restarts or BLE drops. Presence and shortcuts are omitted from the read response (Orion owns them).
 
 ---
 
 ## 7. Disconnect, reconnect, and cache semantics
 
-- Profile, photo, and PTO persist to NVS on `SyncControl{op:"END"}` and are shown with a "SYNCED · X min ago" pill while offline. **Meeting List and local time are RAM-only** (not persisted, §6.0) — the pill therefore appears only on a *runtime* disconnect (meetings still in RAM), never after a power cycle (the list is empty → "No meetings today"). See `meeting-list.md`.
+- Profile, photo, and Time Off persist to NVS on `SyncControl{op:"END"}` and are shown with a "SYNCED · X min ago" pill while offline. **Meeting List and local time are RAM-only** (not persisted, §6.0) — the pill therefore appears only on a *runtime* disconnect (meetings still in RAM), never after a power cycle (the list is empty → "No meetings today"). See `meeting-list.md`.
 - Factory reset wipes NVS and both bonds; next connection is first-time pairing.
 
 ### 7.1 Factory-reset-during-reconnect
@@ -503,7 +492,7 @@ Local long-press-photo reset is identical; both paths converge in the same firmw
 | `NACK_CHUNK_TIMEOUT` | Reassembly stalled; sender restarts |
 | `NACK_CBOR_DECODE` | Payload malformed; sender re-encodes, retries once |
 | `NACK_TOO_LARGE` | Payload exceeds cap |
-| `NACK_BAD_MAGIC` | Factory Reset Command wrong magic |
+| `NACK_BAD_MAGIC` | Device Command magic not recognised |
 
 Link-layer encryption failure (`BLE_HS_ENC_FAIL`) signals a stale bond — see §7.1. Surface it cleanly; do not retry-loop.
 
@@ -511,7 +500,7 @@ Link-layer encryption failure (`BLE_HS_ENC_FAIL`) signals a stale bond — see �
 
 ## 9. Versioning
 
-- Protocol Version characteristic: `{ proto_major, proto_minor, fw_version }`. Pre-release — this contract isn't finalized, so no changelog is kept here; just edit the relevant section in place when something changes.
+- Protocol Version characteristic: `{ proto_major, proto_minor, fw_version }`. Current: **1.0**. Pre-release — this contract isn't finalized, so no changelog is kept here; just edit the relevant section in place when something changes.
 - Once the protocol is finalized/released, switch to: **Major bump** = breaking. On a `proto_major` mismatch, Orion must not attempt the hash-manifest sync at all — a different `proto_major` means the GATT layout/CBOR schema can't be trusted. Instead Orion **automatically** starts a USB CDC firmware update (`ota.md`) to bring Ori onto a `proto_major` Orion supports, provided Ori is reachable over USB CDC at that moment; if not, Orion shows a blocking "Ori needs a firmware update — connect it to this PC" prompt and re-checks once a serial port appears. This replaces a passive "show a message, user clicks Install" flow with an automatic one — see `pc-app.md`'s "Protocol compatibility gate." **Minor bump** = additive (unknown CBOR keys silently ignored) — a minor-only difference is not a sync blocker.
 - `fw_version` (semver) drives a separate, optional check: Orion polls `ori.app` for the latest released version and offers a user-initiated "Install update" in Settings when a newer (but still `proto_major`-compatible) build exists. This is independent of the mandatory `proto_major` gate above — see `pc-app.md`.
 
@@ -530,21 +519,24 @@ Link-layer encryption failure (`BLE_HS_ENC_FAIL`) signals a stale bond — see �
 | Meeting `loc` | ≤ 64 UTF-8 bytes (firmware buffer; truncated past that) |
 | Meeting `org` | ≤ 64 UTF-8 bytes (firmware buffer; truncated past that) |
 | Meeting list total | ≤ 32 meetings/day |
-| `PtoEntry.destination` | ≤ 128 UTF-8 bytes |
-| PTO image (JPEG, 528×396) | hard cap 512 KB — Orion resizes to 528×396 before sending |
+| `TimeOffEntry.destination` | ≤ 128 UTF-8 bytes |
+| Time Off image (JPEG, 528×396) | hard cap 512 KB — Orion resizes to 528×396 before sending |
 | `MediaMetadata.title` | ≤ 192 UTF-8 bytes |
 | `MediaMetadata.artist` | ≤ 96 UTF-8 bytes |
 | Media Album Art (JPEG, 484×216) | target 15–30 KB; hard cap 64 KB |
-| Presence Status | exactly 1 byte (0x00–0x03) |
-| `ShortcutConfig.slot1/2/3` | ≤ 19 chars each (firmware buffer) — icon token, e.g. "vol-mute" |
-| Clock Face | exactly 1 byte (0x00–0x01) |
+| `DeviceSettings.presence` | uint 0–3 |
+| `DeviceSettings.slot1/2/3` | ≤ 19 chars each (firmware buffer) — icon token, e.g. "vol-mute" |
+| `DeviceSettings.clock_face` | uint 0–1 |
+| `DeviceSettings.ancs_filter` | uint 0–3 |
+| `PhoneBondStatus.name` | ≤ 63 UTF-8 bytes (firmware `g_phone_name[64]` minus null terminator) |
+| Unpair Phone Command | exactly 4 bytes (0x55 0x4E 0x50 0x52) |
 
 ---
 
 ## 11. Implementation owners
 
-- **`esp32-connectivity`** — GATT server, bonding, chunk reassembly, NVS persistence + hashes, factory-reset routine, ANCS client, chars 11–17. No HOGP.
-- **`orion-sync`** — scanning + connection lifecycle, bonding storage, hash-manifest delta, chunked writes, background keep-alive, USB CDC OTA path (`ota.md`), media-mode OS bridge (§12).
+- **`esp32-connectivity`** — GATT server, bonding, chunk reassembly, NVS persistence + hashes, factory-reset routine, ANCS client, chars 11–16. No HOGP.
+- **`orion-sync`** — scanning + connection lifecycle, bonding storage, hash-manifest delta, chunked writes, background keep-alive, USB CDC OTA path (`ota.md`), media-mode OS bridge (§12). Reads char 16 (Phone Bond Status) on connect and subscribes to notifies; writes Unpair Phone magic bytes via char 9 (Device Command) on user request; writes char 15 (Device Settings) on reconnect (shortcuts + presence) and when the user changes clock face or ANCS filter.
 
 Pre-release: no need to bump a version header per change — just keep this file in sync with the firmware/Orion implementations as the contract evolves.
 
@@ -572,7 +564,7 @@ Supported shortcut actions (configured per slot in Orion settings): `vol-mute`, 
 
 ### Shortcut icon assignment — Orion → Ori
 
-Which icon shows in each of the three slots is configured in Orion's settings UI and delivered over **Shortcut Config** (char `0010`, §3/§4) — still staged like Profile Info (applied at `SyncControl{END}`), but RAM-only on Ori and sent unconditionally on every sync, like Time Sync — no NVS, no hash, no manifest entry. It's small and changes rarely enough that hash-checking it costs more than just always sending it, and skipping NVS means a shortcuts-only sync never needs the display blackout (§6.0). Ori maps each token to a compiled-in icon asset (`shortcut_icons.h`); unknown tokens hide that slot's button entirely (`media-mode.md`) rather than failing the sync. Adding a new icon *type* to the available set still requires a firmware update (`media-mode.md`) — this characteristic only carries which of the existing compiled-in icons each slot shows.
+Which icon shows in each of the three slots is configured in Orion's settings UI and delivered via the `"1"/"2"/"3"` fields of **Device Settings** (char `000F`, §3/§4) — written on every (re)connect outside the BEGIN/END staging pipeline, applied immediately on Ori. RAM-only on Ori — no NVS persistence, no manifest hash. Ori maps each token to a compiled-in icon asset (`shortcut_icons.h`); unknown tokens hide that slot's button entirely (`media-mode.md`) rather than failing the write. Adding a new icon *type* to the available set still requires a firmware update (`media-mode.md`) — Device Settings only carries which of the existing compiled-in icons each slot shows.
 
 ### State push flow — OS → Orion → Ori
 

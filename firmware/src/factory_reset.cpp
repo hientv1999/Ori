@@ -22,7 +22,7 @@ void execute() {
 
     // Erase both cached photos from NVS and free their PSRAM decode buffers.
     photo_cache::clear();
-    photo_cache::clear_pto();
+    photo_cache::clear_time_off();
 
     // Wipe both BLE bond records + NVS bond slot addresses.
     ble_manager::wipe_all_bonds();

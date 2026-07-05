@@ -15,7 +15,7 @@ namespace nvs_sync {
 const char* const HASH_KEY_PROFILE   = "p_sha";
 const char* const HASH_KEY_PHOTO     = "ph_sha";
 const char* const HASH_KEY_MEETINGS  = "m_sha";
-const char* const HASH_KEY_PTO       = "pto_sha";
+const char* const HASH_KEY_TIME_OFF  = "to_sha";
 
 namespace {
 constexpr const char* NS = "ori";
@@ -29,38 +29,38 @@ constexpr const char* K_EPOCH  = "epoch";
 
 Preferences prefs;
 
-// PTO metadata RAM cache.
+// Time Off metadata RAM cache.
 //
 // ESP-IDF's NVS handle allocator uses SRAM heap. After the media screen
 // allocates and frees LVGL objects, the heap layout can place a new
 // NVSHandleSimple at an address whose vtable field overlaps a prior JFIF
-// buffer, producing a LoadProhibited crash inside load_pto_meta().
+// buffer, producing a LoadProhibited crash inside load_time_off_meta().
 //
-// Fix: populate once at startup (prime_pto_cache(), clean heap) so that
-// all later calls — including from screen_pto::create() — read from RAM.
-struct PtoCache {
+// Fix: populate once at startup (prime_time_off_cache(), clean heap) so that
+// all later calls — including from screen_time_off::create() — read from RAM.
+struct TimeOffCache {
     uint32_t start;
     uint32_t end;
     char     dest[129];
     bool     loaded;
 };
-static PtoCache g_pto_cache = {};
+static TimeOffCache g_time_off_cache = {};
 
-static void load_pto_from_nvs() {
-    g_pto_cache = {};       // zero fields
-    g_pto_cache.loaded = true;  // mark done even if NVS fails
+static void load_time_off_from_nvs() {
+    g_time_off_cache = {};       // zero fields
+    g_time_off_cache.loaded = true;  // mark done even if NVS fails
     if (!prefs.begin(NS, /*readOnly=*/true)) return;
-    g_pto_cache.start = prefs.getUInt("pto_s", 0);
-    g_pto_cache.end   = prefs.getUInt("pto_e", 0);
-    String d = prefs.getString("pto_d", "");
+    g_time_off_cache.start = prefs.getUInt("to_s", 0);
+    g_time_off_cache.end   = prefs.getUInt("to_e", 0);
+    String d = prefs.getString("to_d", "");
     prefs.end();
     size_t dlen = d.length();
-    if (dlen >= sizeof(g_pto_cache.dest)) dlen = sizeof(g_pto_cache.dest) - 1;
-    memcpy(g_pto_cache.dest, d.c_str(), dlen);
-    g_pto_cache.dest[dlen] = '\0';
+    if (dlen >= sizeof(g_time_off_cache.dest)) dlen = sizeof(g_time_off_cache.dest) - 1;
+    memcpy(g_time_off_cache.dest, d.c_str(), dlen);
+    g_time_off_cache.dest[dlen] = '\0';
 }
 
-// Sync-hash RAM cache — same rationale as PtoCache above. handle_manifest_write()
+// Sync-hash RAM cache — same rationale as TimeOffCache above. handle_manifest_write()
 // (gatt_server.cpp) calls load_hash() up to 4 times per reconnect, on the NimBLE
 // host task, right after a sync session that may have decoded/freed JPEG buffers.
 // A fresh nvs_open() there can land on heap previously holding JFIF bytes and
@@ -71,10 +71,10 @@ static void load_pto_from_nvs() {
 struct HashCache {
     uint8_t profile[32];
     uint8_t photo[32];
-    uint8_t pto[32];
+    uint8_t time_off[32];
     bool has_profile;
     bool has_photo;
-    bool has_pto;
+    bool has_time_off;
     bool loaded;
 };
 static HashCache g_hash_cache = {};
@@ -91,9 +91,9 @@ static void load_hashes_from_nvs() {
     g_hash_cache = {};
     g_hash_cache.loaded = true; // mark done even if NVS fails
     if (!prefs.begin(NS, /*readOnly=*/true)) return;
-    load_one_hash(HASH_KEY_PROFILE, g_hash_cache.profile, &g_hash_cache.has_profile);
-    load_one_hash(HASH_KEY_PHOTO,   g_hash_cache.photo,   &g_hash_cache.has_photo);
-    load_one_hash(HASH_KEY_PTO,     g_hash_cache.pto,     &g_hash_cache.has_pto);
+    load_one_hash(HASH_KEY_PROFILE,   g_hash_cache.profile,   &g_hash_cache.has_profile);
+    load_one_hash(HASH_KEY_PHOTO,     g_hash_cache.photo,     &g_hash_cache.has_photo);
+    load_one_hash(HASH_KEY_TIME_OFF,  g_hash_cache.time_off,  &g_hash_cache.has_time_off);
     prefs.end();
 }
 
@@ -117,9 +117,9 @@ bool load_hash(const char* key, uint8_t out_hash[32]) {
         memcpy(out_hash, g_hash_cache.photo, 32);
         return true;
     }
-    if (key == HASH_KEY_PTO) {
-        if (!g_hash_cache.has_pto) return false;
-        memcpy(out_hash, g_hash_cache.pto, 32);
+    if (key == HASH_KEY_TIME_OFF) {
+        if (!g_hash_cache.has_time_off) return false;
+        memcpy(out_hash, g_hash_cache.time_off, 32);
         return true;
     }
     // HASH_KEY_MEETINGS: meetings are RAM-only (not NVS-persisted) — the
@@ -141,9 +141,9 @@ void save_hash(const char* key, const uint8_t hash[32]) {
     } else if (key == HASH_KEY_PHOTO) {
         memcpy(g_hash_cache.photo, hash, 32);
         g_hash_cache.has_photo = true;
-    } else if (key == HASH_KEY_PTO) {
-        memcpy(g_hash_cache.pto, hash, 32);
-        g_hash_cache.has_pto = true;
+    } else if (key == HASH_KEY_TIME_OFF) {
+        memcpy(g_hash_cache.time_off, hash, 32);
+        g_hash_cache.has_time_off = true;
     }
 }
 
@@ -197,40 +197,40 @@ uint32_t load_epoch() {
     return v;
 }
 
-// ── PTO metadata ──────────────────────────────────────────────────────────────
+// ── Time Off metadata ─────────────────────────────────────────────────────────
 
-void prime_pto_cache() {
-    if (!g_pto_cache.loaded) load_pto_from_nvs();
+void prime_time_off_cache() {
+    if (!g_time_off_cache.loaded) load_time_off_from_nvs();
 }
 
-void save_pto_meta(uint32_t start, uint32_t end, const char* destination) {
+void save_time_off_meta(uint32_t start, uint32_t end, const char* destination) {
     if (!prefs.begin(NS, /*readOnly=*/false)) return;
-    prefs.putUInt("pto_s",  start);
-    prefs.putUInt("pto_e",  end);
-    if (destination) prefs.putString("pto_d", destination);
+    prefs.putUInt("to_s",  start);
+    prefs.putUInt("to_e",  end);
+    if (destination) prefs.putString("to_d", destination);
     prefs.end();
-    // Keep cache in sync so load_pto_meta() doesn't re-read NVS.
-    g_pto_cache.start = start;
-    g_pto_cache.end   = end;
+    // Keep cache in sync so load_time_off_meta() doesn't re-read NVS.
+    g_time_off_cache.start = start;
+    g_time_off_cache.end   = end;
     if (destination) {
-        strncpy(g_pto_cache.dest, destination, sizeof(g_pto_cache.dest) - 1);
-        g_pto_cache.dest[sizeof(g_pto_cache.dest) - 1] = '\0';
+        strncpy(g_time_off_cache.dest, destination, sizeof(g_time_off_cache.dest) - 1);
+        g_time_off_cache.dest[sizeof(g_time_off_cache.dest) - 1] = '\0';
     } else {
-        g_pto_cache.dest[0] = '\0';
+        g_time_off_cache.dest[0] = '\0';
     }
-    g_pto_cache.loaded = true;
+    g_time_off_cache.loaded = true;
 }
 
-bool load_pto_meta(uint32_t* out_start, uint32_t* out_end,
-                   char* out_dest, size_t dest_sz) {
-    if (!g_pto_cache.loaded) load_pto_from_nvs();
-    if (out_start) *out_start = g_pto_cache.start;
-    if (out_end)   *out_end   = g_pto_cache.end;
+bool load_time_off_meta(uint32_t* out_start, uint32_t* out_end,
+                        char* out_dest, size_t dest_sz) {
+    if (!g_time_off_cache.loaded) load_time_off_from_nvs();
+    if (out_start) *out_start = g_time_off_cache.start;
+    if (out_end)   *out_end   = g_time_off_cache.end;
     if (out_dest && dest_sz > 0) {
-        strncpy(out_dest, g_pto_cache.dest, dest_sz - 1);
+        strncpy(out_dest, g_time_off_cache.dest, dest_sz - 1);
         out_dest[dest_sz - 1] = '\0';
     }
-    return g_pto_cache.start != 0;
+    return g_time_off_cache.start != 0;
 }
 
 // ── Meeting list CBOR blob ─────────────────────────────────────────────────────

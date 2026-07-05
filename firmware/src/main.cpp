@@ -51,7 +51,7 @@
 #include "nvs_sync.h"
 #include "ota_receiver.h"
 #include "assets/profile_placeholder.h"
-#include "assets/pto_placeholder.h"
+#include "assets/time_off_placeholder.h"
 #include "photo_cache.h"
 #include "screen_manager.h"
 #include "screens/screen_boot_splash.h"
@@ -166,10 +166,10 @@ void setup() {
     // Placeholders (compiled into firmware flash) decoded first so init() can
     // fall back to them immediately if no user photo exists on LittleFS yet.
     photo_cache::init_profile_placeholder(profile_placeholder_jpg, profile_placeholder_jpg_len);
-    photo_cache::init_pto_placeholder(pto_placeholder_jpg, pto_placeholder_jpg_len);
+    photo_cache::init_time_off_placeholder(time_off_placeholder_jpg, time_off_placeholder_jpg_len);
     // Load user photos from LittleFS (persists across firmware updates).
     photo_cache::init();
-    photo_cache::init_pto();
+    photo_cache::init_time_off();
     mem_snapshot("after photo_cache");
 
     // Meetings are RAM-only (see state_machine::set_meetings_cbor) — nothing to

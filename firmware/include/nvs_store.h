@@ -8,7 +8,7 @@
 //   "mode"        — uint8: 0=Calendar, 1=Media (immediate write, infrequent)
 //   "clock_face"  — uint8: 0=Digital, 1=Analog (immediate write, infrequent)
 //
-// Profile, photo, and meeting/PTO hashes are M5 scope — reserved slots.
+// Profile, photo, and meeting/Time Off hashes are M5 scope — reserved slots.
 namespace nvs {
 
 void    init();
@@ -40,11 +40,15 @@ uint8_t get_mode();
 void    set_mode(uint8_t mode);
 
 // Clock-face preference (0 = Digital, 1 = Analog). Drives which of
-// screen_clock / screen_clock_analog the Clock state shows. Currently set
-// only via the ORI_DEBUG_SERIAL cycler; intended to eventually be driven by
-// an Orion setting.
+// screen_clock / screen_clock_analog the Clock state shows.
 uint8_t get_clock_face();
 void    set_clock_face(uint8_t face);
+
+// ANCS notification filter level (0=Disabled, 1=CallOnly, 2=Important, 3=All).
+// Default 3 (All). Set by Orion via Device Settings (char 000F); persisted so the setting
+// survives power cycles without Orion needing to resend it on every reconnect.
+uint8_t get_notif_filter();
+void    set_notif_filter(uint8_t level);
 
 // Factory reset — clears ALL keys in the "ori" namespace.
 // Does NOT reboot; caller is responsible for calling ESP.restart() after.

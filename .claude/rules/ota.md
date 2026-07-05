@@ -123,7 +123,7 @@ There is **no "Firmware Install / Update now" gate** — the download flows stra
 - All touch inert — mode-toggle and long-press triggers do nothing.
 - **Meeting-check tick paused.** The 1 s state-machine tick (meeting expiry / 5-minute alert / `evaluate()`) is paused for the whole update via `lv_timer_pause()` in `on_ota_begin`, resumed in `on_reconnect_end` only if the update fails (success reboots). No meeting/alert logic runs or touches state while the OTA owns the device. (Other timers are screen-local — the status bar, profile card, and any countdown modal are deleted when the OTA screen replaces the runtime screen, cleaning up their timers.)
 - **BLE quiesced before the flash commit** (`ble_manager::quiesce_for_commit()` — stops advertising + `NimBLEDevice::deinit`), so nothing BLE-side executes or triggers an NVS/flash write while `Update.write()` has the cache disabled.
-- **BLE writes NACKed** for all data characteristics (Profile Info, Photo, Meeting List, PTO Entry, Factory Reset Command) while `is_active()` — Orion retries after reboot.
+- **BLE writes NACKed** for all data characteristics (Profile Info, Photo, Meeting List, Time Off Entry, Factory Reset Command) while `is_active()` — Orion retries after reboot.
 - **`Keyboard Command` notifies suspended** for the duration.
 - Download phase is interruptible (unplug = partial image discarded, active slot untouched, no resume — Orion restarts from `BEGIN`). Once the image verifies and the Installing linger starts, the commit runs through to reboot.
 

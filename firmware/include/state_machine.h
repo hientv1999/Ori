@@ -10,12 +10,12 @@ typedef struct _lv_obj_t lv_obj_t;
 // Ori — State Machine (M4)
 //
 // Owns the left-panel priority logic, periodic ticks, 5-minute pre-meeting
-// alert, PTO window detection, and meeting expiry.
+// alert, Time Off window detection, and meeting expiry.
 //
 // Priority order (highest → lowest):
 //   1. SETUP             — first-boot / factory-reset setup flow
 //   2. OTA_UPDATING      — firmware update in progress (future M5 trigger)
-//   3. PTO_ACTIVE        — current time within cached PTO window
+//   3. TIME_OFF_ACTIVE   — current time within cached Time Off window
 //   4. COUNTDOWN         — 5-min pre-meeting alert modal
 //   5. RECONNECT_SYNCING — Orion reconnected, hash-manifest in progress (M5)
 //   6+. Mode-driven (g_mode):
@@ -35,7 +35,7 @@ enum class AppState : uint8_t {
     SETUP,
     OTA_UPDATING,
     OTA_ACK,          // post-update "Firmware updated" ack (persists until Close)
-    PTO_ACTIVE,
+    TIME_OFF_ACTIVE,
     COUNTDOWN,
     RECONNECT_SYNCING,
     MEETING_LIST,
@@ -63,13 +63,13 @@ void poll();
 // MeetingList handler.
 void set_meetings_cbor(const uint8_t* buf, size_t len);
 
-// The PTO destination image finished decoding into photo_cache after the
+// The Time Off destination image finished decoding into photo_cache after the
 // screen was already built (the image streams in asynchronously). Unlike the
 // profile photo — which widget_profile_card::set_photo() live-updates on the
-// active card — the PTO screen has no in-place image setter, so this forces a
-// rebuild when PTO_ACTIVE is the screen currently shown (cheap no-op otherwise).
-// Call from the BLE PtoPhotoReceived handler after photo_cache::store_pto().
-void notify_pto_image_changed();
+// active card — the Time Off screen has no in-place image setter, so this forces a
+// rebuild when TIME_OFF_ACTIVE is the screen currently shown (cheap no-op otherwise).
+// Call from the BLE TimeOffPhotoReceived handler after photo_cache::store_time_off().
+void notify_time_off_image_changed();
 
 // Re-evaluate priority and push a new LVGL screen if the state changed.
 // Called by the internal lv_timer; may also be called directly when data

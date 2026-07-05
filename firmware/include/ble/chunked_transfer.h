@@ -6,7 +6,7 @@
 
 // Ori chunked transfer reassembly engine (ble-protocol.md §5).
 //
-// Used by: Profile Photo, Meeting List, PTO Entry, Media Album Art.
+// Used by: Profile Photo, Meeting List, Time Off Entry, Media Album Art.
 //
 // Frame format (6-byte header):
 //   Offset  Size  Field

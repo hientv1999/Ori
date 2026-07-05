@@ -21,7 +21,7 @@
 #include "screens/screen_meeting_list.h"
 #include "screens/screen_no_meetings.h"
 #include "screens/screen_ota_updating.h"
-#include "screens/screen_pto.h"
+#include "screens/screen_time_off.h"
 #include "screens/screen_reconnect_syncing.h"
 // #include "screens/screen_repair_phone.h" // removed obsolete repair screen
 #include "screens/screen_setup.h"
@@ -141,7 +141,7 @@ void print_keymap() {
     LOG("  c   Digital clock (entered via time tap; sets clock-face pref -> Digital)\n");
     LOG("  a   Analog clock (entered via time tap; sets clock-face pref -> Analog)\n");
     LOG("  v   Calendar month view (entered via time long-press)\n");
-    LOG("  p   PTO scenic\n");
+    LOG("  p   Time Off scenic\n");
     LOG("  k   Media mode\n");
     LOG("  C   5-minute countdown modal\n");
     LOG("  P   Cycle Teams presence\n");
@@ -196,7 +196,7 @@ void debug_handle_key(char c) {
                 debug_load(screen_calendar::create());
             break;
         case 'p':
-                debug_load(screen_pto::create());
+                debug_load(screen_time_off::create());
             break;
         case 'C': {
             lv_obj_t* base = screen_no_meetings::create();

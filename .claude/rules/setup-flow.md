@@ -54,7 +54,7 @@ Both screens share the same wordmark + title + description + primary-button stac
 
 - **Trigger**: long-press the circular profile photo for 3 seconds from any state.
 - Shows a confirmation popup with Cancel and Reset actions.
-- Erases: profile, meetings, PTO, and pairing bonds.
+- Erases: profile, meetings, Time Off, and pairing bonds.
 - Device returns to first-boot setup state.
 
 ## Runtime Re-Pair iPhone

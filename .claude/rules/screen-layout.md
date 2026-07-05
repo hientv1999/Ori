@@ -56,5 +56,5 @@ Border colour transitions animate at ~300 ms ease.
 
 Dynamic, driven by the mode-toggle:
 
-- **Calendar mode** — priority-ordered state machine content (meeting list / PTO / countdown / reconnect overlay). See `state-machine.md`.
+- **Calendar mode** — priority-ordered state machine content (meeting list / Time Off / countdown / reconnect overlay). See `state-machine.md`.
 - **Controls mode** — media-controller UI. Only available when Orion is online. See `media-mode.md`.

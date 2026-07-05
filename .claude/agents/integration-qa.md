@@ -15,7 +15,7 @@ Validate **system behaviors** — the end-to-end loops that no single subsystem 
 2. **Meeting cancelled in calendar disappears from Ori** — immediately on next sync.
 3. **Past meetings drop off Ori** without involvement from Orion — device-side timer behavior.
 4. **5-minute alert fires** at the right moment, even if connectivity drops in the window.
-5. **PTO window switches the display** — entering PTO shows scenic; exiting PTO returns to meeting list / clock.
+5. **Time Off window switches the display** — entering Time Off shows scenic; exiting Time Off returns to meeting list / clock.
 6. **Phone disconnect** surfaces the broken-link icon in the status bar; long-press triggers re-pair flow.
 7. **Factory reset** wipes everything and returns to first-boot setup; pairing again works cleanly.
 8. **Orion-offline behavior** — BLE-only state still shows cached data with the "SYNCED · X min ago" pill; fully offline behavior matches the offline rules.

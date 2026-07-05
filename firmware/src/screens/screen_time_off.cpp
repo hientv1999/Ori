@@ -1,4 +1,4 @@
-﻿#include "screens/screen_pto.h"
+﻿#include "screens/screen_time_off.h"
 
 #include <lvgl.h>
 #include <time.h>
@@ -12,12 +12,12 @@
 #include "widgets/widget_profile_card.h"
 #include "widgets/widget_status_bar.h"
 
-// PTO scenic screen.
+// Time Off scenic screen.
 //
-// Background: real destination JPEG from photo_cache::get_pto() if available,
+// Background: real destination JPEG from photo_cache::get_time_off() if available,
 // otherwise the gradient placeholder bands.
-// Text: real PTO metadata from NVS (start/end/destination). Buffers stay empty
-// when no NVS entry exists — the state machine only enters PTO when the window is active.
+// Text: real Time Off metadata from NVS (start/end/destination). Buffers stay empty
+// when no NVS entry exists — the state machine only enters Time Off when the window is active.
 
 namespace {
 
@@ -73,7 +73,7 @@ void build_gradient_bg(lv_obj_t* left, int16_t H) {
 
 // ── Detail modal ──────────────────────────────────────────────────────────────
 
-static void show_pto_detail(lv_obj_t* screen) {
+static void show_time_off_detail(lv_obj_t* screen) {
     lv_obj_t* scrim = lv_obj_create(screen);
     lv_obj_set_size(scrim, 800, 480);
     lv_obj_set_pos(scrim, 0, 0);
@@ -116,7 +116,7 @@ static void show_pto_detail(lv_obj_t* screen) {
     lv_obj_set_flex_grow(spacer_top, 1);
 
     lv_obj_t* eyebrow = lv_label_create(scroll);
-    lv_label_set_text_static(eyebrow, "ON PTO");
+    lv_label_set_text_static(eyebrow, "ON TIME OFF");
     lv_obj_set_style_text_font(eyebrow, theme::font_meta(), 0);
     lv_obj_set_style_text_color(eyebrow, theme::color(theme::COLOR_ACCENT), 0);
     lv_obj_set_style_text_letter_space(eyebrow, 4, 0);
@@ -177,7 +177,7 @@ static void format_date_range(char* out, size_t out_sz,
 
 } // namespace
 
-namespace screen_pto {
+namespace screen_time_off {
 
 lv_obj_t* create() {
     lv_obj_t* screen = lv_obj_create(nullptr);
@@ -200,12 +200,12 @@ lv_obj_t* create() {
     // ── Background: BLE image → compiled-in placeholder → gradient ────────
     // Priority: real BLE image (528×396 from Orion) > compiled-in placeholder
     // > painted gradient bands. The placeholder is a JPEG baked into firmware
-    // flash at build time; see firmware/src/assets/pto_placeholder.c.
-    const lv_image_dsc_t* pto_img = photo_cache::get_pto();
-    if (!pto_img) pto_img = photo_cache::get_pto_placeholder();
-    if (pto_img) {
+    // flash at build time; see firmware/src/assets/time_off_placeholder.c.
+    const lv_image_dsc_t* time_off_img = photo_cache::get_time_off();
+    if (!time_off_img) time_off_img = photo_cache::get_time_off_placeholder();
+    if (time_off_img) {
         lv_obj_t* img = lv_image_create(left);
-        lv_image_set_src(img, pto_img);
+        lv_image_set_src(img, time_off_img);
         lv_obj_set_pos(img, 0, 0);
         lv_obj_clear_flag(img, LV_OBJ_FLAG_CLICKABLE);
     } else {
@@ -213,12 +213,12 @@ lv_obj_t* create() {
     }
 
 
-    // ── Load PTO text from NVS ────────────────────────────────────────────
-    uint32_t pto_start = 0, pto_end = 0;
-    bool has_nvs = nvs_sync::load_pto_meta(&pto_start, &pto_end,
-                                            s_destination, sizeof(s_destination));
-    if (has_nvs && pto_start && pto_end) {
-        format_date_range(s_dates, sizeof(s_dates), pto_start, pto_end);
+    // ── Load Time Off text from NVS ───────────────────────────────────────
+    uint32_t time_off_start = 0, time_off_end = 0;
+    bool has_nvs = nvs_sync::load_time_off_meta(&time_off_start, &time_off_end,
+                                                 s_destination, sizeof(s_destination));
+    if (has_nvs && time_off_start && time_off_end) {
+        format_date_range(s_dates, sizeof(s_dates), time_off_start, time_off_end);
     }
     if (!s_destination[0]) strncpy(s_destination, "Unknown destination", sizeof(s_destination) - 1);
     if (!s_dates[0])       strncpy(s_dates,       "Unknown period",      sizeof(s_dates) - 1);
@@ -243,7 +243,7 @@ lv_obj_t* create() {
     lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     lv_obj_t* eyebrow = lv_label_create(card);
-    lv_label_set_text_static(eyebrow, "ON PTO");
+    lv_label_set_text_static(eyebrow, "ON TIME OFF");
     lv_obj_set_style_text_font(eyebrow, theme::font_meta(), 0);
     lv_obj_set_style_text_color(eyebrow, theme::color(theme::COLOR_ACCENT), 0);
     lv_obj_set_style_text_letter_space(eyebrow, 4, 0);
@@ -265,7 +265,7 @@ lv_obj_t* create() {
     lv_obj_set_style_pad_top(dates_lbl, 4, 0);
 
     lv_obj_add_event_cb(card, [](lv_event_t* e) {
-        show_pto_detail(lv_obj_get_screen((lv_obj_t*)lv_event_get_target(e)));
+        show_time_off_detail(lv_obj_get_screen((lv_obj_t*)lv_event_get_target(e)));
     }, LV_EVENT_CLICKED, nullptr);
 
     ui::make_panel_divider(body);
@@ -273,4 +273,4 @@ lv_obj_t* create() {
     return screen;
 }
 
-} // namespace screen_pto
+} // namespace screen_time_off

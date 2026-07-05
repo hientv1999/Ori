@@ -1,5 +1,5 @@
-/* Ori UI Prototype — behavior script (v9)
-   - PTO screen: image 75% height / info bar 25% (label + destination + dates)
+﻿/* Ori UI Prototype â€” behavior script (v9)
+   - Time Off screen: image 75% height / info bar 25% (label + destination + dates)
    - Meeting rows: title and location single-line with ellipsis; tap row to expand detail overlay
    - Re-pair iPhone hides status bar so its layout matches Step 4 exactly */
 
@@ -23,7 +23,7 @@ const ANCS_NOTIFICATIONS = {
   messenger: {
     displayName: 'Messenger',
     title: 'Marcus Lee',
-    body: "Studio is booked for the design review. I'll send the invite now — can you confirm you're free at 10:30? Also, Hannah said she needs at least 20 minutes at the end to walk through the chassis tolerances with the vendor rep, so I've blocked the room until 12:00 just in case. Let me know if you want me to pull in the DFM report beforehand so we're not scrambling for numbers during the meeting.",
+    body: "Studio is booked for the design review. I'll send the invite now â€” can you confirm you're free at 10:30? Also, Hannah said she needs at least 20 minutes at the end to walk through the chassis tolerances with the vendor rep, so I've blocked the room until 12:00 just in case. Let me know if you want me to pull in the DFM report beforehand so we're not scrambling for numbers during the meeting.",
     time: '5 min ago',
   },
   instagram: {
@@ -31,12 +31,12 @@ const ANCS_NOTIFICATIONS = {
     title: 'New activity',
     body: 'oridevice and 47 others liked your photo.',
     time: '18 min ago',
-    silent: true,   // EventFlags SILENT bit — badge shown in the overlay
+    silent: true,   // EventFlags SILENT bit â€” badge shown in the overlay
   },
   facebook: {
     displayName: 'Facebook',
     title: 'Hannah Kim commented',
-    body: "Great progress on the display calibration — the green channel fix looks solid. Let's review the pin map again before M3.",
+    body: "Great progress on the display calibration â€” the green channel fix looks solid. Let's review the pin map again before M3.",
     time: '1 hr ago',
   },
 };
@@ -61,20 +61,20 @@ const TODAY_MEETINGS = [
   { start: '13:00', end: '13:45', title: 'Orion app sync', loc: 'Zoom', org: 'Hannah K.' },
   { start: '14:00', end: '15:00', title: 'Investor update prep', loc: 'Office', org: 'Xander T.', inProgress: true },
   { start: '15:30', end: '16:00', title: 'Quick sync with marketing', loc: 'Studio', org: 'Sam R.' },
-  { start: '16:30', end: '17:00', title: 'Q4 budget review', loc: 'Virtual — Microsoft Teams Conference Room B', org: 'Dr. Christopher Vandenbrook' },
+  { start: '16:30', end: '17:00', title: 'Q4 budget review', loc: 'Virtual â€” Microsoft Teams Conference Room B', org: 'Dr. Christopher Vandenbrook' },
 ];
 const OVERLAP_MEETINGS = [
   { start: '10:00', end: '11:00', title: 'Firmware architecture review', loc: 'Conf Room A', org: 'Marcus L.', overlap: true },
   { start: '10:00', end: '10:30', title: 'Quick chat with Priya', loc: 'Coffee bar', org: 'Priya N.', overlap: true },
-  { start: '10:30', end: '11:30', title: 'Vendor call — display panels', loc: 'Zoom', org: 'Hannah K.', overlap: true },
+  { start: '10:30', end: '11:30', title: 'Vendor call â€” display panels', loc: 'Zoom', org: 'Hannah K.', overlap: true },
 ];
 const LONG_TITLE_MEETINGS = [
   { start: '09:00', end: '10:00', title: 'Q3 roadmap planning across firmware, Orion, mobile, and operations', loc: 'Conf Room A', org: 'Priya N.' },
-  { start: '11:00', end: '12:00', title: 'Industrial design review — chassis, materials, and tooling decisions for the pilot run', loc: 'Studio', org: 'Marcus L.' },
+  { start: '11:00', end: '12:00', title: 'Industrial design review â€” chassis, materials, and tooling decisions for the pilot run', loc: 'Studio', org: 'Marcus L.' },
   { start: '14:00', end: '15:30', title: 'Investor preview', loc: 'Office', org: 'Xander T.', inProgress: true },
 ];
 const OVERLAP_LONG_MEETINGS = [
-  { start: '10:00', end: '11:00', title: 'Strategic planning session for Q4 — deep dive into roadmap and prioritisation', loc: 'Studio', org: 'Marcus L.', overlap: true },
+  { start: '10:00', end: '11:00', title: 'Strategic planning session for Q4 â€” deep dive into roadmap and prioritisation', loc: 'Studio', org: 'Marcus L.', overlap: true },
   { start: '10:00', end: '10:45', title: 'Manufacturing partner kickoff with the Shenzhen vendor', loc: 'Zoom', org: 'Hannah K.', overlap: true },
   { start: '11:00', end: '12:00', title: 'Standup', loc: 'Studio', org: 'Priya N.' },
 ];
@@ -83,7 +83,7 @@ const LONG_LIST_MEETINGS = [
   { start: '09:30', end: '10:30', title: 'Firmware architecture review with hardware team', loc: 'Conf Room A', org: 'Marcus L.' },
   { start: '10:30', end: '11:00', title: 'Orion app sync', loc: 'Zoom', org: 'Hannah K.' },
   { start: '11:00', end: '12:00', title: 'Industrial design review', loc: 'Studio', org: 'Marcus L.' },
-  { start: '13:00', end: '13:45', title: 'Vendor call — display panels and cover glass options', loc: 'Zoom', org: 'Hannah K.' },
+  { start: '13:00', end: '13:45', title: 'Vendor call â€” display panels and cover glass options', loc: 'Zoom', org: 'Hannah K.' },
   { start: '14:00', end: '15:00', title: 'One-on-one with Priya', loc: 'Coffee bar', org: 'Priya N.', inProgress: true },
   { start: '15:00', end: '15:30', title: 'Investor update prep', loc: 'Office', org: 'Xander T.' },
   { start: '15:30', end: '16:00', title: 'Quick sync with marketing', loc: 'Studio', org: 'Sam R.' },
@@ -92,8 +92,8 @@ const LONG_LIST_MEETINGS = [
 
 const SCREENS = {
   'meeting-list': {
-    label: 'Primary state', title: 'Meeting list — work hours',
-    desc: 'Default left-panel view. Title and location are single-line (ellipsis on overflow). Tap any meeting row to expand — shows full title, location, and time.',
+    label: 'Primary state', title: 'Meeting list â€” work hours',
+    desc: 'Default left-panel view. Title and location are single-line (ellipsis on overflow). Tap any meeting row to expand â€” shows full title, location, and time.',
     statusBar: { ancsApps: ['gmail', 'messenger', 'instagram'], phoneConnected: true },
     leftRender: () => meetingListHTML(TODAY_MEETINGS),
   },
@@ -112,7 +112,7 @@ const SCREENS = {
   },
   'clock-analog': {
     label: 'Primary state', title: 'Analog clock',
-    desc: 'Alternate Clock-state face — same entry/exit as the digital clock (tap status-bar time, mode-toggle to return). Proposed: a setting in Orion lets the user pick digital vs. analog; the device remembers the choice in NVS like the calendar/media mode-toggle preference.',
+    desc: 'Alternate Clock-state face â€” same entry/exit as the digital clock (tap status-bar time, mode-toggle to return). Proposed: a setting in Orion lets the user pick digital vs. analog; the device remembers the choice in NVS like the calendar/media mode-toggle preference.',
     statusBar: { ancsApps: ['gmail', 'facebook'], phoneConnected: true, hideDateTime: true },
     mode: 'clock',
     leftRender: () => analogClockHTML(),
@@ -124,49 +124,49 @@ const SCREENS = {
     mode: 'clock',
     leftRender: () => calendarHTML(),
   },
-  'pto': {
-    label: 'Primary state', title: 'PTO active',
-    desc: 'Destination name is single-line (ellipsis on overflow). Tap the card to open the full PTO detail overlay.',
+  'timeOff': {
+    label: 'Primary state', title: 'Time Off active',
+    desc: 'Destination name is single-line (ellipsis on overflow). Tap the card to open the full Time Off detail overlay.',
     statusBar: { ancsApps: [], phoneConnected: true },
-    leftRender: () => ptoHTML('Lisbon, Portugal', 'May 13 – May 21'),
+    leftRender: () => timeOffHTML('Lisbon, Portugal', 'May 13 â€“ May 21'),
   },
-  'pto-long-dest': {
-    label: 'Edge case', title: 'PTO — long destination name',
+  'timeOff-long-dest': {
+    label: 'Edge case', title: 'Time Off — long destination name',
     desc: 'Destination overflows the card width and is clipped with ellipsis. Tap the card to see the full name.',
     statusBar: { ancsApps: [], phoneConnected: true },
-    leftRender: () => ptoHTML('São Paulo, State of São Paulo, Brazil', 'Jun 2 – Jun 14'),
+    leftRender: () => timeOffHTML('SÃ£o Paulo, State of SÃ£o Paulo, Brazil', 'Jun 2 â€“ Jun 14'),
   },
-  'pto-detail': {
-    label: 'Modal popup', title: 'PTO detail overlay',
-    desc: 'Opened by tapping the destination card on the PTO screen. Shows the full destination and date range. Dismissed via the Close button.',
+  'timeOffDetail': {
+    label: 'Modal popup', title: 'Time Off detail overlay',
+    desc: 'Opened by tapping the destination card on the Time Off screen. Shows the full destination and date range. Dismissed via the Close button.',
     statusBar: { ancsApps: [], phoneConnected: true },
-    leftRender: () => ptoHTML('São Paulo, State of São Paulo, Brazil', 'Jun 2 – Jun 14'),
-    modal: () => ptoDetailHTML('São Paulo, State of São Paulo, Brazil', 'Jun 2 – Jun 14'),
+    leftRender: () => timeOffHTML('SÃ£o Paulo, State of SÃ£o Paulo, Brazil', 'Jun 2 â€“ Jun 14'),
+    modal: () => timeOffDetailHTML('SÃ£o Paulo, State of SÃ£o Paulo, Brazil', 'Jun 2 â€“ Jun 14'),
   },
   'ancs-notification': {
     label: 'Modal popup', title: 'ANCS notification detail',
-    desc: 'Tap any ANCS icon in the status bar to open. Shows app name, notification title, message preview (up to 3 lines), and timestamp — all fields available from the iOS ANCS protocol. "Read" dismisses the notification from the status bar entirely (firmware triggers ANCS PositiveAction, which tells iOS to mark it read — the device then receives an ANCS Removed event and hides the icon). "Close" dismisses the overlay only.',
+    desc: 'Tap any ANCS icon in the status bar to open. Shows app name, notification title, message preview (up to 3 lines), and timestamp â€” all fields available from the iOS ANCS protocol. "Read" dismisses the notification from the status bar entirely (firmware triggers ANCS PositiveAction, which tells iOS to mark it read â€” the device then receives an ANCS Removed event and hides the icon). "Close" dismisses the overlay only.',
     statusBar: { ancsApps: ['gmail', 'messenger', 'instagram'], phoneConnected: true },
     leftRender: () => meetingListHTML(TODAY_MEETINGS),
     modal: () => ancsDetailHTML('gmail'),
   },
   'ancs-notification-silent': {
     label: 'Modal popup', title: 'ANCS silent notification detail',
-    desc: 'When the notification\'s ANCS EventFlags SILENT bit is set (iOS delivered it without sound/vibration), the overlay shows a small pill badge in the top-left corner. Whether the notification appears at all depends on the Orion "show silent notifications" toggle. This demo uses Instagram — marked silent in the mock data — to show the badge design.',
+    desc: 'When the notification\'s ANCS EventFlags SILENT bit is set (iOS delivered it without sound/vibration), the overlay shows a small pill badge in the top-left corner. Whether the notification appears at all depends on the Orion "show silent notifications" toggle. This demo uses Instagram â€” marked silent in the mock data â€” to show the badge design.',
     statusBar: { ancsApps: ['gmail', 'messenger', 'instagram'], phoneConnected: true },
     leftRender: () => meetingListHTML(TODAY_MEETINGS),
     modal: () => ancsDetailHTML('instagram'),
   },
   'profile-detail': {
     label: 'Modal popup', title: 'Profile detail overlay',
-    desc: 'Tap the profile photo (short tap) to open. Shows the full name, job title, email, and phone number from the cached profile. Closed only via the Close button — tapping the scrim does not dismiss.',
+    desc: 'Tap the profile photo (short tap) to open. Shows the full name, job title, email, and phone number from the cached profile. Closed only via the Close button â€” tapping the scrim does not dismiss.',
     statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
     leftRender: () => meetingListHTML(TODAY_MEETINGS),
     modal: () => profileDetailHTML(),
   },
   'kbd-mode': {
     label: 'Primary state', title: 'Media mode (BLE bridge)',
-    desc: 'Touch surface acts as a secondary controller for the paired PC — large album art (tap = play/pause, swipe ↔ = prev/next, swipe ↕ = volume with momentary HUD), now-playing title + artist, three user-assignable shortcut buttons (default mock: mute audio, mute mic, screen capture). All commands travel as custom BLE messages to Orion which bridges to OS APIs. Tap the toggle in the status bar to switch back to calendar mode.',
+    desc: 'Touch surface acts as a secondary controller for the paired PC â€” large album art (tap = play/pause, swipe â†” = prev/next, swipe â†• = volume with momentary HUD), now-playing title + artist, three user-assignable shortcut buttons (default mock: mute audio, mute mic, screen capture). All commands travel as custom BLE messages to Orion which bridges to OS APIs. Tap the toggle in the status bar to switch back to calendar mode.',
     statusBar: { ancsApps: ['gmail', 'messenger', 'instagram'], phoneConnected: true },
     mode: 'media',
     leftRender: () => mediaModeHTML(),
@@ -176,7 +176,7 @@ const SCREENS = {
     desc: 'Dismissed via the Close button only.',
     statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
     leftRender: () => meetingListHTML(TODAY_MEETINGS),
-    modal: () => countdownHTML('Industrial design review', 'Starts at 10:30 · Studio'),
+    modal: () => countdownHTML('Industrial design review', 'Starts at 10:30 Â· Studio'),
   },
   'factory-reset': {
     label: 'Modal popup', title: 'Factory reset confirmation',
@@ -194,38 +194,38 @@ const SCREENS = {
   },
   'setup-welcome': {
     label: 'Setup flow', title: 'Welcome aboard',
-    desc: 'All four step dots inactive (before Step 1). Dots fixed at y≈440.',
+    desc: 'All four step dots inactive (before Step 1). Dots fixed at yâ‰ˆ440.',
     hideStatusBar: true,
     setup: () => setupWelcomeHTML(),
   },
   'setup-install': {
-    label: 'Setup flow', title: 'Step 1 — Install Orion',
+    label: 'Setup flow', title: 'Step 1 â€” Install Orion',
     desc: 'Visit ori.app/orion on a PC. Next button advances.',
     hideStatusBar: true,
     setup: () => setupInstallHTML(),
   },
   'setup-link-orion': {
-    label: 'Setup flow', title: 'Step 2 — Link Orion',
+    label: 'Setup flow', title: 'Step 2 â€” Link Orion',
     desc: 'Waiting for Orion to connect. Shows the BLE device name so the user picks the right Ori.',
     hideStatusBar: true,
     setup: () => setupLinkOrionHTML(),
   },
   'setup-passkey': {
-    label: 'Setup flow', title: 'Step 2 — Passkey',
-    desc: '6-digit passkey modal for secure BLE bonding — overlaid on the Link Orion base screen.',
+    label: 'Setup flow', title: 'Step 2 â€” Passkey',
+    desc: '6-digit passkey modal for secure BLE bonding â€” overlaid on the Link Orion base screen.',
     hideStatusBar: true,
     setup: () => setupLinkOrionHTML(),
     modal: () => passkeyHTML(PASSKEY),
   },
   'setup-orioning': {
-    label: 'Setup flow', title: 'Step 2 — Orioning',
-    desc: 'First sync from Orion (profile, calendar, PTO, time) — overlaid on the Link Orion base screen.',
+    label: 'Setup flow', title: 'Step 2 â€” Orioning',
+    desc: 'First sync from Orion (profile, calendar, Time Off, time) â€” overlaid on the Link Orion base screen.',
     hideStatusBar: true,
     setup: () => setupLinkOrionHTML(),
     modal: () => orioningModalHTML(67),
   },
   'setup-phone': {
-    label: 'Setup flow', title: 'Step 3 — Pair iPhone ',
+    label: 'Setup flow', title: 'Step 3 â€” Pair iPhone ',
     desc: 'Optional. Skip; can re-pair later by long-press on phone-disconnect icon.',
     hideStatusBar: true,
     setup: () => setupPhoneHTML({ allowSkip: true }),
@@ -238,37 +238,37 @@ const SCREENS = {
   },
   'reconnect-syncing': {
     label: 'Runtime', title: 'Reconnect-Syncing overlay',
-    desc: 'Triggered when Ori reconnects to Orion after being offline. Overlays the left panel only — status bar and profile card remain visible. Auto-dismisses when RUNTIME_READY arrives (~300 ms when nothing changed; longer when calendar data changed). Touch on the overlay is inert.',
+    desc: 'Triggered when Ori reconnects to Orion after being offline. Overlays the left panel only â€” status bar and profile card remain visible. Auto-dismisses when RUNTIME_READY arrives (~300 ms when nothing changed; longer when calendar data changed). Touch on the overlay is inert.',
     statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
     leftRender: () => reconnectSyncingHTML(),
   },
   'ota-updating': {
-    label: 'OTA update', title: '1 · Downloading firmware',
-    desc: 'Full-screen takeover while Orion streams the firmware over USB CDC into a PSRAM staging buffer. No flash is written yet, so the LCD keeps refreshing and the progress ring is LIVE (0→100%). Status bar, profile card, and left panel hidden; touch inert. Sweeps clockwise; % centred in the ring.',
+    label: 'OTA update', title: '1 Â· Downloading firmware',
+    desc: 'Full-screen takeover while Orion streams the firmware over USB CDC into a PSRAM staging buffer. No flash is written yet, so the LCD keeps refreshing and the progress ring is LIVE (0â†’100%). Status bar, profile card, and left panel hidden; touch inert. Sweeps clockwise; % centred in the ring.',
     hideStatusBar: true,
     setup: () => otaDownloadingHTML(62),
   },
   'ota-ready': {
-    label: 'OTA update', title: '2 · Ready to install',
-    desc: 'Shown once the image has fully downloaded into PSRAM and its SHA-256 verifies. Explains that the screen goes dark during install. The primary "Update now" button starts the PSRAM→flash copy — this is the user-driven gate before any flash is written. (A download-phase failure instead resumes runtime with the screen still live — no reboot.)',
+    label: 'OTA update', title: '2 Â· Ready to install',
+    desc: 'Shown once the image has fully downloaded into PSRAM and its SHA-256 verifies. Explains that the screen goes dark during install. The primary "Update now" button starts the PSRAMâ†’flash copy â€” this is the user-driven gate before any flash is written. (A download-phase failure instead resumes runtime with the screen still live â€” no reboot.)',
     hideStatusBar: true,
     setup: () => otaReadyHTML(),
   },
   'ota-installing': {
-    label: 'OTA update', title: '3 · Installing (screen dark)',
-    desc: 'After tapping "Update now": the firmware halts the LCD and copies the staged image from PSRAM to the inactive flash slot. The panel is physically DARK here (the RGB panel\'s PSRAM-framebuffer DMA cannot run while flash is written — shared MSPI bus). Lasts a few seconds; install→reboot is atomic, so it goes straight to the post-reboot "Updated" ack (no separate "Update complete / Restart" step).',
+    label: 'OTA update', title: '3 Â· Installing (screen dark)',
+    desc: 'After tapping "Update now": the firmware halts the LCD and copies the staged image from PSRAM to the inactive flash slot. The panel is physically DARK here (the RGB panel\'s PSRAM-framebuffer DMA cannot run while flash is written â€” shared MSPI bus). Lasts a few seconds; installâ†’reboot is atomic, so it goes straight to the post-reboot "Updated" ack (no separate "Update complete / Restart" step).',
     hideStatusBar: true,
     setup: () => otaInstallingHTML(),
   },
   'ota-updated-ack': {
-    label: 'OTA update', title: '4 · Updated (boot ack)',
-    desc: 'The FIRST screen shown after the post-update reboot: confirms the update succeeded and shows the new firmware version, with a "Close" button. The firmware persists an "update acknowledged" flag in NVS — so if the user restarts again without tapping Close, this screen reappears on every boot until acknowledged.',
+    label: 'OTA update', title: '4 Â· Updated (boot ack)',
+    desc: 'The FIRST screen shown after the post-update reboot: confirms the update succeeded and shows the new firmware version, with a "Close" button. The firmware persists an "update acknowledged" flag in NVS â€” so if the user restarts again without tapping Close, this screen reappears on every boot until acknowledged.',
     hideStatusBar: true,
     setup: () => otaUpdatedAckHTML(),
   },
   'ota-error': {
-    label: 'OTA update', title: '⚠ Update failed',
-    desc: 'Shown when the OTA cannot complete — corrupted download (hash/truncated), lost connection (timeout), no room (too large / out of memory), or a flash write error. The firmware maps each failure code to one plain-language reason. Close dismisses back to runtime (download-phase failures keep the display alive; a commit-phase failure reboots first). Edit otaErrorHTML(msg) to preview other messages.',
+    label: 'OTA update', title: 'âš  Update failed',
+    desc: 'Shown when the OTA cannot complete â€” corrupted download (hash/truncated), lost connection (timeout), no room (too large / out of memory), or a flash write error. The firmware maps each failure code to one plain-language reason. Close dismisses back to runtime (download-phase failures keep the display alive; a commit-phase failure reboots first). Edit otaErrorHTML(msg) to preview other messages.',
     hideStatusBar: true,
     setup: () => otaErrorHTML(),
   },
@@ -286,7 +286,7 @@ const SCREENS = {
   },
   'phone-disconnected': {
     label: 'Edge case', title: 'iPhone disconnected',
-    desc: 'Phone outline + diagonal slash. Long-press → unpair confirmation (iPhone is bonded but offline). To demo the "no iPhone bonded" path use the sidebar button for Re-pair iPhone directly.',
+    desc: 'Phone outline + diagonal slash. Long-press â†’ unpair confirmation (iPhone is bonded but offline). To demo the "no iPhone bonded" path use the sidebar button for Re-pair iPhone directly.',
     statusBar: { ancsApps: [], phoneConnected: false, phonePaired: true },
     leftRender: () => meetingListHTML(TODAY_MEETINGS),
   },
@@ -310,41 +310,41 @@ const SCREENS = {
   },
   'long-list': {
     label: 'Edge case', title: 'Scrollable list',
-    desc: '9 meetings — visible scrollbar indicates length and position.',
+    desc: '9 meetings â€” visible scrollbar indicates length and position.',
     statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
     leftRender: () => meetingListHTML(LONG_LIST_MEETINGS),
   },
   'cached': {
-    label: 'Edge case', title: 'Orion offline — using cached list',
-    desc: 'No BLE link to Orion. Cached meetings still render with a SYNCED pill. Note: the Media mode-toggle button is hidden from the status bar — Media mode is useless without Orion bridging commands to the OS. The profile-photo border also auto-falls to dark grey (presence-offline) because Ori can no longer verify the user\'s real Teams status.',
+    label: 'Edge case', title: 'Orion offline â€” using cached list',
+    desc: 'No BLE link to Orion. Cached meetings still render with a SYNCED pill. Note: the Media mode-toggle button is hidden from the status bar â€” Media mode is useless without Orion bridging commands to the OS. The profile-photo border also auto-falls to dark grey (presence-offline) because Ori can no longer verify the user\'s real Teams status.',
     statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true, pcConnected: false },
     leftRender: () => meetingListHTML(TODAY_MEETINGS, true),
   },
 
   'presence-available': {
-    label: 'Teams presence', title: 'Available — green border',
+    label: 'Teams presence', title: 'Available â€” green border',
     desc: 'Default Teams "Available" state. Profile-photo border is green (--presence-available). Orion pushed PresenceStatus = 0x00 to Ori via the BLE Presence Status characteristic.',
     statusBar: { ancsApps: ['gmail', 'messenger', 'instagram'], phoneConnected: true },
     presence: 'available',
     leftRender: () => meetingListHTML(TODAY_MEETINGS),
   },
   'presence-busy': {
-    label: 'Teams presence', title: 'Busy / DND — red border',
-    desc: 'Maps from Teams "Busy", "Do Not Disturb", "In a call", "In a meeting", or "Presenting" — Orion collapses all of these into PresenceStatus = 0x01 (Busy). Profile-photo border is red.',
+    label: 'Teams presence', title: 'Busy / DND â€” red border',
+    desc: 'Maps from Teams "Busy", "Do Not Disturb", "In a call", "In a meeting", or "Presenting" â€” Orion collapses all of these into PresenceStatus = 0x01 (Busy). Profile-photo border is red.',
     statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
     presence: 'busy',
     leftRender: () => meetingListHTML(TODAY_MEETINGS),
   },
   'presence-away': {
-    label: 'Teams presence', title: 'Be right back / Away — yellow border',
-    desc: 'Maps from Teams "Be Right Back" or "Appear Away" — PresenceStatus = 0x02 (Away). Profile-photo border is yellow.',
+    label: 'Teams presence', title: 'Be right back / Away â€” yellow border',
+    desc: 'Maps from Teams "Be Right Back" or "Appear Away" â€” PresenceStatus = 0x02 (Away). Profile-photo border is yellow.',
     statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
     presence: 'away',
     leftRender: () => meetingListHTML(TODAY_MEETINGS),
   },
   'presence-offline': {
-    label: 'Teams presence', title: 'Appear offline — grey border',
-    desc: 'User chose Teams "Appear Offline" — PresenceStatus = 0x03 (Offline). Profile-photo border is dark grey. This is also the same border colour the device falls back to whenever Orion is BLE-disconnected (see the "Orion offline" edge case for that fallback path).',
+    label: 'Teams presence', title: 'Appear offline â€” grey border',
+    desc: 'User chose Teams "Appear Offline" â€” PresenceStatus = 0x03 (Offline). Profile-photo border is dark grey. This is also the same border colour the device falls back to whenever Orion is BLE-disconnected (see the "Orion offline" edge case for that fallback path).',
     statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
     presence: 'offline',
     leftRender: () => meetingListHTML(TODAY_MEETINGS),
@@ -356,10 +356,10 @@ let _meetingData = [];
 function meetingListHTML(items, cached) {
   _meetingData = items;
   let html = '<div class="meeting-list">';
-  if (cached) html += '<div class="synced-pill">SYNCED · 12 min ago</div>';
+  if (cached) html += '<div class="synced-pill">SYNCED Â· 12 min ago</div>';
   for (let i = 0; i < items.length; i++) {
     const m = items[i];
-    // in-progress beats overlap — "you should be in this room right now"
+    // in-progress beats overlap â€” "you should be in this room right now"
     // is more actionable than "this overlaps with another item".
     const cls =
       'meeting' +
@@ -367,7 +367,7 @@ function meetingListHTML(items, cached) {
         m.overlap ? ' overlap' : '');
     html += '<div class="' + cls + '" onclick="showMeetingDetail(' + i + ')" style="cursor:pointer">' +
       '<div class="time-block"><div class="start">' + m.start +
-      '</div><div class="end">— ' + m.end + '</div></div>' +
+      '</div><div class="end">â€” ' + m.end + '</div></div>' +
       '<div class="content">' +
       '<div class="title">' + escapeHtml(m.title) + '</div>' +
       '<div class="meta"><span class="loc">' + escapeHtml(m.loc) +
@@ -391,14 +391,14 @@ function closeMeetingDetail() {
 }
 
 function meetingDetailHTML(m) {
-  // Red for in-progress, accent-gold for overlap, white for normal —
+  // Red for in-progress, accent-gold for overlap, white for normal â€”
   // applied to both the title and the time to match the meeting-list rule.
   const stateColor = m.inProgress ? 'var(--danger)' : m.overlap ? 'var(--accent)' : 'var(--text-1)';
   return '<div class="meeting-detail">' +
     '<div class="md-title" style="color:' + stateColor + '">' + escapeHtml(m.title) + '</div>' +
     '<div class="md-loc">' + escapeHtml(m.loc) + '</div>' +
     '<div class="md-org">' + escapeHtml(m.org) + '</div>' +
-    '<div class="md-time" style="color:' + stateColor + '">' + escapeHtml(m.start) + ' – ' + escapeHtml(m.end) + '</div>' +
+    '<div class="md-time" style="color:' + stateColor + '">' + escapeHtml(m.start) + ' â€“ ' + escapeHtml(m.end) + '</div>' +
     '<div class="profile-close-row"><button class="btn btn-tertiary" onclick="closeMeetingDetail()">Close</button></div>' +
     '</div>';
 }
@@ -412,10 +412,10 @@ function clockHTML() {
   const dateStr = d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
   return '<div class="clock-face"><div class="clock-time"><span>' + h +
     '</span><span class="colon">:</span><span>' + m + '</span></div>' +
-    '<div class="clock-date">' + dateStr.toUpperCase() + ' · ' + ampm + '</div></div>';
+    '<div class="clock-date">' + dateStr.toUpperCase() + ' Â· ' + ampm + '</div></div>';
 }
 
-// Analog face — same data source as clockHTML(), alternate rendering. Orion
+// Analog face â€” same data source as clockHTML(), alternate rendering. Orion
 // setting (mocked here as a sidebar-selectable screen) picks which of the two
 // the device shows; both share the Clock state's entry/exit + status-bar rules.
 function analogClockHTML() {
@@ -455,7 +455,7 @@ function analogClockHTML() {
     '</svg>';
 
   return '<div class="analog-clock-face">' + dial +
-    '<div class="clock-date">' + dateStr.toUpperCase() + ' · ' + ampm + '</div></div>';
+    '<div class="clock-date">' + dateStr.toUpperCase() + ' Â· ' + ampm + '</div></div>';
 }
 
 let _calViewDate = null; // first-of-month being viewed; null = current month
@@ -519,45 +519,45 @@ function bindCalendarNav() {
   };
 }
 
-let _ptoDestination = '';
-let _ptoDates = '';
+let _timeOffDestination = '';
+let _timeOffDates = '';
 
-function ptoHTML(destination, dates) {
-  _ptoDestination = destination;
-  _ptoDates = dates;
-  return '<div class="pto">' +
-    '<div class="pto-scene"></div><div class="pto-sun"></div>' +
-    '<svg class="pto-mountains" viewBox="0 0 528 130" preserveAspectRatio="none">' +
+function timeOffHTML(destination, dates) {
+  _timeOffDestination = destination;
+  _timeOffDates = dates;
+  return '<div class="timeOff">' +
+    '<div class="timeOffScene"></div><div class="timeOffSun"></div>' +
+    '<svg class="timeOffMountains" viewBox="0 0 528 130" preserveAspectRatio="none">' +
     '<path d="M0 130 L0 80 L80 30 L160 70 L240 20 L340 65 L420 35 L528 75 L528 130 Z" fill="#3a4a60" opacity="0.9"/>' +
     '<path d="M0 130 L0 100 L70 65 L150 95 L230 60 L320 90 L400 70 L528 100 L528 130 Z" fill="#243348" opacity="0.85"/>' +
-    '</svg><div class="pto-water"></div><div class="pto-overlay"></div>' +
-    '<div class="pto-text"><div class="pto-text-card" onclick="showPtoDetail()">' +
-    '<div class="label">On PTO</div>' +
+    '</svg><div class="timeOffWater"></div><div class="timeOffOverlay"></div>' +
+    '<div class="timeOffText"><div class="timeOffTextCard" onclick="showTimeOffDetail()">' +
+    '<div class="label">On Time Off</div>' +
     '<div class="destination">' + escapeHtml(destination) + '</div>' +
     '<div class="dates">' + escapeHtml(dates) + '</div>' +
     '</div></div>' +
     '</div>';
 }
 
-function showPtoDetail() {
+function showTimeOffDetail() {
   const modalLayer = document.getElementById('modal-layer');
   modalLayer.innerHTML = '<div class="modal-scrim">' +
-    ptoDetailHTML(_ptoDestination, _ptoDates) + '</div>';
+    timeOffDetailHTML(_timeOffDestination, _timeOffDates) + '</div>';
 }
 
-function closePtoDetail() {
+function closeTimeOffDetail() {
   const ml = document.getElementById('modal-layer');
   if (ml) ml.innerHTML = '';
 }
 
-function ptoDetailHTML(destination, dates) {
-  return '<div class="pto-detail">' +
+function timeOffDetailHTML(destination, dates) {
+  return '<div class="timeOffDetail">' +
     '<div class="pd-scroll">' +
-    '<div class="pd-label">On PTO</div>' +
+    '<div class="pd-label">On Time Off</div>' +
     '<div class="pd-destination">' + escapeHtml(destination) + '</div>' +
     '<div class="pd-dates">' + escapeHtml(dates) + '</div>' +
     '</div>' +
-    '<div class="profile-close-row"><button class="btn btn-tertiary" onclick="closePtoDetail()">Close</button></div>' +
+    '<div class="profile-close-row"><button class="btn btn-tertiary" onclick="closeTimeOffDetail()">Close</button></div>' +
     '</div>';
 }
 
@@ -589,7 +589,7 @@ function passkeyHTML(passkey) {
 function orioningModalHTML(pct) {
   const R = 90, C = 2 * Math.PI * R, off = C * (1 - pct / 100);
   return '<div class="passkey-card">' +
-    '<h3>A busy day ahead…</h3>' +
+    '<h3>A busy day aheadâ€¦</h3>' +
     '<div class="orioning-ring" style="width:140px;height:140px;margin:24px auto 0">' +
     '<svg viewBox="0 0 200 200">' +
     '<circle class="track" cx="100" cy="100" r="' + R + '" fill="none" stroke-width="7"/>' +
@@ -700,28 +700,28 @@ function skipSetupDone() {
   setScreen('meeting-list');
 }
 
-// Reconnect-Syncing overlay — replaces the left panel while Ori runs the
+// Reconnect-Syncing overlay â€” replaces the left panel while Ori runs the
 // hash-manifest delta sync after reconnecting to Orion. Status bar and
 // profile card stay visible. Non-dismissable; auto-clears when sync ends.
 function reconnectSyncingHTML() {
   return '<div class="reconnect-overlay">' +
     '<div class="reconnect-ring"></div>' +
-    '<p style="margin-top:22px;font-size:24px;color:var(--text-3)">Refreshing your day…</p>' +
+    '<p style="margin-top:22px;font-size:24px;color:var(--text-3)">Refreshing your dayâ€¦</p>' +
     '</div>';
 }
 
-// ── OTA firmware update flow (PSRAM-staging model) ─────────────────────────
+// â”€â”€ OTA firmware update flow (PSRAM-staging model) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 //
 // Sequence on the device:
-//   1. ota-downloading  — image streams into PSRAM; progress bar is LIVE (no
+//   1. ota-downloading  â€” image streams into PSRAM; progress bar is LIVE (no
 //                         flash written yet, so the screen keeps refreshing).
-//   2. ota-ready        — download done + verified; instruction that the screen
+//   2. ota-ready        â€” download done + verified; instruction that the screen
 //                         goes dark during install, with a primary "Update now".
-//   3. ota-installing   — user tapped Update; PSRAM→flash copy runs. The panel
+//   3. ota-installing   â€” user tapped Update; PSRAMâ†’flash copy runs. The panel
 //                         is physically DARK here (LCD halted; PSRAM-DMA can't
 //                         run while flash is written). Shown black in the proto.
-//   4. ota-complete     — flash written; checkmark + primary "Restart".
-//   5. ota-updated-ack  — FIRST screen after the reboot: confirms the update and
+//   4. ota-complete     â€” flash written; checkmark + primary "Restart".
+//   5. ota-updated-ack  â€” FIRST screen after the reboot: confirms the update and
 //                         shows the new version, with a "Close" button. Firmware
 //                         persists a flag in NVS so this screen reappears on
 //                         every boot until the user taps Close (acknowledges).
@@ -736,12 +736,12 @@ function okCheckHTML(size) {
     '</svg></div>';
 }
 
-// 1. Downloading — live progress ring while the image streams into PSRAM.
+// 1. Downloading â€” live progress ring while the image streams into PSRAM.
 function otaDownloadingHTML(pct) {
   const R = 90, C = 2 * Math.PI * R, off = C * (1 - pct / 100);
   return setupShell('hide',
     '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;width:100%">' +
-    '<h2>Downloading firmware…</h2>' +
+    '<h2>Downloading firmwareâ€¦</h2>' +
     '<div class="orioning-ring" style="margin-top:30px">' +
     '<svg viewBox="0 0 200 200">' +
     '<circle class="track" cx="100" cy="100" r="' + R + '" fill="none" stroke-width="8"/>' +
@@ -755,7 +755,7 @@ function otaDownloadingHTML(pct) {
   );
 }
 
-// 2. Firmware Install — mirrors the downloading layout (title / centre glyph /
+// 2. Firmware Install â€” mirrors the downloading layout (title / centre glyph /
 //    short instruction), plus a primary "Update now" at the Start-button spot.
 function otaReadyHTML() {
   return setupShell('hide',
@@ -773,13 +773,13 @@ function otaReadyHTML() {
   );
 }
 
-// 3. Installing — the panel is physically dark on the device while flash is
+// 3. Installing â€” the panel is physically dark on the device while flash is
 //    written. Shown black here; auto-advances to the post-reboot ack.
 let _otaInstallTimer = null;
 function otaInstallingHTML() {
   clearTimeout(_otaInstallTimer);
   _otaInstallTimer = setTimeout(() => {
-    // Install → reboot is atomic on the device (no "Update complete / Restart"
+    // Install â†’ reboot is atomic on the device (no "Update complete / Restart"
     // step); the post-reboot ack confirms completion.
     if (currentScreenId === 'ota-installing') setScreen('ota-updated-ack');
   }, 2400);
@@ -788,7 +788,7 @@ function otaInstallingHTML() {
     '</div>';
 }
 
-// 4. Post-reboot acknowledgement — persisted until Close (NVS flag in firmware).
+// 4. Post-reboot acknowledgement â€” persisted until Close (NVS flag in firmware).
 //    Title at top, then the version line, then the checkmark, then Close.
 function otaUpdatedAckHTML() {
   return setupShell('hide',
@@ -804,11 +804,11 @@ function otaUpdatedAckHTML() {
   );
 }
 
-// Error — shown if the OTA can't complete. Same title/glyph/instruction layout;
+// Error â€” shown if the OTA can't complete. Same title/glyph/instruction layout;
 // `msg` is the user-facing reason (firmware maps each failure code to one of a
 // few plain-language messages). Close dismisses back to runtime.
 function otaErrorHTML(msg) {
-  msg = msg || 'The update couldn’t be installed — try again from Orion';
+  msg = msg || 'The update couldnâ€™t be installed â€” try again from Orion';
   return setupShell('hide',
     '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;width:100%">' +
     '<h2>Update failed</h2>' +
@@ -822,7 +822,7 @@ function otaErrorHTML(msg) {
   );
 }
 
-// Runtime re-pair — same layout as Step 4, with a Cancel button anchored at bottom
+// Runtime re-pair â€” same layout as Step 4, with a Cancel button anchored at bottom
 function repairPhoneHTML() {
   return '<div class="setup" style="padding-bottom:80px">' +
     brandMarkHTML(132, -2) +
@@ -835,7 +835,7 @@ function repairPhoneHTML() {
     '</div>';
 }
 
-// Unpair-iPhone confirmation — shown when user long-presses the phone-disconnect
+// Unpair-iPhone confirmation â€” shown when user long-presses the phone-disconnect
 // icon and an iPhone bond already exists. "Unpair" clears the bond and proceeds
 // to re-pair; "Cancel" returns to wherever the long-press was triggered from.
 function unpairPhoneHTML() {
@@ -856,18 +856,18 @@ function unpairPhoneHTML() {
 
 // ---- Keyboard mode (BLE-bridged secondary controller) ----
 //
-// Architecture: Ori → custom BLE GATT command → Orion (always-running
-// background app) → OS HID injection or OS volume/media API → focused
+// Architecture: Ori â†’ custom BLE GATT command â†’ Orion (always-running
+// background app) â†’ OS HID injection or OS volume/media API â†’ focused
 // application. Orion is also the source of truth for the volume level
 // and the currently-playing media metadata, both of which it pushes
 // back to Ori so the HUD and the Now Playing card stay honest.
 // See `.claude/rules/media-mode.md` and `.claude/rules/ble-protocol.md`
-// §3 (Keyboard Command / Host Volume State / Media Metadata chars).
+// Â§3 (Keyboard Command / Host Volume State / Media Metadata chars).
 
 // Prototype-only state, just for the visual preview.
 let kbdPlaying = false;
 let kbdVolume = 65;    // pushed by Orion via Host Volume State char on the real device
-let kbdPosition = 83;  // seconds elapsed — pushed by Orion via Media Metadata on the real device
+let kbdPosition = 83;  // seconds elapsed â€” pushed by Orion via Media Metadata on the real device
 const kbdDuration = 245; // seconds total
 
 function fmtTime(s) {
@@ -882,7 +882,7 @@ function fmtTime(s) {
 // Media Metadata characteristic. A long title is used here to demonstrate
 // truncation/ellipsis behavior.
 const MOCK_MEDIA = {
-  title: 'Industrial Symphony No. 1 — The Dream of the Brokenhearted Woman',
+  title: 'Industrial Symphony No. 1 â€” The Dream of the Brokenhearted Woman',
   artist: 'Angelo Badalamenti',
   can_seek: true,   // mirrors MediaMetadata.can_seek (ble-protocol.md v1.5)
   // set to false to preview the no-scrubber state (e.g. browser audio)
@@ -891,7 +891,7 @@ const MOCK_MEDIA = {
 // const MOCK_MEDIA = { title: '', artist: '' };
 
 // Three user-assignable shortcut slots. The icons here are mock defaults
-// for the prototype — in production each slot's icon (and the action it
+// for the prototype â€” in production each slot's icon (and the action it
 // triggers) is configured in Orion's settings UI. No text label on the
 // device by design. Mock config: mute audio, mute mic, screen capture.
 const KBD_SHORTCUTS = [
@@ -914,23 +914,23 @@ function mediaModeHTML() {
   ).join('');
 
   return '<div class="kbd-mode">' +
-    // Album art — the dominant interaction surface.
-    //   tap          → play/pause
-    //   horiz swipe  → prev/next track
-    //   vert swipe   → volume (with momentary HUD)
+    // Album art â€” the dominant interaction surface.
+    //   tap          â†’ play/pause
+    //   horiz swipe  â†’ prev/next track
+    //   vert swipe   â†’ volume (with momentary HUD)
     '<div class="' + artClasses.join(' ') + '" id="kbd-art-wrap">' +
     '<div class="kbd-art"></div>' +
     // Persistent paused-state overlay (visible while paused)
     '<div class="kbd-art-overlay"><svg viewBox="0 0 24 24"><use href="#i-play"/></svg></div>' +
     // Transient flash overlay (animates on tap)
     '<div class="kbd-art-flash"><svg viewBox="0 0 24 24" id="kbd-art-flash-icon"><use href="#i-play"/></svg></div>' +
-    // Volume HUD — visible only during a vertical-swipe gesture
+    // Volume HUD â€” visible only during a vertical-swipe gesture
     '<div class="kbd-art-hud" id="kbd-art-hud">' +
     '<div class="hud-pct" id="hud-pct">' + v + '%</div>' +
     '<div class="hud-bar"><div class="hud-fill" id="hud-fill" style="height:' + v + '%"></div></div>' +
     '</div>' +
-    // Timeline bar — only rendered when the app supports seeking (can_seek).
-    // Absent or false → scrubber hidden entirely; no dead affordance.
+    // Timeline bar â€” only rendered when the app supports seeking (can_seek).
+    // Absent or false â†’ scrubber hidden entirely; no dead affordance.
     (hasMedia && m.can_seek ? (function () {
       const pct = kbdDuration > 0 ? (kbdPosition / kbdDuration * 100).toFixed(1) : 0;
       return '<div class="kbd-timeline">' +
@@ -949,7 +949,7 @@ function mediaModeHTML() {
     // Title + artist, centred below art
     '<div class="kbd-meta' + (hasMedia ? '' : ' empty') + '">' +
     '<div class="title">' + (hasMedia ? escapeHtml(m.title) : 'Nothing playing') + '</div>' +
-    '<div class="artist">' + (hasMedia ? escapeHtml(m.artist) : '—') + '</div>' +
+    '<div class="artist">' + (hasMedia ? escapeHtml(m.artist) : 'â€”') + '</div>' +
     '</div>' +
     // Three user-assignable shortcut buttons (mock: mute audio, mute mic, screen capture)
     '<div class="kbd-shortcuts">' + shortcuts + '</div>' +
@@ -971,7 +971,7 @@ function togglePlayPause() {
 }
 
 function onMediaPress(el) {
-  // Visual feedback only — real device emits a BLE Keyboard Command notify
+  // Visual feedback only â€” real device emits a BLE Keyboard Command notify
   // and Orion bridges it to the OS.
   el.animate(
     [{ transform: 'scale(1)' }, { transform: 'scale(0.92)' }, { transform: 'scale(1)' }],
@@ -979,10 +979,10 @@ function onMediaPress(el) {
   );
 }
 
-// Album-art gesture handler — three orthogonal gestures on the same surface:
-//   tap         (|dx|<20 AND |dy|<20)        → play/pause
-//   horizontal  (|dx|>50 AND |dx|>|dy|)      → prev / next
-//   vertical    (|dy|>25 AND |dy|>|dx|)      → volume up / down + show HUD
+// Album-art gesture handler â€” three orthogonal gestures on the same surface:
+//   tap         (|dx|<20 AND |dy|<20)        â†’ play/pause
+//   horizontal  (|dx|>50 AND |dx|>|dy|)      â†’ prev / next
+//   vertical    (|dy|>25 AND |dy|>|dx|)      â†’ volume up / down + show HUD
 //
 // During a vertical drag the HUD overlay fades in and the volume tracks the
 // swipe distance: ~200 px of vertical travel = full 0..100 range. On release
@@ -1082,7 +1082,7 @@ function bindAlbumArtGestures() {
   wrap.addEventListener('touchcancel', onCancel);
 }
 
-// Seek gesture — drag the timeline bar to jump to a position in the track.
+// Seek gesture â€” drag the timeline bar to jump to a position in the track.
 // On the real device Ori emits KeyboardCommand{op:"seek", arg:<position_s>} on
 // release; Orion bridges this to the OS via:
 //   Windows: GlobalSystemMediaTransportControlsSession.TryChangePlaybackPositionAsync
@@ -1156,7 +1156,7 @@ function ancsDetailHTML(app) {
     body: 'No preview available.',
     time: 'Just now',
   };
-  // Silent badge — shown in the top-left corner of the overlay when the
+  // Silent badge â€” shown in the top-left corner of the overlay when the
   // notification's ANCS EventFlags SILENT bit is set (iOS delivered it silently;
   // whether it even appears depends on the Orion "show silent" toggle setting).
   const silentBadge = n.silent
@@ -1166,12 +1166,12 @@ function ancsDetailHTML(app) {
     : '';
   const detailClass = 'ancs-detail' + (n.silent ? ' has-silent' : '');
   // Layout mirrors the meeting-detail overlay:
-  //   app icon  ← visual anchor (no meeting equivalent)
-  //   title     ← md-title (28px weight 500) — sender / notification subject
-  //   body      ← md-loc  (20px secondary)   — message preview, 3-line clamp
-  //   timestamp ← md-org  (18px tertiary)    — how long ago
-  //   app name  ← md-time (22px weight 500)  — definitive source identifier
-  //   buttons   ← replaces "Tap to dismiss" hint
+  //   app icon  â† visual anchor (no meeting equivalent)
+  //   title     â† md-title (28px weight 500) â€” sender / notification subject
+  //   body      â† md-loc  (20px secondary)   â€” message preview, 3-line clamp
+  //   timestamp â† md-org  (18px tertiary)    â€” how long ago
+  //   app name  â† md-time (22px weight 500)  â€” definitive source identifier
+  //   buttons   â† replaces "Tap to dismiss" hint
   return '<div class="' + detailClass + '" onclick="event.stopPropagation()">' +
     silentBadge +
     '<div class="ad-app-icon"><svg viewBox="0 0 24 24"><use href="#i-' + app + '"/></svg></div>' +
@@ -1211,14 +1211,14 @@ function profileDetailHTML(photoColPadTop) {
 
   return '<div class="profile-box" onclick="event.stopPropagation()">' +
     '<div class="profile-body">' +
-    // Left half — scrollable info block, centred text.
+    // Left half â€” scrollable info block, centred text.
     '<div class="profile-info-col">' +
     '<div class="po-name">' + escapeHtml(PROFILE.name) + '</div>' +
     '<div class="po-job-title">' + escapeHtml(PROFILE.title) + '</div>' +
     (PROFILE.email ? '<div class="po-email">' + escapeHtml(PROFILE.email) + '</div>' : '') +
     (PROFILE.phone ? '<div class="po-phone">' + escapeHtml(PROFILE.phone) + '</div>' : '') +
     '</div>' +
-    // Right half — photo at its exact calendar-mode position, with presence border.
+    // Right half â€” photo at its exact calendar-mode position, with presence border.
     '<div class="profile-photo-col"' + padStyle + '>' +
     '<div class="profile-photo ' + presenceClass + '" style="cursor:default">' +
     escapeHtml(initialsOf(PROFILE.name)) +
@@ -1268,7 +1268,7 @@ function updateStatusDateTime() {
   const m = d.getMinutes().toString().padStart(2, '0');
   const date = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
   el.innerHTML = '<span class="t-time">' + h + ':' + m + '</span>' +
-    '<span class="t-sep">·</span>' +
+    '<span class="t-sep">Â·</span>' +
     '<span class="t-date">' + date + '</span>';
 }
 
@@ -1291,11 +1291,11 @@ function renderStatusBar(cfg) {
   const isClockMode = screenMode === 'clock';
 
   // Mode-toggle visibility:
-  //   • Hidden when PC offline (Media mode is useless without Orion) — EXCEPT in
+  //   â€¢ Hidden when PC offline (Media mode is useless without Orion) â€” EXCEPT in
   //     Clock mode where the toggle acts as a "return" button and must stay visible.
-  //   • In Clock mode: calendar icon, neutral bg — "return to previous mode".
-  //   • In Calendar mode: headphones icon — "tap to enter Media".
-  //   • In Media mode: calendar icon, accent-tinted — "tap to return to Calendar".
+  //   â€¢ In Clock mode: calendar icon, neutral bg â€” "return to previous mode".
+  //   â€¢ In Calendar mode: headphones icon â€” "tap to enter Media".
+  //   â€¢ In Media mode: calendar icon, accent-tinted â€” "tap to return to Calendar".
   if (!pcConnected && !isClockMode) {
     modeSlot.innerHTML = '';
     // Real device auto-reverts to Calendar mode when Orion drops.
@@ -1354,7 +1354,7 @@ function bindLongPress(el, action, ms) {
   ['mouseup', 'mouseleave', 'touchend', 'touchcancel'].forEach(ev => el.addEventListener(ev, stop));
 }
 
-// Like bindLongPress, but also handles a short tap — and suppresses the tap
+// Like bindLongPress, but also handles a short tap â€” and suppresses the tap
 // action when the long-press already fired. Uses single-slot `on*` assignment
 // (not addEventListener) so re-binding on every renderStatusBar() call doesn't
 // stack duplicate handlers on the persistent status-bar element.
@@ -1404,7 +1404,7 @@ function setScreen(id) {
   // Presence-border colour on the profile photo. Source: cfg.presence
   // (default 'available'). If the PC link is down (statusBar.pcConnected
   // === false), the device-side rule forces 'offline' regardless of the
-  // last-cached value pushed by Orion — the photo can't claim a presence
+  // last-cached value pushed by Orion â€” the photo can't claim a presence
   // we can't currently verify. See `screen-layout.md` and `ble-protocol.md`
   // Presence Status characteristic.
   const photo = document.getElementById('profile-photo');
@@ -1483,3 +1483,4 @@ setInterval(() => {
     document.getElementById('left-panel').innerHTML = analogClockHTML();
   }
 }, 1000);
+

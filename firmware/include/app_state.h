@@ -4,7 +4,7 @@
 //
 // Holds shared data types and runtime state for subsystems that write from
 // BLE handlers and read from UI screens: ANCS notification queue, media
-// playback state, meeting/PTO types, and shortcut config.
+// playback state, meeting/Time Off types, and shortcut config.
 // Real data is populated by NVS (M4) and BLE (M5); nothing here is mock.
 
 #include <stdint.h>

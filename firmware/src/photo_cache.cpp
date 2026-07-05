@@ -1,14 +1,14 @@
-// Ori — profile photo + PTO destination image decode-once PSRAM cache.
+// Ori — profile photo + Time Off destination image decode-once PSRAM cache.
 //
-// Profile photo: 228×228 JPEG (≤40 KB). PTO image: 528×396 JPEG (≤64 KB).
+// Profile photo: 228×228 JPEG (≤40 KB). Time Off image: 528×396 JPEG (≤64 KB).
 // Raw JPEG persisted to LittleFS (/photos/ directory); decoded RGB565 held in
 // PSRAM. LVGL renders directly from PSRAM — zero re-decode per frame.
 //
 // LittleFS must be mounted (LittleFS.begin()) before any function in this
 // module is called. Call photo_cache::mount_fs() from main setup() first.
 //
-// Empty image (len == 0 in store_pto) means the user set no destination
-// photo in Orion; get_pto() returns nullptr and screen_pto uses the placeholder.
+// Empty image (len == 0 in store_time_off) means the user set no destination
+// photo in Orion; get_time_off() returns nullptr and screen_time_off uses the placeholder.
 
 #include "photo_cache.h"
 
@@ -26,14 +26,14 @@
 static constexpr uint16_t PHOTO_W = 228;
 static constexpr uint16_t PHOTO_H = 228;
 
-static constexpr uint16_t PTO_W = 528;
-static constexpr uint16_t PTO_H = 396;
+static constexpr uint16_t TIME_OFF_W = 528;
+static constexpr uint16_t TIME_OFF_H = 396;
 
-static constexpr size_t PROFILE_MAX_JPEG = 200 * 1024;
-static constexpr size_t PTO_MAX_JPEG     = 512 * 1024;
+static constexpr size_t PROFILE_MAX_JPEG  = 200 * 1024;
+static constexpr size_t TIME_OFF_MAX_JPEG = 512 * 1024;
 
-static constexpr const char* PATH_PROFILE = "/photos/profile.jpg";
-static constexpr const char* PATH_PTO     = "/photos/pto.jpg";
+static constexpr const char* PATH_PROFILE  = "/photos/profile.jpg";
+static constexpr const char* PATH_TIME_OFF = "/photos/time_off.jpg";
 
 // ── Shared tjpgd decode plumbing ──────────────────────────────────────────────
 
@@ -207,13 +207,13 @@ uint16_t*      g_profile_ph_buf   = nullptr;
 lv_image_dsc_t g_profile_ph_dsc   = {};
 bool           g_profile_ph_ready  = false;
 
-uint16_t*      g_pto_buf          = nullptr;
-lv_image_dsc_t g_pto_dsc          = {};
-bool           g_pto_ready         = false;
+uint16_t*      g_time_off_buf          = nullptr;
+lv_image_dsc_t g_time_off_dsc          = {};
+bool           g_time_off_ready         = false;
 
-uint16_t*      g_pto_ph_buf       = nullptr;
-lv_image_dsc_t g_pto_ph_dsc       = {};
-bool           g_pto_ph_ready      = false;
+uint16_t*      g_time_off_ph_buf       = nullptr;
+lv_image_dsc_t g_time_off_ph_dsc       = {};
+bool           g_time_off_ph_ready      = false;
 
 } // namespace
 
@@ -307,75 +307,75 @@ const lv_image_dsc_t* get_profile_placeholder() {
     return g_profile_ph_ready ? &g_profile_ph_dsc : nullptr;
 }
 
-// ── PTO image ─────────────────────────────────────────────────────────────────
+// ── Time Off image ────────────────────────────────────────────────────────────
 
-void init_pto() {
-    uint16_t* buf = load_and_decode(PATH_PTO, PTO_MAX_JPEG, PTO_W, PTO_H);
+void init_time_off() {
+    uint16_t* buf = load_and_decode(PATH_TIME_OFF, TIME_OFF_MAX_JPEG, TIME_OFF_W, TIME_OFF_H);
     if (buf) {
-        if (g_pto_buf) heap_caps_free(g_pto_buf);
-        g_pto_buf   = buf;
-        g_pto_ready = true;
-        build_dsc(&g_pto_dsc, g_pto_buf, PTO_W, PTO_H);
-        LOG("[photo_cache] PTO image loaded from LittleFS\n");
+        if (g_time_off_buf) heap_caps_free(g_time_off_buf);
+        g_time_off_buf   = buf;
+        g_time_off_ready = true;
+        build_dsc(&g_time_off_dsc, g_time_off_buf, TIME_OFF_W, TIME_OFF_H);
+        LOG("[photo_cache] Time Off image loaded from LittleFS\n");
     }
 }
 
-void store_pto(uint8_t* jpeg, size_t len) {
+void store_time_off(uint8_t* jpeg, size_t len) {
     if (len == 0) {
         if (jpeg) heap_caps_free(jpeg);
-        clear_pto();
+        clear_time_off();
         return;
     }
-    if (len > PTO_MAX_JPEG) {
-        LOG("[photo_cache] store_pto: too large (%u bytes)\n", (unsigned)len);
+    if (len > TIME_OFF_MAX_JPEG) {
+        LOG("[photo_cache] store_time_off: too large (%u bytes)\n", (unsigned)len);
         if (jpeg) heap_caps_free(jpeg);
         return;
     }
-    uint16_t* buf = save_and_decode(PATH_PTO, PTO_MAX_JPEG,
-                                     jpeg, len, PTO_W, PTO_H);
+    uint16_t* buf = save_and_decode(PATH_TIME_OFF, TIME_OFF_MAX_JPEG,
+                                     jpeg, len, TIME_OFF_W, TIME_OFF_H);
     heap_caps_free(jpeg);
     if (buf) {
-        if (g_pto_buf) heap_caps_free(g_pto_buf);
-        g_pto_buf   = buf;
-        g_pto_ready = true;
-        build_dsc(&g_pto_dsc, g_pto_buf, PTO_W, PTO_H);
-        LOG("[photo_cache] PTO image stored to LittleFS (%u bytes)\n", (unsigned)len);
+        if (g_time_off_buf) heap_caps_free(g_time_off_buf);
+        g_time_off_buf   = buf;
+        g_time_off_ready = true;
+        build_dsc(&g_time_off_dsc, g_time_off_buf, TIME_OFF_W, TIME_OFF_H);
+        LOG("[photo_cache] Time Off image stored to LittleFS (%u bytes)\n", (unsigned)len);
     } else {
-        LOG("[photo_cache] PTO image decode failed\n");
+        LOG("[photo_cache] Time Off image decode failed\n");
     }
 }
 
-const lv_image_dsc_t* get_pto() {
-    return g_pto_ready ? &g_pto_dsc : nullptr;
+const lv_image_dsc_t* get_time_off() {
+    return g_time_off_ready ? &g_time_off_dsc : nullptr;
 }
 
-void clear_pto() {
-    g_pto_ready = false;
-    erase_file(PATH_PTO);
-    if (g_pto_buf) { heap_caps_free(g_pto_buf); g_pto_buf = nullptr; }
-    g_pto_dsc = {};
-    LOG("[photo_cache] PTO image cleared\n");
+void clear_time_off() {
+    g_time_off_ready = false;
+    erase_file(PATH_TIME_OFF);
+    if (g_time_off_buf) { heap_caps_free(g_time_off_buf); g_time_off_buf = nullptr; }
+    g_time_off_dsc = {};
+    LOG("[photo_cache] Time Off image cleared\n");
 }
 
-void init_pto_placeholder(const uint8_t* jpeg, size_t len) {
+void init_time_off_placeholder(const uint8_t* jpeg, size_t len) {
     if (!jpeg || !len) return;
     uint16_t* buf = static_cast<uint16_t*>(
-        heap_caps_malloc((size_t)PTO_W * PTO_H * 2, MALLOC_CAP_SPIRAM));
-    if (!buf) { LOG("[photo_cache] PTO placeholder PSRAM alloc failed\n"); return; }
-    if (!decode_jpeg_to(jpeg, len, buf, PTO_W, PTO_H)) {
+        heap_caps_malloc((size_t)TIME_OFF_W * TIME_OFF_H * 2, MALLOC_CAP_SPIRAM));
+    if (!buf) { LOG("[photo_cache] Time Off placeholder PSRAM alloc failed\n"); return; }
+    if (!decode_jpeg_to(jpeg, len, buf, TIME_OFF_W, TIME_OFF_H)) {
         heap_caps_free(buf);
-        LOG("[photo_cache] PTO placeholder decode failed\n");
+        LOG("[photo_cache] Time Off placeholder decode failed\n");
         return;
     }
-    if (g_pto_ph_buf) heap_caps_free(g_pto_ph_buf);
-    g_pto_ph_buf   = buf;
-    g_pto_ph_ready = true;
-    build_dsc(&g_pto_ph_dsc, g_pto_ph_buf, PTO_W, PTO_H);
-    LOG("[photo_cache] PTO placeholder ready (%u bytes)\n", (unsigned)len);
+    if (g_time_off_ph_buf) heap_caps_free(g_time_off_ph_buf);
+    g_time_off_ph_buf   = buf;
+    g_time_off_ph_ready = true;
+    build_dsc(&g_time_off_ph_dsc, g_time_off_ph_buf, TIME_OFF_W, TIME_OFF_H);
+    LOG("[photo_cache] Time Off placeholder ready (%u bytes)\n", (unsigned)len);
 }
 
-const lv_image_dsc_t* get_pto_placeholder() {
-    return g_pto_ph_ready ? &g_pto_ph_dsc : nullptr;
+const lv_image_dsc_t* get_time_off_placeholder() {
+    return g_time_off_ph_ready ? &g_time_off_ph_dsc : nullptr;
 }
 
 uint16_t* decode_to_psram(const uint8_t* jpeg, size_t len, uint16_t w, uint16_t h) {

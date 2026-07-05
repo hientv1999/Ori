@@ -1,10 +1,10 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=1200, initial-scale=1">
-  <title>Ori — UI Prototype</title>
+  <title>Ori â€” UI Prototype</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@200;300;400;500;600;700&display=swap"
@@ -27,16 +27,16 @@
       --accent-line: rgba(224, 184, 106, 0.55);
       --danger: #D86A6A;
       --ok: #7FB48A;
-      /* Teams-presence palette for the profile-photo border — colors match the
+      /* Teams-presence palette for the profile-photo border â€” colors match the
      actual Microsoft Teams presence swatches so users get instant recognition. */
       --presence-available: #92C353;
-      /* Teams green  — "Available" */
+      /* Teams green  â€” "Available" */
       --presence-busy: #C4314B;
-      /* Teams red    — "Busy", "Do Not Disturb", "In a call/meeting", "Presenting" */
+      /* Teams red    â€” "Busy", "Do Not Disturb", "In a call/meeting", "Presenting" */
       --presence-away: #FFAA44;
-      /* Teams amber  — "Be Right Back", "Appear Away" */
+      /* Teams amber  â€” "Be Right Back", "Appear Away" */
       --presence-offline: #8A8884;
-      /* Teams grey   — "Appear Offline", OR Ori-side fallback when Orion is offline */
+      /* Teams grey   â€” "Appear Offline", OR Ori-side fallback when Orion is offline */
       --font: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     }
 
@@ -352,7 +352,7 @@
       box-shadow: none;
     }
 
-    /* Name uses 30px (matches status-bar time + after-hours clock date — the
+    /* Name uses 30px (matches status-bar time + after-hours clock date â€” the
    three "primary identity" type sizes). Allowed to wrap onto up to 2 lines
    when long. -webkit-line-clamp caps at 2 lines so anything longer
    ellipsises. */
@@ -371,7 +371,7 @@
       word-wrap: break-word;
     }
 
-    /* Title uses font_meta (24 px) — matches meeting-location and media-artist. */
+    /* Title uses font_meta (24 px) â€” matches meeting-location and media-artist. */
     .profile-title {
       margin-top: 6px;
       font-size: 24px;
@@ -462,7 +462,7 @@
       opacity: 0.7;
     }
 
-    /* In-progress (start <= now <= end) — danger-red title + time so the user
+    /* In-progress (start <= now <= end) â€” danger-red title + time so the user
    spots the meeting they're currently supposed to be in at a glance. */
     .meeting.in-progress .time-block .start {
       color: var(--danger);
@@ -477,7 +477,7 @@
       color: var(--danger);
     }
 
-    /* Title — single line with ellipsis; tap the row to see the full title in an overlay */
+    /* Title â€” single line with ellipsis; tap the row to see the full title in an overlay */
     .meeting .title {
       color: var(--text-1);
       font-size: 26px;
@@ -742,20 +742,20 @@
       font-weight: 600;
     }
 
-    .pto {
+    .timeOff {
       position: relative;
       width: 100%;
       height: 100%;
       overflow: hidden;
     }
 
-    .pto-scene {
+    .timeOffScene {
       position: absolute;
       inset: 0;
       background: linear-gradient(180deg, #2a4565 0%, #45617e 35%, #c08868 65%, #d9a47a 100%);
     }
 
-    .pto-sun {
+    .timeOffSun {
       position: absolute;
       width: 110px;
       height: 110px;
@@ -766,7 +766,7 @@
       transform: translateX(-50%);
     }
 
-    .pto-mountains {
+    .timeOffMountains {
       position: absolute;
       bottom: 90px;
       left: 0;
@@ -774,7 +774,7 @@
       height: 130px;
     }
 
-    .pto-water {
+    .timeOffWater {
       position: absolute;
       bottom: 0;
       left: 0;
@@ -783,13 +783,13 @@
       background: linear-gradient(180deg, #1f3a55 0%, #0e1f30 100%);
     }
 
-    .pto-overlay {
+    .timeOffOverlay {
       position: absolute;
       inset: 0;
       background: linear-gradient(180deg, rgba(14, 17, 22, 0) 35%, rgba(14, 17, 22, 0.30) 100%);
     }
 
-    .pto-text {
+    .timeOffText {
       position: absolute;
       bottom: 18px;
       left: 18px;
@@ -798,7 +798,7 @@
       color: white;
     }
 
-    .pto-text-card {
+    .timeOffTextCard {
       background: rgba(10, 12, 16, 0.72);
       backdrop-filter: blur(10px);
       -webkit-backdrop-filter: blur(10px);
@@ -810,11 +810,11 @@
       -webkit-tap-highlight-color: transparent;
     }
 
-    .pto-text-card:active {
+    .timeOffTextCard:active {
       background: rgba(10, 12, 16, 0.88);
     }
 
-    .pto-detail {
+    .timeOffDetail {
       width: 480px;
       text-align: center;
       color: var(--text-1);
@@ -823,7 +823,7 @@
       max-height: 400px;
     }
 
-    .pto-detail .pd-scroll {
+    .timeOffDetail .pd-scroll {
       overflow-y: auto;
       flex: 1;
       min-height: 0;
@@ -831,7 +831,7 @@
       padding: 0 8px;
     }
 
-    .pto-detail .pd-label {
+    .timeOffDetail .pd-label {
       font-size: 24px;
       text-transform: uppercase;
       letter-spacing: 2px;
@@ -839,7 +839,7 @@
       font-weight: 500;
     }
 
-    .pto-detail .pd-destination {
+    .timeOffDetail .pd-destination {
       margin-top: 12px;
       font-size: 42px;
       font-weight: 300;
@@ -848,14 +848,14 @@
       overflow-wrap: anywhere;
     }
 
-    .pto-detail .pd-dates {
+    .timeOffDetail .pd-dates {
       margin-top: 10px;
       font-size: 24px;
       color: var(--text-2);
       font-variant-numeric: tabular-nums;
     }
 
-    .pto-text .label {
+    .timeOffText .label {
       font-size: 24px;
       text-transform: uppercase;
       letter-spacing: 2px;
@@ -863,7 +863,7 @@
       font-weight: 500;
     }
 
-    .pto-text .destination {
+    .timeOffText .destination {
       font-size: 42px;
       font-weight: 300;
       margin-top: 4px;
@@ -873,7 +873,7 @@
       text-overflow: ellipsis;
     }
 
-    .pto-text .dates {
+    .timeOffText .dates {
       font-size: 24px;
       color: rgba(255, 255, 255, 0.80);
       margin-top: 4px;
@@ -1249,7 +1249,7 @@
     }
 
     /* 267px = right-panel grid width. padding-top 18px = (396 - ~359px group) / 2,
-   where the group is photo(240px) + name(14+71px, 2 lines at 30px×1.18)
+   where the group is photo(240px) + name(14+71px, 2 lines at 30pxÃ—1.18)
    + title(6+29px) = 359px. padding 0 8px matches the right-panel's
    horizontal padding so the photo center aligns too. */
     .profile-photo-col {
@@ -1482,7 +1482,7 @@
       justify-content: center;
     }
 
-    /* Centre glyphs for the OTA "ready to install" and "failed" screens —
+    /* Centre glyphs for the OTA "ready to install" and "failed" screens â€”
        sized to sit where the downloading ring sits. */
     .ota-install-glyph,
     .ota-error-glyph {
@@ -1619,7 +1619,7 @@
       z-index: 2;
     }
 
-    /* Mode toggle button in status bar — switches between calendar and media modes */
+    /* Mode toggle button in status bar â€” switches between calendar and media modes */
     .mode-toggle {
       width: 60px;
       height: 60px;
@@ -1653,9 +1653,9 @@
       height: 32px;
     }
 
-    /* Media mode — left panel content. The album art is the dominant element
+    /* Media mode â€” left panel content. The album art is the dominant element
    and doubles as the interaction surface (tap=play/pause, horiz swipe=prev/next,
-   vert swipe=volume). No persistent volume slider — volume HUD appears
+   vert swipe=volume). No persistent volume slider â€” volume HUD appears
    momentarily during the vertical swipe and fades. */
     .kbd-mode {
       height: 100%;
@@ -1666,8 +1666,8 @@
       box-sizing: border-box;
     }
 
-    /* Album art — 484×216 — fills the full usable left-panel width
-   (528 px panel − 22 px padding each side). Height fixed at 216 px. */
+    /* Album art â€” 484Ã—216 â€” fills the full usable left-panel width
+   (528 px panel âˆ’ 22 px padding each side). Height fixed at 216 px. */
     .kbd-art-wrap {
       width: 484px;
       height: 216px;
@@ -1768,7 +1768,7 @@
       transform: translateX(40px);
     }
 
-    /* Volume HUD — momentary overlay during vertical-swipe-on-art. Shows a
+    /* Volume HUD â€” momentary overlay during vertical-swipe-on-art. Shows a
    tall vertical bar fill + percentage. Fades out after the gesture ends. */
     .kbd-art-hud {
       position: absolute;
@@ -1824,7 +1824,7 @@
       transition: height 0.05s linear;
     }
 
-    /* "Nothing playing" empty-state — replaces the gradient with a muted dark fill,
+    /* "Nothing playing" empty-state â€” replaces the gradient with a muted dark fill,
    and uses the Ori brand mark (accent-gold ring + inner circle) as the placeholder. */
     .kbd-art-wrap.empty .kbd-art {
       background: radial-gradient(circle at 50% 45%, #1B2029 0%, #0c0f14 80%);
@@ -1914,8 +1914,8 @@
       margin-top: 10px;
     }
 
-    /* Title uses font_title (26 px) — matches meeting title. Artist uses font_meta (24 px)
-   — matches meeting location and profile job-title. */
+    /* Title uses font_title (26 px) â€” matches meeting title. Artist uses font_meta (24 px)
+   â€” matches meeting location and profile job-title. */
     .kbd-meta .title {
       color: var(--text-1);
       font-size: 26px;
@@ -1997,8 +1997,8 @@
 <body>
   <div class="app">
     <aside class="nav">
-      <h1>Ori — UI Prototype</h1>
-      <div class="sub">800 × 480 · ESP32-S3 4.3" panel</div>
+      <h1>Ori â€” UI Prototype</h1>
+      <div class="sub">800 Ã— 480 Â· ESP32-S3 4.3" panel</div>
       <div class="group">
         <div class="group-title">Primary states</div>
         <button data-screen="meeting-list" class="active">Meeting list</button>
@@ -2006,8 +2006,8 @@
         <button data-screen="clock">Digital Clock</button>
         <button data-screen="clock-analog">Analog Clock</button>
         <button data-screen="calendar">Calendar (month view)</button>
-        <button data-screen="pto">PTO active</button>
-        <button data-screen="pto-long-dest">PTO — long destination</button>
+        <button data-screen="timeOff">Time Off active</button>
+        <button data-screen=”timeOff-long-dest”>Time Off — long destination</button>
         <button data-screen="kbd-mode">Media mode (BLE bridge)</button>
       </div>
       <div class="group">
@@ -2015,7 +2015,7 @@
         <button data-screen="countdown">5-min meeting countdown</button>
         <button data-screen="factory-reset">Factory reset confirm</button>
         <button data-screen="meeting-detail">Meeting detail overlay</button>
-        <button data-screen="pto-detail">PTO detail overlay</button>
+        <button data-screen="timeOffDetail">Time Off detail overlay</button>
         <button data-screen="ancs-notification">ANCS notification detail</button>
         <button data-screen="ancs-notification-silent">ANCS silent notification</button>
         <button data-screen="profile-detail">Profile detail overlay</button>
@@ -2023,11 +2023,11 @@
       <div class="group">
         <div class="group-title">Setup flow</div>
         <button data-screen="setup-welcome">Welcome aboard</button>
-        <button data-screen="setup-install">Step 1 · Install Orion</button>
-        <button data-screen="setup-link-orion">Step 2 · Link Orion</button>
-        <button data-screen="setup-passkey">Step 2 · Passkey</button>
-        <button data-screen="setup-orioning">Step 2 · Orioning</button>
-        <button data-screen="setup-phone">Step 3 · Pair iPhone</button>
+        <button data-screen="setup-install">Step 1 Â· Install Orion</button>
+        <button data-screen="setup-link-orion">Step 2 Â· Link Orion</button>
+        <button data-screen="setup-passkey">Step 2 Â· Passkey</button>
+        <button data-screen="setup-orioning">Step 2 Â· Orioning</button>
+        <button data-screen="setup-phone">Step 3 Â· Pair iPhone</button>
         <button data-screen="setup-done">Setup complete</button>
       </div>
       <div class="group">
@@ -2038,11 +2038,11 @@
       </div>
       <div class="group">
         <div class="group-title">OTA update</div>
-        <button data-screen="ota-updating">1 · Downloading firmware</button>
-        <button data-screen="ota-ready">2 · Firmware Install</button>
-        <button data-screen="ota-installing">3 · Installing (dark)</button>
-        <button data-screen="ota-updated-ack">4 · Updated (boot ack)</button>
-        <button data-screen="ota-error">⚠ Update failed</button>
+        <button data-screen="ota-updating">1 Â· Downloading firmware</button>
+        <button data-screen="ota-ready">2 Â· Firmware Install</button>
+        <button data-screen="ota-installing">3 Â· Installing (dark)</button>
+        <button data-screen="ota-updated-ack">4 Â· Updated (boot ack)</button>
+        <button data-screen="ota-error">âš  Update failed</button>
       </div>
       <div class="group">
         <div class="group-title">Teams presence</div>
@@ -2066,7 +2066,7 @@
     <main class="stage">
       <div class="stage-meta">
         <div class="label" id="meta-label">Primary state</div>
-        <h2 id="meta-title">Meeting list — work hours</h2>
+        <h2 id="meta-title">Meeting list â€” work hours</h2>
         <div class="desc" id="meta-desc"></div>
       </div>
       <div class="bezel">
@@ -2074,7 +2074,7 @@
           <div class="status-bar" id="status-bar">
             <div class="status-datetime" id="status-datetime">
               <span class="t-time">14:30</span>
-              <span class="t-sep">·</span>
+              <span class="t-sep">Â·</span>
               <span class="t-date">Wed, May 14</span>
             </div>
             <div class="status-spacer"></div>
@@ -2095,7 +2095,7 @@
           <div id="modal-layer"></div>
         </div>
       </div>
-      <div class="panel-label">800 × 480 — Waveshare ESP32-S3 4.3" Touch LCD</div>
+      <div class="panel-label">800 Ã— 480 â€” Waveshare ESP32-S3 4.3" Touch LCD</div>
     </main>
   </div>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
