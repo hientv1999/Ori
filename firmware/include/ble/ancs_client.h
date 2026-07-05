@@ -101,13 +101,15 @@ const QueueEntry* get_queue(size_t* count_out);
 // cleared on disconnect.
 const char* phone_name();
 
-// ANCS notification filter level. Applied to incoming NS Added/Modified events.
-//   0x00  DISABLED   — drop all notifications
-//   0x01  CALL_ONLY  — pass only CategoryID 1 (IncomingCall)
-//   0x02  IMPORTANT  — pass IncomingCall OR ANCS Important flag set
-//   0x03  ALL        — pass all (default)
+// ANCS notification filter level. Applied at DISPLAY TIME — all notifications are
+// always stored internally so changing the filter instantly shows/hides them.
+//   0x00  DISABLED   — store all; display none (no icons, no call modal, no badge animation)
+//   0x01  CALL_ONLY  — display only CategoryID 1 (IncomingCall)
+//   0x02  IMPORTANT  — display IncomingCall OR ANCS Important flag set
+//   0x03  ALL        — display all (default)
 // set_filter() is called from ble_manager::poll() after Orion writes Device Settings (char 000F);
 // the value is also persisted to NVS (nvs::set_notif_filter) by that poll handler.
+// set_filter() immediately calls publish_queue() to refresh the status bar.
 void    set_filter(uint8_t level);
 uint8_t get_filter();
 

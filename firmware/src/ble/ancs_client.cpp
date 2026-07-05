@@ -495,7 +495,11 @@ static void publish_queue() {
         const char* tok        = g_queue[i].icon_token;
         uint32_t    uid        = g_queue[i].uid;
         bool        is_unknown = (strcmp(tok, "unknown") == 0);
-        uint8_t     cat        = is_unknown ? app_state::ancs_category(uid) : 0;
+        uint8_t     cat        = app_state::ancs_category(uid);
+        bool        important  = app_state::ancs_is_important(uid);
+        // Display-time filter: entries are always stored but only shown when they
+        // pass the current filter level, so a filter change takes effect instantly.
+        if (!passes_filter(cat, important ? EvtFlag::IMPORTANT : 0)) continue;
         time_t      epoch      = app_state::ancs_recv_epoch(uid);
         const char* title      = app_state::ancs_title(uid);
 
@@ -756,17 +760,11 @@ void on_notification_source(const uint8_t* data, uint16_t len) {
         (unsigned)event_id, (unsigned)cat_id, (unsigned)flags, (unsigned)uid);
 
     if (event_id == 0 || event_id == 1) {
-        // Added or Modified — apply the notification filter before queuing.
-        // Removed events (event_id 2) are always processed so dismissals
-        // work correctly regardless of filter state.
-        if (!passes_filter(cat_id, flags)) {
-            LOG("[ancs] NS uid=%u filtered (level=%u cat=%u flags=0x%02X)\n",
-                (unsigned)uid, (unsigned)g_filter, (unsigned)cat_id, (unsigned)flags);
-            return;
-        }
-        // Stash flags+category (not echoed in the DS response) then (re)request
-        // attributes. queue_add dedups by UID so a Modified event keeps the
-        // existing icon, while set_ancs_detail refreshes title/body/timestamp.
+        // Added or Modified — always store, regardless of filter level. The filter
+        // is applied at display time (publish_queue, note_new_notification, call modal)
+        // so a filter change immediately shows/hides existing notifications without
+        // needing to refetch from the iPhone. Removed events (event_id 2) are always
+        // processed so dismissals work correctly regardless of filter state.
         pmeta_put(uid, flags, cat_id);
         ancs_client::request_attributes(uid);
     } else if (event_id == 2) {
@@ -909,8 +907,9 @@ void on_data_source(const uint8_t* data, uint16_t len) {
                                fpos, fneg, neg_action);
 
     // Genuinely-new notifications animate in; the backlog iOS replays on connect
-    // (PreExisting flag) populates silently.
-    if (!preexisting) widget_status_bar::note_new_notification(resp_uid);
+    // (PreExisting flag) populates silently. Only animate if the notification
+    // passes the current filter — filtered-out entries are stored but not surfaced.
+    if (!preexisting && passes_filter(cat, flags)) widget_status_bar::note_new_notification(resp_uid);
 
     // Call notification that isn't part of the reconnect backlog → call overlay.
     // Two call categories: the classic INCOMING_CALL (1, native Phone app) and
@@ -922,7 +921,7 @@ void on_data_source(const uint8_t* data, uint16_t len) {
     // dialog directly. Best-effort: relies on iOS's action flags.
     bool is_call = (cat == app_state::AncsCategory::INCOMING_CALL ||
                     cat == app_state::AncsCategory::ACTIVE_CALL);
-    if (is_call && !preexisting && !ota_receiver::is_active()) {
+    if (is_call && !preexisting && !ota_receiver::is_active() && passes_filter(cat, flags)) {
         bool can_answer = (flags & EvtFlag::POSITIVE_ACTION) != 0;
         if (can_answer) modal_incoming_call::show(resp_uid);          // ringing
         else            modal_incoming_call::notify_active(resp_uid); // on call
@@ -1034,6 +1033,9 @@ void set_filter(uint8_t level) {
     LOG("[ancs] filter -> %u (%s)\n", (unsigned)level,
         level == 0 ? "Disabled" : level == 1 ? "CallOnly" :
         level == 2 ? "Important" : "All");
+    // Re-publish so the status bar immediately reflects the new filter level
+    // without waiting for the next incoming notification.
+    publish_queue();
 }
 
 uint8_t get_filter() {
