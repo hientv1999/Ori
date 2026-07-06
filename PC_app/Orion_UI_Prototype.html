@@ -1,0 +1,929 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1200">
+  <title>Orion</title>
+  <link rel="stylesheet" href="Orion_UI_Prototype.css">
+</head>
+
+<body>
+
+  <!-- ═══════════ PROTOTYPE NAV (dev chrome, not part of the real app) ═══════════ -->
+  <aside class="nav">
+    <h1>Orion — UI Prototype</h1>
+    <div class="sub">Click a page to jump straight to it.</div>
+
+    <div class="group">
+      <div class="group-title">Main Panel</div>
+      <button data-page="main-connected" onclick="navTo('main-connected')">Connected</button>
+      <button data-page="main-syncing" onclick="navTo('main-syncing')">Syncing</button>
+      <button data-page="main-disconnected" onclick="navTo('main-disconnected')">Disconnected</button>
+    </div>
+
+    <div class="group">
+      <div class="group-title">First-Run Setup</div>
+      <button data-page="setup-welcome" onclick="navTo('setup-welcome')">Welcome</button>
+      <button data-page="setup-profile" onclick="navTo('setup-profile')">1 · Profile</button>
+      <button data-page="setup-discover" onclick="navTo('setup-discover')">2 · Device Discovery</button>
+      <button data-page="setup-passkey" onclick="navTo('setup-passkey')">Pairing modal · Enter Passkey</button>
+      <button data-page="setup-connecting" onclick="navTo('setup-connecting')">Pairing modal · Connecting</button>
+      <button data-page="setup-syncing" onclick="navTo('setup-syncing')">Pairing modal · Syncing</button>
+    </div>
+
+    <div class="group">
+      <div class="group-title">Settings &amp; Subscreens</div>
+      <button data-page="settings" onclick="navTo('settings')">Settings</button>
+      <button data-page="profile-editor" onclick="navTo('profile-editor')">Profile Editor</button>
+      <button data-page="timeoff-editor" onclick="navTo('timeoff-editor')">Time Off Editor</button>
+      <button data-page="calendar-source" onclick="navTo('calendar-source')">Calendar Source</button>
+      <button data-page="quick-actions" onclick="navTo('quick-actions')">Quick Actions</button>
+      <button data-page="clock-face" onclick="navTo('clock-face')">Clock Face</button>
+      <button data-page="notification-filter" onclick="navTo('notification-filter')">Notification Filter</button>
+    </div>
+
+    <div class="group">
+      <div class="group-title">Modals</div>
+      <button data-page="modal-reset" onclick="navTo('modal-reset')">Reset Ori / Clear All</button>
+      <button data-page="modal-pairing-fail" onclick="navTo('modal-pairing-fail')">Pairing Failed</button>
+      <button data-page="modal-fw-available" onclick="navTo('modal-fw-available')">Firmware Update Available</button>
+      <button data-page="modal-fw-installing" onclick="navTo('modal-fw-installing')">Firmware Updating</button>
+    </div>
+
+    <div class="footer">Nav is prototype-only chrome for design review — it isn't part of the real Orion app.</div>
+  </aside>
+
+  <svg style="display:none" aria-hidden="true">
+    <symbol id="ico-back" viewBox="0 0 7 12">
+      <path d="M6 1L1 6l5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+        stroke-linejoin="round" />
+    </symbol>
+    <symbol id="ico-img" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+      stroke-linejoin="round">
+      <rect x="3" y="3" width="18" height="18" rx="3" />
+      <circle cx="8.5" cy="8.5" r="1.5" />
+      <path d="M21 15l-5-5L5 21" />
+    </symbol>
+    <symbol id="ico-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+      stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12" />
+    </symbol>
+    <symbol id="ico-recrop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+      stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6 2v14a2 2 0 002 2h14" />
+      <path d="M18 22V8a2 2 0 00-2-2H2" />
+    </symbol>
+    <symbol id="ico-teams" viewBox="0 0 24 24">
+      <rect width="24" height="24" rx="5" fill="#5059C9" />
+      <circle cx="16" cy="7.6" r="2.2" fill="#fff" />
+      <path d="M12.6 10.4h5.6c.8 0 1.4.6 1.4 1.4v3c0 1.6-1.3 3-3 3h-.4c-1.6 0-3-1.4-3-3v-3.7c0-.4.2-.7.4-.7z"
+        fill="#fff" opacity=".85" />
+      <circle cx="8.8" cy="7" r="3.1" fill="#fff" />
+      <path d="M4 13.4c0-2.1 2.3-3.4 4.8-3.4s4.8 1.3 4.8 3.4v2.4c0 1.3-1.1 2.4-2.4 2.4H6.4A2.4 2.4 0 014 15.8z"
+        fill="#fff" />
+    </symbol>
+    <symbol id="ico-gcal" viewBox="0 0 24 24">
+      <rect x="2" y="4" width="20" height="18" rx="3" fill="#fff" />
+      <path d="M2 7a3 3 0 013-3h14a3 3 0 013 3v3H2z" fill="#1A73E8" />
+      <rect x="6" y="1.3" width="2.2" height="5" rx="1.1" fill="#1A73E8" />
+      <rect x="15.8" y="1.3" width="2.2" height="5" rx="1.1" fill="#1A73E8" />
+      <text x="12" y="18.5" font-size="9" font-weight="700" fill="#1A73E8" text-anchor="middle"
+        font-family="Arial,Helvetica,sans-serif">31</text>
+    </symbol>
+  </svg>
+  <!-- DESKTOP HINT -->
+  <div
+    style="position:fixed;top:50%;left:calc(260px + (100vw - 260px)/2);transform:translate(-50%,-60%);color:rgba(255,255,255,.04);font-size:12.5px;letter-spacing:2px;text-transform:uppercase;text-align:center;line-height:3;pointer-events:none;">
+    Orion Demo<br>Click tray icon ↘</div>
+
+  <!-- TASKBAR -->
+  <div class="taskbar">
+    <div class="tb-r">
+      <div class="tray open" id="tray" onclick="togglePanel()">
+        <div class="wm"><span class="o">o</span><span class="r">r</span><span class="i">i</span></div>
+        <div class="tdot on" id="tdot"></div>
+      </div>
+      <div class="tb-clock" id="clock"></div>
+    </div>
+  </div>
+
+  <!-- ═══════════ PANEL ═══════════ -->
+  <div class="panel" id="panel">
+
+    <!-- ── MAIN SCREEN ── -->
+    <div id="s-main">
+      <div class="main-hdr">
+        <div class="conn-area">
+          <div class="h-dot on" id="hDot"></div>
+          <div class="h-device">
+            <div class="h-name" id="hName">Ori-XT-9F</div>
+            <div class="h-state" id="hState">Connected</div>
+          </div>
+        </div>
+        <div class="hdr-icons">
+          <div class="h-ico" id="fwIco" title="Firmware up to date" onclick="clickFw()" style="display:none;">
+            <svg width="14" height="14" viewBox="0 0 20 20" fill="none">
+              <path d="M10 3v11M6 9.5l4-4 4 4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"
+                stroke-linejoin="round" />
+              <path d="M4 17h12" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" />
+            </svg>
+          </div>
+          <div class="h-ico" id="gearIco" title="Settings" onclick="show('s-settings')">
+            <svg width="15" height="15" viewBox="0 0 20 20" fill="none">
+              <path d="M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z" stroke="currentColor" stroke-width="1.7" />
+              <path
+                d="M17 10a7 7 0 01-.1.9l1.8 1.4a.5.5 0 010 .6l-1.7 3a.5.5 0 01-.6.2l-2.1-.9c-.5.4-1 .7-1.5.9l-.3 2.3a.5.5 0 01-.5.4H9a.5.5 0 01-.5-.4l-.3-2.3a6.6 6.6 0 01-1.5-.9l-2.1.9a.5.5 0 01-.6-.2l-1.7-3a.5.5 0 010-.6L4.1 11A7 7 0 014 10a7 7 0 01.1-.9L2.3 7.7a.5.5 0 010-.6l1.7-3a.5.5 0 01.6-.2l2.1.9c.5-.4 1-.7 1.5-.9L8.5 1.6A.5.5 0 019 1.2h2a.5.5 0 01.5.4l.3 2.3c.5.2 1 .5 1.5.9l2.1-.9a.5.5 0 01.6.2l1.7 3a.5.5 0 010 .6l-1.8 1.4c.1.3.1.6.1.9z"
+                stroke="currentColor" stroke-width="1.7" />
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      <div class="body">
+        <!-- Profile card -->
+        <div id="mainProfileRow" class="profile-card" onclick="openProfileScreen()">
+          <div class="prof-photo available" id="mainProfPhoto"><span id="mainProfInitials">XT</span></div>
+          <div class="prof-name" id="mainName">Xander To</div>
+          <div class="prof-pres">
+            <span class="p-dot available" id="mainPDot"></span>
+            <span id="mainPText">Available</span>
+          </div>
+          <div class="card-chev">›</div>
+        </div>
+
+        <div class="row-gap"></div>
+        <div class="row-div"></div>
+        <div class="row-gap"></div>
+
+        <!-- Time Off toggle row -->
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:0 14px 8px;">
+          <span class="row-main" style="color:var(--t2);">Time Off</span>
+          <div class="toggle" id="timeOffToggle" onclick="toggleTimeOff()"></div>
+        </div>
+
+        <!-- Time Off banner card -->
+        <div class="timeOffCard collapsed" id="mainTimeOffCard" onclick="openTimeOffScreen()">
+          <div class="timeOffBanner" id="mainTimeOffBanner">
+            <div class="timeOffEmptyState" id="mainTimeOffEmpty">
+              <div class="timeOffEmptyIco">🌴</div>
+              <div class="timeOffEmptyTxt">No Time Off planned</div>
+              <div class="timeOffEmptySub">Tap to set</div>
+            </div>
+            <div class="timeOffOverlay" id="mainTimeOffOverlay" style="display:none;">
+              <div class="timeOffDest" id="mainTimeOffDest"></div>
+              <div class="timeOffDates" id="mainTimeOffDates"></div>
+            </div>
+          </div>
+          <div class="timeOffTextOnly" id="mainTimeOffText" style="display:none;">
+            <div class="toTextDest" id="mainTimeOffTextDest"></div>
+            <div class="toTextDates" id="mainTimeOffTextDates"></div>
+          </div>
+          <div class="card-chev">›</div>
+        </div>
+
+        <div id="mainTimeOffDivider" style="display:none;">
+          <div class="row-gap"></div>
+          <div class="row-div"></div>
+        </div>
+
+        <div id="connRequiredSections">
+        <div class="row-gap"></div>
+        <div class="row-div"></div>
+
+        <!-- Notification Filter row -->
+        <div class="row" onclick="openAncs()">
+          <div class="row-l">
+            <div>
+              <div class="row-main" style="color:var(--t2);">Notification Filter</div>
+            </div>
+          </div>
+          <div class="row-r">
+            <div id="mainAncs">
+              <!-- Disabled: bell-slash -->
+              <svg id="an-ico-0" style="display:none;" width="17" height="17" viewBox="0 0 20 20" fill="none"
+                stroke="var(--t3)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M8.7 3.1A4 4 0 0114 7v3.5l1.5 1.5H5L6.5 10.5V7c0-.5.1-1 .2-1.4" />
+                <path d="M10 17a2 2 0 002-2H8a2 2 0 002 2z" />
+                <line x1="3" y1="3" x2="17" y2="17" />
+              </svg>
+              <!-- Call Only: phone -->
+              <svg id="an-ico-1" style="display:none;" width="17" height="17" viewBox="0 0 20 20" fill="none"
+                stroke="var(--t2)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path
+                  d="M4 3.5h2.5a1 1 0 01.95.7l.9 2.7a1 1 0 01-.27.99L6.8 9.2a9.1 9.1 0 004 4l1.3-1.28a1 1 0 01.99-.27l2.7.9a1 1 0 01.7.95V16a1 1 0 01-1 1C7.94 17 3 12.06 3 5.5a2 2 0 011-1.74A2 2 0 014 3.5z" />
+              </svg>
+              <!-- Important: bell + accent dot -->
+              <svg id="an-ico-2" style="display:none;" width="17" height="17" viewBox="0 0 20 20" fill="none"
+                stroke="var(--t2)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M6 10.5V7a4 4 0 018 0v3.5L15.5 13H4.5L6 10.5z" />
+                <path d="M10 17a2 2 0 002-2H8a2 2 0 002 2z" />
+                <circle cx="15" cy="5" r="3" fill="var(--accent)" stroke="none" />
+              </svg>
+              <!-- All: plain bell -->
+              <svg id="an-ico-3" width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="var(--t2)"
+                stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M6 10.5V7a4 4 0 018 0v3.5L15.5 13H4.5L6 10.5z" />
+                <path d="M10 17a2 2 0 002-2H8a2 2 0 002 2z" />
+              </svg>
+            </div>
+            <div class="chev">›</div>
+          </div>
+        </div>
+
+        <div class="row-div"></div>
+
+        <!-- Clock face row -->
+        <div class="row" onclick="openClock()">
+          <div class="row-l">
+            <div class="row-main" style="color:var(--t2);">Clock Face</div>
+          </div>
+          <div class="row-r">
+            <div id="mainClock">
+              <!-- Digital preview -->
+              <div id="mcDig"
+                style="width:46px;height:26px;background:var(--elev);border:1px solid var(--brd);border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:12.5px;font-weight:600;color:var(--t1);letter-spacing:0.5px;font-variant-numeric:tabular-nums;">
+                10:10</div>
+              <!-- Analog preview -->
+              <svg id="mcAna" style="display:none;" width="26" height="26" viewBox="0 0 26 26">
+                <circle cx="13" cy="13" r="12" fill="var(--elev)" stroke="var(--brd)" stroke-width="1" />
+                <!-- tick marks -->
+                <line x1="13" y1="2.5" x2="13" y2="4.5" stroke="var(--t3)" stroke-width="1" stroke-linecap="round" />
+                <line x1="23.5" y1="13" x2="21.5" y2="13" stroke="var(--t3)" stroke-width="1" stroke-linecap="round" />
+                <line x1="13" y1="23.5" x2="13" y2="21.5" stroke="var(--t3)" stroke-width="1" stroke-linecap="round" />
+                <line x1="2.5" y1="13" x2="4.5" y2="13" stroke="var(--t3)" stroke-width="1" stroke-linecap="round" />
+                <!-- hour hand ~10 o'clock -->
+                <line x1="13" y1="13" x2="8.5" y2="8" stroke="var(--t1)" stroke-width="1.8" stroke-linecap="round" />
+                <!-- minute hand ~2 o'clock -->
+                <line x1="13" y1="13" x2="18" y2="7" stroke="var(--t1)" stroke-width="1.2" stroke-linecap="round" />
+                <!-- center dot -->
+                <circle cx="13" cy="13" r="1.5" fill="var(--accent)" />
+              </svg>
+            </div>
+            <div class="chev">›</div>
+          </div>
+        </div>
+
+        <div class="row-div"></div>
+
+        <!-- Quick Actions row -->
+        <div class="row" onclick="openShortcuts()">
+          <div class="row-l">
+            <div class="row-main" style="color:var(--t2);">Quick Actions</div>
+          </div>
+          <div class="row-r">
+            <div class="main-slot-imgs" id="mainSlots">
+              <img class="main-slot-img" id="ms1" src="../firmware/img/shortcut_icons/vol-mute.png">
+              <img class="main-slot-img" id="ms2" src="../firmware/img/shortcut_icons/mic-mute.png">
+              <img class="main-slot-img" id="ms3" src="../firmware/img/shortcut_icons/screenshot.png">
+            </div>
+            <div class="chev">›</div>
+          </div>
+        </div>
+
+        </div><!-- /connRequiredSections -->
+
+      </div>
+    </div>
+
+    <!-- ── FIRST-RUN SETUP WIZARD ── -->
+    <div class="screen" id="s-setup">
+
+      <!-- Step 0: Welcome -->
+      <div class="su-step show" id="su-step-welcome">
+        <div class="su-body" style="display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;">
+          <div class="su-welcome-mark">
+            <div class="su-welcome-line"></div>
+            <div class="su-welcome-word"><span class="o">o</span><span class="r">r</span><span class="i">i</span></div>
+            <div class="su-welcome-line right"></div>
+          </div>
+          <div class="su-welcome-title">Welcome to Orion</div>
+          <div class="su-welcome-desc">Orion keeps your Ori in sync — profile, calendar, and quick controls, all handled automatically from this PC.</div>
+          <button class="btn btn-primary btn-full" style="margin-top:22px;max-width:200px;"
+            onclick="suGoToProfile()">Start</button>
+        </div>
+        <div class="su-dots">
+          <div class="su-dot"></div>
+          <div class="su-dot"></div>
+        </div>
+      </div>
+
+      <!-- Step 1: Profile -->
+      <div class="su-step" id="su-step-profile">
+        <div class="su-hdr">
+          <div class="su-title">Set up your profile</div>
+          <div class="su-sub">This is what appears on Ori's display.</div>
+        </div>
+        <div class="su-body">
+          <div class="fgrp" style="display:flex;flex-direction:column;align-items:center;gap:10px;">
+            <div class="flbl" style="align-self:flex-start;">Profile Photo</div>
+            <input type="file" id="suPhotoInp" accept="image/*" style="display:none;" onchange="suLoadPhoto(this)">
+            <div id="suDropZone" class="pfDropZone">
+              <div id="suDzEmpty" class="timeOffDzEmpty" onclick="suPickPhoto()">
+                <svg width="22" height="22">
+                  <use href="#ico-img" />
+                </svg>
+                <span>Choose photo</span>
+              </div>
+              <div id="suDzImg" class="timeOffDzImg" style="display:none;">
+                <div id="suDzThumb" class="timeOffDzThumb" onclick="suOpenCropExisting()" title="Click to recrop"></div>
+                <div class="timeOffDzRecropHint">
+                  <svg width="16" height="16">
+                    <use href="#ico-recrop" />
+                  </svg>
+                  Recrop
+                </div>
+              </div>
+            </div>
+            <div id="suReuploadBtn" class="pfReuploadBtn" onclick="suPickPhoto()" style="display:none;">
+              <svg width="12" height="12">
+                <use href="#ico-upload" />
+              </svg>
+              Reupload
+            </div>
+          </div>
+          <div class="fgrp">
+            <div class="flbl"><span>Name <span style="color:var(--danger);">*</span></span><span class="fcnt" id="suNmCnt">0 / 32</span></div>
+            <input class="finp" id="suNmInp" maxlength="32" placeholder="Full name" oninput="suDirty()">
+          </div>
+          <div class="fgrp">
+            <div class="flbl"><span>Job title <span style="color:var(--danger);">*</span></span><span class="fcnt" id="suTlCnt">0 / 32</span></div>
+            <input class="finp" id="suTlInp" maxlength="32" placeholder="e.g. Senior Product Manager" oninput="suDirty()">
+          </div>
+          <div class="fgrp">
+            <div class="flbl"><span>Email</span><span class="fcnt" id="suEmCnt">0 / 32</span></div>
+            <input class="finp" id="suEmInp" maxlength="32" placeholder="name@company.com" oninput="suDirty()">
+          </div>
+          <div class="fgrp" style="margin-bottom:0;">
+            <div class="flbl"><span>Phone</span><span class="fcnt" id="suPhCnt">0 / 16</span></div>
+            <input class="finp" id="suPhInp" maxlength="16" placeholder="+1 555 000 0000" oninput="suDirty()">
+          </div>
+        </div>
+        <div class="su-foot">
+          <button class="btn btn-primary btn-full" id="suProfileNext" disabled onclick="suGoDiscover()">Next</button>
+        </div>
+        <div class="su-dots">
+          <div class="su-dot active"></div>
+          <div class="su-dot"></div>
+        </div>
+      </div>
+
+      <!-- Step 2: Device discovery -->
+      <div class="su-step" id="su-step-discover">
+        <div class="su-hdr">
+          <div class="su-back" onclick="suBackToProfile()">
+            <svg width="7" height="12">
+              <use href="#ico-back" />
+            </svg>
+            Edit profile
+          </div>
+          <div class="su-title">Select your Ori</div>
+          <div class="su-sub">Make sure Ori is powered on and in pairing mode.</div>
+        </div>
+        <div class="su-body">
+          <div class="su-scan" id="suScanning">
+            <div class="scan-row">
+              <div class="sd"></div>
+              <div class="sd"></div>
+              <div class="sd"></div>
+            </div>
+            <div>Looking for nearby Ori devices…</div>
+          </div>
+          <div class="su-devlist" id="suDevList" style="display:none;"></div>
+        </div>
+        <div class="su-dots">
+          <div class="su-dot"></div>
+          <div class="su-dot active"></div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- ── PROFILE SUB-SCREEN ── -->
+    <div class="screen" id="s-profile">
+      <div class="hdr">
+        <div class="hdr-title" style="text-align:center;">Profile</div>
+      </div>
+      <div class="body">
+        <div class="form-body">
+          <div class="fgrp">
+            <div class="flbl">Profile Photo</div>
+            <input type="file" id="pfPhotoInp" accept="image/*" style="display:none;" onchange="loadProfilePhoto(this)">
+            <div style="display:flex;flex-direction:column;align-items:center;gap:10px;">
+              <div id="pfDropZone" class="pfDropZone">
+                <div id="pfDzEmpty" class="timeOffDzEmpty" onclick="pfPickPhoto()">
+                  <svg width="22" height="22">
+                    <use href="#ico-img" />
+                  </svg>
+                  <span>Choose photo</span>
+                </div>
+                <div id="pfDzImg" class="timeOffDzImg" style="display:none;">
+                  <div id="pfDzThumb" class="timeOffDzThumb" onclick="openPfCropExisting()" title="Click to recrop">
+                  </div>
+                  <div class="timeOffDzRecropHint">
+                    <svg width="16" height="16">
+                      <use href="#ico-recrop" />
+                    </svg>
+                    Recrop
+                  </div>
+                </div>
+              </div>
+              <div id="pfReuploadBtn" class="pfReuploadBtn" onclick="pfPickPhoto()" style="display:none;">
+                <svg width="12" height="12">
+                  <use href="#ico-upload" />
+                </svg>
+                Reupload
+              </div>
+            </div>
+          </div>
+          <div class="fgrp">
+            <div class="flbl"><span>Name <span style="color:var(--danger);">*</span></span><span class="fcnt" id="nmCnt">9 / 32</span></div>
+            <input class="finp" id="nmInp" value="Xander To" maxlength="32" oninput="pfDirty()">
+          </div>
+          <div class="fgrp">
+            <div class="flbl"><span>Job title <span style="color:var(--danger);">*</span></span><span class="fcnt" id="tlCnt">24 / 32</span></div>
+            <input class="finp" id="tlInp" value="Senior Product Manager" maxlength="32" oninput="pfDirty()">
+          </div>
+          <div class="fgrp">
+            <div class="flbl">Email <span class="fcnt" id="emCnt">0 / 32</span></div>
+            <input class="finp" id="emInp" value="" maxlength="32" placeholder="name@company.com" oninput="pfDirty()">
+          </div>
+          <div class="fgrp" style="margin-bottom:0;">
+            <div class="flbl">Phone <span class="fcnt" id="phCnt">0 / 16</span></div>
+            <input class="finp" id="phInp" value="" maxlength="16" placeholder="+1 555 000 0000" oninput="pfDirty()">
+          </div>
+        </div>
+      </div>
+      <div class="sub-foot">
+        <div class="btn-row" style="margin-top:0;">
+          <button class="btn btn-sec btn-full" onclick="backWithCheck()">Cancel</button>
+          <button class="btn btn-primary btn-full" id="pfSaveBtn" disabled onclick="saveProfile()">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── TIME OFF SUB-SCREEN ── -->
+    <div class="screen" id="s-timeOff">
+      <div class="hdr">
+        <div class="hdr-title" style="text-align:center;">Time Off</div>
+      </div>
+      <div class="body">
+        <div class="form-body">
+          <div class="fgrp">
+            <div class="flbl"><span>Period <span style="color:var(--danger);">*</span></span><span class="field-err" id="periodErr" style="display:none;"></span></div>
+            <div class="period-display" id="periodDisplay" onclick="togglePeriodCal()">
+              <span class="period-display-txt" id="periodText" style="color:var(--t3);">Select dates…</span>
+              <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"
+                stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;color:var(--t3);">
+                <rect x="3" y="4" width="14" height="13" rx="2" />
+                <path d="M3 8h14M7 2v3M13 2v3" />
+              </svg>
+            </div>
+            <div class="period-cal" id="periodCal" style="display:none;">
+              <div class="pcal-hdr">
+                <div class="pcal-nav pcal-nav-prev" onclick="calNav(-1)">‹</div>
+                <div class="pcal-mlbl" id="pcalMonth"></div>
+                <div class="pcal-nav" onclick="calNav(1)">›</div>
+              </div>
+              <div class="pcal-grid" id="pcalGrid" onmousemove="onCalMove(event)" onmouseleave="onCalLeave()"></div>
+              <div class="pcal-hint" id="pcalHint">Select start date</div>
+            </div>
+          </div>
+          <div class="fgrp">
+            <div class="flbl"><span>Destination <span style="color:var(--danger);">*</span></span><span class="fcnt" id="dtCnt">0 / 48</span> <span class="field-err"
+                id="destErr" style="display:none;"></span></div>
+            <input class="finp" id="timeOffDt" value="" maxlength="48" placeholder="City, Country"
+              oninput="timeOffDirty=true;cc('timeOffDt','dtCnt',48);updateToSaveState();updateTimeOff()">
+          </div>
+          <div class="fgrp" style="margin-bottom:0;">
+            <div class="flbl">Destination photo</div>
+            <input type="file" id="timeOffPhoInp" accept="image/*" style="display:none;"
+              onchange="loadTimeOffPhoto(this)">
+            <div style="display:flex;flex-direction:column;align-items:center;gap:10px;">
+              <div id="timeOffBannerPreview" class="timeOffDropZone" style="width:100%;">
+                <div id="timeOffDzEmpty" class="timeOffDzEmpty" onclick="timeOffPickPhoto()">
+                  <svg width="22" height="22">
+                    <use href="#ico-img" />
+                  </svg>
+                  <span>Choose photo</span>
+                </div>
+                <div id="timeOffDzImg" class="timeOffDzImg" style="display:none;">
+                  <div id="timeOffDzThumb" class="timeOffDzThumb" onclick="openCropExisting()" title="Click to recrop">
+                  </div>
+                  <div class="timeOffDzRecropHint">
+                    <svg width="16" height="16">
+                      <use href="#ico-recrop" />
+                    </svg>
+                    Recrop
+                  </div>
+                </div>
+              </div>
+              <div id="toReuploadBtn" class="pfReuploadBtn" onclick="timeOffPickPhoto()" style="display:none;">
+                <svg width="12" height="12">
+                  <use href="#ico-upload" />
+                </svg>
+                Reupload
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="sub-foot">
+        <div class="btn-row" style="margin-top:0;">
+          <button class="btn btn-sec btn-full" onclick="backWithCheck()">Cancel</button>
+          <button class="btn btn-primary btn-full" id="toSaveBtn" disabled onclick="saveTimeOff()">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── CALENDAR SUB-SCREEN ── -->
+    <div class="screen" id="s-calendar">
+      <div class="hdr">
+        <div class="hdr-title" style="text-align:center;">Calendar Source</div>
+      </div>
+      <div class="body">
+        <div class="cal-opts">
+          <div class="cal-opt sel" id="co-ms" onclick="setCalPending('ms')">
+            <div class="co-ico"><svg width="22" height="22"><use href="#ico-teams" /></svg></div>
+            <div class="co-info">
+              <div class="co-nm">Microsoft Teams</div>
+              <div class="co-st">Signed in · Exchange Online</div>
+            </div>
+            <div class="co-chk">✓</div>
+          </div>
+          <div class="cal-opt" id="co-gg" onclick="setCalPending('gg')">
+            <div class="co-ico"><svg width="22" height="22"><use href="#ico-gcal" /></svg></div>
+            <div class="co-info">
+              <div class="co-nm">Google Calendar</div>
+              <div class="co-st" id="ggSt">Not signed in</div>
+            </div>
+            <div class="co-chk">✓</div>
+          </div>
+        </div>
+        <div id="ggSignInRow" style="padding:0 14px 14px;">
+          <button class="btn btn-sec btn-full" onclick="signGoogle()" id="ggSignBtn">Sign in with Google</button>
+        </div>
+      </div>
+      <div class="sub-foot">
+        <div class="btn-row" style="margin-top:0;">
+          <button class="btn btn-sec btn-full" onclick="backWithCheck()">Cancel</button>
+          <button class="btn btn-primary btn-full" id="calSaveBtn" disabled onclick="saveCalSource()">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SHORTCUTS SUB-SCREEN ── -->
+    <div class="screen" id="s-shortcuts">
+      <div class="hdr">
+        <div class="hdr-title" style="text-align:center;">Quick Actions</div>
+      </div>
+      <div class="body">
+        <div class="slot-section">
+          <div class="slot-row">
+            <div class="slot-n">Slot 1</div>
+            <div class="slot-ico"><img class="slot-ico-img" id="si1" src="../firmware/img/shortcut_icons/vol-mute.png">
+            </div>
+            <div class="slot-sel">
+              <select class="finp" id="ss1" onchange="applySlot(1)">
+                <option value="vol-mute" selected>Volume Mute</option>
+                <option value="mic-mute">Mic Mute</option>
+                <option value="screenshot">Screenshot</option>
+                <option value="lock-screen">Lock Screen</option>
+                <option value="favorite">Favorite</option>
+              </select>
+              <div class="fav-kbd" id="fav1">
+                <div class="kbd-recorder" id="kbdRec1" onclick="startKbdRecord(1)">
+                  <span class="kbd-combo-disp" id="kbdDisp1"><span class="kbd-unset">Not set</span></span>
+                  <span class="kbd-cta" id="kbdHint1">Click to set</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="slot-row">
+            <div class="slot-n">Slot 2</div>
+            <div class="slot-ico"><img class="slot-ico-img" id="si2" src="../firmware/img/shortcut_icons/mic-mute.png">
+            </div>
+            <div class="slot-sel">
+              <select class="finp" id="ss2" onchange="applySlot(2)">
+                <option value="vol-mute">Volume Mute</option>
+                <option value="mic-mute" selected>Mic Mute</option>
+                <option value="screenshot">Screenshot</option>
+                <option value="lock-screen">Lock Screen</option>
+                <option value="favorite">Favorite</option>
+              </select>
+              <div class="fav-kbd" id="fav2">
+                <div class="kbd-recorder" id="kbdRec2" onclick="startKbdRecord(2)">
+                  <span class="kbd-combo-disp" id="kbdDisp2"><span class="kbd-unset">Not set</span></span>
+                  <span class="kbd-cta" id="kbdHint2">Click to set</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="slot-row">
+            <div class="slot-n">Slot 3</div>
+            <div class="slot-ico"><img class="slot-ico-img" id="si3"
+                src="../firmware/img/shortcut_icons/screenshot.png"></div>
+            <div class="slot-sel">
+              <select class="finp" id="ss3" onchange="applySlot(3)">
+                <option value="vol-mute">Volume Mute</option>
+                <option value="mic-mute">Mic Mute</option>
+                <option value="screenshot" selected>Screenshot</option>
+                <option value="lock-screen">Lock Screen</option>
+                <option value="favorite">Favorite</option>
+              </select>
+              <div class="fav-kbd" id="fav3">
+                <div class="kbd-recorder" id="kbdRec3" onclick="startKbdRecord(3)">
+                  <span class="kbd-combo-disp" id="kbdDisp3"><span class="kbd-unset">Not set</span></span>
+                  <span class="kbd-cta" id="kbdHint3">Click to set</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="sub-foot">
+        <div class="btn-row" style="margin-top:0;">
+          <button class="btn btn-sec btn-full" onclick="backWithCheck()">Cancel</button>
+          <button class="btn btn-primary btn-full" id="slotsSaveBtn" disabled onclick="saveSlots()">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── CLOCK FACE SUB-SCREEN ── -->
+    <div class="screen" id="s-clock">
+      <div class="hdr">
+        <div class="hdr-title" style="text-align:center;">Clock Face</div>
+      </div>
+      <div class="body">
+        <div class="clock-opts">
+          <div class="clock-opt sel" id="co-dig" onclick="setClock('digital')">
+            <div class="co-radio">
+              <div class="co-r-inner"></div>
+            </div>
+            <div class="co-text">
+              <div class="co-label">Digital</div>
+              <div class="co-sub">Large digits</div>
+            </div>
+          </div>
+          <div class="clock-opt" id="co-ana" onclick="setClock('analog')">
+            <div class="co-radio">
+              <div class="co-r-inner"></div>
+            </div>
+            <div class="co-text">
+              <div class="co-label">Analog</div>
+              <div class="co-sub">Tick dial with hands</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="sub-foot">
+        <div class="btn-row" style="margin-top:0;">
+          <button class="btn btn-sec btn-full" onclick="backWithCheck()">Cancel</button>
+          <button class="btn btn-primary btn-full" id="clockSaveBtn" disabled onclick="saveClock()">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── ANCS FILTER SUB-SCREEN ── -->
+    <div class="screen" id="s-ancs">
+      <div class="hdr">
+        <div class="hdr-title" style="text-align:center;">Notification Filter</div>
+      </div>
+      <div class="body">
+        <div class="clock-opts">
+          <div class="clock-opt" id="an-0" onclick="setAncs(0)">
+            <div class="co-radio">
+              <div class="co-r-inner"></div>
+            </div>
+            <div class="co-text">
+              <div class="co-label">Disabled</div>
+              <div class="co-sub">No notifications shown on Ori</div>
+            </div>
+          </div>
+          <div class="clock-opt" id="an-1" onclick="setAncs(1)">
+            <div class="co-radio">
+              <div class="co-r-inner"></div>
+            </div>
+            <div class="co-text">
+              <div class="co-label">Call Only</div>
+              <div class="co-sub">Incoming calls only</div>
+            </div>
+          </div>
+          <div class="clock-opt" id="an-2" onclick="setAncs(2)">
+            <div class="co-radio">
+              <div class="co-r-inner"></div>
+            </div>
+            <div class="co-text">
+              <div class="co-label">Important</div>
+              <div class="co-sub">Calls and high-priority alerts</div>
+            </div>
+          </div>
+          <div class="clock-opt sel" id="an-3" onclick="setAncs(3)">
+            <div class="co-radio">
+              <div class="co-r-inner"></div>
+            </div>
+            <div class="co-text">
+              <div class="co-label">All</div>
+              <div class="co-sub">Every notification (default)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="sub-foot">
+        <div class="btn-row" style="margin-top:0;">
+          <button class="btn btn-sec btn-full" onclick="backWithCheck()">Cancel</button>
+          <button class="btn btn-primary btn-full" id="ancsSaveBtn" disabled onclick="saveAncs()">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SETTINGS SUB-SCREEN ── -->
+    <div class="screen" id="s-settings">
+      <div class="hdr">
+        <div class="hdr-back" onclick="back()">
+          <svg width="7" height="12">
+            <use href="#ico-back" />
+          </svg>
+          Back
+        </div>
+        <div class="hdr-title">Settings</div>
+        <div style="width:36px;"></div>
+      </div>
+      <div class="body">
+        <div class="pg-section">
+          <div class="pg-lbl">General</div>
+          <div class="pg-card">
+            <div class="pg-row">
+              <div>
+                <div class="pg-row-main">Run automatically</div>
+                <div class="pg-row-sub">Launch at Windows startup</div>
+              </div>
+              <div class="toggle on" id="autoToggle" onclick="this.classList.toggle('on')"></div>
+            </div>
+            <div class="pg-row" style="cursor:pointer;" onclick="openCalendarSource()">
+              <div>
+                <div class="pg-row-main">Calendar Source</div>
+                <div class="pg-row-sub" id="mainCalSub">Microsoft Teams · Connected</div>
+              </div>
+              <div class="chev">›</div>
+            </div>
+            <div class="pg-row">
+              <div class="pg-row-main">Language</div>
+              <select class="lang-sel">
+                <option>English</option>
+                <option>Tiếng Việt</option>
+                <option>Español</option>
+                <option>Français</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div class="pg-section">
+          <div class="pg-lbl">About</div>
+          <div class="pg-card">
+            <div class="about-row"><span>App</span><span>v1.0.0</span></div>
+          </div>
+        </div>
+        <div style="padding:8px 14px 4px;">
+          <button class="btn btn-dng btn-full" onclick="showModal('m-reset')">Reset</button>
+        </div>
+        <div style="height:12px;"></div>
+      </div>
+    </div>
+
+    <!-- ── MODALS ── -->
+
+    <!-- Discard unsaved changes -->
+    <div class="modal-bg" id="m-discard">
+      <div class="modal">
+        <div class="modal-title">Discard changes?</div>
+        <div class="modal-body">Unsaved changes will be lost.</div>
+        <div class="btn-row" style="margin-top:16px;">
+          <button class="btn btn-sec btn-full" onclick="hideModal('m-discard')">Keep editing</button>
+          <button class="btn btn-dng btn-full" onclick="confirmDiscard()">Discard</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Reset Ori / Clear All -->
+    <div class="modal-bg" id="m-reset">
+      <div class="modal">
+        <div class="modal-title">Reset Ori</div>
+        <div class="modal-body">All data and paired devices will be removed from Ori. Clear All also erases your profile, calendar sign-in, and shortcuts on this PC.</div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:16px;">
+          <button class="btn btn-dng btn-full" onclick="doFactoryReset()">Factory Reset</button>
+          <button class="btn btn-dng btn-full" onclick="doClearAll()">Clear All</button>
+          <button class="btn btn-sec btn-full" onclick="hideModal('m-reset')">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Pairing failed -->
+    <div class="modal-bg" id="m-pairfail">
+      <div class="modal">
+        <div class="modal-title">Couldn't pair with Ori</div>
+        <div class="modal-body">The passkey didn't match, or the request timed out on Ori. Pick a device to try again.</div>
+        <div class="btn-row" style="margin-top:16px;">
+          <button class="btn btn-primary btn-full" onclick="suPairFailClose()">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Pairing: Enter Passkey → Connecting → Syncing (part of first-run setup) -->
+    <div class="modal-bg" id="m-pair">
+      <div class="modal">
+        <div id="sp1">
+          <div class="modal-title">Enter passkey</div>
+          <div class="modal-body">Enter the 6-digit code shown on <span id="suPasskeyDevName">Ori</span>.</div>
+          <div class="pk-row">
+            <input class="pk-d pk-inp" id="suPk0" type="text" inputmode="numeric" maxlength="1" autocomplete="off"
+              oninput="suPkInput(event,0)" onkeydown="suPkKeydown(event,0)" onpaste="suPkPaste(event)">
+            <input class="pk-d pk-inp" id="suPk1" type="text" inputmode="numeric" maxlength="1" autocomplete="off"
+              oninput="suPkInput(event,1)" onkeydown="suPkKeydown(event,1)" onpaste="suPkPaste(event)">
+            <input class="pk-d pk-inp" id="suPk2" type="text" inputmode="numeric" maxlength="1" autocomplete="off"
+              oninput="suPkInput(event,2)" onkeydown="suPkKeydown(event,2)" onpaste="suPkPaste(event)">
+            <input class="pk-d pk-inp" id="suPk3" type="text" inputmode="numeric" maxlength="1" autocomplete="off"
+              oninput="suPkInput(event,3)" onkeydown="suPkKeydown(event,3)" onpaste="suPkPaste(event)">
+            <input class="pk-d pk-inp" id="suPk4" type="text" inputmode="numeric" maxlength="1" autocomplete="off"
+              oninput="suPkInput(event,4)" onkeydown="suPkKeydown(event,4)" onpaste="suPkPaste(event)">
+            <input class="pk-d pk-inp" id="suPk5" type="text" inputmode="numeric" maxlength="1" autocomplete="off"
+              oninput="suPkInput(event,5)" onkeydown="suPkKeydown(event,5)" onpaste="suPkPaste(event)">
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-sec btn-full" onclick="hideModal('m-pair')">Cancel</button>
+            <button class="btn btn-primary btn-full" onclick="suSubmitPasskey()">Pair</button>
+          </div>
+        </div>
+        <div id="sp2" style="display:none;">
+          <div class="modal-title">Pairing with Ori…</div>
+          <div class="spin"></div>
+          <div class="ring-sub">Waiting for Ori to confirm…</div>
+        </div>
+        <div id="sp3" style="display:none;">
+          <div class="modal-title">Setting up Ori…</div>
+          <div class="ring-c">
+            <svg width="132" height="132" viewBox="0 0 132 132">
+              <circle class="ring-bg" cx="66" cy="66" r="57" />
+              <circle class="ring-fill" id="suRing" cx="66" cy="66" r="57" />
+            </svg>
+            <div class="ring-n" id="suPct">0%</div>
+          </div>
+          <div class="ring-sub" id="suLbl">Syncing time…</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Firmware -->
+    <div class="modal-bg" id="m-fw">
+      <div class="modal">
+        <div id="fw-c">
+          <div class="modal-title">Firmware Update</div>
+          <div class="modal-body"><span style="color:var(--t1);font-weight:600;">v1.0.0 → v1.1.0</span><br><br>Keep Ori
+              plugged in during the update.</div>
+          <div class="btn-row" style="margin-top:16px;">
+            <button class="btn btn-sec btn-full" onclick="hideModal('m-fw')">Cancel</button>
+            <button class="btn btn-primary btn-full" onclick="startFwInstall()">Update</button>
+          </div>
+        </div>
+        <div id="fw-i" style="display:none;">
+          <div class="modal-title" id="fwMTitle">Updating firmware…</div>
+          <div class="ring-c">
+            <svg width="132" height="132" viewBox="0 0 132 132">
+              <circle class="ring-bg" cx="66" cy="66" r="57" />
+              <circle class="ring-fill" id="fwRing" cx="66" cy="66" r="57" />
+            </svg>
+            <div class="ring-n" id="fwPct">0%</div>
+          </div>
+          <div class="ring-sub" id="fwLbl">Keep Ori plugged in</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── CROP OVERLAY ── -->
+    <div class="crop-ovl" id="m-crop">
+      <div class="hdr">
+        <div class="hdr-back" onclick="cancelCrop()">
+          <svg width="7" height="12">
+            <use href="#ico-back" />
+          </svg>
+          Back
+        </div>
+        <div class="hdr-title">Crop Photo</div>
+        <div class="hdr-action" onclick="applyCrop()">Apply</div>
+      </div>
+      <div class="crop-area" id="cropArea">
+        <canvas id="cropCanvas" onpointerdown="onCropDown(event)" onpointermove="onCropMove(event)"
+          onpointerup="onCropUp(event)" onwheel="onCropWheel(event)"
+          ontouchstart="onCropTouchStart(event)" ontouchmove="onCropTouchMove(event)"
+          ontouchend="onCropTouchEnd(event)"></canvas>
+      </div>
+      <div class="crop-hint">Drag crop box to reposition · Drag corners to resize · Scroll or pinch to zoom · Drag outside box to pan</div>
+    </div>
+
+  </div><!-- /panel -->
+
+  <script src="Orion_UI_Prototype.js"></script>
+</body>
+
+</html>
