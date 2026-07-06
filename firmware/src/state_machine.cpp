@@ -520,15 +520,16 @@ AppState evaluate() {
 
     // CLOCK / CALENDAR_VIEW: user-entered by tapping/long-pressing the time;
     // persists through normal Calendar state changes (meeting list updates,
-    // etc.). Only overridden by high-priority states or an explicit
-    // on_mode_toggle() call.
+    // Time Off becoming/staying active, etc.). Only a full-screen takeover
+    // (OTA / Setup) or an explicit on_mode_toggle() (which forces a rebuild)
+    // can pull the user out — a passive state change like Time Off must not
+    // yank away a view the user explicitly opened.
     bool force = g_force_rebuild;
     g_force_rebuild = false;
     if (!force &&
         (g_state == AppState::CLOCK || g_state == AppState::CALENDAR_VIEW) &&
         target != AppState::SETUP &&
-        target != AppState::OTA_UPDATING &&
-        target != AppState::TIME_OFF_ACTIVE) {
+        target != AppState::OTA_UPDATING) {
         return g_state;
     }
 

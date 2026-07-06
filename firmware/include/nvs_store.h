@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include <stddef.h>
 
 // NVS scaffolding (Arduino Preferences). Single namespace "ori".
 //

@@ -52,6 +52,19 @@ const char* synced_pill_text();
 // (show "--:--" instead). Threshold = 2026-07-12 (any later real epoch passes).
 bool clock_is_set();
 
+// Records that Orion's Time Sync has established a true-UTC clock + POSIX TZ this
+// session, and caches that TZ. Set from apply_time_sync(); RAM-only, cleared only
+// by reboot. The iPhone CTS backup reports LOCAL wall time with no timezone; the
+// cached TZ lets the CTS fallback map that wall time back onto Orion's SAME
+// true-UTC basis (see ancs_client::read_phone_time()), so a CTS re-seed while
+// Orion is offline doesn't shift time(nullptr) by the timezone offset and break
+// epoch-relative state (sync pill, meeting expiry).
+void set_orion_clock_synced(const char* tz);
+bool orion_clock_synced();
+// Orion's last POSIX TZ string ("" if none / not yet synced). Valid to use once
+// orion_clock_synced() is true.
+const char* orion_tz();
+
 // Now-playing media metadata for the Media mode screen.
 // Populated from Orion via BLE Media Metadata / Album Art characteristics.
 // Starts with has_media=false ("Nothing playing" state) until a track arrives.

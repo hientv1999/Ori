@@ -306,6 +306,9 @@ static uint32_t s_last_cts_ms = 0; // millis() of last successful CTS read
 
 static void read_phone_time(bool force = false) {
     if (!g_client) return;
+    // On connect (force=false) only seed if the clock isn't valid yet — Orion,
+    // when present, is authoritative. The periodic re-read (force=true) runs only
+    // while Orion is offline (poll()), keeping the clock live from the iPhone.
     if (!force && app_state::clock_is_set()) return;  // Orion already set it
 
     NimBLERemoteService* cts = g_client->getService(NimBLEUUID((uint16_t)0x1805));
@@ -331,20 +334,27 @@ static void read_phone_time(bool force = false) {
     tmv.tm_min  = b[5];
     tmv.tm_sec  = b[6];
 
-    // CTS gives LOCAL time with no timezone. Treat it as the wall clock directly:
-    // set TZ=UTC so localtime_r() returns exactly these values (no offset applied).
-    // Real UTC + tz only comes from Orion; this backup is display-only — after a
-    // power cycle (the only time the iPhone is the sole source) there are no
-    // meetings, so the UTC-vs-local epoch distinction doesn't affect any logic.
-    setenv("TZ", "UTC0", 1);
+    // CTS gives LOCAL wall time with no timezone. Which TZ we interpret it in
+    // fixes the epoch basis of settimeofday():
+    //  • If Orion has synced this session it established a true-UTC clock and a
+    //    POSIX TZ. Reuse that TZ so mktime() maps the CTS wall time onto the SAME
+    //    true-UTC basis — otherwise time(nullptr) would jump by the tz offset on
+    //    every re-seed and corrupt epoch-relative state (the "last synced" pill
+    //    sticks on "now", meeting expiry misfires).
+    //  • On a cold boot where Orion has never synced there is no known TZ, so
+    //    treat CTS as UTC0 (display-only — no meetings / sync stamp exist yet).
+    //    Orion re-bases the clock the moment it connects.
+    const char* tz = (app_state::orion_clock_synced() && app_state::orion_tz()[0])
+                         ? app_state::orion_tz() : "UTC0";
+    setenv("TZ", tz, 1);
     tzset();
     time_t epoch = mktime(&tmv);
     if (epoch <= 0) return;
     struct timeval tv = { epoch, 0 };
     settimeofday(&tv, nullptr);
     s_last_cts_ms = millis();
-    LOG("[ancs] clock synced from iPhone CTS: %04u-%02u-%02u %02u:%02u\n",
-        (unsigned)year, (unsigned)b[2], (unsigned)b[3], (unsigned)b[4], (unsigned)b[5]);
+    LOG("[ancs] clock synced from iPhone CTS: %04u-%02u-%02u %02u:%02u (tz=%s)\n",
+        (unsigned)year, (unsigned)b[2], (unsigned)b[3], (unsigned)b[4], (unsigned)b[5], tz);
 }
 
 // ── ANCS EventFlags bits (Notification Source byte 1) ──────────────────────

@@ -138,6 +138,19 @@ void set_last_sync_time(time_t t) {
     g_last_sync_epoch = t;
 }
 
+// Set once Orion has established a true-UTC clock this session, with its POSIX TZ
+// cached so the iPhone CTS fallback can stay on the same epoch basis (see header).
+// RAM-only; never cleared except by reboot.
+bool g_orion_clock_synced = false;
+char g_orion_tz[64]       = {};
+
+void set_orion_clock_synced(const char* tz) {
+    g_orion_clock_synced = true;
+    if (tz) { snprintf(g_orion_tz, sizeof(g_orion_tz), "%s", tz); }
+}
+bool        orion_clock_synced() { return g_orion_clock_synced; }
+const char* orion_tz()           { return g_orion_tz; }
+
 bool clock_is_set() {
     // Lower bound that rejects the ~1970 default after a cold boot but accepts
     // any real Orion-synced time. It MUST sit safely BELOW "now" — the old

@@ -1027,6 +1027,14 @@ static void apply_time_sync(uint64_t epoch_utc, const char* tz) {
         tzset();
     }
 
+    // Record that Orion has established a true-UTC clock this session and cache
+    // its TZ. The iPhone CTS backup (local wall time, no timezone) reuses this TZ
+    // to map its reading back onto the SAME true-UTC basis while Orion is offline,
+    // so a CTS re-seed doesn't shift time(nullptr) by the timezone offset and
+    // break epoch-relative state (the "last synced" pill). See
+    // ancs_client::read_phone_time().
+    app_state::set_orion_clock_synced(tz);
+
     LOG("[gatt] TimeSync: epoch=%llu tz=%s\n",
                    (unsigned long long)epoch_utc, tz ? tz : "");
 }

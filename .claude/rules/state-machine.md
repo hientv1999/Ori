@@ -16,6 +16,7 @@ The left panel has **two user-selectable modes** via the status-bar mode-toggle 
    - **Calendar mode** — meeting list or "No meetings today." See `meeting-list.md`.
    - **Clock view** — digital clock, entered via status-bar time tap; status bar date/time hidden.
    - **Calendar view** — month grid, entered via status-bar time long-press; status bar date/time hidden.
+   - *Persistence exception:* Clock and Calendar view are entered by an explicit user action, so once open they are **held above** the passive higher-priority states (Time Off, Reconnect-Syncing) until the user exits via the mode-toggle return button. Only a full-screen takeover (OTA, Setup) pulls the user out. The 5-minute countdown still appears — but as a modal *overlay on top of* Clock/Calendar, not by replacing them.
    - **Controls mode** — media-controller UI. Only available when Orion is connected; auto-reverts to Calendar on PC disconnect. See `media-mode.md`.
 
 The right panel and status bar remain visible in all states **except OTA-Updating**.
@@ -36,7 +37,7 @@ Left panel: Time Off destination scenic image fills the full panel. A frosted-da
 - **Exit:** tap the mode-toggle button → returns to the mode active before entering Clock.
 - Status bar date/time hidden; mode-toggle always visible (even when Orion is offline).
 - Countdown modal still fires on top of Clock when triggered.
-- High-priority states (OTA, Time Off) override Clock; meeting list updates do not exit Clock.
+- Only a full-screen takeover (OTA, Setup) overrides Clock. Passive state changes do **not** exit Clock — neither meeting-list updates nor Time Off becoming (or staying) active while the user is in Clock. Exit is always via the mode-toggle return button, which drops back to the mode active before Clock (so a still-active Time Off window reappears then).
 - **Two faces, one state:** Digital (`screen_clock.cpp`, ~96 px digits-only font) and Analog (`screen_clock_analog.cpp`, 280 px tick dial + hands, accent second hand). `build_clock_screen()` (`state_machine.cpp`) picks between them via `g_clock_face` (0=Digital, 1=Analog), persisted through `nvs::get/set_clock_face()` — survives power cycles, same as the calendar/media mode preference. Both faces apply the same `clock_is_set()` fallback (no battery-backed RTC — see `meeting-list.md`): digital shows "--:--"/"WAITING FOR ORION", analog parks all hands at 12 with the same waiting label. Settable over BLE via the **Device Settings** characteristic (`ble-protocol.md` §3/§6.4, char `000E`, key `"c"`) — Orion writes it as part of the Device Settings CBOR map, applied + persisted immediately (not staged through §6.0's BEGIN/END pipeline). Also reachable via the `ORI_DEBUG_SERIAL` cycler (`c` = Digital, `a` = Analog) for hardware testing without a real Orion build (PC_app/M6 not started yet).
 
 ### Calendar (Month View)
@@ -46,7 +47,7 @@ Left panel: Time Off destination scenic image fills the full panel. A frosted-da
 - View-only: a 7-column month grid (weekday header + day cells), today highlighted in an accent-filled circle, with up/down chevrons in the header to navigate between months. No meeting data is overlaid — the meeting list is RAM-only (`meeting-list.md`), so there is nothing reliable to show beyond today even if it were.
 - Navigating months only re-renders the grid in place; it does not leave or re-enter the Calendar state.
 - Countdown modal still fires on top of Calendar when triggered.
-- High-priority states (OTA, Time Off) override Calendar; meeting list updates do not exit Calendar.
+- Only a full-screen takeover (OTA, Setup) overrides Calendar. Passive state changes do **not** exit Calendar — neither meeting-list updates nor Time Off becoming (or staying) active while the user is in Calendar. Exit is always via the mode-toggle return button, which drops back to the mode active before Calendar (so a still-active Time Off window reappears then).
 - Re-entering Calendar (after exiting and long-pressing again) always resets the view back to the current month.
 
 ### Reconnect-Syncing Overlay
