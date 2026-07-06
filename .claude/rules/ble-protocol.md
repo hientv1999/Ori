@@ -1,6 +1,6 @@
 ﻿# Ori — BLE GATT Protocol Specification
 
-**Protocol version:** 1.0 — pre-release; this contract isn't finalized, no version-history tracking needed yet.
+**Contract revision:** 1.0 — pre-release; this document isn't finalized, no version-history tracking needed yet. Documentation-only label — there is no wire-transmitted protocol version negotiation; see §9.
 **Status:** Authoritative — `esp32-connectivity` (Ori firmware) and `orion-sync` (Orion app) must conform.
 
 This document defines the single BLE GATT contract between Ori and the Orion PC app.
@@ -88,7 +88,7 @@ Orion uses the mode flag to detect "Ori factory-reset since last bond" without c
 
 ## 3. Service and characteristics
 
-**One service, sixteen characteristics.**
+**One service, fifteen characteristics** — plus a separate BLE SIG standard service for firmware version (§3.1).
 
 ```
 Ori Sync Service:  6F726900-0000-4F72-9F00-000000000000
@@ -98,24 +98,33 @@ Each characteristic UUID replaces bytes 4–5 of the base with the offset below.
 
 | # | Name | UUID offset | Properties | Direction | Encrypted? |
 |---|---|---|---|---|---|
-| 1 | Protocol Version | `0001` | Read | Orion reads | No |
-| 2 | Device Status | `0002` | Read, Notify | Ori → Orion (notify) | No |
-| 3 | Time Sync | `0003` | Write (response) | Orion → Ori | Yes |
-| 4 | Profile Info | `0004` | Write (response) | Orion → Ori | Yes |
-| 5 | Profile Photo | `0005` | Write, **Write NR** | Orion → Ori (chunked) | Yes |
-| 6 | Meeting List | `0006` | Write, **Write NR** | Orion → Ori (chunked) | Yes |
-| 7 | Time Off Entry | `0007` | Write, **Write NR** | Orion → Ori (chunked) | Yes |
-| 8 | Sync Control | `0008` | Write, Notify | Orion ↔ Ori | Yes |
-| 9 | **Device Command** | `0009` | Write (response) | Orion → Ori | Yes |
-| 10 | Sync Manifest | `000A` | Write, Notify | Orion ↔ Ori | Yes |
-| 11 | **Keyboard Command** | `000B` | Notify | Ori → Orion (notify) | Yes |
-| 12 | **Host Volume State** | `000C` | Read, Write (response) | Orion → Ori (+ Orion reads) | Yes |
-| 13 | **Media Metadata** | `000D` | Write, Notify | Orion → Ori | Yes |
-| 14 | **Media Album Art** | `000E` | Write (no response) | Orion → Ori (chunked) | Yes |
-| 15 | **Device Settings** | `000F` | Read, Write (response) | Orion → Ori (+ Orion reads) | Yes |
-| 16 | **Phone Bond Status** | `0012` | Read, Notify | Ori → Orion (notify) | Yes |
+| 1 | Device Status | `0001` | Read, Notify | Ori → Orion (notify) | No |
+| 2 | Time Sync | `0002` | Write (response) | Orion → Ori | Yes |
+| 3 | Profile Info | `0003` | Write (response) | Orion → Ori | Yes |
+| 4 | Profile Photo | `0004` | Write, **Write NR** | Orion → Ori (chunked) | Yes |
+| 5 | Meeting List | `0005` | Write, **Write NR** | Orion → Ori (chunked) | Yes |
+| 6 | Time Off Entry | `0006` | Write, **Write NR** | Orion → Ori (chunked) | Yes |
+| 7 | Sync Control | `0007` | Write, Notify | Orion ↔ Ori | Yes |
+| 8 | **Device Command** | `0008` | Write (response) | Orion → Ori | Yes |
+| 9 | Sync Manifest | `0009` | Write, Notify | Orion ↔ Ori | Yes |
+| 10 | **Keyboard Command** | `000A` | Notify | Ori → Orion (notify) | Yes |
+| 11 | **Host Volume State** | `000B` | Read, Write (response) | Orion → Ori (+ Orion reads) | Yes |
+| 12 | **Media Metadata** | `000C` | Write, Notify | Orion → Ori | Yes |
+| 13 | **Media Album Art** | `000D` | Write (no response) | Orion → Ori (chunked) | Yes |
+| 14 | **Device Settings** | `000E` | Read, Write (response) | Orion → Ori (+ Orion reads) | Yes |
+| 15 | **Phone Bond Status** | `000F` | Read, Notify | Ori → Orion (notify) | Yes |
 
 Reads/writes on encrypted characteristics over an unencrypted link return `INSUFFICIENT_AUTHENTICATION`.
+
+### 3.1 Device Information Service (BLE SIG standard — separate from Ori Sync Service)
+
+Ori also exposes the standard **Device Information Service** (`0x180A`), a distinct GATT service (not part of the Ori Sync Service above), with one characteristic:
+
+| Characteristic | UUID | Properties | Encrypted? |
+|---|---|---|---|
+| Firmware Revision String | `0x2A26` | Read | No |
+
+Value is a plain UTF-8 semver string (e.g. `"1.0.0"`) — not CBOR, static for the life of the connection (only changes across a reboot after a USB CDC firmware update, `ota.md`), and unencrypted so it's readable without bonding. This is how Orion learns the running firmware version — see §9.
 
 ---
 
@@ -190,12 +199,6 @@ SyncManifest_Write = {           // Orion → Ori — Device Settings fields hav
 
 SyncManifest_Notify = {          // Ori → Orion
   "n": [text, ...]               // needed. subset of {"profile","photo","meetings","to"}
-}
-
-ProtocolVersion = {
-  "j": uint,           // proto_major
-  "n": uint,           // proto_minor
-  "f": text            // fw_version. semver, e.g. "1.2.3"
 }
 
 KeyboardCommand = {              // Ori → Orion, notify
@@ -362,7 +365,7 @@ PSRAM before a single flash commit.
   — in one batch. **Profile, Profile Photo, and Time Off Entry persist to NVS.**
 - **Time Sync and Meeting List are RAM-only on Ori** — staged and applied at `END` but NOT written to NVS. Neither has a manifest hash; Orion always resends Time Sync unconditionally. A power cycle drops both; the next sync repopulates them. Orion sends Meeting List identically on the wire — the RAM-only choice is Ori's (no `proto` bump). See `meeting-list.md` for rationale.
 - **Shortcut Config is no longer part of the staged sync pipeline.** It is delivered
-  via the **Device Settings** characteristic (char `000F`) written outside the
+  via the **Device Settings** characteristic (char `000E`) written outside the
   BEGIN/END window — applied immediately on write, like Clock Face / ANCS Filter.
   **Persisted to NVS on Ori** (no manifest hash). Orion reads Device Settings on
   every (re)connect to recover the current slot tokens; it only writes them when
@@ -448,7 +451,7 @@ Periodic refreshes set `RUNTIME_SYNCING` briefly but do **not** trigger the reco
 
 ### 6.4 Device Settings push (no manifest, no hash)
 
-Device Settings (char `000F`) is outside the BEGIN/END pipeline. Each field is ephemeral or user-configured:
+Device Settings (char `000E`) is outside the BEGIN/END pipeline. Each field is ephemeral or user-configured:
 
 - **Presence** (`"p"`): ephemeral. Orion writes on every (re)connect and on every Teams state change. Before the first write, Ori displays `Offline`. On BLE link drop, Ori immediately renders `Offline` — stale presence would lie about reality.
 - **Shortcuts** (`"1"/"2"/"3"`): persisted to NVS. Same write-only-on-change policy as Clock Face — Orion writes only when the user changes a slot. Orion reads Device Settings on (re)connect to recover the current slot tokens and populate its Quick Actions UI.
@@ -503,9 +506,9 @@ Link-layer encryption failure (`BLE_HS_ENC_FAIL`) signals a stale bond — see �
 
 ## 9. Versioning
 
-- Protocol Version characteristic: `{ proto_major, proto_minor, fw_version }`. Current: **1.0**. Pre-release — this contract isn't finalized, so no changelog is kept here; just edit the relevant section in place when something changes.
-- Once the protocol is finalized/released, switch to: **Major bump** = breaking. On a `proto_major` mismatch, Orion must not attempt the hash-manifest sync at all — a different `proto_major` means the GATT layout/CBOR schema can't be trusted. Instead Orion **automatically** starts a USB CDC firmware update (`ota.md`) to bring Ori onto a `proto_major` Orion supports, provided Ori is reachable over USB CDC at that moment; if not, Orion shows a blocking "Ori needs a firmware update — connect it to this PC" prompt and re-checks once a serial port appears. This replaces a passive "show a message, user clicks Install" flow with an automatic one — see `pc-app.md`'s "Protocol compatibility gate." **Minor bump** = additive (unknown CBOR keys silently ignored) — a minor-only difference is not a sync blocker.
-- `fw_version` (semver) drives a separate, optional check: Orion polls `ori.app` for the latest released version and offers a user-initiated "Install update" in Settings when a newer (but still `proto_major`-compatible) build exists. This is independent of the mandatory `proto_major` gate above — see `pc-app.md`.
+There is no wire-level protocol version negotiation and no compatibility gate — Ori and Orion are developed and released together, and the GATT layout/CBOR schema in this document is expected to stay stable. Unknown CBOR keys are always silently ignored (§4), so additive changes are non-breaking by construction; if a genuinely breaking change to this contract is ever needed, revisit this section then.
+
+`fw_version` (semver, e.g. `"1.2.3"`) is read from the standard **Firmware Revision String** characteristic (§3.1) and drives exactly one thing: Orion polls `ori.app` for the latest released version and offers a user-initiated "Install update" in Settings when a newer build exists (`ota.md`). This check is purely optional and never blocks or gates the sync flow.
 
 ---
 
@@ -538,8 +541,8 @@ Link-layer encryption failure (`BLE_HS_ENC_FAIL`) signals a stale bond — see �
 
 ## 11. Implementation owners
 
-- **`esp32-connectivity`** — GATT server, bonding, chunk reassembly, NVS persistence + hashes, factory-reset routine, ANCS client, chars 11–16. No HOGP.
-- **`orion-sync`** — scanning + connection lifecycle, bonding storage, hash-manifest delta, chunked writes, background keep-alive, USB CDC OTA path (`ota.md`), media-mode OS bridge (§12). Reads char 16 (Phone Bond Status) on connect and subscribes to notifies; writes Unpair Phone magic bytes via char 9 (Device Command) on user request; writes char 15 (Device Settings) on reconnect (shortcuts + presence) and when the user changes clock face or ANCS filter.
+- **`esp32-connectivity`** — GATT server, bonding, chunk reassembly, NVS persistence + hashes, factory-reset routine, ANCS client, chars 10–15. No HOGP.
+- **`orion-sync`** — scanning + connection lifecycle, bonding storage, hash-manifest delta, chunked writes, background keep-alive, USB CDC OTA path (`ota.md`), media-mode OS bridge (§12). Reads char 15 (Phone Bond Status) on connect and subscribes to notifies; writes Unpair Phone magic bytes via char 8 (Device Command) on user request; writes char 14 (Device Settings) on reconnect (shortcuts + presence) and when the user changes clock face or ANCS filter.
 
 Pre-release: no need to bump a version header per change — just keep this file in sync with the firmware/Orion implementations as the contract evolves.
 
@@ -547,7 +550,7 @@ Pre-release: no need to bump a version header per change — just keep this file
 
 ## 12. Media-mode bridging — the Orion-mediated model
 
-Ori uses chars 11–14 instead of HOGP. Orion bridges each `KeyboardCommand` notify to OS APIs and mirrors OS state changes back to Ori.
+Ori uses chars 10–13 instead of HOGP. Orion bridges each `KeyboardCommand` notify to OS APIs and mirrors OS state changes back to Ori.
 
 Orion is two native codebases sharing this contract: **WinUI 3 / C# on Windows** (building now) and **SwiftUI / Swift on macOS** (planned next, not yet started) — see `memory.md`. The table below lists both; the macOS column is forward documentation to build against once that work starts, not yet implemented or verified.
 
@@ -567,7 +570,7 @@ Supported shortcut actions (configured per slot in Orion settings): `vol-mute`, 
 
 ### Shortcut icon assignment — Orion → Ori
 
-Which icon shows in each of the three slots is configured in Orion's settings UI and delivered via the `"1"/"2"/"3"` fields of **Device Settings** (char `000F`, §3/§4) — written outside the BEGIN/END staging pipeline, applied immediately on Ori. **Persisted to NVS on Ori** (no manifest hash); Orion reads the current values back on every (re)connect and only writes when the user changes a slot (same write-only-on-change policy as Clock Face — see §6.4). Ori maps each token to a compiled-in icon asset (`shortcut_icons.h`); unknown tokens hide that slot's button entirely (`media-mode.md`) rather than failing the write. Adding a new icon *type* to the available set still requires a firmware update (`media-mode.md`) — Device Settings only carries which of the existing compiled-in icons each slot shows.
+Which icon shows in each of the three slots is configured in Orion's settings UI and delivered via the `"1"/"2"/"3"` fields of **Device Settings** (char `000E`, §3/§4) — written outside the BEGIN/END staging pipeline, applied immediately on Ori. **Persisted to NVS on Ori** (no manifest hash); Orion reads the current values back on every (re)connect and only writes when the user changes a slot (same write-only-on-change policy as Clock Face — see §6.4). Ori maps each token to a compiled-in icon asset (`shortcut_icons.h`); unknown tokens hide that slot's button entirely (`media-mode.md`) rather than failing the write. Adding a new icon *type* to the available set still requires a firmware update (`media-mode.md`) — Device Settings only carries which of the existing compiled-in icons each slot shows.
 
 ### State push flow — OS → Orion → Ori
 

@@ -107,7 +107,7 @@ const char* phone_name();
 //   0x01  CALL_ONLY  — display only CategoryID 1 (IncomingCall)
 //   0x02  IMPORTANT  — display IncomingCall OR ANCS Important flag set
 //   0x03  ALL        — display all (default)
-// set_filter() is called from ble_manager::poll() after Orion writes Device Settings (char 000F);
+// set_filter() is called from ble_manager::poll() after Orion writes Device Settings (char 000E);
 // the value is also persisted to NVS (nvs::set_notif_filter) by that poll handler.
 // set_filter() immediately calls publish_queue() to refresh the status bar.
 void    set_filter(uint8_t level);

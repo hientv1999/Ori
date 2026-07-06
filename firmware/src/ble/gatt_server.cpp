@@ -1,23 +1,27 @@
-﻿// Ori GATT Server — 16 characteristics, ble-protocol.md v1.0.
+﻿// Ori GATT Server — 15 characteristics, ble-protocol.md v1.0.
 //
 // Service UUID: 6F726900-0000-4F72-9F00-000000000000
 // Each char UUID replaces bytes 4-5 with the offset:
-//   0001 Protocol Version        Read
-//   0002 Device Status           Read+Notify
-//   0003 Time Sync               Write (enc)
-//   0004 Profile Info            Write (enc)
-//   0005 Profile Photo           Write + Write-NR (enc, chunked)
-//   0006 Meeting List            Write + Write-NR (enc, chunked)
-//   0007 Time Off Entry          Write + Write-NR (enc, chunked)
-//   0008 Sync Control            Write+Notify (enc)
-//   0009 Device Command          Write (enc)  — magic-routed: factory reset | unpair phone
-//   000A Sync Manifest           Write+Notify (enc)
-//   000B Keyboard Command        Notify (enc)
-//   000C Host Volume State       Read+Write (enc)
-//   000D Media Metadata          Write+Notify (enc)
-//   000E Media Album Art         Write no-rsp (enc, chunked)
-//   000F Device Settings         Read+Write (enc) — presence | shortcuts | clock face | ANCS filter
-//   0012 Phone Bond Status       Read+Notify (enc)
+//   0001 Device Status           Read+Notify
+//   0002 Time Sync               Write (enc)
+//   0003 Profile Info            Write (enc)
+//   0004 Profile Photo           Write + Write-NR (enc, chunked)
+//   0005 Meeting List            Write + Write-NR (enc, chunked)
+//   0006 Time Off Entry          Write + Write-NR (enc, chunked)
+//   0007 Sync Control            Write+Notify (enc)
+//   0008 Device Command          Write (enc)  — magic-routed: factory reset | unpair phone
+//   0009 Sync Manifest           Write+Notify (enc)
+//   000A Keyboard Command        Notify (enc)
+//   000B Host Volume State       Read+Write (enc)
+//   000C Media Metadata          Write+Notify (enc)
+//   000D Media Album Art         Write no-rsp (enc, chunked)
+//   000E Device Settings         Read+Write (enc) — presence | shortcuts | clock face | ANCS filter
+//   000F Phone Bond Status       Read+Notify (enc)
+//
+// Firmware version no longer rides this service — it's exposed via the BLE
+// SIG standard Device Information Service (0x180A) / Firmware Revision
+// String characteristic (0x2A26), registered separately in init() below —
+// see ble-protocol.md §3/§3.1.
 
 #include "ble/gatt_server.h"
 #include "ble/ble_manager.h"
@@ -94,11 +98,10 @@ void ble_post_time_off_photo_event(uint8_t* buf, size_t len);
 #define DS_RUNTIME_SYNCING             0x12
 #define DS_ERROR_GENERIC               0xF0
 
-// Firmware version (for Protocol Version characteristic + OTA checks).
-// Single source of truth in include/fw_version.h — shared with ota_receiver.
+// Firmware version (for the standard Firmware Revision String characteristic
+// + OTA checks). Single source of truth in include/fw_version.h — shared
+// with ota_receiver.
 #define FIRMWARE_VERSION ORI_FW_VERSION
-#define PROTO_MAJOR 1
-#define PROTO_MINOR 0
 
 namespace {
 
@@ -109,22 +112,21 @@ volatile bool g_ota_active = false;
 uint8_t g_device_status = DS_SETUP_WAITING_PAIRING;
 
 // ── Characteristic handles ────────────────────────────────────────────────
-NimBLECharacteristic* c_proto_ver   = nullptr; // 0001
-NimBLECharacteristic* c_dev_status  = nullptr; // 0002
-NimBLECharacteristic* c_time_sync   = nullptr; // 0003
-NimBLECharacteristic* c_profile     = nullptr; // 0004
-NimBLECharacteristic* c_photo       = nullptr; // 0005
-NimBLECharacteristic* c_meetings    = nullptr; // 0006
-NimBLECharacteristic* c_time_off     = nullptr; // 0007
-NimBLECharacteristic* c_sync_ctrl   = nullptr; // 0008
-NimBLECharacteristic* c_dev_cmd      = nullptr; // 0009
-NimBLECharacteristic* c_manifest    = nullptr; // 000A
-NimBLECharacteristic* c_kbd_cmd     = nullptr; // 000B
-NimBLECharacteristic* c_host_vol    = nullptr; // 000C
-NimBLECharacteristic* c_media_meta  = nullptr; // 000D
-NimBLECharacteristic* c_album_art   = nullptr; // 000E
-NimBLECharacteristic* c_dev_settings = nullptr; // 000F
-NimBLECharacteristic* c_phone_status = nullptr; // 0012
+NimBLECharacteristic* c_dev_status  = nullptr; // 0001
+NimBLECharacteristic* c_time_sync   = nullptr; // 0002
+NimBLECharacteristic* c_profile     = nullptr; // 0003
+NimBLECharacteristic* c_photo       = nullptr; // 0004
+NimBLECharacteristic* c_meetings    = nullptr; // 0005
+NimBLECharacteristic* c_time_off     = nullptr; // 0006
+NimBLECharacteristic* c_sync_ctrl   = nullptr; // 0007
+NimBLECharacteristic* c_dev_cmd      = nullptr; // 0008
+NimBLECharacteristic* c_manifest    = nullptr; // 0009
+NimBLECharacteristic* c_kbd_cmd     = nullptr; // 000A
+NimBLECharacteristic* c_host_vol    = nullptr; // 000B
+NimBLECharacteristic* c_media_meta  = nullptr; // 000C
+NimBLECharacteristic* c_album_art   = nullptr; // 000D
+NimBLECharacteristic* c_dev_settings = nullptr; // 000E
+NimBLECharacteristic* c_phone_status = nullptr; // 000F
 
 // Meeting list is RAM-only (not persisted to NVS — see state_machine). Its
 // delta-sync hash therefore also lives in RAM only: a power cycle drops the
@@ -199,21 +201,6 @@ static size_t cbor_encode_sync_ctrl(uint8_t* buf, size_t buf_sz,
         cbor_encode_text_stringz(&map, "r");
         cbor_encode_text_stringz(&map, reason);
     }
-    cbor_encoder_close_container(&enc, &map);
-    return cbor_encoder_get_buffer_size(&enc, buf);
-}
-
-// Encode Protocol Version { proto_major, proto_minor, fw_version }.
-static size_t cbor_encode_proto_ver(uint8_t* buf, size_t buf_sz) {
-    CborEncoder enc, map;
-    cbor_encoder_init(&enc, buf, buf_sz, 0);
-    cbor_encoder_create_map(&enc, &map, 3);
-    cbor_encode_text_stringz(&map, "j");
-    cbor_encode_uint(&map, PROTO_MAJOR);
-    cbor_encode_text_stringz(&map, "n");
-    cbor_encode_uint(&map, PROTO_MINOR);
-    cbor_encode_text_stringz(&map, "f");
-    cbor_encode_text_stringz(&map, FIRMWARE_VERSION);
     cbor_encoder_close_container(&enc, &map);
     return cbor_encoder_get_buffer_size(&enc, buf);
 }
@@ -431,11 +418,7 @@ public:
     }
 
     void onRead(NimBLECharacteristic* c, NimBLEConnInfo& info) override {
-        if (c == c_proto_ver) {
-            uint8_t buf[64];
-            size_t n = cbor_encode_proto_ver(buf, sizeof(buf));
-            c->setValue(buf, n);
-        } else if (c == c_dev_status) {
+        if (c == c_dev_status) {
             c->setValue(&g_device_status, 1);
         } else if (c == c_host_vol) {
             if (!info.isEncrypted()) return;
@@ -448,7 +431,7 @@ public:
 
 private:
 
-    // ── Time Sync (char 0003) ───────────────────────────────────────────────
+    // ── Time Sync (char 0002) ───────────────────────────────────────────────
     // Staged — applied at SyncControl{END} via apply_time_sync() (§6.0).
     void handle_time_sync(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "TimeSync")) return;
@@ -491,7 +474,7 @@ private:
         }
     }
 
-    // ── Profile Info (char 0004) ────────────────────────────────────────────
+    // ── Profile Info (char 0003) ────────────────────────────────────────────
     // Staged — parsed and applied at SyncControl{END} via apply_profile_cbor() (§6.0).
     void handle_profile(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "ProfileInfo")) return;
@@ -511,7 +494,7 @@ private:
         stage_add_bytes(len);
     }
 
-    // ── Profile Photo (char 0005) — chunked ────────────────────────────────
+    // ── Profile Photo (char 0004) — chunked ────────────────────────────────
     // Staged — hashed and posted at SyncControl{END} via apply_photo_jpeg() (§6.0).
     void handle_photo(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "ProfilePhoto")) return;
@@ -533,7 +516,7 @@ private:
         chunked_transfer::feed(&g_photo_ctx, data, len);
     }
 
-    // ── Meeting List (char 0006) — chunked ─────────────────────────────────
+    // ── Meeting List (char 0005) — chunked ─────────────────────────────────
     // Staged — hashed and applied at SyncControl{END} via apply_meetings_cbor() (§6.0).
     void handle_meetings(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "MeetingList")) return;
@@ -555,7 +538,7 @@ private:
         chunked_transfer::feed(&g_meetings_ctx, data, len);
     }
 
-    // ── Time Off Entry (char 0007) — chunked ───────────────────────────────
+    // ── Time Off Entry (char 0006) — chunked ───────────────────────────────
     // Staged — hashed, parsed, and applied at SyncControl{END} via apply_time_off_cbor() (§6.0).
     void handle_time_off(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "TimeOffEntry")) return;
@@ -577,7 +560,7 @@ private:
         chunked_transfer::feed(&g_time_off_ctx, data, len);
     }
 
-    // ── Sync Control (char 0008) ────────────────────────────────────────────
+    // ── Sync Control (char 0007) ────────────────────────────────────────────
     void handle_sync_ctrl(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "SyncControl")) return;
 
@@ -641,7 +624,7 @@ private:
         }
     }
 
-    // ── Device Command (char 0009) — magic-routed ──────────────────────────
+    // ── Device Command (char 0008) — magic-routed ──────────────────────────
     // Accepts two 4-byte magic payloads; all others → NACK_BAD_MAGIC.
     //   0xFA 0xC7 0x5E 0x5E  Factory Reset
     //   0x55 0x4E 0x50 0x52  Unpair Phone ("UNPR")
@@ -668,7 +651,7 @@ private:
         }
     }
 
-    // ── Sync Manifest Write (char 000A) — central→peripheral ───────────────
+    // ── Sync Manifest Write (char 0009) — central→peripheral ───────────────
     void handle_manifest_write(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "SyncManifest")) return;
 
@@ -751,7 +734,7 @@ private:
         LOG("[gatt] Manifest: need %u items\n", (unsigned)needed_count);
     }
 
-    // ── Host Volume State (char 000C) ───────────────────────────────────────
+    // ── Host Volume State (char 000B) ───────────────────────────────────────
     void handle_host_volume(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "HostVolume")) return;
 
@@ -811,7 +794,7 @@ private:
         c->setValue(buf, n);
     }
 
-    // ── Media Metadata (char 000D) ──────────────────────────────────────────
+    // ── Media Metadata (char 000C) ──────────────────────────────────────────
     void handle_media_metadata(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "MediaMetadata")) return;
 
@@ -880,7 +863,7 @@ private:
         ble_post_media_meta_event();
     }
 
-    // ── Media Album Art (char 000E) — chunked raw JPEG ─────────────────────
+    // ── Media Album Art (char 000D) — chunked raw JPEG ─────────────────────
     void handle_album_art(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "AlbumArt")) return;
 
@@ -924,7 +907,7 @@ private:
         c->setValue(buf, n);
     }
 
-    // ── Device Settings (char 000F) — CBOR map, partial-update ───────────────
+    // ── Device Settings (char 000E) — CBOR map, partial-update ───────────────
     // Merges Presence Status, Shortcut Config, Clock Face, and ANCS Filter into
     // one characteristic. All fields are optional; absent keys leave state
     // unchanged. All present fields are validated before any are applied (atomic).
@@ -1226,22 +1209,22 @@ void init() {
     NimBLEServer* server = NimBLEDevice::createServer();
     // Server callbacks are handled in ble_manager.cpp (connection events).
 
+    // Device Information Service — BLE SIG standard (0x180A). Exposes the
+    // Firmware Revision String characteristic (0x2A26) so Orion (or any
+    // generic BLE client) can read the running firmware version without a
+    // custom characteristic or CBOR decode. Unencrypted, static value — it
+    // only changes across a reboot after a USB CDC firmware update (ota.md).
+    NimBLEService* dis_svc = server->createService(NimBLEUUID((uint16_t)0x180A));
+    NimBLECharacteristic* c_fw_rev = dis_svc->createCharacteristic(
+        NimBLEUUID((uint16_t)0x2A26),
+        NIMBLE_PROPERTY::READ);
+    c_fw_rev->setValue(FIRMWARE_VERSION);
+
     NimBLEService* svc = server->createService(SVC_UUID);
 
-    // 0001 Protocol Version — Read, no encryption required
-    c_proto_ver = svc->createCharacteristic(
-        "6F726900-0001-4F72-9F00-000000000000",
-        NIMBLE_PROPERTY::READ);
-    c_proto_ver->setCallbacks(&s_char_cb);
-    {
-        uint8_t buf[64];
-        size_t  n = cbor_encode_proto_ver(buf, sizeof(buf));
-        c_proto_ver->setValue(buf, n);
-    }
-
-    // 0002 Device Status — Read + Notify, no encryption required
+    // 0001 Device Status — Read + Notify, no encryption required
     c_dev_status = svc->createCharacteristic(
-        "6F726900-0002-4F72-9F00-000000000000",
+        "6F726900-0001-4F72-9F00-000000000000",
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
     c_dev_status->setCallbacks(&s_char_cb);
     c_dev_status->setValue(&g_device_status, 1);
@@ -1253,105 +1236,105 @@ void init() {
     // below MUST be changed to _AUTHEN to close the Just Works bypass vulnerability.
     // See: https://github.com/anthropics/... (tracked in M5 sign-off checklist)
 
-    // 0003 Time Sync — Write with response, encrypted
+    // 0002 Time Sync — Write with response, encrypted
     c_time_sync = svc->createCharacteristic(
-        "6F726900-0003-4F72-9F00-000000000000",
+        "6F726900-0002-4F72-9F00-000000000000",
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
     c_time_sync->setCallbacks(&s_char_cb);
 
-    // 0004 Profile Info — Write with response, encrypted
+    // 0003 Profile Info — Write with response, encrypted
     c_profile = svc->createCharacteristic(
-        "6F726900-0004-4F72-9F00-000000000000",
+        "6F726900-0003-4F72-9F00-000000000000",
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
     c_profile->setCallbacks(&s_char_cb);
 
-    // 0005 Profile Photo — Write + Write-No-Response, encrypted (chunked).
+    // 0004 Profile Photo — Write + Write-No-Response, encrypted (chunked).
     // WRITE_NR is the fast bulk path (central streams fragments without per-write
     // ATT acks); WRITE is kept for the periodic WR checkpoint that bounds the
     // sender's in-flight window (see ble-protocol.md §5 flow control).
     c_photo = svc->createCharacteristic(
-        "6F726900-0005-4F72-9F00-000000000000",
+        "6F726900-0004-4F72-9F00-000000000000",
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC);
     c_photo->setCallbacks(&s_char_cb);
 
-    // 0006 Meeting List — Write + Write-No-Response, encrypted (chunked)
+    // 0005 Meeting List — Write + Write-No-Response, encrypted (chunked)
     c_meetings = svc->createCharacteristic(
-        "6F726900-0006-4F72-9F00-000000000000",
+        "6F726900-0005-4F72-9F00-000000000000",
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC);
     c_meetings->setCallbacks(&s_char_cb);
 
-    // 0007 Time Off Entry — Write + Write-No-Response, encrypted (chunked)
+    // 0006 Time Off Entry — Write + Write-No-Response, encrypted (chunked)
     c_time_off = svc->createCharacteristic(
-        "6F726900-0007-4F72-9F00-000000000000",
+        "6F726900-0006-4F72-9F00-000000000000",
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC);
     c_time_off->setCallbacks(&s_char_cb);
 
-    // 0008 Sync Control — Write + Notify, encrypted
+    // 0007 Sync Control — Write + Notify, encrypted
     c_sync_ctrl = svc->createCharacteristic(
-        "6F726900-0008-4F72-9F00-000000000000",
+        "6F726900-0007-4F72-9F00-000000000000",
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC |
         NIMBLE_PROPERTY::NOTIFY);
     c_sync_ctrl->setCallbacks(&s_char_cb);
 
-    // 0009 Device Command — Write with response, encrypted.
+    // 0008 Device Command — Write with response, encrypted.
     // Magic-routed: 0xFA C7 5E 5E = factory reset; 0x55 4E 50 52 = unpair phone.
     c_dev_cmd = svc->createCharacteristic(
-        "6F726900-0009-4F72-9F00-000000000000",
+        "6F726900-0008-4F72-9F00-000000000000",
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
     c_dev_cmd->setCallbacks(&s_char_cb);
 
-    // 000A Sync Manifest — Write + Notify, encrypted
+    // 0009 Sync Manifest — Write + Notify, encrypted
     c_manifest = svc->createCharacteristic(
-        "6F726900-000A-4F72-9F00-000000000000",
+        "6F726900-0009-4F72-9F00-000000000000",
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC |
         NIMBLE_PROPERTY::NOTIFY);
     c_manifest->setCallbacks(&s_char_cb);
 
-    // 000B Keyboard Command — Notify (encrypted via READ_ENC; no write needed)
+    // 000A Keyboard Command — Notify (encrypted via READ_ENC; no write needed)
     // NimBLE 2.5 does not have NOTIFY_ENC; encryption enforced via READ_ENC.
     c_kbd_cmd = svc->createCharacteristic(
-        "6F726900-000B-4F72-9F00-000000000000",
+        "6F726900-000A-4F72-9F00-000000000000",
         NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ_ENC);
     c_kbd_cmd->setCallbacks(&s_char_cb);
 
-    // 000C Host Volume State — Read + Write, encrypted
+    // 000B Host Volume State — Read + Write, encrypted
     c_host_vol = svc->createCharacteristic(
-        "6F726900-000C-4F72-9F00-000000000000",
+        "6F726900-000B-4F72-9F00-000000000000",
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_ENC |
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
     c_host_vol->setCallbacks(&s_char_cb);
 
-    // 000D Media Metadata — Write + Notify, encrypted
+    // 000C Media Metadata — Write + Notify, encrypted
     c_media_meta = svc->createCharacteristic(
-        "6F726900-000D-4F72-9F00-000000000000",
+        "6F726900-000C-4F72-9F00-000000000000",
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC |
         NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ_ENC);
     c_media_meta->setCallbacks(&s_char_cb);
 
-    // 000E Media Album Art — Write no response, encrypted (chunked JPEG)
+    // 000D Media Album Art — Write no response, encrypted (chunked JPEG)
     c_album_art = svc->createCharacteristic(
-        "6F726900-000E-4F72-9F00-000000000000",
+        "6F726900-000D-4F72-9F00-000000000000",
         NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC);
     c_album_art->setCallbacks(&s_char_cb);
 
-    // 000F Device Settings — Read + Write, encrypted. CBOR map with optional
+    // 000E Device Settings — Read + Write, encrypted. CBOR map with optional
     // write fields: "p"=presence (0-3), "1"/"2"/"3"=shortcut tokens,
     // "c"=clock face (0-1), "f"=ANCS filter (0-3). Absent keys leave current
     // state unchanged. Read returns {"c", "f", "1", "2", "3"} — all
     // NVS-persisted fields Orion reads on (re)connect to sync its UI state.
     c_dev_settings = svc->createCharacteristic(
-        "6F726900-000F-4F72-9F00-000000000000",
+        "6F726900-000E-4F72-9F00-000000000000",
         NIMBLE_PROPERTY::READ  | NIMBLE_PROPERTY::READ_ENC |
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
     c_dev_settings->setCallbacks(&s_char_cb);
 
-    // 0012 Phone Bond Status — Read + Notify, encrypted.
+    // 000F Phone Bond Status — Read + Notify, encrypted.
     // Ori notifies Orion whenever the iPhone bond/connection state changes.
     // CBOR: { "b": bool (bonded), "c": bool (connected), "n": text (phone name) }
     // Orion reads on (re)connect for initial state; Ori notifies on every change.
     // NimBLE 2.5 has no NOTIFY_ENC; READ_ENC enforces encryption on subscriptions.
     c_phone_status = svc->createCharacteristic(
-        "6F726900-0012-4F72-9F00-000000000000",
+        "6F726900-000F-4F72-9F00-000000000000",
         NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_ENC |
         NIMBLE_PROPERTY::NOTIFY);
     c_phone_status->setCallbacks(&s_char_cb);
@@ -1365,7 +1348,7 @@ void init() {
     // In NimBLE 2.5, services are started when NimBLEServer::start() is called.
     // svc->start() is deprecated and a no-op; omit it.
     // The server is started in ble_manager::init() after all characteristics are set up.
-    LOG("[gatt] Service registered: 16 characteristics\n");
+    LOG("[gatt] Service registered: 15 characteristics + DIS Firmware Revision\n");
 }
 
 bool is_ota_active() { return g_ota_active; }

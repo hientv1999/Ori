@@ -65,7 +65,7 @@ bool is_busy();
 void set_progress(uint8_t pct);
 
 // Returns the current firmware version string (semver, e.g. "1.0.0").
-// Used by gatt_server to fill the Protocol Version characteristic.
+// Used by gatt_server to fill the Firmware Revision String characteristic.
 const char* firmware_version();
 
 // "Close" on the Update failed screen: drops the failed transfer and returns to

@@ -355,7 +355,7 @@ namespace EvtFlag {
 
 // ── Notification filter ───────────────────────────────────────────────────
 // 0x00 DISABLED, 0x01 CALL_ONLY, 0x02 IMPORTANT, 0x03 ALL (default).
-// Set via Device Settings (char 000F "f" field) by Orion; persisted to NVS.
+// Set via Device Settings (char 000E "f" field) by Orion; persisted to NVS.
 // Loaded at boot by state_machine::init() from NVS before the first iPhone
 // connection so the filter is active from the very first notification.
 static uint8_t g_filter = 0x03;  // default: ALL

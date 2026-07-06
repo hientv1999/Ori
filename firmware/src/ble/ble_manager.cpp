@@ -67,9 +67,9 @@ enum class BleEventType : uint8_t {
     IphoneConnected,
     IphoneBonded,
     IphoneDisconnected,
-    UnpairPhone,       // Orion wrote the iPhone unpair magic to Device Command (char 0009)
-    AncsFilterUpdate,  // Orion wrote ANCS Notification Filter via Device Settings (char 000F)
-    ShortcutUpdate,    // Orion wrote shortcut slots via Device Settings (char 000F) — repaint shortcuts row
+    UnpairPhone,       // Orion wrote the iPhone unpair magic to Device Command (char 0008)
+    AncsFilterUpdate,  // Orion wrote ANCS Notification Filter via Device Settings (char 000E)
+    ShortcutUpdate,    // Orion wrote shortcut slots via Device Settings (char 000E) — repaint shortcuts row
 };
 
 struct BleEvent {

@@ -47,7 +47,7 @@ uint8_t get_clock_face();
 void    set_clock_face(uint8_t face);
 
 // ANCS notification filter level (0=Disabled, 1=CallOnly, 2=Important, 3=All).
-// Default 3 (All). Set by Orion via Device Settings (char 000F); persisted so the setting
+// Default 3 (All). Set by Orion via Device Settings (char 000E); persisted so the setting
 // survives power cycles without Orion needing to resend it on every reconnect.
 uint8_t get_notif_filter();
 void    set_notif_filter(uint8_t level);

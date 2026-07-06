@@ -28,7 +28,8 @@ Firmware updates run over **USB CDC** on the existing USB-C power cable. No BLE 
 ## Wire flow
 
 ```
-Orion checks ori.app for latest version vs fw_version in BLE Protocol Version char.
+Orion checks ori.app for latest version vs fw_version read from the standard
+Firmware Revision String characteristic (Device Information Service, BLE).
 If newer exists:
    Orion UI: Settings → "Update available · 1.2.3" → tap "Install update"
 
@@ -57,7 +58,8 @@ After reboot:
    60 s healthy → mark partition valid.
    60 s unhealthy (panic / watchdog) → bootloader rolls back on next boot.
 
-Orion reconnects over BLE, reads Protocol Version, confirms new fw_version.
+Orion reconnects over BLE, reads the Firmware Revision String characteristic,
+confirms new fw_version.
 ```
 
 ## Framing (USB CDC OTA protocol)
@@ -200,7 +202,7 @@ Every device→host response is a framed message (`§ Framing`): magic `0x4F54`,
 - **Never parse log text for state.** All state comes from frames (`READY` / `PROGRESS` / `VALIDATED` / `FAILED` / `REJECT`). Logs are diagnostics only.
 
 > **Production vs development — important.** In production the firmware's USB logging is **disabled**, so the CDC port carries **only OTA frames** (a clean stream). In development (`ORI_DEBUG_SERIAL` / `Serial.printf`) the port also carries log text and boot logs interleaved between frames. The same magic-scanning reader handles **both**: it ignores the (absent-in-production) log bytes and locks onto frames. Two rules follow:
-> - Orion must **not depend on any log line** being present (there are none in production) — e.g. confirm the post-update version over BLE (Protocol Version characteristic), never by reading a boot-log string.
+> - Orion must **not depend on any log line** being present (there are none in production) — e.g. confirm the post-update version over BLE (Firmware Revision String characteristic), never by reading a boot-log string.
 > - Orion must **not be confused by** log bytes when they *are* present (dev) — hence the magic-scan + validation. Device→host frames are written atomically by the firmware, so a log line can only appear *between* frames, never inside one.
 
 ### 3. BEGIN handshake
@@ -225,7 +227,7 @@ The device RX buffer is 32 KB and it acks via `PROGRESS { bytes_received }` ever
 - Send `END`.
 - The device installs **automatically** (no user action): hash check → version check → ~3.5 s "Installing firmware" frame → flash commit (screen dark a few seconds) → `VALIDATED` → reboot.
 - Wait up to ~**45 s** for `VALIDATED` (covers the linger + commit) or `FAILED { reason }`.
-- On `VALIDATED`: the device reboots and the COM/tty port **re-enumerates**. Close the port; after re-enumeration, confirm the new `fw_version` over BLE (Protocol Version char). Do not expect any serial output post-reboot in production.
+- On `VALIDATED`: the device reboots and the COM/tty port **re-enumerates**. Close the port; after re-enumeration, confirm the new `fw_version` over BLE (Firmware Revision String characteristic). Do not expect any serial output post-reboot in production.
 
 ### 6. Error tracking — reasons and Orion's response
 

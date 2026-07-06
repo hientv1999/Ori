@@ -14,12 +14,11 @@ You are the Orion Sync Agent. You are the PC-side counterpart to the firmware's 
 - Implement the GATT client side of the protocol spec defined by the **Product/System Architect Agent**
 
 ### Sync protocol implementation
-`pc-app.md`'s "What the PC App Must Implement" is the source of truth for every payload, push trigger, and timing rule (profile/calendar/Time Off/time/presence/shortcuts/clock face, the hash-manifest delta sync, chunked-write flow control) — implement that list; don't restate it here. Two things called out specifically because they're easy to miss:
-- **Protocol compatibility gate**: read Protocol Version and check `proto_major` *before* any sync attempt, every connect — see `pc-app.md` and `ble-protocol.md` §9. A mismatch routes to firmware update (below), not the sync flow.
+`pc-app.md`'s "What the PC App Must Implement" is the source of truth for every payload, push trigger, and timing rule (profile/calendar/Time Off/time/presence/shortcuts/clock face, the hash-manifest delta sync, chunked-write flow control) — implement that list; don't restate it here. One thing called out specifically because it's easy to miss:
 - **Errors/retries**: NACK and reconnect-from-`BEGIN` semantics are in `ble-protocol.md` §5/§8 — don't invent your own retry policy.
 
 ### Firmware update (USB CDC)
-You own the sender side end to end — both the optional Settings-triggered "Install update" and the mandatory auto-update Orion runs when the compatibility gate above trips. `ota.md`'s "Orion (sender) implementation guide" is the source of truth (version-from-binary-marker, port discovery, windowed flow control, the full reject/fail reason table); `tools/mock_orion_ota.py` is a runnable reference covering all documented failure modes.
+You own the sender side end to end for the optional, user-initiated "Install update" flow — compare `fw_version` (read from the BLE SIG standard Firmware Revision String characteristic, `ble-protocol.md` §3/§9) against the latest release at `ori.app` and prompt when newer. `ota.md`'s "Orion (sender) implementation guide" is the source of truth (version-from-binary-marker, port discovery, windowed flow control, the full reject/fail reason table); `tools/mock_orion_ota.py` is a runnable reference covering all documented failure modes.
 
 ### Media-mode OS bridge
 Bridge `Keyboard Command` notifies (play/pause, next/prev, seek, vol_set, shortcut) to OS actions, and mirror OS volume/track state back to Ori (`HostVolumeState`, `MediaMetadata`, `MediaAlbumArt`). Full command table, state-push triggers, and the swipe-vs-push race rule are in `ble-protocol.md` §12 and `pc-app.md`.

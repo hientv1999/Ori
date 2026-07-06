@@ -3,14 +3,15 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// Ori GATT Server — 16 characteristics per ble-protocol.md v1.0.
+// Ori GATT Server — 15 characteristics per ble-protocol.md v1.0, plus the
+// BLE SIG standard Device Information Service (Firmware Revision String).
 //
 // Service UUID: 6F726900-0000-4F72-9F00-000000000000
 // Each characteristic UUID has bytes 4-5 replaced with the offset below.
 //
 // This file owns:
 //   - Service + characteristic registration with NimBLE
-//   - Read/Write callbacks for all 16 chars
+//   - Read/Write callbacks for all 15 chars
 //   - Chunked reassembly (delegates to chunked_transfer.h for photo/meetings/Time Off/art)
 //   - SHA-256 hash computation and NVS save after SyncControl{op:"END"}
 //   - State machine transitions triggered by GATT events

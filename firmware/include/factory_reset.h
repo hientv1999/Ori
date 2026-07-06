@@ -2,7 +2,7 @@
 
 // Ori factory reset helper — shared by both the local long-press path
 // (modal_factory_reset) and the remote BLE path (gatt_server Factory
-// Reset Command char 0x0009).
+// Reset Command char 0x0008).
 //
 // Both paths converge here so the exact same NVS-wipe + bond-wipe +
 // restart sequence runs regardless of trigger source.

@@ -92,7 +92,7 @@ static const uint32_t COMMIT_LINGER_MS    = 3500;
 static const uint32_t RX_CHUNK = 1024;
 
 // Firmware version — single source of truth in include/fw_version.h, shared
-// with gatt_server's Protocol Version characteristic.
+// with gatt_server's Firmware Revision String characteristic.
 static const char k_fw_version[] = ORI_FW_VERSION;
 
 // Embedded firmware-version marker. Compiled into every Ori image so the OTA

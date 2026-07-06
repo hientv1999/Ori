@@ -27,7 +27,7 @@ Interactive commands (shown on connect):
     t  — resync time (manual TimeSync-only push, RAM-only, no blackout)
     m  — push media now (manual one-shot push of the current Windows
          now-playing session — title, artist, embedded album art)
-    k  — push clock face (toggles DIGITAL <-> ANALOG, char 000F Device Settings)
+    k  — push clock face (toggles DIGITAL <-> ANALOG, char 000E Device Settings)
     f  — factory reset           (§7.2)
     q  — quit
 
@@ -158,21 +158,24 @@ def _uuid(offset: int) -> str:
     return _BASE.format(offset)
 
 SVC_ORI_SYNC      = _uuid(0x0000)
-UUID_PROTO_VER    = _uuid(0x0001)   # Read                  — unencrypted
-UUID_DEV_STATUS   = _uuid(0x0002)   # Read, Notify          — unencrypted
-UUID_TIME_SYNC    = _uuid(0x0003)   # Write (response)      — encrypted
-UUID_PROFILE      = _uuid(0x0004)   # Write (response)      — encrypted
-UUID_PHOTO        = _uuid(0x0005)   # Write chunked         — encrypted
-UUID_MEETINGS     = _uuid(0x0006)   # Write chunked         — encrypted
-UUID_TIME_OFF     = _uuid(0x0007)   # Write chunked         — encrypted
-UUID_SYNC_CTRL    = _uuid(0x0008)   # Write, Notify         — encrypted
-UUID_FACTORY_RST  = _uuid(0x0009)   # Write (response)      — encrypted
-UUID_MANIFEST     = _uuid(0x000A)   # Write, Notify         — encrypted
-UUID_KEYBOARD_CMD = _uuid(0x000B)   # Notify only               — encrypted (Ori → Orion)
-UUID_HOST_VOLUME  = _uuid(0x000C)   # Read, Write (response)   — encrypted
-UUID_MEDIA_META   = _uuid(0x000D)   # Write (response), Notify — encrypted
-UUID_ALBUM_ART    = _uuid(0x000E)   # Write NO RESPONSE only   — encrypted
-UUID_DEV_SETTINGS = _uuid(0x000F)   # Write (response)      — encrypted
+# Firmware version is read via the BLE SIG standard Device Information
+# Service (0x180A) / Firmware Revision String characteristic (0x2A26),
+# not a custom char in this service — see ble-protocol.md §3/§3.1/§9.
+UUID_DIS_FW_REV   = "00002a26-0000-1000-8000-00805f9b34fb"
+UUID_DEV_STATUS   = _uuid(0x0001)   # Read, Notify          — unencrypted
+UUID_TIME_SYNC    = _uuid(0x0002)   # Write (response)      — encrypted
+UUID_PROFILE      = _uuid(0x0003)   # Write (response)      — encrypted
+UUID_PHOTO        = _uuid(0x0004)   # Write chunked         — encrypted
+UUID_MEETINGS     = _uuid(0x0005)   # Write chunked         — encrypted
+UUID_TIME_OFF     = _uuid(0x0006)   # Write chunked         — encrypted
+UUID_SYNC_CTRL    = _uuid(0x0007)   # Write, Notify         — encrypted
+UUID_FACTORY_RST  = _uuid(0x0008)   # Write (response)      — encrypted
+UUID_MANIFEST     = _uuid(0x0009)   # Write, Notify         — encrypted
+UUID_KEYBOARD_CMD = _uuid(0x000A)   # Notify only               — encrypted (Ori → Orion)
+UUID_HOST_VOLUME  = _uuid(0x000B)   # Read, Write (response)   — encrypted
+UUID_MEDIA_META   = _uuid(0x000C)   # Write (response), Notify — encrypted
+UUID_ALBUM_ART    = _uuid(0x000D)   # Write NO RESPONSE only   — encrypted
+UUID_DEV_SETTINGS = _uuid(0x000E)   # Write (response)      — encrypted
                                     # Merges: presence | shortcut slots | clock face | ANCS filter
 
 FACTORY_RESET_MAGIC = bytes([0xFA, 0xC7, 0x5E, 0x5E])
@@ -557,7 +560,7 @@ def build_device_settings(presence: Optional[int] = None,
                           slot3: Optional[str] = None,
                           clock_face: Optional[int] = None,
                           ancs_filter: Optional[int] = None) -> bytes:
-    # Device Settings (char 000F) — all fields optional; absent keys leave
+    # Device Settings (char 000E) — all fields optional; absent keys leave
     # Ori's current state unchanged. Applied immediately outside BEGIN/END.
     # Keys: "p"=presence, "1"/"2"/"3"=shortcut slots, "c"=clock_face, "f"=ancs_filter.
     d: dict = {}
@@ -799,7 +802,7 @@ class MockOrion:
         self._on_dev_status(None, raw)  # seed current value
 
     async def push_presence(self, value: int):
-        # Presence is "p" in Device Settings (char 000F) — write-only, applied
+        # Presence is "p" in Device Settings (char 000E) — write-only, applied
         # immediately outside BEGIN/END. Must push fresh on every connect.
         name = PRESENCE_NAMES.get(value, f"0x{value:02X}")
         payload = build_device_settings(presence=value)
@@ -820,7 +823,7 @@ class MockOrion:
         await self.write(UUID_DEV_SETTINGS, payload, f"DeviceSettings ancs_filter={name}")
 
     async def read_device_settings(self) -> dict:
-        # Read Device Settings (char 000F) to recover the two NVS-persisted fields:
+        # Read Device Settings (char 000E) to recover the two NVS-persisted fields:
         #   "c" = clock_face (0=Digital, 1=Analog)
         #   "f" = ancs_filter (0=Disabled, 1=CallOnly, 2=Important, 3=All)
         # Presence and shortcuts are NOT returned — Orion is the source of truth
@@ -961,7 +964,7 @@ class MockOrion:
         # Keys are single chars (ble-protocol.md §4):
         # p=profile_sha, h=photo_sha, m=meetings_sha, t=to_sha.
         # No Device Settings entry — shortcuts/presence are written outside
-        # BEGIN/END (char 000F, applied immediately), so they have no hash entry.
+        # BEGIN/END (char 000E, applied immediately), so they have no hash entry.
         await self.write(UUID_MANIFEST, cbor2.dumps({
             "p": sha256(profile_bytes),
             "h": sha256(photo_bytes),
@@ -1292,7 +1295,7 @@ Commands:
   t — resync time     (manual TimeSync-only push, inside BEGIN/END)
   m — push media now  (manual one-shot; media also auto-pushes in the
                         background on every track change — see media_watcher)
-  k — push clock face (toggle DIGITAL <-> ANALOG, char 000F Device Settings)
+  k — push clock face (toggle DIGITAL <-> ANALOG, char 000E Device Settings)
   n — push ANCS filter (cycle DISABLED -> CALL_ONLY -> IMPORTANT -> ALL -> ...)
   r — read Device Settings (show Ori's current clock_face + ancs_filter from NVS)
   f — factory reset   (§7.2)
@@ -1435,8 +1438,8 @@ async def main(args):
         # Ori's actual state, not a guess. Presence and shortcuts are NOT returned
         # by the read — Orion is their sole source of truth (ble-protocol.md §6.4).
         initial_settings = await orion.read_device_settings()
-        # Push presence fresh on every connect via char 000F, outside the sync
-        # pipeline. run_sync() pushes shortcuts (also char 000F) right before BEGIN.
+        # Push presence fresh on every connect via char 000E, outside the sync
+        # pipeline. run_sync() pushes shortcuts (also char 000E) right before BEGIN.
         await orion.push_presence(args.presence)
         # Sync automatically on connect — Ori reports which sections differ and we
         # send only those. Running it immediately also satisfies Ori's first-pair
