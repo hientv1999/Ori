@@ -7,6 +7,8 @@
 //   "prov"        — bool: setup completed (first-boot flag)
 //   "mode"        — uint8: 0=Calendar, 1=Media (immediate write, infrequent)
 //   "clock_face"  — uint8: 0=Digital, 1=Analog (immediate write, infrequent)
+//   "notif_filt"  — uint8: ANCS filter level 0-3
+//   "sc_1/2/3"    — string: shortcut slot token (≤19 chars + null)
 //
 // Profile, photo, and meeting/Time Off hashes are M5 scope — reserved slots.
 namespace nvs {
@@ -49,6 +51,13 @@ void    set_clock_face(uint8_t face);
 // survives power cycles without Orion needing to resend it on every reconnect.
 uint8_t get_notif_filter();
 void    set_notif_filter(uint8_t level);
+
+// Shortcut slot tokens — NVS-persisted (≤19 chars each) so Orion can read them
+// back on (re)connect via the Device Settings characteristic. get_shortcut_slots()
+// fills each buffer up to slot_sz-1 chars (null-terminated). Defaults on a fresh
+// device: "vol-mute" / "mic-mute" / "screenshot".
+void get_shortcut_slots(char* s1, char* s2, char* s3, size_t slot_sz);
+void set_shortcut_slots(const char* s1, const char* s2, const char* s3);
 
 // Factory reset — clears ALL keys in the "ori" namespace.
 // Does NOT reboot; caller is responsible for calling ESP.restart() after.

@@ -22,7 +22,7 @@
 namespace {
 
 // String storage for detail modal (set in create() before modal can open).
-static char s_destination[129] = {};
+static char s_destination[49] = {};
 static char s_dates[64]        = {};
 
 

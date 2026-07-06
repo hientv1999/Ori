@@ -832,10 +832,13 @@ void poll() {
                 nvs::set_notif_filter(ev.data.ancs_filter);
                 break;
 
-            case BleEventType::ShortcutUpdate:
+            case BleEventType::ShortcutUpdate: {
                 LOG("[ble:poll] shortcut update\n");
                 screen_media_mode::update_shortcuts();
+                const app_state::ShortcutSlot* s = app_state::shortcuts();
+                nvs::set_shortcut_slots(s[0].icon_token, s[1].icon_token, s[2].icon_token);
                 break;
+            }
 
             default:
                 break;

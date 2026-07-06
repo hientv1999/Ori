@@ -15,6 +15,9 @@ constexpr const char* k_phone_step  = "phone_step"; // bool: Orion synced, await
 constexpr const char* k_mode         = "mode";        // uint8: 0=Calendar 1=Controls
 constexpr const char* k_clock_face   = "clock_face";  // uint8: 0=Digital 1=Analog
 constexpr const char* k_notif_filter = "notif_filt";  // uint8: 0=Disabled 1=CallOnly 2=Important 3=All
+constexpr const char* k_slot1        = "sc_1";         // string: shortcut slot 1 token
+constexpr const char* k_slot2        = "sc_2";         // string: shortcut slot 2 token
+constexpr const char* k_slot3        = "sc_3";         // string: shortcut slot 3 token
 constexpr const char* k_ota_ack      = "ota_ack";     // string: post-update version
 
 Preferences prefs;
@@ -156,6 +159,29 @@ void set_notif_filter(uint8_t level) {
         prefs.end();
     }
     LOG("[nvs] notif_filter=%u\n", (unsigned)level);
+}
+
+// ── Shortcut slot tokens ───────────────────────────────────────────────────
+
+void get_shortcut_slots(char* s1, char* s2, char* s3, size_t slot_sz) {
+    if (!prefs.begin(NAMESPACE, /*readOnly=*/true)) return;
+    String v1 = prefs.getString(k_slot1, "vol-mute");
+    String v2 = prefs.getString(k_slot2, "mic-mute");
+    String v3 = prefs.getString(k_slot3, "screenshot");
+    prefs.end();
+    if (s1 && slot_sz > 0) { strncpy(s1, v1.c_str(), slot_sz - 1); s1[slot_sz - 1] = '\0'; }
+    if (s2 && slot_sz > 0) { strncpy(s2, v2.c_str(), slot_sz - 1); s2[slot_sz - 1] = '\0'; }
+    if (s3 && slot_sz > 0) { strncpy(s3, v3.c_str(), slot_sz - 1); s3[slot_sz - 1] = '\0'; }
+}
+
+void set_shortcut_slots(const char* s1, const char* s2, const char* s3) {
+    if (!prefs.begin(NAMESPACE, /*readOnly=*/false)) return;
+    if (s1) prefs.putString(k_slot1, s1);
+    if (s2) prefs.putString(k_slot2, s2);
+    if (s3) prefs.putString(k_slot3, s3);
+    prefs.end();
+    LOG("[nvs] shortcut_slots=%s,%s,%s\n",
+        s1 ? s1 : "", s2 ? s2 : "", s3 ? s3 : "");
 }
 
 // ── Factory reset ──────────────────────────────────────────────────────────

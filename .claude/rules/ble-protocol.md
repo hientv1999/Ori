@@ -234,7 +234,8 @@ DeviceSettings = {             // Orion → Ori, write (response). All fields op
                        // Orion re-writes on every (re)connect. Fallback to Offline on BLE drop.
   "1": text,           // shortcut_slot1. icon token ≤ 19 chars — see §12 for supported tokens.
   "2": text,           // shortcut_slot2. Unknown tokens hide the slot button in the UI.
-  "3": text,           // shortcut_slot3. RAM-only; Orion re-sends on every (re)connect.
+  "3": text,           // shortcut_slot3. Persisted to NVS; Orion writes only when the user
+                       // changes a slot. Orion reads back on (re)connect (same policy as "c"/"f").
   "c": uint,           // clock_face. 0=Digital 1=Analog. Persisted to NVS; survives power cycles.
                        // Orion writes only when the user changes the setting.
   "f": uint            // ancs_filter. 0=Disabled 1=CallOnly 2=Important 3=All (default).
@@ -244,8 +245,9 @@ DeviceSettings = {             // Orion → Ori, write (response). All fields op
 }
 // Any field value outside its valid range → NACK_CBOR_DECODE via SyncControl notify.
 //
-// Read (Orion → Ori): returns only the NVS-persisted fields — {"c": <clock_face>, "f": <ancs_filter>}.
-// Presence and shortcuts are ephemeral (Orion is source of truth); reading them back has no value.
+// Read (Orion → Ori): returns all NVS-persisted fields —
+//   {"c": <clock_face>, "f": <ancs_filter>, "1": <slot1>, "2": <slot2>, "3": <slot3>}.
+// Presence is not returned (ephemeral; Orion is source of truth).
 // Orion reads on (re)connect to restore its settings UI without having to cache what it last wrote.
 
 PhoneBondStatus = {            // Ori → Orion, notify + readable (CBOR)
@@ -361,9 +363,10 @@ PSRAM before a single flash commit.
 - **Time Sync and Meeting List are RAM-only on Ori** — staged and applied at `END` but NOT written to NVS. Neither has a manifest hash; Orion always resends Time Sync unconditionally. A power cycle drops both; the next sync repopulates them. Orion sends Meeting List identically on the wire — the RAM-only choice is Ori's (no `proto` bump). See `meeting-list.md` for rationale.
 - **Shortcut Config is no longer part of the staged sync pipeline.** It is delivered
   via the **Device Settings** characteristic (char `000F`) written outside the
-  BEGIN/END window — applied immediately on write, like Presence Status — and is
-  RAM-only on Ori (not persisted to NVS, no manifest hash). Orion writes Device
-  Settings with the current shortcut tokens on every (re)connect, before BEGIN.
+  BEGIN/END window — applied immediately on write, like Clock Face / ANCS Filter.
+  **Persisted to NVS on Ori** (no manifest hash). Orion reads Device Settings on
+  every (re)connect to recover the current slot tokens; it only writes them when
+  the user changes a slot in Orion's UI (same write-only-on-change policy as `"c"`/`"f"`).
 - **Display blackout during flash write.** Ori blanks the framebuffer before NVS writes (`hardware.md` — LCD_CAM DMA vs. cache). Only when the commit touches NVS (Profile, Photo, Time Off); RAM-only commits (Time Sync, Meeting List) skip it entirely.
 - **Progress.** If `BEGIN` includes `total` (> 0), Ori tracks cumulative bytes across all writes (chunked: `payload_len` per fragment, not the 6-byte header) and derives `pct = received * 100 / total` (capped at 99 until `END` commits, then 100). Drives both the Step 2/3 Orioning ring and the runtime "Refreshing your day" overlay (same `OrioningProgress` event). Overlay only shown when `total` > `RECONNECT_OVERLAY_MIN_BYTES` (200 B) — see `state-machine.md`. If `total` is absent or 0, staging still works but the ring is not byte-driven.
 
@@ -437,7 +440,7 @@ Ori notifies Device Status = RUNTIME_READY → overlay dismissed.
 | Meeting List | Calendar event or every 15 min | Hash-check via Manifest, push if needed |
 | Time Off Entry | Calendar event | Hash-check, push if needed |
 | Profile Info / Photo | User edit in Orion | Hash-check, push if needed |
-| Shortcut Config | Every (re)connect | Write Device Settings {"1","2","3"} outside BEGIN/END |
+| Shortcut Config | User changes slot | Write Device Settings {"1","2","3"} outside BEGIN/END; read back on (re)connect |
 | Presence Status | Teams change or ~60 s poll | Write Device Settings {"p"} (only when value changes) |
 | Clock Face / ANCS Filter | User changes setting | Write Device Settings {"c"} or {"f"} |
 
@@ -448,13 +451,13 @@ Periodic refreshes set `RUNTIME_SYNCING` briefly but do **not** trigger the reco
 Device Settings (char `000F`) is outside the BEGIN/END pipeline. Each field is ephemeral or user-configured:
 
 - **Presence** (`"p"`): ephemeral. Orion writes on every (re)connect and on every Teams state change. Before the first write, Ori displays `Offline`. On BLE link drop, Ori immediately renders `Offline` — stale presence would lie about reality.
-- **Shortcuts** (`"1"/"2"/"3"`): RAM-only. Orion writes on every (re)connect so the shortcuts row always reflects the user's configured set.
+- **Shortcuts** (`"1"/"2"/"3"`): persisted to NVS. Same write-only-on-change policy as Clock Face — Orion writes only when the user changes a slot. Orion reads Device Settings on (re)connect to recover the current slot tokens and populate its Quick Actions UI.
 - **Clock Face** (`"c"`): persisted to NVS. Orion writes only when the user changes the setting in Orion's UI — not on every reconnect. Ori's NVS retains it across power cycles.
 - **ANCS Filter** (`"f"`): persisted to NVS. Same write-only-on-change policy as Clock Face.
 
-Orion can write any subset of fields in a single Device Settings write (e.g. presence-only on Teams state changes, shortcuts + presence on reconnect).
+Orion can write any subset of fields in a single Device Settings write (e.g. presence-only on Teams state changes, slot update when the user changes a shortcut).
 
-**Read on (re)connect:** Orion reads Device Settings once per connection to recover `"c"` (clock_face) and `"f"` (ancs_filter) — the two NVS-persisted fields whose ground truth lives on Ori. This lets Orion's settings UI show the correct current values without Orion having to cache what it last wrote across app restarts or BLE drops. Presence and shortcuts are omitted from the read response (Orion owns them).
+**Read on (re)connect:** Orion reads Device Settings once per connection to recover all five NVS-persisted fields: `"c"` (clock_face), `"f"` (ancs_filter), and `"1"`/`"2"`/`"3"` (shortcut slot tokens). This lets Orion's settings UI show the correct current values without having to cache what it last wrote across app restarts or BLE drops. Presence is not returned (ephemeral; Orion is the source of truth).
 
 ---
 
@@ -519,7 +522,7 @@ Link-layer encryption failure (`BLE_HS_ENC_FAIL`) signals a stale bond — see �
 | Meeting `loc` | ≤ 64 UTF-8 bytes (firmware buffer; truncated past that) |
 | Meeting `org` | ≤ 64 UTF-8 bytes (firmware buffer; truncated past that) |
 | Meeting list total | ≤ 32 meetings/day |
-| `TimeOffEntry.destination` | ≤ 128 UTF-8 bytes |
+| `TimeOffEntry.destination` | ≤ 48 UTF-8 bytes |
 | Time Off image (JPEG, 528×396) | hard cap 512 KB — Orion resizes to 528×396 before sending |
 | `MediaMetadata.title` | ≤ 192 UTF-8 bytes |
 | `MediaMetadata.artist` | ≤ 96 UTF-8 bytes |
@@ -564,7 +567,7 @@ Supported shortcut actions (configured per slot in Orion settings): `vol-mute`, 
 
 ### Shortcut icon assignment — Orion → Ori
 
-Which icon shows in each of the three slots is configured in Orion's settings UI and delivered via the `"1"/"2"/"3"` fields of **Device Settings** (char `000F`, §3/§4) — written on every (re)connect outside the BEGIN/END staging pipeline, applied immediately on Ori. RAM-only on Ori — no NVS persistence, no manifest hash. Ori maps each token to a compiled-in icon asset (`shortcut_icons.h`); unknown tokens hide that slot's button entirely (`media-mode.md`) rather than failing the write. Adding a new icon *type* to the available set still requires a firmware update (`media-mode.md`) — Device Settings only carries which of the existing compiled-in icons each slot shows.
+Which icon shows in each of the three slots is configured in Orion's settings UI and delivered via the `"1"/"2"/"3"` fields of **Device Settings** (char `000F`, §3/§4) — written outside the BEGIN/END staging pipeline, applied immediately on Ori. **Persisted to NVS on Ori** (no manifest hash); Orion reads the current values back on every (re)connect and only writes when the user changes a slot (same write-only-on-change policy as Clock Face — see §6.4). Ori maps each token to a compiled-in icon asset (`shortcut_icons.h`); unknown tokens hide that slot's button entirely (`media-mode.md`) rather than failing the write. Adding a new icon *type* to the available set still requires a firmware update (`media-mode.md`) — Device Settings only carries which of the existing compiled-in icons each slot shows.
 
 ### State push flow — OS → Orion → Ori
 

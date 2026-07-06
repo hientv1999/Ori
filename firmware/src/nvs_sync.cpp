@@ -41,7 +41,7 @@ Preferences prefs;
 struct TimeOffCache {
     uint32_t start;
     uint32_t end;
-    char     dest[129];
+    char     dest[49];
     bool     loaded;
 };
 static TimeOffCache g_time_off_cache = {};

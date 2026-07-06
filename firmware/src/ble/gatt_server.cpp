@@ -900,18 +900,25 @@ private:
     }
 
     // ── Device Settings read ────────────────────────────────────────────────────
-    // Returns only the NVS-persisted fields Orion can't track itself: "c"
-    // (clock_face) and "f" (ancs_filter). Presence and shortcuts are ephemeral
-    // and Orion is the source of truth for both — no value reading them back.
+    // Returns all NVS-persisted fields: "c" (clock_face), "f" (ancs_filter),
+    // and "1"/"2"/"3" (shortcut slot tokens). Presence is not returned —
+    // it's ephemeral and Orion is the source of truth.
     void handle_device_settings_read(NimBLECharacteristic* c) {
         CborEncoder enc, map;
-        uint8_t buf[32];
+        uint8_t buf[128];
         cbor_encoder_init(&enc, buf, sizeof(buf), 0);
-        cbor_encoder_create_map(&enc, &map, 2);
+        cbor_encoder_create_map(&enc, &map, 5);
         cbor_encode_text_stringz(&map, "c");
         cbor_encode_uint(&map, (uint64_t)nvs::get_clock_face());
         cbor_encode_text_stringz(&map, "f");
         cbor_encode_uint(&map, (uint64_t)nvs::get_notif_filter());
+        const app_state::ShortcutSlot* slots = app_state::shortcuts();
+        cbor_encode_text_stringz(&map, "1");
+        cbor_encode_text_stringz(&map, slots[0].icon_token ? slots[0].icon_token : "");
+        cbor_encode_text_stringz(&map, "2");
+        cbor_encode_text_stringz(&map, slots[1].icon_token ? slots[1].icon_token : "");
+        cbor_encode_text_stringz(&map, "3");
+        cbor_encode_text_stringz(&map, slots[2].icon_token ? slots[2].icon_token : "");
         cbor_encoder_close_container(&enc, &map);
         size_t n = cbor_encoder_get_buffer_size(&enc, buf);
         c->setValue(buf, n);
@@ -1136,7 +1143,7 @@ static void apply_time_off_cbor(uint8_t* buf, size_t n) {
     CborParser parser;
     CborValue  root, map_val;
     uint32_t   time_off_start = 0, time_off_end = 0;
-    char       dest[129] = {};
+    char       dest[49] = {};
     uint8_t*   img_buf   = nullptr;
     size_t     img_len   = 0;
 
@@ -1199,7 +1206,7 @@ static void apply_time_off_cbor(uint8_t* buf, size_t n) {
 
     // Drop glyphs the UI font can't render (emoji, CJK, …) from the displayed
     // destination. Time Off hash (if any) is over raw bytes, so this doesn't desync.
-    char fdest[129] = {};
+    char fdest[49] = {};
     ui::sanitize_text(dest, fdest, sizeof(fdest));
 
     nvs_sync::save_time_off_meta(time_off_start, time_off_end, fdest);
@@ -1330,8 +1337,8 @@ void init() {
     // 000F Device Settings — Read + Write, encrypted. CBOR map with optional
     // write fields: "p"=presence (0-3), "1"/"2"/"3"=shortcut tokens,
     // "c"=clock face (0-1), "f"=ANCS filter (0-3). Absent keys leave current
-    // state unchanged. Read returns {"c":<clock_face>, "f":<ancs_filter>} —
-    // the NVS-persisted fields Orion reads on (re)connect to sync its UI state.
+    // state unchanged. Read returns {"c", "f", "1", "2", "3"} — all
+    // NVS-persisted fields Orion reads on (re)connect to sync its UI state.
     c_dev_settings = svc->createCharacteristic(
         "6F726900-000F-4F72-9F00-000000000000",
         NIMBLE_PROPERTY::READ  | NIMBLE_PROPERTY::READ_ENC |

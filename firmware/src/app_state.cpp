@@ -5,6 +5,7 @@
 #include <time.h>
 #include <esp_mac.h>
 #include <esp_heap_caps.h>
+#include "nvs_store.h"
 
 namespace app_state {
 
@@ -112,6 +113,11 @@ void init() {
         k_detail.data = s_fallback;
         k_detail.n = 4;
     }
+
+    // Restore persisted shortcut slots so the first Device Settings read
+    // (before Orion writes them) returns the last-saved assignment.
+    nvs::get_shortcut_slots(k_slot_tokens[0], k_slot_tokens[1], k_slot_tokens[2],
+                            sizeof(k_slot_tokens[0]));
 }
 
 const char* ble_name() {
