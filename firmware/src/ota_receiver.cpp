@@ -113,7 +113,7 @@ const char g_ori_fw_marker[] = "OriFwVer=" ORI_FW_VERSION;
 // OTA lifecycle. is_active() (sticky OTA screen + BLE NACK gate) is true for any
 // state other than Idle.
 //   Idle         — no transfer
-//   AwaitingData — streaming image into PSRAM (Downloading screen, live ring)
+//   AwaitingData — streaming image into PSRAM (Updating screen, live ring)
 //   Installing   — image received + verified; "Installing firmware" frame up,
 //                  counting down COMMIT_LINGER_MS before the flash commit
 //   Failed       — "Update failed" screen up, waiting for the user to tap Close
@@ -436,7 +436,7 @@ static void handle_begin(const uint8_t* payload, uint32_t len) {
     g_ota_state   = OtaState::AwaitingData;
 
     gatt_server::set_ota_active(true);   // NACK BLE data writes for the duration
-    state_machine::on_ota_begin();       // full-screen OTA takeover (Downloading)
+    state_machine::on_ota_begin();       // full-screen OTA takeover (Updating)
 
     send_empty_response(OTA_OP_READY);
     LOG("[ota] BEGIN accepted: size=%u ver=%s\n",

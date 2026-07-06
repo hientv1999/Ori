@@ -98,7 +98,7 @@ All OTA screens are full-screen takeovers (status bar + profile card + left pane
 
 | # | Screen | Builder | Content | Notes |
 |---|---|---|---|---|
-| 1 | **Downloading firmware** | `create()` | Title + live progress ring (220 px, % in centre) + "Keep Ori plugged in" | Ring driven by `set_progress()` on each PROGRESS frame; image streams into PSRAM (LCD stays live). State `AwaitingData`. |
+| 1 | **Updating firmware** | `create()` | Title + live progress ring (220 px, % in centre) + "Keep Ori plugged in" | Ring driven by `set_progress()` on each PROGRESS frame; image streams into PSRAM (LCD stays live). State `AwaitingData`. |
 | 2 | **Installing** | `set_installing(linger_ms)` | "Installing firmware" title + centred instruction + bottom countdown bar | Reached automatically at END after the hash + version check pass (state `Installing`). Reuses screen 1's objects (see layout below). Shown for `linger_ms` (= `COMMIT_LINGER_MS`, 3.5 s), then the LCD halts for the flash burst. |
 | — | *(commit)* | — | Screen **dark** | LCD halted (PSRAM-DMA vs flash MSPI contention), BLE quiesced, image written to flash, then reboot. No frame can be shown between flash and reboot. |
 | 3 | **Firmware updated** | `create_updated_ack(version, on_close)` | "Firmware updated" title + "Ori is now running version X" + animated check + **Close** tertiary button | Post-reboot acknowledgement. **Persisted in NVS** (`ota_ack` key) — reappears on every boot until the user taps Close. Serves as the completion confirmation (there is no separate "Update complete / Restart" screen — the install→reboot is atomic). |
@@ -114,8 +114,8 @@ There is **no "Firmware Install / Update now" gate** — the download flows stra
 
 ### Installing screen specifics (screen 2)
 
-`set_installing()` transforms the live download screen in place rather than building a new one, so the Downloading→Installing transition is seamless:
-- **Title** retitled "Installing firmware" and pinned at the **same Y as the "Downloading firmware" title** — the download title's laid-out Y is captured (`lv_obj_get_y` after `lv_obj_update_layout`) and the title is pinned there with `LV_OBJ_FLAG_IGNORE_LAYOUT` so hiding the ring doesn't shift it.
+`set_installing()` transforms the live download screen in place rather than building a new one, so the Updating→Installing transition is seamless:
+- **Title** retitled "Installing firmware" and pinned at the **same Y as the "Updating firmware" title** — the download title's laid-out Y is captured (`lv_obj_get_y` after `lv_obj_update_layout`) and the title is pinned there with `LV_OBJ_FLAG_IGNORE_LAYOUT` so hiding the ring doesn't shift it.
 - **Progress ring hidden** (`LV_OBJ_FLAG_HIDDEN`) — there's no live percentage during the flash commit.
 - **Instruction text** ("Screen goes dark for a few seconds — keep Ori plugged in. It restarts when done.") is taken out of the flex flow (`LV_OBJ_FLAG_IGNORE_LAYOUT`) and pinned to the **centre of the screen**, independent of the top title.
 - **Countdown bar** at the very bottom: a **6 px** (2× the 3 px Setup-Complete bar) accent strip (`COLOR_ELEV` track, `COLOR_ACCENT` indicator) that fills 0→100 linearly over `linger_ms`, so the user can see how long until the screen blanks. Mirrors the Setup-Complete countdown bar; created on the top-level screen and cleaned up with it.
@@ -131,7 +131,7 @@ There is **no "Firmware Install / Update now" gate** — the download flows stra
 
 ### Serial test commands (`ORI_DEBUG_SERIAL`)
 
-`screen_manager.cpp` exposes the screens for hand-testing without a real transfer: `u` Downloading · `1` Installing (screen goes dark, with the countdown bar) · `2` Updated ack · `3` Update failed.
+`screen_manager.cpp` exposes the screens for hand-testing without a real transfer: `u` Updating · `1` Installing (screen goes dark, with the countdown bar) · `2` Updated ack · `3` Update failed.
 
 ## When an update may not start
 

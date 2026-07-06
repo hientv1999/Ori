@@ -159,7 +159,7 @@ void print_keymap() {
     LOG("  e   Setup — Complete\n");
     LOG("  x   Reconnect-Syncing overlay\n");
     LOG("  -- OTA update flow --\n");
-    LOG("  u   OTA · Downloading firmware (live ring)\n");
+    LOG("  u   OTA · Updating firmware (live ring)\n");
     LOG("  1   OTA · Installing (screen goes dark)\n");
     LOG("  2   OTA · Updated boot ack (Close)\n");
     LOG("  3   OTA · Update failed (Close)\n");
@@ -277,7 +277,7 @@ void debug_handle_key(char c) {
         case 'u': debug_load(screen_ota_updating::create());                  break;
         case '1': {
             // "Installing… / screen goes dark" — set_installing() switches the
-            // labels on the downloading screen, so build that first, then switch.
+            // labels on the updating screen, so build that first, then switch.
             lv_obj_t* s = screen_ota_updating::create();
             screen_ota_updating::set_installing();
             debug_load(s);

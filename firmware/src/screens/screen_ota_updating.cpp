@@ -65,7 +65,7 @@ lv_obj_t* create() {
         LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     state->heading_label = lv_label_create(root);
-    lv_label_set_text_static(state->heading_label, "Downloading firmware");
+    lv_label_set_text_static(state->heading_label, "Updating firmware");
     lv_obj_set_style_text_color(state->heading_label,
         theme::color(theme::COLOR_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(state->heading_label, theme::font_display(), 0);
@@ -112,8 +112,8 @@ void set_installing(uint32_t linger_ms) {
     lv_obj_t* root   = lv_obj_get_parent(g_ota_ui->heading_label);
     lv_obj_t* screen = lv_obj_get_parent(root);
 
-    // Keep the title at the SAME Y as the "Downloading firmware" title so the
-    // in-place Downloading→Installing transition doesn't shift it. Capture the
+    // Keep the title at the SAME Y as the "Updating firmware" title so the
+    // in-place Updating→Installing transition doesn't shift it. Capture the
     // title's laid-out position, then pin it there out of the flex flow (before
     // hiding the ring, so the later re-layout can't move it).
     lv_obj_update_layout(screen);

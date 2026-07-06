@@ -22,7 +22,7 @@ lv_obj_t* create();
 // runs) because lv_timer_handler() is also on the main task.
 void set_progress(uint8_t pct);
 
-// Switch the page from the live "Updating firmware / Downloading…" state to the
+// Switch the page from the live "Updating firmware" state to the
 // "Installing firmware" state shown for the final frame before the panel goes
 // dark for the flash commit. Called once at END after the image verifies.
 // `linger_ms` is how long this frame stays up before the screen blanks — it

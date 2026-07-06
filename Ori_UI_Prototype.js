@@ -243,7 +243,7 @@ const SCREENS = {
     leftRender: () => reconnectSyncingHTML(),
   },
   'ota-updating': {
-    label: 'OTA update', title: '1 Â· Downloading firmware',
+    label: 'OTA update', title: '1 Â· Updating firmware',
     desc: 'Full-screen takeover while Orion streams the firmware over USB CDC into a PSRAM staging buffer. No flash is written yet, so the LCD keeps refreshing and the progress ring is LIVE (0â†’100%). Status bar, profile card, and left panel hidden; touch inert. Sweeps clockwise; % centred in the ring.',
     hideStatusBar: true,
     setup: () => otaDownloadingHTML(62),
@@ -741,7 +741,7 @@ function otaDownloadingHTML(pct) {
   const R = 90, C = 2 * Math.PI * R, off = C * (1 - pct / 100);
   return setupShell('hide',
     '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;width:100%">' +
-    '<h2>Downloading firmwareâ€¦</h2>' +
+    '<h2>Updating firmwareâ€¦</h2>' +
     '<div class="orioning-ring" style="margin-top:30px">' +
     '<svg viewBox="0 0 200 200">' +
     '<circle class="track" cx="100" cy="100" r="' + R + '" fill="none" stroke-width="8"/>' +
