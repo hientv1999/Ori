@@ -1,10 +1,18 @@
 const $=id=>document.getElementById(id);
 
+// Declared up front (not with the rest of the I18N block below) because
+// tick() reads them on the very first paint, before the script has run far
+// enough to reach that block — a `let`/`const` referenced before its own
+// declaration line executes throws, even though the binding is hoisted.
+let appLang='en';
+const LOCALE_MAP={en:'en-US',vi:'vi-VN',es:'es-ES',fr:'fr-FR'};
+
 function tick(){
   const n=new Date();
+  const loc=LOCALE_MAP[appLang];
   $('clock').innerHTML=
-    n.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})+
-    '<br>'+n.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+    n.toLocaleTimeString(loc,{hour:'numeric',minute:'2-digit',hour12:true})+
+    '<br>'+n.toLocaleDateString(loc,{weekday:'short',month:'short',day:'numeric'});
 }
 setInterval(tick,1000);tick();
 
@@ -37,13 +45,13 @@ function backWithCheck(){
       $('nmInp').value=pfCommitted.name;$('tlInp').value=pfCommitted.title;
       $('emInp').value=pfCommitted.email;$('phInp').value=pfCommitted.phone;
       cc('nmInp','nmCnt',32);cc('tlInp','tlCnt',32);cc('emInp','emCnt',32);cc('phInp','phCnt',16);
-      pfPendingUrl=null;
+      pfPendingUrl=null;pfRemoved=false;
       if(pfOrigUrl){
         $('pfDzThumb').style.backgroundImage=`url(${pfOrigUrl})`;
-        $('pfDzEmpty').style.display='none';$('pfDzImg').style.display='';$('pfReuploadBtn').style.display='';
+        $('pfDzEmpty').style.display='none';$('pfDzImg').style.display='';$('pfReuploadBtn').style.display='';$('pfRemoveBtn').style.display='';
       } else {
         $('pfDzThumb').style.backgroundImage='';
-        $('pfDzEmpty').style.display='';$('pfDzImg').style.display='none';$('pfReuploadBtn').style.display='none';
+        $('pfDzEmpty').style.display='';$('pfDzImg').style.display='none';$('pfReuploadBtn').style.display='none';$('pfRemoveBtn').style.display='none';
       }
       pfChanged=false;$('pfSaveBtn').setAttribute('disabled','');back();
     };
@@ -69,41 +77,44 @@ function showModal(id){$(id).classList.add('show');}
 function hideModal(id){$(id).classList.remove('show');}
 
 let fwAvail=false;
+let connState='on';
 function setConn(s){
+  connState=s;
   const dot=$('hDot'),td=$('tdot'),name=$('hName'),state=$('hState');
   const connSections=$('connRequiredSections'),toDivider=$('mainTimeOffDivider'),fwIco=$('fwIco');
+  const t=I18N[appLang].main;
   dot.className='h-dot '+s;td.className='tdot '+s;
   if(s==='on'){
-    name.textContent='Ori-XT-9F';state.textContent='Connected';
+    name.textContent='Ori-XT-9F';state.textContent=t.connected;
     connSections.style.display='';toDivider.style.display='none';
     fwIco.style.display=fwAvail?'':'none';
     readSlotsFromDevice(); // simulate Orion reading Device Settings from Ori on connect
   } else if(s==='rec'){
-    name.textContent='Ori-XT-9F';state.textContent='Syncing…';
+    name.textContent='Ori-XT-9F';state.textContent=t.syncing;
     connSections.style.display='none';toDivider.style.display='';
     fwIco.style.display='none';
   } else {
-    name.textContent='Ori-XT-9F';state.textContent='Disconnected';
+    name.textContent='Ori-XT-9F';state.textContent=t.disconnected;
     connSections.style.display='none';toDivider.style.display='';
     fwIco.style.display='none';
   }
   back();
 }
 
-let pfChanged=false;
+let pfChanged=false,pfRemoved=false;
 let pfCommitted={name:'',title:'',email:'',phone:''};
 function openProfileScreen(){
-  pfOrigUrl=null;pfPendingUrl=null;
+  pfOrigUrl=null;pfPendingUrl=null;pfRemoved=false;
   const savedBg=$('mainProfPhoto').style.backgroundImage;
   const hasSaved=savedBg&&savedBg!=='none'&&savedBg!=='';
   if(hasSaved){
     const url=savedBg.slice(4,-1).replace(/['"]/g,'');
     $('pfDzThumb').style.backgroundImage=savedBg;
-    $('pfDzEmpty').style.display='none';$('pfDzImg').style.display='';$('pfReuploadBtn').style.display='';
+    $('pfDzEmpty').style.display='none';$('pfDzImg').style.display='';$('pfReuploadBtn').style.display='';$('pfRemoveBtn').style.display='';
     pfOrigUrl=url;
   } else {
     $('pfDzThumb').style.backgroundImage='';
-    $('pfDzEmpty').style.display='';$('pfDzImg').style.display='none';$('pfReuploadBtn').style.display='none';
+    $('pfDzEmpty').style.display='';$('pfDzImg').style.display='none';$('pfReuploadBtn').style.display='none';$('pfRemoveBtn').style.display='none';
   }
   pfCommitted={name:$('nmInp').value,title:$('tlInp').value,email:$('emInp').value,phone:$('phInp').value};
   pfChanged=false;$('pfSaveBtn').setAttribute('disabled','');show('s-profile');
@@ -116,31 +127,41 @@ function pfDirty(){
   cc('nmInp','nmCnt',32);cc('tlInp','tlCnt',32);cc('emInp','emCnt',32);cc('phInp','phCnt',16);
   const textChanged=$('nmInp').value!==pfCommitted.name||$('tlInp').value!==pfCommitted.title||
     $('emInp').value!==pfCommitted.email||$('phInp').value!==pfCommitted.phone;
-  pfChanged=textChanged||pfPendingUrl!==null;
+  pfChanged=textChanged||pfPendingUrl!==null||pfRemoved;
   const valid=$('nmInp').value.trim().length>0&&$('tlInp').value.trim().length>0;
   if(pfChanged&&valid)$('pfSaveBtn').removeAttribute('disabled');else $('pfSaveBtn').setAttribute('disabled','');
+}
+function pfRemovePhoto(){
+  pfPendingUrl=null;pfRemoved=true;
+  $('pfDzThumb').style.backgroundImage='';
+  $('pfDzEmpty').style.display='';$('pfDzImg').style.display='none';
+  $('pfReuploadBtn').style.display='none';$('pfRemoveBtn').style.display='none';
+  pfDirty();
 }
 function saveProfile(){
   if(!pfChanged) return;
   if(!$('nmInp').value.trim()||!$('tlInp').value.trim()) return;
   const name=$('nmInp').value||'—';
   $('mainName').textContent=name;
+  const photo=$('mainProfPhoto');
   if(pfPendingUrl){
-    const photo=$('mainProfPhoto');
     photo.style.backgroundImage=`url(${pfPendingUrl})`;
     photo.style.backgroundSize='cover';photo.style.backgroundPosition='center';
     $('mainProfInitials').style.display='none';pfPendingUrl=null;
+  } else if(pfRemoved){
+    photo.style.backgroundImage='';
+    $('mainProfInitials').style.display='';
   }
-  const photo=$('mainProfPhoto');
   if(!photo.style.backgroundImage){
     const parts=name.trim().split(' ');
     $('mainProfInitials').textContent=(parts[0][0]+(parts[1]?parts[1][0]:'')).toUpperCase();
   }
+  pfRemoved=false;
   pfChanged=false;$('pfSaveBtn').setAttribute('disabled','');back();
 }
 cc('nmInp','nmCnt',32);cc('tlInp','tlCnt',32);cc('emInp','emCnt',32);cc('phInp','phCnt',16);
 
-let timeOffActive=false,timeOffCustomPhoto=false,timeOffDirty=false;
+let timeOffActive=false,timeOffCustomPhoto=false,timeOffDirty=false,timeOffPhotoRemoved=false;
 let toCommittedStart=null,toCommittedEnd=null,toCommittedDest='',toCommittedPhotoUrl=null;
 function updateToSaveState(){
   const dest=$('timeOffDt').value.trim();
@@ -161,17 +182,25 @@ function openTimeOffScreen(){
   selStart=toCommittedStart;selEnd=toCommittedEnd;
   selPhase=selStart?(selEnd?2:1):0;calHover=null;
   $('timeOffDt').value=toCommittedDest;
+  timeOffPhotoRemoved=false;
   if(toCommittedPhotoUrl){
     timeOffOrigUrl=toCommittedPhotoUrl;timeOffPendingUrl=null;
     $('timeOffDzThumb').style.backgroundImage=`url(${toCommittedPhotoUrl})`;
-    $('timeOffDzEmpty').style.display='none';$('timeOffDzImg').style.display='';$('toReuploadBtn').style.display='';
+    $('timeOffDzEmpty').style.display='none';$('timeOffDzImg').style.display='';$('toReuploadBtn').style.display='';$('toRemoveBtn').style.display='';
   } else {
     timeOffOrigUrl=null;timeOffPendingUrl=null;
     $('timeOffDzThumb').style.backgroundImage='';
-    $('timeOffDzEmpty').style.display='';$('timeOffDzImg').style.display='none';$('toReuploadBtn').style.display='none';
+    $('timeOffDzEmpty').style.display='';$('timeOffDzImg').style.display='none';$('toReuploadBtn').style.display='none';$('toRemoveBtn').style.display='none';
   }
   updatePeriodDisplay();
   timeOffDirty=false;cc('timeOffDt','dtCnt',48);updateToSaveState();show('s-timeOff');
+}
+function timeOffRemovePhoto(){
+  timeOffPendingUrl=null;timeOffPhotoRemoved=true;timeOffDirty=true;
+  $('timeOffDzThumb').style.backgroundImage='';
+  $('timeOffDzEmpty').style.display='';$('timeOffDzImg').style.display='none';
+  $('toReuploadBtn').style.display='none';$('toRemoveBtn').style.display='none';
+  updateToSaveState();
 }
 function exitTimeOff(){
   timeOffDirty=false;timeOffActive=false;
@@ -193,7 +222,7 @@ function updateTimeOff(){
   const d=$('timeOffDt').value.trim();
   if(d){$('mainTimeOffDest').textContent=d;$('mainTimeOffTextDest').textContent=d;}
   if(selStart&&selEnd){
-    const f=v=>v.toLocaleDateString('en-US',{month:'short',day:'numeric'});
+    const f=v=>v.toLocaleDateString(LOCALE_MAP[appLang],{month:'short',day:'numeric'});
     const range=f(selStart)+' – '+f(selEnd);
     $('mainTimeOffDates').textContent=range;$('mainTimeOffTextDates').textContent=range;
   }
@@ -207,15 +236,18 @@ function saveTimeOff(){
     b.style.backgroundImage=`url(${timeOffPendingUrl})`;
     b.style.backgroundSize='cover';b.style.backgroundPosition='center';b.style.backgroundRepeat='no-repeat';
     toCommittedPhotoUrl=timeOffPendingUrl;
+  } else if(timeOffPhotoRemoved){
+    $('mainTimeOffBanner').style.backgroundImage='';
+    toCommittedPhotoUrl=null;
   }
   toCommittedStart=selStart;toCommittedEnd=selEnd;toCommittedDest=dest;
+  timeOffPhotoRemoved=false;
   timeOffDirty=false;timeOffActive=true;
   $('timeOffToggle').classList.add('on');setTimeOffState(true);back();
 }
 function hideToErr(id){$(id).style.display='none';}
 
 let calYear,calMonth,selStart=null,selEnd=null,selPhase=0,calHover=null;
-const MONTHS=['January','February','March','April','May','June','July','August','September','October','November','December'];
 function initCal(){const t=new Date();calYear=t.getFullYear();calMonth=t.getMonth();renderCal();}
 function togglePeriodCal(){
   const cal=$('periodCal'),disp=$('periodDisplay'),open=cal.style.display!=='none';
@@ -229,13 +261,18 @@ function calNav(dir){
 }
 function renderCal(){
   const today=new Date();today.setHours(0,0,0,0);
-  $('pcalMonth').textContent=MONTHS[calMonth]+' '+calYear;
+  const loc=LOCALE_MAP[appLang];
+  const monthName=new Date(calYear,calMonth,1).toLocaleDateString(loc,{month:'long'});
+  $('pcalMonth').textContent=monthName+' '+calYear;
   document.querySelector('.pcal-nav-prev').classList.toggle('dis',calYear===today.getFullYear()&&calMonth===today.getMonth());
-  $('pcalHint').textContent=selPhase===0?'Select start date':selPhase===1?'Now select end date':'';
+  const ti=I18N[appLang].timeOffEditor;
+  $('pcalHint').textContent=selPhase===0?ti.selectStartDate:selPhase===1?ti.selectEndDate:'';
   const grid=$('pcalGrid');grid.innerHTML='';
-  ['Mo','Tu','We','Th','Fr','Sa','Su'].forEach(h=>{
-    const el=document.createElement('div');el.className='pcal-dh';el.textContent=h;grid.appendChild(el);
-  });
+  // 2024-01-01 is a Monday, so i=0..6 walks Mon→Sun to match the grid's week start
+  for(let i=0;i<7;i++){
+    const wd=new Date(2024,0,1+i).toLocaleDateString(loc,{weekday:'short'});
+    const el=document.createElement('div');el.className='pcal-dh';el.textContent=wd;grid.appendChild(el);
+  }
   const firstDow=new Date(calYear,calMonth,1).getDay();
   const offset=firstDow===0?6:firstDow-1;
   const daysInMonth=new Date(calYear,calMonth+1,0).getDate();
@@ -276,14 +313,14 @@ function selectDay(d){
   timeOffDirty=true;updatePeriodDisplay();updateToSaveState();renderCal();
 }
 function updatePeriodDisplay(){
-  const txt=$('periodText');
-  if(!selStart){txt.textContent='Select dates…';txt.style.color='var(--t3)';}
+  const txt=$('periodText'),loc=LOCALE_MAP[appLang];
+  if(!selStart){txt.textContent=I18N[appLang].timeOffEditor.selectDates;txt.style.color='var(--t3)';}
   else if(!selEnd){
-    txt.textContent=selStart.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' → …';txt.style.color='var(--t2)';
+    txt.textContent=selStart.toLocaleDateString(loc,{month:'short',day:'numeric'})+' → …';txt.style.color='var(--t2)';
   } else {
     const sameY=selStart.getFullYear()===selEnd.getFullYear();
-    const d1=selStart.toLocaleDateString('en-US',{month:'short',day:'numeric',...(sameY?{}:{year:'numeric'})});
-    const d2=selEnd.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'});
+    const d1=selStart.toLocaleDateString(loc,{month:'short',day:'numeric',...(sameY?{}:{year:'numeric'})});
+    const d2=selEnd.toLocaleDateString(loc,{month:'short',day:'numeric',year:'numeric'});
     txt.textContent=d1+' – '+d2;txt.style.color='var(--t1)';
   }
 }
@@ -292,9 +329,9 @@ let timeOffOrigUrl=null,timeOffPendingUrl=null;
 function timeOffPickPhoto(){$('timeOffPhoInp').click();}
 function openCropExisting(){if(timeOffOrigUrl) openCrop(timeOffOrigUrl,applyTimeOffCrop);}
 function applyTimeOffCrop(url){
-  timeOffDirty=true;timeOffCustomPhoto=true;timeOffPendingUrl=url;
+  timeOffDirty=true;timeOffCustomPhoto=true;timeOffPendingUrl=url;timeOffPhotoRemoved=false;
   $('timeOffDzThumb').style.backgroundImage=`url(${url})`;
-  $('timeOffDzEmpty').style.display='none';$('timeOffDzImg').style.display='';$('toReuploadBtn').style.display='';
+  $('timeOffDzEmpty').style.display='none';$('timeOffDzImg').style.display='';$('toReuploadBtn').style.display='';$('toRemoveBtn').style.display='';
   updateToSaveState();
 }
 function loadTimeOffPhoto(inp){
@@ -308,9 +345,9 @@ let pfOrigUrl=null,pfPendingUrl=null;
 function pfPickPhoto(){$('pfPhotoInp').click();}
 function openPfCropExisting(){if(pfOrigUrl) openCrop(pfOrigUrl,applyPfCrop,1,228,228,true);}
 function applyPfCrop(url){
-  pfPendingUrl=url;
+  pfPendingUrl=url;pfRemoved=false;
   $('pfDzThumb').style.backgroundImage=`url(${url})`;
-  $('pfDzEmpty').style.display='none';$('pfDzImg').style.display='';$('pfReuploadBtn').style.display='';
+  $('pfDzEmpty').style.display='none';$('pfDzImg').style.display='';$('pfReuploadBtn').style.display='';$('pfRemoveBtn').style.display='';
   pfDirty();
 }
 function loadProfilePhoto(inp){
@@ -490,7 +527,7 @@ function onCropTouchMove(e){
 function onCropTouchEnd(e){if(e.touches.length<2) _lastPinchDist=null;}
 
 let calSrc='ms',calPending='ms';
-const calInfo={ms:{name:'Microsoft Teams',ok:true},gg:{name:'Google Calendar',ok:true}};
+const calInfo={ms:{name:'Microsoft Teams',ok:true},gg:{name:'Google Calendar',ok:false}};
 function _renderCalOpts(s){
   ['ms','gg'].forEach(k=>$('co-'+k).classList.toggle('sel',k===s));
   $('ggSignInRow').style.display=s==='ms'?'none':'';
@@ -503,22 +540,34 @@ function openCalendarSource(){
   calPending=calSrc;_renderCalOpts(calPending);_updateCalSave();show('s-calendar');
 }
 function setCalPending(s){calPending=s;_renderCalOpts(s);_updateCalSave();}
+function _calStatusSuffix(info){
+  const t=I18N[appLang];
+  return ' · '+(info.ok?t.main.connected:t.calendarSource.notConnected);
+}
 function saveCalSource(){
   calSrc=calPending;
   const info=calInfo[calSrc];
-  $('mainCalSub').textContent=info.name+(info.ok?' · Connected':' · Not connected');
+  $('mainCalSub').textContent=info.name+_calStatusSuffix(info);
   back();
 }
 function discardCalSource(){calPending=calSrc;_renderCalOpts(calPending);back();}
+let ggSigningIn=false;
+function _renderGgStatus(){
+  const t=I18N[appLang].calendarSource;
+  $('ggSt').textContent=ggSigningIn?t.signingIn:(calInfo.gg.ok?I18N[appLang].main.connected:t.notSignedIn);
+}
+function _renderGgSignBtn(){
+  const t=I18N[appLang].calendarSource;
+  $('ggSignBtn').textContent=calInfo.gg.ok?t.signOutGoogle:t.signInGoogle;
+}
 function signGoogle(){
-  $('ggSt').textContent='Signing in…';$('ggSignBtn').disabled=true;
+  ggSigningIn=true;_renderGgStatus();$('ggSignBtn').disabled=true;
   setTimeout(()=>{
-    calInfo.gg.ok=true;$('ggSt').textContent='Connected';
-    $('ggSignBtn').disabled=false;$('ggSignBtn').textContent='Sign out from Google';setCalPending('gg');
+    ggSigningIn=false;calInfo.gg.ok=true;_renderGgStatus();
+    $('ggSignBtn').disabled=false;_renderGgSignBtn();setCalPending('gg');
   },1400);
 }
 $('ggSignInRow').style.display='none';
-initCal();
 
 const siImgMap={
   'vol-mute':'../firmware/img/shortcut_icons/vol-mute.png',
@@ -558,21 +607,23 @@ const kbdCommitted=[[],[],[]];
 function renderKbdCombo(n){
   const parts=_kbdCombos[n-1];
   const disp=$('kbdDisp'+n),hint=$('kbdHint'+n);
+  const t=I18N[appLang].quickActions;
   if(!parts.length){
-    disp.innerHTML='<span class="kbd-unset">Not set</span>';
-    hint.textContent='Click to set';
+    disp.innerHTML=`<span class="kbd-unset">${t.notSet}</span>`;
+    hint.textContent=t.clickToSet;
   } else {
     disp.innerHTML=parts.map(p=>`<kbd class="kc">${p}</kbd>`).join('<span class="kbd-sep"> + </span>');
-    hint.textContent='Click to change';
+    hint.textContent=t.clickToChange;
   }
 }
 
 function startKbdRecord(n){
   if(_kbdRecSlot) stopKbdRecord();
   _kbdRecSlot=n;
+  const t=I18N[appLang].quickActions;
   $('kbdRec'+n).classList.add('recording');
-  $('kbdDisp'+n).innerHTML='<span class="kbd-recording-text">Press shortcut…</span>';
-  $('kbdHint'+n).textContent='Esc to cancel';
+  $('kbdDisp'+n).innerHTML=`<span class="kbd-recording-text">${t.pressShortcut}</span>`;
+  $('kbdHint'+n).textContent=t.escToCancel;
   document.addEventListener('keydown',_onKbdKey,true);
 }
 
@@ -700,7 +751,7 @@ function doFactoryReset(){hideModal('m-reset');setConn('off');}
 function doClearAll(){
   hideModal('m-reset');
   calSrc='ms';calPending='ms';_renderCalOpts('ms');
-  $('mainCalSub').textContent=calInfo.ms.name+(calInfo.ms.ok?' · Connected':' · Not connected');
+  $('mainCalSub').textContent=calInfo.ms.name+_calStatusSuffix(calInfo.ms);
   $('nmInp').value='';$('tlInp').value='';$('emInp').value='';$('phInp').value='';
   pfOrigUrl=null;pfPendingUrl=null;
   $('pfDzThumb').style.backgroundImage='';$('pfDzEmpty').style.display='';$('pfDzImg').style.display='none';
@@ -717,7 +768,7 @@ function clickFw(){
 }
 function simFwUpdate(){
   fwAvail=true;const ico=$('fwIco');
-  ico.style.display='';ico.classList.add('fw-on');ico.title='Firmware update available';back();
+  ico.style.display='';ico.classList.add('fw-on');ico.title=I18N[appLang].main.fwAvailable;back();
 }
 function startFwInstall(){
   $('fw-c').style.display='none';$('fw-i').style.display='';
@@ -725,21 +776,367 @@ function startFwInstall(){
   const ring=$('fwRing'),pct=$('fwPct'),lbl=$('fwLbl'),title=$('fwMTitle');
   clearInterval(_fwInstallTimer);
   _fwInstallTimer=setInterval(()=>{
+    const t=I18N[appLang].fwModal;
     p+=1.6;if(p>100) p=100;
     ring.style.strokeDashoffset=358-(358*p/100);pct.textContent=Math.round(p)+'%';
-    if(p<55) lbl.textContent='Keep Ori plugged in';
-    else if(p<80){lbl.textContent='Verifying…';title.textContent='Verifying…';}
-    else if(p<100){lbl.textContent='Updating firmware…';title.textContent='Updating firmware…';}
+    if(p<55) lbl.textContent=t.keepPluggedIn;
+    else if(p<80){lbl.textContent=t.verifying;title.textContent=t.verifying;}
+    else if(p<100){lbl.textContent=t.updatingFirmware;title.textContent=t.updatingFirmware;}
     else{
-      clearInterval(_fwInstallTimer);pct.textContent='✓';lbl.textContent='Now running v1.1.0';title.textContent='Done';
+      clearInterval(_fwInstallTimer);pct.textContent='✓';lbl.textContent=t.nowRunning.replace('{v}','v1.1.0');title.textContent=t.done;
       setTimeout(()=>{
         hideModal('m-fw');fwAvail=false;
-        const d=$('fwIco');d.classList.remove('fw-on');d.title='Firmware up to date';d.style.display='none';
+        const d=$('fwIco');d.classList.remove('fw-on');d.title=I18N[appLang].main.fwUpToDate;d.style.display='none';
         $('fw-c').style.display='';$('fw-i').style.display='none';
-        ring.style.strokeDashoffset=358;pct.textContent='0%';title.textContent='Updating firmware…';
+        ring.style.strokeDashoffset=358;pct.textContent='0%';title.textContent=I18N[appLang].fwModal.updatingFirmware;
       },2000);
     }
   },55);
+}
+
+// ── Language (single, union setting for Orion's own UI) ─────────────────────
+// One app-wide language setting — no separate Ori-firmware language track.
+// Starting point for the picker is the Welcome screen; covers the whole
+// first-run wizard so switching there isn't a half-translated dead end.
+// More surfaces (e.g. Settings) adopt this same `appLang` state as they're
+// wired up. `appLang`/`LOCALE_MAP` themselves are declared at the top of the
+// file — see the comment there.
+const I18N={
+  en:{
+    name:'English',
+    common:{cancel:'Cancel',save:'Save',back:'Back'},
+    welcome:{title:'Welcome to Orion',
+      desc:'Orion keeps your Ori in sync — profile, calendar, and quick controls, all handled automatically from this PC.',
+      start:'Start'},
+    profile:{changeLang:'Back',title:'Set up your profile',sub:"This is what appears on Ori's display.",
+      photoLbl:'Profile Photo',choosePhoto:'Choose photo',recrop:'Recrop',reupload:'Reupload',remove:'Remove',
+      nameLbl:'Name',namePh:'Full name',jobLbl:'Job title',jobPh:'e.g. Senior Product Manager',
+      emailLbl:'Email',emailPh:'name@company.com',phoneLbl:'Phone',phonePh:'+1 555 000 0000',next:'Next'},
+    discover:{editProfile:'Edit profile',title:'Select your Ori',sub:'Make sure Ori is powered on and in pairing mode.',
+      scanning:'Looking for nearby Ori devices…',rescan:'Scan again',strongSignal:'Strong signal',weakSignal:'Weak signal'},
+    passkey:{title:'Enter passkey',bodyPre:'Enter the 6-digit code shown on ',bodySuf:'.',cancel:'Cancel',pair:'Pair'},
+    connecting:{title:'Pairing with Ori…',sub:'Waiting for Ori to confirm…'},
+    syncing:{title:'Setting up Ori…',progressLabel:'A busy day ahead…',doneLabel:'Ori is set up!'},
+    pairfail:{title:'Couldn’t pair with Ori',body:'The passkey didn’t match, or the request timed out on Ori. Pick a device to try again.',close:'Close'},
+    settings:{title:'Settings',general:'General',auto:'Run automatically',autoSub:'Launch at Windows startup',
+      calendar:'Calendar Source',language:'Language',about:'About',app:'App',reset:'Reset'},
+    main:{connected:'Connected',syncing:'Syncing…',disconnected:'Disconnected',timeOff:'Time Off',
+      noTimeOffPlanned:'No Time Off planned',tapToSet:'Tap to set',notifFilterRow:'Notification Filter',
+      clockFaceRow:'Clock Face',quickActionsRow:'Quick Actions',presenceAvailable:'Available',
+      settingsIcoTitle:'Settings',fwUpToDate:'Firmware up to date',fwAvailable:'Firmware update available'},
+    profileEditor:{title:'Profile'},
+    timeOffEditor:{periodLbl:'Period',selectDates:'Select dates…',selectStartDate:'Select start date',
+      selectEndDate:'Now select end date',destinationLbl:'Destination',destinationPh:'City, Country',
+      destinationPhotoLbl:'Destination photo'},
+    calendarSource:{teamsStatus:'Signed in · Exchange Online',notSignedIn:'Not signed in',signingIn:'Signing in…',
+      notConnected:'Not connected',signInGoogle:'Sign in with Google',signOutGoogle:'Sign out from Google'},
+    quickActions:{slotPrefix:'Slot',notSet:'Not set',clickToSet:'Click to set',clickToChange:'Click to change',
+      pressShortcut:'Press shortcut…',escToCancel:'Esc to cancel',
+      actionLabels:{'vol-mute':'Volume Mute','mic-mute':'Mic Mute',screenshot:'Screenshot','lock-screen':'Lock Screen',favorite:'Favorite'}},
+    clockFace:{digitalLbl:'Digital',digitalSub:'Large digits',analogLbl:'Analog',analogSub:'Tick dial with hands'},
+    notifFilter:{disabledLbl:'Disabled',disabledSub:'No notifications shown on Ori',callOnlyLbl:'Call Only',
+      callOnlySub:'Incoming calls only',importantLbl:'Important',importantSub:'Calls and high-priority alerts',
+      allLbl:'All',allSub:'Every notification (default)'},
+    discardModal:{title:'Discard changes?',body:'Unsaved changes will be lost.',keepEditing:'Keep editing',discard:'Discard'},
+    resetModal:{title:'Reset Ori',
+      body:'All data and paired devices will be removed from Ori. Clear All also erases your profile, calendar sign-in, and shortcuts on this PC.',
+      factoryReset:'Factory Reset',clearAll:'Clear All'},
+    fwModal:{title:'Firmware Update',update:'Update',
+      updatingFirmware:'Updating firmware…',keepPluggedIn:'Keep Ori plugged in',verifying:'Verifying…',
+      nowRunning:'Now running {v}',done:'Done',
+      changelog:['Added Vietnamese, Spanish, and French language support','Faster reconnect after Ori goes to sleep','Fixed a rare crash when removing a Time Off photo']},
+    cropOverlay:{title:'Crop Photo',apply:'Apply',
+      hint:'Drag crop box to reposition · Drag corners to resize · Scroll or pinch to zoom · Drag outside box to pan'}
+  },
+  vi:{
+    name:'Tiếng Việt',
+    common:{cancel:'Hủy',save:'Lưu',back:'Quay lại'},
+    welcome:{title:'Chào mừng đến với Orion',
+      desc:'Orion giữ Ori của bạn luôn đồng bộ — hồ sơ, lịch và các điều khiển nhanh, tất cả được xử lý tự động từ máy tính này.',
+      start:'Bắt đầu'},
+    profile:{changeLang:'Quay lại',title:'Thiết lập hồ sơ của bạn',sub:'Đây là thông tin hiển thị trên màn hình Ori.',
+      photoLbl:'Ảnh hồ sơ',choosePhoto:'Chọn ảnh',recrop:'Cắt lại',reupload:'Tải lại ảnh',remove:'Xóa ảnh',
+      nameLbl:'Họ tên',namePh:'Họ và tên',jobLbl:'Chức danh',jobPh:'VD: Trưởng phòng Sản phẩm',
+      emailLbl:'Email',emailPh:'ten@congty.com',phoneLbl:'Số điện thoại',phonePh:'+84 90 000 0000',next:'Tiếp theo'},
+    discover:{editProfile:'Sửa hồ sơ',title:'Chọn Ori của bạn',sub:'Đảm bảo Ori đã mở và đang ở chế độ ghép nối.',
+      scanning:'Đang tìm thiết bị Ori gần đây…',rescan:'Quét lại',strongSignal:'Tín hiệu mạnh',weakSignal:'Tín hiệu yếu'},
+    passkey:{title:'Nhập mã ghép nối',bodyPre:'Nhập mã 6 số hiển thị trên ',bodySuf:'.',cancel:'Hủy',pair:'Ghép nối'},
+    connecting:{title:'Đang ghép nối với Ori…',sub:'Đang chờ Ori xác nhận…'},
+    syncing:{title:'Đang thiết lập Ori…',progressLabel:'Một ngày bận rộn đang chờ…',doneLabel:'Ori đã thiết lập xong!'},
+    pairfail:{title:'Không thể ghép nối với Ori',body:'Mã ghép nối không khớp, hoặc yêu cầu đã hết thời gian chờ trên Ori. Hãy chọn một thiết bị để thử lại.',close:'Đóng'},
+    settings:{title:'Cài đặt',general:'Chung',auto:'Tự động chạy',autoSub:'Khởi động cùng Windows',
+      calendar:'Nguồn lịch',language:'Ngôn ngữ',about:'Giới thiệu',app:'Ứng dụng',reset:'Đặt lại'},
+    main:{connected:'Đã kết nối',syncing:'Đang đồng bộ…',disconnected:'Đã ngắt kết nối',timeOff:'Nghỉ phép',
+      noTimeOffPlanned:'Chưa có lịch nghỉ phép',tapToSet:'Nhấn để đặt',notifFilterRow:'Bộ lọc thông báo',
+      clockFaceRow:'Mặt đồng hồ',quickActionsRow:'Thao tác nhanh',presenceAvailable:'Đang hoạt động',
+      settingsIcoTitle:'Cài đặt',fwUpToDate:'Firmware đã mới nhất',fwAvailable:'Có bản cập nhật firmware'},
+    profileEditor:{title:'Hồ sơ'},
+    timeOffEditor:{periodLbl:'Khoảng thời gian',selectDates:'Chọn ngày…',selectStartDate:'Chọn ngày bắt đầu',
+      selectEndDate:'Bây giờ chọn ngày kết thúc',destinationLbl:'Điểm đến',destinationPh:'Thành phố, Quốc gia',
+      destinationPhotoLbl:'Ảnh điểm đến'},
+    calendarSource:{teamsStatus:'Đã đăng nhập · Exchange Online',notSignedIn:'Chưa đăng nhập',signingIn:'Đang đăng nhập…',
+      notConnected:'Chưa kết nối',signInGoogle:'Đăng nhập bằng Google',signOutGoogle:'Đăng xuất khỏi Google'},
+    quickActions:{slotPrefix:'Khe',notSet:'Chưa đặt',clickToSet:'Nhấn để đặt',clickToChange:'Nhấn để đổi',
+      pressShortcut:'Nhấn tổ hợp phím…',escToCancel:'Nhấn Esc để hủy',
+      actionLabels:{'vol-mute':'Tắt âm lượng','mic-mute':'Tắt mic',screenshot:'Chụp màn hình','lock-screen':'Khóa màn hình',favorite:'Yêu thích'}},
+    clockFace:{digitalLbl:'Số',digitalSub:'Chữ số lớn',analogLbl:'Kim',analogSub:'Mặt số kim chỉ giờ'},
+    notifFilter:{disabledLbl:'Tắt',disabledSub:'Không hiển thị thông báo trên Ori',callOnlyLbl:'Chỉ cuộc gọi',
+      callOnlySub:'Chỉ cuộc gọi đến',importantLbl:'Quan trọng',importantSub:'Cuộc gọi và thông báo quan trọng',
+      allLbl:'Tất cả',allSub:'Mọi thông báo (mặc định)'},
+    discardModal:{title:'Hủy các thay đổi?',body:'Các thay đổi chưa lưu sẽ bị mất.',keepEditing:'Tiếp tục chỉnh sửa',discard:'Hủy bỏ'},
+    resetModal:{title:'Đặt lại Ori',
+      body:'Toàn bộ dữ liệu và thiết bị đã ghép nối sẽ bị xóa khỏi Ori. Xóa tất cả cũng xóa hồ sơ, đăng nhập lịch và các phím tắt trên PC này.',
+      factoryReset:'Khôi phục cài đặt gốc',clearAll:'Xóa tất cả'},
+    fwModal:{title:'Cập nhật firmware',update:'Cập nhật',
+      updatingFirmware:'Đang cập nhật firmware…',keepPluggedIn:'Giữ Ori được cắm điện',verifying:'Đang xác minh…',
+      nowRunning:'Đang chạy {v}',done:'Hoàn tất',
+      changelog:['Đã thêm hỗ trợ tiếng Việt, tiếng Tây Ban Nha và tiếng Pháp','Kết nối lại nhanh hơn sau khi Ori vào chế độ ngủ','Đã sửa lỗi hiếm gặp gây treo khi xóa ảnh Nghỉ phép']},
+    cropOverlay:{title:'Cắt ảnh',apply:'Áp dụng',
+      hint:'Kéo khung cắt để di chuyển · Kéo góc để đổi kích thước · Cuộn hoặc chụm để thu phóng · Kéo ngoài khung để di chuyển ảnh'}
+  },
+  es:{
+    name:'Español',
+    common:{cancel:'Cancelar',save:'Guardar',back:'Atrás'},
+    welcome:{title:'Bienvenido a Orion',
+      desc:'Orion mantiene tu Ori sincronizado — perfil, calendario y controles rápidos, todo gestionado automáticamente desde este PC.',
+      start:'Comenzar'},
+    profile:{changeLang:'Atrás',title:'Configura tu perfil',sub:'Esto es lo que aparece en la pantalla de Ori.',
+      photoLbl:'Foto de perfil',choosePhoto:'Elegir foto',recrop:'Recortar de nuevo',reupload:'Subir otra vez',remove:'Quitar',
+      nameLbl:'Nombre',namePh:'Nombre completo',jobLbl:'Cargo',jobPh:'p. ej. Gerente de Producto',
+      emailLbl:'Correo',emailPh:'nombre@empresa.com',phoneLbl:'Teléfono',phonePh:'+34 600 000 000',next:'Siguiente'},
+    discover:{editProfile:'Editar perfil',title:'Selecciona tu Ori',sub:'Asegúrate de que Ori esté encendido y en modo de emparejamiento.',
+      scanning:'Buscando dispositivos Ori cercanos…',rescan:'Buscar de nuevo',strongSignal:'Señal fuerte',weakSignal:'Señal débil'},
+    passkey:{title:'Introduce el código',bodyPre:'Introduce el código de 6 dígitos que aparece en ',bodySuf:'.',cancel:'Cancelar',pair:'Emparejar'},
+    connecting:{title:'Emparejando con Ori…',sub:'Esperando confirmación de Ori…'},
+    syncing:{title:'Configurando Ori…',progressLabel:'Un día ocupado por delante…',doneLabel:'¡Ori está listo!'},
+    pairfail:{title:'No se pudo emparejar con Ori',body:'El código no coincidió, o la solicitud caducó en Ori. Elige un dispositivo para intentarlo de nuevo.',close:'Cerrar'},
+    settings:{title:'Configuración',general:'General',auto:'Iniciar automáticamente',autoSub:'Abrir al iniciar Windows',
+      calendar:'Fuente de calendario',language:'Idioma',about:'Acerca de',app:'Aplicación',reset:'Restablecer'},
+    main:{connected:'Conectado',syncing:'Sincronizando…',disconnected:'Desconectado',timeOff:'Tiempo libre',
+      noTimeOffPlanned:'Sin tiempo libre planeado',tapToSet:'Toca para configurar',notifFilterRow:'Filtro de notificaciones',
+      clockFaceRow:'Esfera del reloj',quickActionsRow:'Acciones rápidas',presenceAvailable:'Disponible',
+      settingsIcoTitle:'Configuración',fwUpToDate:'Firmware actualizado',fwAvailable:'Actualización de firmware disponible'},
+    profileEditor:{title:'Perfil'},
+    timeOffEditor:{periodLbl:'Periodo',selectDates:'Selecciona fechas…',selectStartDate:'Selecciona la fecha de inicio',
+      selectEndDate:'Ahora selecciona la fecha de fin',destinationLbl:'Destino',destinationPh:'Ciudad, país',
+      destinationPhotoLbl:'Foto del destino'},
+    calendarSource:{teamsStatus:'Sesión iniciada · Exchange Online',notSignedIn:'No has iniciado sesión',signingIn:'Iniciando sesión…',
+      notConnected:'No conectado',signInGoogle:'Iniciar sesión con Google',signOutGoogle:'Cerrar sesión de Google'},
+    quickActions:{slotPrefix:'Ranura',notSet:'Sin definir',clickToSet:'Haz clic para definir',clickToChange:'Haz clic para cambiar',
+      pressShortcut:'Presiona el atajo…',escToCancel:'Esc para cancelar',
+      actionLabels:{'vol-mute':'Silenciar volumen','mic-mute':'Silenciar micrófono',screenshot:'Captura de pantalla','lock-screen':'Bloquear pantalla',favorite:'Favorito'}},
+    clockFace:{digitalLbl:'Digital',digitalSub:'Dígitos grandes',analogLbl:'Analógico',analogSub:'Esfera con agujas'},
+    notifFilter:{disabledLbl:'Desactivado',disabledSub:'No se muestran notificaciones en Ori',callOnlyLbl:'Solo llamadas',
+      callOnlySub:'Solo llamadas entrantes',importantLbl:'Importante',importantSub:'Llamadas y alertas de alta prioridad',
+      allLbl:'Todas',allSub:'Todas las notificaciones (predeterminado)'},
+    discardModal:{title:'¿Descartar los cambios?',body:'Los cambios no guardados se perderán.',keepEditing:'Seguir editando',discard:'Descartar'},
+    resetModal:{title:'Restablecer Ori',
+      body:'Todos los datos y dispositivos vinculados se eliminarán de Ori. Borrar todo también elimina tu perfil, el inicio de sesión del calendario y los accesos directos en este PC.',
+      factoryReset:'Restablecer de fábrica',clearAll:'Borrar todo'},
+    fwModal:{title:'Actualización de firmware',update:'Actualizar',
+      updatingFirmware:'Actualizando firmware…',keepPluggedIn:'Mantén Ori conectado',verifying:'Verificando…',
+      nowRunning:'Ahora ejecutando {v}',done:'Listo',
+      changelog:['Se agregó soporte para vietnamita, español y francés','Reconexión más rápida cuando Ori sale del reposo','Se corrigió un error poco frecuente al eliminar una foto de Tiempo libre']},
+    cropOverlay:{title:'Recortar foto',apply:'Aplicar',
+      hint:'Arrastra el recuadro para reposicionar · Arrastra las esquinas para redimensionar · Desplázate o pellizca para hacer zoom · Arrastra fuera del recuadro para desplazar'}
+  },
+  fr:{
+    name:'Français',
+    common:{cancel:'Annuler',save:'Enregistrer',back:'Retour'},
+    welcome:{title:'Bienvenue sur Orion',
+      desc:'Orion synchronise votre Ori — profil, calendrier et raccourcis, tout est géré automatiquement depuis ce PC.',
+      start:'Commencer'},
+    profile:{changeLang:'Retour',title:'Configurez votre profil',sub:"C'est ce qui apparaît sur l'écran d'Ori.",
+      photoLbl:'Photo de profil',choosePhoto:'Choisir une photo',recrop:'Recadrer',reupload:'Réimporter',remove:'Supprimer',
+      nameLbl:'Nom',namePh:'Nom complet',jobLbl:'Poste',jobPh:'p. ex. Chef de produit senior',
+      emailLbl:'E-mail',emailPh:'nom@entreprise.com',phoneLbl:'Téléphone',phonePh:'+33 6 00 00 00 00',next:'Suivant'},
+    discover:{editProfile:'Modifier le profil',title:'Sélectionnez votre Ori',sub:"Assurez-vous qu'Ori est allumé et en mode d'appairage.",
+      scanning:"Recherche d'appareils Ori à proximité…",rescan:'Rescanner',strongSignal:'Signal fort',weakSignal:'Signal faible'},
+    passkey:{title:'Saisir le code',bodyPre:'Saisissez le code à 6 chiffres affiché sur ',bodySuf:'.',cancel:'Annuler',pair:'Appairer'},
+    connecting:{title:'Appairage avec Ori…',sub:"En attente de confirmation d'Ori…"},
+    syncing:{title:"Configuration d'Ori…",progressLabel:'Une journée bien remplie vous attend…',doneLabel:'Ori est configuré !'},
+    pairfail:{title:"Impossible d'appairer avec Ori",body:'Le code ne correspondait pas, ou la demande a expiré sur Ori. Choisissez un appareil pour réessayer.',close:'Fermer'},
+    settings:{title:'Paramètres',general:'Général',auto:'Démarrage automatique',autoSub:'Lancer au démarrage de Windows',
+      calendar:'Source de calendrier',language:'Langue',about:'À propos',app:'Application',reset:'Réinitialiser'},
+    main:{connected:'Connecté',syncing:'Synchronisation…',disconnected:'Déconnecté',timeOff:'Congé',
+      noTimeOffPlanned:'Aucun congé prévu',tapToSet:'Toucher pour définir',notifFilterRow:'Filtre de notifications',
+      clockFaceRow:"Cadran de l'horloge",quickActionsRow:'Actions rapides',presenceAvailable:'Disponible',
+      settingsIcoTitle:'Paramètres',fwUpToDate:'Firmware à jour',fwAvailable:'Mise à jour du firmware disponible'},
+    profileEditor:{title:'Profil'},
+    timeOffEditor:{periodLbl:'Période',selectDates:'Sélectionner les dates…',selectStartDate:'Sélectionner la date de début',
+      selectEndDate:'Sélectionnez maintenant la date de fin',destinationLbl:'Destination',destinationPh:'Ville, pays',
+      destinationPhotoLbl:'Photo de la destination'},
+    calendarSource:{teamsStatus:'Connecté · Exchange Online',notSignedIn:'Non connecté',signingIn:'Connexion en cours…',
+      notConnected:'Non connecté',signInGoogle:'Se connecter avec Google',signOutGoogle:'Se déconnecter de Google'},
+    quickActions:{slotPrefix:'Emplacement',notSet:'Non défini',clickToSet:'Cliquer pour définir',clickToChange:'Cliquer pour modifier',
+      pressShortcut:'Appuyez sur le raccourci…',escToCancel:'Échap pour annuler',
+      actionLabels:{'vol-mute':'Muet volume','mic-mute':'Muet micro',screenshot:"Capture d'écran",'lock-screen':"Verrouiller l'écran",favorite:'Favori'}},
+    clockFace:{digitalLbl:'Numérique',digitalSub:'Grands chiffres',analogLbl:'Analogique',analogSub:'Cadran à aiguilles'},
+    notifFilter:{disabledLbl:'Désactivé',disabledSub:'Aucune notification affichée sur Ori',callOnlyLbl:'Appels uniquement',
+      callOnlySub:'Appels entrants uniquement',importantLbl:'Important',importantSub:'Appels et alertes prioritaires',
+      allLbl:'Toutes',allSub:'Toutes les notifications (par défaut)'},
+    discardModal:{title:'Abandonner les modifications ?',body:'Les modifications non enregistrées seront perdues.',keepEditing:'Continuer la modification',discard:'Abandonner'},
+    resetModal:{title:"Réinitialiser Ori",
+      body:"Toutes les données et appareils associés seront supprimés d'Ori. Tout effacer supprime également votre profil, votre connexion au calendrier et les raccourcis sur ce PC.",
+      factoryReset:"Réinitialisation d'usine",clearAll:'Tout effacer'},
+    fwModal:{title:'Mise à jour du firmware',update:'Mettre à jour',
+      updatingFirmware:'Mise à jour du firmware…',keepPluggedIn:'Gardez Ori branché',verifying:'Vérification…',
+      nowRunning:'Exécute maintenant {v}',done:'Terminé',
+      changelog:["Ajout de la prise en charge du vietnamien, de l'espagnol et du français","Reconnexion plus rapide après la mise en veille d'Ori","Correction d'un rare plantage lors de la suppression d'une photo de congé"]},
+    cropOverlay:{title:'Recadrer la photo',apply:'Appliquer',
+      hint:'Faites glisser le cadre pour le repositionner · Faites glisser les coins pour redimensionner · Faites défiler ou pincez pour zoomer · Faites glisser hors du cadre pour déplacer'}
+  }
+};
+function setAppLang(code){
+  if(!I18N[code]) return;
+  appLang=code;
+  applyI18n();
+}
+function applyI18n(){
+  const t=I18N[appLang];
+  $('welcomeLangSel').value=appLang;
+  $('suWelcomeTitle').textContent=t.welcome.title;
+  $('suWelcomeDesc').textContent=t.welcome.desc;
+  $('suStartBtn').textContent=t.welcome.start;
+  $('suChangeLangTxt').textContent=t.profile.changeLang;
+  $('suProfileTitle').textContent=t.profile.title;
+  $('suProfileSub').textContent=t.profile.sub;
+  $('suPhotoLbl').textContent=t.profile.photoLbl;
+  $('suChoosePhotoTxt').textContent=t.profile.choosePhoto;
+  $('suRecropTxt').textContent=t.profile.recrop;
+  $('suReuploadTxt').textContent=t.profile.reupload;
+  $('suRemoveTxt').textContent=t.profile.remove;
+  $('suNameLblTxt').textContent=t.profile.nameLbl;
+  $('suNmInp').placeholder=t.profile.namePh;
+  $('suJobLblTxt').textContent=t.profile.jobLbl;
+  $('suTlInp').placeholder=t.profile.jobPh;
+  $('suEmailLblTxt').textContent=t.profile.emailLbl;
+  $('suEmInp').placeholder=t.profile.emailPh;
+  $('suPhoneLblTxt').textContent=t.profile.phoneLbl;
+  $('suPhInp').placeholder=t.profile.phonePh;
+  $('suProfileNext').textContent=t.profile.next;
+  $('suEditProfileTxt').textContent=t.discover.editProfile;
+  $('suDiscoverTitle').textContent=t.discover.title;
+  $('suDiscoverSub').textContent=t.discover.sub;
+  $('suScanningTxt').textContent=t.discover.scanning;
+  $('suPkTitle').textContent=t.passkey.title;
+  $('suPkBodyPre').textContent=t.passkey.bodyPre;
+  $('suPkBodySuf').textContent=t.passkey.bodySuf;
+  $('suPkCancelBtn').textContent=t.passkey.cancel;
+  $('suPkPairBtn').textContent=t.passkey.pair;
+  $('suConnTitle').textContent=t.connecting.title;
+  $('suConnSub').textContent=t.connecting.sub;
+  $('suSyncTitle').textContent=t.syncing.title;
+  $('suFailTitle').textContent=t.pairfail.title;
+  $('suFailBody').textContent=t.pairfail.body;
+  $('suFailCloseBtn').textContent=t.pairfail.close;
+  $('settingsLangSel').value=appLang;
+  $('settingsTitle').textContent=t.settings.title;
+  $('settingsGeneralLbl').textContent=t.settings.general;
+  $('settingsAutoMain').textContent=t.settings.auto;
+  $('settingsAutoSub').textContent=t.settings.autoSub;
+  $('settingsCalLbl').textContent=t.settings.calendar;
+  $('settingsLangLbl').textContent=t.settings.language;
+  $('settingsAboutLbl').textContent=t.settings.about;
+  $('settingsAppLbl').textContent=t.settings.app;
+  $('settingsResetBtn').textContent=t.settings.reset;
+  $('settingsBackTxt').textContent=t.common.back;
+  // main screen
+  $('mainTimeOffLabel').textContent=t.main.timeOff;
+  $('mainTimeOffEmptyTxt').textContent=t.main.noTimeOffPlanned;
+  $('mainTimeOffEmptySub').textContent=t.main.tapToSet;
+  $('mainAncsLabel').textContent=t.main.notifFilterRow;
+  $('mainClockLabel').textContent=t.main.clockFaceRow;
+  $('mainQaLabel').textContent=t.main.quickActionsRow;
+  $('mainPText').textContent=t.main.presenceAvailable;
+  $('gearIco').title=t.main.settingsIcoTitle;
+  $('fwIco').title=fwAvail?t.main.fwAvailable:t.main.fwUpToDate;
+  $('hState').textContent={on:t.main.connected,rec:t.main.syncing,off:t.main.disconnected}[connState];
+  // profile editor
+  $('pfEditTitle').textContent=t.profileEditor.title;
+  $('pfPhotoLbl2').textContent=t.profile.photoLbl;
+  $('pfChoosePhotoTxt').textContent=t.profile.choosePhoto;
+  $('pfRecropTxt').textContent=t.profile.recrop;
+  $('pfReuploadTxt').textContent=t.profile.reupload;
+  $('pfRemoveTxt').textContent=t.profile.remove;
+  $('pfNameLblTxt').textContent=t.profile.nameLbl;
+  $('pfJobLblTxt').textContent=t.profile.jobLbl;
+  $('pfEmailLblTxt').textContent=t.profile.emailLbl;
+  $('emInp').placeholder=t.profile.emailPh;
+  $('pfPhoneLblTxt').textContent=t.profile.phoneLbl;
+  $('phInp').placeholder=t.profile.phonePh;
+  $('pfCancelBtn').textContent=t.common.cancel;
+  $('pfSaveBtn').textContent=t.common.save;
+  // time off editor
+  $('toEditTitle').textContent=t.main.timeOff;
+  $('toPeriodLblTxt').textContent=t.timeOffEditor.periodLbl;
+  $('toDestLblTxt').textContent=t.timeOffEditor.destinationLbl;
+  $('timeOffDt').placeholder=t.timeOffEditor.destinationPh;
+  $('toPhotoLbl').textContent=t.timeOffEditor.destinationPhotoLbl;
+  $('toChoosePhotoTxt').textContent=t.profile.choosePhoto;
+  $('toRecropTxt').textContent=t.profile.recrop;
+  $('toReuploadTxt').textContent=t.profile.reupload;
+  $('toRemoveTxt').textContent=t.profile.remove;
+  $('toCancelBtn').textContent=t.common.cancel;
+  $('toSaveBtn').textContent=t.common.save;
+  updatePeriodDisplay();
+  renderCal();
+  // calendar source
+  $('calEditTitle').textContent=t.settings.calendar;
+  $('teamsStatusTxt').textContent=t.calendarSource.teamsStatus;
+  _renderGgStatus();
+  _renderGgSignBtn();
+  $('calCancelBtn').textContent=t.common.cancel;
+  $('calSaveBtn').textContent=t.common.save;
+  // quick actions
+  $('qaEditTitle').textContent=t.main.quickActionsRow;
+  $('qaSlotLbl1').textContent=t.quickActions.slotPrefix+' 1';
+  $('qaSlotLbl2').textContent=t.quickActions.slotPrefix+' 2';
+  $('qaSlotLbl3').textContent=t.quickActions.slotPrefix+' 3';
+  document.querySelectorAll('#ss1 option,#ss2 option,#ss3 option').forEach(o=>{
+    if(t.quickActions.actionLabels[o.value]) o.textContent=t.quickActions.actionLabels[o.value];
+  });
+  [1,2,3].forEach(renderKbdCombo);
+  $('qaCancelBtn').textContent=t.common.cancel;
+  $('slotsSaveBtn').textContent=t.common.save;
+  // clock face
+  $('clockEditTitle').textContent=t.main.clockFaceRow;
+  $('clockDigitalLbl').textContent=t.clockFace.digitalLbl;
+  $('clockDigitalSub').textContent=t.clockFace.digitalSub;
+  $('clockAnalogLbl').textContent=t.clockFace.analogLbl;
+  $('clockAnalogSub').textContent=t.clockFace.analogSub;
+  $('clockCancelBtn').textContent=t.common.cancel;
+  $('clockSaveBtn').textContent=t.common.save;
+  // notification filter
+  $('ancsEditTitle').textContent=t.main.notifFilterRow;
+  $('ancsDisabledLbl').textContent=t.notifFilter.disabledLbl;
+  $('ancsDisabledSub').textContent=t.notifFilter.disabledSub;
+  $('ancsCallOnlyLbl').textContent=t.notifFilter.callOnlyLbl;
+  $('ancsCallOnlySub').textContent=t.notifFilter.callOnlySub;
+  $('ancsImportantLbl').textContent=t.notifFilter.importantLbl;
+  $('ancsImportantSub').textContent=t.notifFilter.importantSub;
+  $('ancsAllLbl').textContent=t.notifFilter.allLbl;
+  $('ancsAllSub').textContent=t.notifFilter.allSub;
+  $('ancsCancelBtn').textContent=t.common.cancel;
+  $('ancsSaveBtn').textContent=t.common.save;
+  // modals
+  $('discardTitle').textContent=t.discardModal.title;
+  $('discardBody').textContent=t.discardModal.body;
+  $('discardKeepBtn').textContent=t.discardModal.keepEditing;
+  $('discardBtn').textContent=t.discardModal.discard;
+  $('resetTitle').textContent=t.resetModal.title;
+  $('resetBody').textContent=t.resetModal.body;
+  $('resetFactoryBtn').textContent=t.resetModal.factoryReset;
+  $('resetClearBtn').textContent=t.resetModal.clearAll;
+  $('resetCancelBtn').textContent=t.common.cancel;
+  $('fwTitle').textContent=t.fwModal.title;
+  $('fwChangelog').innerHTML=t.fwModal.changelog.map(item=>`<li>${item}</li>`).join('');
+  $('fwCancelBtn').textContent=t.common.cancel;
+  $('fwUpdateBtn').textContent=t.fwModal.update;
+  $('cropBackTxt').textContent=t.common.back;
+  $('cropTitleTxt').textContent=t.cropOverlay.title;
+  $('cropApplyTxt').textContent=t.cropOverlay.apply;
+  $('cropHintTxt').textContent=t.cropOverlay.hint;
 }
 
 // ── First-run setup wizard ───────────────────────────────────────────────────
@@ -752,13 +1149,18 @@ function openSetupWizard(){
   $('suProfileNext').setAttribute('disabled','');
   suPhotoUrl=null;
   $('suDzThumb').style.backgroundImage='';
-  $('suDzEmpty').style.display='';$('suDzImg').style.display='none';$('suReuploadBtn').style.display='none';
+  $('suDzEmpty').style.display='';$('suDzImg').style.display='none';$('suReuploadBtn').style.display='none';$('suRemoveBtn').style.display='none';
   suSelectedDevice=null;
   suResetPasskeyInputs();
+  applyI18n();
   suShowStep('welcome');
   show('s-setup');
 }
 function suGoToProfile(){suShowStep('profile');}
+// Lets the user change language after starting profile setup, without
+// losing what they've already entered — just switches the visible step,
+// doesn't reset via openSetupWizard().
+function suBackToWelcome(){suShowStep('welcome');}
 function suDirty(){
   cc('suNmInp','suNmCnt',32);cc('suTlInp','suTlCnt',32);cc('suEmInp','suEmCnt',32);cc('suPhInp','suPhCnt',16);
   const ok=$('suNmInp').value.trim().length>0&&$('suTlInp').value.trim().length>0;
@@ -769,7 +1171,13 @@ function suOpenCropExisting(){if(suPhotoUrl) openCrop(suPhotoUrl,suApplyCrop,1,2
 function suApplyCrop(url){
   suPhotoUrl=url;
   $('suDzThumb').style.backgroundImage=`url(${url})`;
-  $('suDzEmpty').style.display='none';$('suDzImg').style.display='';$('suReuploadBtn').style.display='';
+  $('suDzEmpty').style.display='none';$('suDzImg').style.display='';$('suReuploadBtn').style.display='';$('suRemoveBtn').style.display='';
+}
+function suRemovePhoto(){
+  suPhotoUrl=null;
+  $('suDzThumb').style.backgroundImage='';
+  $('suDzEmpty').style.display='';$('suDzImg').style.display='none';
+  $('suReuploadBtn').style.display='none';$('suRemoveBtn').style.display='none';
 }
 function suLoadPhoto(inp){
   const file=inp.files[0];if(!file) return;inp.value='';
@@ -797,14 +1205,15 @@ function suStartScan(){
   clearTimeout(_suScanTimer);
   $('suScanning').style.display='';$('suDevList').style.display='none';$('suDevList').innerHTML='';
   _suScanTimer=setTimeout(()=>{
-    const devices=[{name:'Ori-XT-9F',sig:'Strong signal'},{name:'Ori-4C-12',sig:'Weak signal'}];
+    const t=I18N[appLang].discover;
+    const devices=[{name:'Ori-XT-9F',sig:t.strongSignal},{name:'Ori-4C-12',sig:t.weakSignal}];
     $('suDevList').innerHTML=devices.map(d=>
       '<div class="su-dev" onclick="suSelectDevice(\''+d.name+'\')">'+
         '<div class="su-dev-ico"><div class="wm" style="font-size:12px;"><span class="o">o</span><span class="r">r</span><span class="i">i</span></div></div>'+
         '<div class="su-dev-info"><div class="su-dev-name">'+d.name+'</div><div class="su-dev-sig">'+d.sig+'</div></div>'+
         '<div class="chev">›</div>'+
       '</div>'
-    ).join('')+'<div class="su-rescan" onclick="suStartScan()">⟳ Scan again</div>';
+    ).join('')+'<div class="su-rescan" onclick="suStartScan()">⟳ '+t.rescan+'</div>';
     $('suScanning').style.display='none';$('suDevList').style.display='';
   },1500);
 }
@@ -845,13 +1254,14 @@ function suSubmitPasskey(){
 function suRunSync(){
   suShowPairPhase(3);let p=0;
   const ring=$('suRing'),pct=$('suPct'),lbl=$('suLbl');
-  lbl.textContent='A busy day ahead…';
+  const t=I18N[appLang].syncing;
+  lbl.textContent=t.progressLabel;
   clearInterval(_suSyncTimer);
   _suSyncTimer=setInterval(()=>{
     p+=2.2;if(p>100) p=100;
     ring.style.strokeDashoffset=358-(358*p/100);pct.textContent=Math.round(p)+'%';
     if(p>=100){
-      clearInterval(_suSyncTimer);pct.textContent='✓';lbl.textContent='Ori is set up!';
+      clearInterval(_suSyncTimer);pct.textContent='✓';lbl.textContent=t.doneLabel;
       setTimeout(suFinishSetup,1200);
     }
   },65);
@@ -910,7 +1320,7 @@ const NAV_PAGES={
   'setup-connecting':()=>{openSetupWizard();suShowStep('discover');suSelectDevice('Ori-XT-9F');suShowPairPhase(2);},
   'setup-syncing':()=>{
     openSetupWizard();suShowStep('discover');suSelectDevice('Ori-XT-9F');suShowPairPhase(3);
-    $('suRing').style.strokeDashoffset=358-(358*60/100);$('suPct').textContent='60%';$('suLbl').textContent='A busy day ahead…';
+    $('suRing').style.strokeDashoffset=358-(358*60/100);$('suPct').textContent='60%';$('suLbl').textContent=I18N[appLang].syncing.progressLabel;
   },
   'settings':()=>{setConn('on');show('s-settings');},
   'profile-editor':()=>{setConn('on');openProfileScreen();},
@@ -926,7 +1336,7 @@ const NAV_PAGES={
     setConn('on');simFwUpdate();showModal('m-fw');
     $('fw-c').style.display='none';$('fw-i').style.display='';
     $('fwRing').style.strokeDashoffset=358-(358*45/100);$('fwPct').textContent='45%';
-    $('fwLbl').textContent='Keep Ori plugged in';$('fwMTitle').textContent='Updating firmware…';
+    $('fwLbl').textContent=I18N[appLang].fwModal.keepPluggedIn;$('fwMTitle').textContent=I18N[appLang].fwModal.updatingFirmware;
   },
 };
 
@@ -937,4 +1347,5 @@ function navTo(id){
   document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.page===id));
 }
 
+initCal(); // after I18N (renderCal reads it for locale-aware month/weekday names)
 navTo('main-connected');
