@@ -530,7 +530,8 @@ let calSrc='ms',calPending='ms';
 const calInfo={ms:{name:'Microsoft Teams',ok:true},gg:{name:'Google Calendar',ok:false}};
 function _renderCalOpts(s){
   ['ms','gg'].forEach(k=>$('co-'+k).classList.toggle('sel',k===s));
-  $('ggSignInRow').style.display=s==='ms'?'none':'';
+  $('msSignInRow').style.display=s==='ms'?'':'none';
+  $('ggSignInRow').style.display=s==='gg'?'':'none';
 }
 function _updateCalSave(){
   const btn=$('calSaveBtn');if(!btn) return;
@@ -561,13 +562,36 @@ function _renderGgSignBtn(){
   $('ggSignBtn').textContent=calInfo.gg.ok?t.signOutGoogle:t.signInGoogle;
 }
 function signGoogle(){
+  if(calInfo.gg.ok){
+    calInfo.gg.ok=false;_renderGgStatus();_renderGgSignBtn();
+    return;
+  }
   ggSigningIn=true;_renderGgStatus();$('ggSignBtn').disabled=true;
   setTimeout(()=>{
     ggSigningIn=false;calInfo.gg.ok=true;_renderGgStatus();
     $('ggSignBtn').disabled=false;_renderGgSignBtn();setCalPending('gg');
   },1400);
 }
-$('ggSignInRow').style.display='none';
+let msSigningIn=false;
+function _renderMsStatus(){
+  const t=I18N[appLang].calendarSource;
+  $('teamsStatusTxt').textContent=msSigningIn?t.signingIn:(calInfo.ms.ok?t.teamsStatus:t.notSignedIn);
+}
+function _renderMsSignBtn(){
+  const t=I18N[appLang].calendarSource;
+  $('msSignBtn').textContent=calInfo.ms.ok?t.signOutMicrosoft:t.signInMicrosoft;
+}
+function signMicrosoft(){
+  if(calInfo.ms.ok){
+    calInfo.ms.ok=false;_renderMsStatus();_renderMsSignBtn();
+    return;
+  }
+  msSigningIn=true;_renderMsStatus();$('msSignBtn').disabled=true;
+  setTimeout(()=>{
+    msSigningIn=false;calInfo.ms.ok=true;_renderMsStatus();
+    $('msSignBtn').disabled=false;_renderMsSignBtn();setCalPending('ms');
+  },1400);
+}
 
 const siImgMap={
   'vol-mute':'../firmware/img/shortcut_icons/vol-mute.png',
@@ -829,7 +853,8 @@ const I18N={
       selectEndDate:'Now select end date',destinationLbl:'Destination',destinationPh:'City, Country',
       destinationPhotoLbl:'Destination photo'},
     calendarSource:{teamsStatus:'Signed in · Exchange Online',notSignedIn:'Not signed in',signingIn:'Signing in…',
-      notConnected:'Not connected',signInGoogle:'Sign in with Google',signOutGoogle:'Sign out from Google'},
+      notConnected:'Not connected',signInGoogle:'Sign in with Google',signOutGoogle:'Sign out from Google',
+      signInMicrosoft:'Sign in with Microsoft',signOutMicrosoft:'Sign out from Microsoft'},
     quickActions:{slotPrefix:'Slot',notSet:'Not set',clickToSet:'Click to set',clickToChange:'Click to change',
       pressShortcut:'Press shortcut…',escToCancel:'Esc to cancel',
       actionLabels:{'vol-mute':'Volume Mute','mic-mute':'Mic Mute',screenshot:'Screenshot','lock-screen':'Lock Screen',favorite:'Favorite'}},
@@ -875,7 +900,8 @@ const I18N={
       selectEndDate:'Bây giờ chọn ngày kết thúc',destinationLbl:'Điểm đến',destinationPh:'Thành phố, Quốc gia',
       destinationPhotoLbl:'Ảnh điểm đến'},
     calendarSource:{teamsStatus:'Đã đăng nhập · Exchange Online',notSignedIn:'Chưa đăng nhập',signingIn:'Đang đăng nhập…',
-      notConnected:'Chưa kết nối',signInGoogle:'Đăng nhập bằng Google',signOutGoogle:'Đăng xuất khỏi Google'},
+      notConnected:'Chưa kết nối',signInGoogle:'Đăng nhập bằng Google',signOutGoogle:'Đăng xuất khỏi Google',
+      signInMicrosoft:'Đăng nhập bằng Microsoft',signOutMicrosoft:'Đăng xuất khỏi Microsoft'},
     quickActions:{slotPrefix:'Khe',notSet:'Chưa đặt',clickToSet:'Nhấn để đặt',clickToChange:'Nhấn để đổi',
       pressShortcut:'Nhấn tổ hợp phím…',escToCancel:'Nhấn Esc để hủy',
       actionLabels:{'vol-mute':'Tắt âm lượng','mic-mute':'Tắt mic',screenshot:'Chụp màn hình','lock-screen':'Khóa màn hình',favorite:'Yêu thích'}},
@@ -921,7 +947,8 @@ const I18N={
       selectEndDate:'Ahora selecciona la fecha de fin',destinationLbl:'Destino',destinationPh:'Ciudad, país',
       destinationPhotoLbl:'Foto del destino'},
     calendarSource:{teamsStatus:'Sesión iniciada · Exchange Online',notSignedIn:'No has iniciado sesión',signingIn:'Iniciando sesión…',
-      notConnected:'No conectado',signInGoogle:'Iniciar sesión con Google',signOutGoogle:'Cerrar sesión de Google'},
+      notConnected:'No conectado',signInGoogle:'Iniciar sesión con Google',signOutGoogle:'Cerrar sesión de Google',
+      signInMicrosoft:'Iniciar sesión con Microsoft',signOutMicrosoft:'Cerrar sesión de Microsoft'},
     quickActions:{slotPrefix:'Ranura',notSet:'Sin definir',clickToSet:'Haz clic para definir',clickToChange:'Haz clic para cambiar',
       pressShortcut:'Presiona el atajo…',escToCancel:'Esc para cancelar',
       actionLabels:{'vol-mute':'Silenciar volumen','mic-mute':'Silenciar micrófono',screenshot:'Captura de pantalla','lock-screen':'Bloquear pantalla',favorite:'Favorito'}},
@@ -967,7 +994,8 @@ const I18N={
       selectEndDate:'Sélectionnez maintenant la date de fin',destinationLbl:'Destination',destinationPh:'Ville, pays',
       destinationPhotoLbl:'Photo de la destination'},
     calendarSource:{teamsStatus:'Connecté · Exchange Online',notSignedIn:'Non connecté',signingIn:'Connexion en cours…',
-      notConnected:'Non connecté',signInGoogle:'Se connecter avec Google',signOutGoogle:'Se déconnecter de Google'},
+      notConnected:'Non connecté',signInGoogle:'Se connecter avec Google',signOutGoogle:'Se déconnecter de Google',
+      signInMicrosoft:'Se connecter avec Microsoft',signOutMicrosoft:'Se déconnecter de Microsoft'},
     quickActions:{slotPrefix:'Emplacement',notSet:'Non défini',clickToSet:'Cliquer pour définir',clickToChange:'Cliquer pour modifier',
       pressShortcut:'Appuyez sur le raccourci…',escToCancel:'Échap pour annuler',
       actionLabels:{'vol-mute':'Muet volume','mic-mute':'Muet micro',screenshot:"Capture d'écran",'lock-screen':"Verrouiller l'écran",favorite:'Favori'}},
@@ -1083,7 +1111,8 @@ function applyI18n(){
   renderCal();
   // calendar source
   $('calEditTitle').textContent=t.settings.calendar;
-  $('teamsStatusTxt').textContent=t.calendarSource.teamsStatus;
+  _renderMsStatus();
+  _renderMsSignBtn();
   _renderGgStatus();
   _renderGgSignBtn();
   $('calCancelBtn').textContent=t.common.cancel;
