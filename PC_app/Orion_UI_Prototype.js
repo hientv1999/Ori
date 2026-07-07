@@ -77,6 +77,18 @@ function showModal(id){$(id).classList.add('show');}
 function hideModal(id){$(id).classList.remove('show');}
 
 let fwAvail=false;
+let orionAppVersion='v1.0.0';
+let orionUpdateAvail=false;
+let orionUpdateVersion='v1.1.0';
+function updateOrionUpdateRow(){
+  const t=I18N[appLang].orionUpdate;
+  $('settingsAppVer').textContent=orionAppVersion;
+  $('orionUpdateRow').style.display=orionUpdateAvail?'':'none';
+  if(orionUpdateAvail){
+    $('orionUpdateMain').textContent=t.rowMain;
+    $('orionUpdateSub').textContent=t.rowSub.replace('{v}',orionUpdateVersion);
+  }
+}
 let connState='on';
 function setConn(s){
   connState=s;
@@ -818,6 +830,44 @@ function startFwInstall(){
   },55);
 }
 
+// ── Orion app self-update (separate from Ori firmware update above) ─────────
+// Orion checks its own release channel independent of any Ori connection —
+// this never touches BLE/USB CDC. Since Orion has no window to swap code
+// under while running, the flow ends in a restart prompt rather than an
+// automatic relaunch.
+let _ouInstallTimer=null;
+function simOrionUpdate(){
+  orionUpdateAvail=true;
+  updateOrionUpdateRow();
+}
+function startOrionInstall(){
+  $('ou-c').style.display='none';$('ou-i').style.display='';
+  let p=0;
+  const ring=$('ouRing'),pct=$('ouPct'),lbl=$('ouLbl'),title=$('ouInstallTitle');
+  clearInterval(_ouInstallTimer);
+  _ouInstallTimer=setInterval(()=>{
+    const t=I18N[appLang].orionUpdate;
+    p+=2.2;if(p>100) p=100;
+    ring.style.strokeDashoffset=358-(358*p/100);pct.textContent=Math.round(p)+'%';
+    if(p<65){lbl.textContent=t.downloading;title.textContent=t.downloading;}
+    else if(p<100){lbl.textContent=t.installing;title.textContent=t.installing;}
+    else{
+      clearInterval(_ouInstallTimer);
+      $('ou-i').style.display='none';$('ou-d').style.display='';
+      $('ouDoneTitle').textContent=t.doneTitle;
+      $('ouDoneBody').textContent=t.doneBody.replace('{v}',orionUpdateVersion);
+    }
+  },55);
+}
+function restartOrion(){
+  hideModal('m-orion-update');
+  orionAppVersion=orionUpdateVersion;
+  orionUpdateAvail=false;
+  updateOrionUpdateRow();
+  $('ou-c').style.display='';$('ou-i').style.display='none';$('ou-d').style.display='none';
+  $('ouRing').style.strokeDashoffset=358;$('ouPct').textContent='0%';
+}
+
 // ── Language (single, union setting for Orion's own UI) ─────────────────────
 // One app-wide language setting — no separate Ori-firmware language track.
 // Starting point for the picker is the Welcome screen; covers the whole
@@ -843,7 +893,7 @@ const I18N={
     syncing:{title:'Setting up Ori…',progressLabel:'A busy day ahead…',doneLabel:'Ori is set up!'},
     pairfail:{title:'Couldn’t pair with Ori',body:'The passkey didn’t match, or the request timed out on Ori. Pick a device to try again.',close:'Close'},
     settings:{title:'Settings',general:'General',auto:'Run automatically',autoSub:'Launch at Windows startup',
-      calendar:'Calendar Source',language:'Language',about:'About',app:'App',reset:'Reset'},
+      calendar:'Calendar Source',language:'Language',about:'About',app:'Version',reset:'Reset'},
     main:{connected:'Connected',syncing:'Syncing…',disconnected:'Disconnected',timeOff:'Time Off',
       noTimeOffPlanned:'No Time Off planned',tapToSet:'Tap to set',notifFilterRow:'Notification Filter',
       clockFaceRow:'Clock Face',quickActionsRow:'Quick Actions',presenceAvailable:'Available',
@@ -865,11 +915,17 @@ const I18N={
     discardModal:{title:'Discard changes?',body:'Unsaved changes will be lost.',keepEditing:'Keep editing',discard:'Discard'},
     resetModal:{title:'Reset Ori',
       body:'All data and paired devices will be removed from Ori. Clear All also erases your profile, calendar sign-in, and shortcuts on this PC.',
-      factoryReset:'Factory Reset',clearAll:'Clear All'},
-    fwModal:{title:'Firmware Update',update:'Update',
-      updatingFirmware:'Updating firmware…',keepPluggedIn:'Keep Ori plugged in',verifying:'Verifying…',
+      factoryReset:'Reset',clearAll:'Clear All'},
+    fwModal:{title:'Ori Update Available',update:'Update',
+      updatingFirmware:'Updating Ori…',keepPluggedIn:'Keep Ori plugged in',verifying:'Verifying…',
       nowRunning:'Now running {v}',done:'Done',
       changelog:['Added Vietnamese, Spanish, and French language support','Faster reconnect after Ori goes to sleep','Fixed a rare crash when removing a Time Off photo']},
+    orionUpdate:{title:'Orion Update Available',update:'Update',
+      downloading:'Updating Orion…',installing:'Installing…',
+      doneTitle:'Orion Update Ready',doneBody:'Restart Orion to finish updating to {v}.',
+      restartNow:'Restart Now',later:'Later',
+      rowMain:'Update available',rowSub:'Version {v} · Tap to install',
+      changelog:['Improved reconnect reliability after sleep/wake','Added French language support','Fixed tray icon flicker on Windows 11']},
     cropOverlay:{title:'Crop Photo',apply:'Apply',
       hint:'Drag crop box to reposition · Drag corners to resize · Scroll or pinch to zoom · Drag outside box to pan'}
   },
@@ -890,7 +946,7 @@ const I18N={
     syncing:{title:'Đang thiết lập Ori…',progressLabel:'Một ngày bận rộn đang chờ…',doneLabel:'Ori đã thiết lập xong!'},
     pairfail:{title:'Không thể ghép nối với Ori',body:'Mã ghép nối không khớp, hoặc yêu cầu đã hết thời gian chờ trên Ori. Hãy chọn một thiết bị để thử lại.',close:'Đóng'},
     settings:{title:'Cài đặt',general:'Chung',auto:'Tự động chạy',autoSub:'Khởi động cùng Windows',
-      calendar:'Nguồn lịch',language:'Ngôn ngữ',about:'Giới thiệu',app:'Ứng dụng',reset:'Đặt lại'},
+      calendar:'Nguồn lịch',language:'Ngôn ngữ',about:'Giới thiệu',app:'Phiên bản',reset:'Đặt lại'},
     main:{connected:'Đã kết nối',syncing:'Đang đồng bộ…',disconnected:'Đã ngắt kết nối',timeOff:'Nghỉ phép',
       noTimeOffPlanned:'Chưa có lịch nghỉ phép',tapToSet:'Nhấn để đặt',notifFilterRow:'Bộ lọc thông báo',
       clockFaceRow:'Mặt đồng hồ',quickActionsRow:'Thao tác nhanh',presenceAvailable:'Đang hoạt động',
@@ -912,11 +968,17 @@ const I18N={
     discardModal:{title:'Hủy các thay đổi?',body:'Các thay đổi chưa lưu sẽ bị mất.',keepEditing:'Tiếp tục chỉnh sửa',discard:'Hủy bỏ'},
     resetModal:{title:'Đặt lại Ori',
       body:'Toàn bộ dữ liệu và thiết bị đã ghép nối sẽ bị xóa khỏi Ori. Xóa tất cả cũng xóa hồ sơ, đăng nhập lịch và các phím tắt trên PC này.',
-      factoryReset:'Khôi phục cài đặt gốc',clearAll:'Xóa tất cả'},
-    fwModal:{title:'Cập nhật firmware',update:'Cập nhật',
-      updatingFirmware:'Đang cập nhật firmware…',keepPluggedIn:'Giữ Ori được cắm điện',verifying:'Đang xác minh…',
+      factoryReset:'Đặt lại',clearAll:'Xóa tất cả'},
+    fwModal:{title:'Có bản cập nhật Ori',update:'Cập nhật',
+      updatingFirmware:'Đang cập nhật Ori…',keepPluggedIn:'Giữ Ori được cắm điện',verifying:'Đang xác minh…',
       nowRunning:'Đang chạy {v}',done:'Hoàn tất',
       changelog:['Đã thêm hỗ trợ tiếng Việt, tiếng Tây Ban Nha và tiếng Pháp','Kết nối lại nhanh hơn sau khi Ori vào chế độ ngủ','Đã sửa lỗi hiếm gặp gây treo khi xóa ảnh Nghỉ phép']},
+    orionUpdate:{title:'Có bản cập nhật Orion',update:'Cập nhật',
+      downloading:'Đang cập nhật Orion…',installing:'Đang cài đặt…',
+      doneTitle:'Orion đã sẵn sàng cập nhật',doneBody:'Khởi động lại Orion để hoàn tất cập nhật lên {v}.',
+      restartNow:'Khởi động lại ngay',later:'Để sau',
+      rowMain:'Có bản cập nhật',rowSub:'Phiên bản {v} · Nhấn để cài đặt',
+      changelog:['Cải thiện độ ổn định kết nối lại sau khi ngủ/thức','Đã thêm hỗ trợ tiếng Pháp','Đã sửa lỗi biểu tượng khay nhấp nháy trên Windows 11']},
     cropOverlay:{title:'Cắt ảnh',apply:'Áp dụng',
       hint:'Kéo khung cắt để di chuyển · Kéo góc để đổi kích thước · Cuộn hoặc chụm để thu phóng · Kéo ngoài khung để di chuyển ảnh'}
   },
@@ -937,7 +999,7 @@ const I18N={
     syncing:{title:'Configurando Ori…',progressLabel:'Un día ocupado por delante…',doneLabel:'¡Ori está listo!'},
     pairfail:{title:'No se pudo emparejar con Ori',body:'El código no coincidió, o la solicitud caducó en Ori. Elige un dispositivo para intentarlo de nuevo.',close:'Cerrar'},
     settings:{title:'Configuración',general:'General',auto:'Iniciar automáticamente',autoSub:'Abrir al iniciar Windows',
-      calendar:'Fuente de calendario',language:'Idioma',about:'Acerca de',app:'Aplicación',reset:'Restablecer'},
+      calendar:'Fuente de calendario',language:'Idioma',about:'Acerca de',app:'Versión',reset:'Restablecer'},
     main:{connected:'Conectado',syncing:'Sincronizando…',disconnected:'Desconectado',timeOff:'Tiempo libre',
       noTimeOffPlanned:'Sin tiempo libre planeado',tapToSet:'Toca para configurar',notifFilterRow:'Filtro de notificaciones',
       clockFaceRow:'Esfera del reloj',quickActionsRow:'Acciones rápidas',presenceAvailable:'Disponible',
@@ -959,11 +1021,17 @@ const I18N={
     discardModal:{title:'¿Descartar los cambios?',body:'Los cambios no guardados se perderán.',keepEditing:'Seguir editando',discard:'Descartar'},
     resetModal:{title:'Restablecer Ori',
       body:'Todos los datos y dispositivos vinculados se eliminarán de Ori. Borrar todo también elimina tu perfil, el inicio de sesión del calendario y los accesos directos en este PC.',
-      factoryReset:'Restablecer de fábrica',clearAll:'Borrar todo'},
-    fwModal:{title:'Actualización de firmware',update:'Actualizar',
-      updatingFirmware:'Actualizando firmware…',keepPluggedIn:'Mantén Ori conectado',verifying:'Verificando…',
+      factoryReset:'Restablecer',clearAll:'Borrar todo'},
+    fwModal:{title:'Actualización de Ori disponible',update:'Actualizar',
+      updatingFirmware:'Actualizando Ori…',keepPluggedIn:'Mantén Ori conectado',verifying:'Verificando…',
       nowRunning:'Ahora ejecutando {v}',done:'Listo',
       changelog:['Se agregó soporte para vietnamita, español y francés','Reconexión más rápida cuando Ori sale del reposo','Se corrigió un error poco frecuente al eliminar una foto de Tiempo libre']},
+    orionUpdate:{title:'Actualización de Orion disponible',update:'Actualizar',
+      downloading:'Actualizando Orion…',installing:'Instalando…',
+      doneTitle:'Actualización de Orion lista',doneBody:'Reinicia Orion para terminar de actualizar a {v}.',
+      restartNow:'Reiniciar ahora',later:'Más tarde',
+      rowMain:'Actualización disponible',rowSub:'Versión {v} · Toca para instalar',
+      changelog:['Mejor fiabilidad de reconexión tras suspender/reanudar','Se agregó soporte para francés','Se corrigió el parpadeo del icono en la bandeja en Windows 11']},
     cropOverlay:{title:'Recortar foto',apply:'Aplicar',
       hint:'Arrastra el recuadro para reposicionar · Arrastra las esquinas para redimensionar · Desplázate o pellizca para hacer zoom · Arrastra fuera del recuadro para desplazar'}
   },
@@ -984,7 +1052,7 @@ const I18N={
     syncing:{title:"Configuration d'Ori…",progressLabel:'Une journée bien remplie vous attend…',doneLabel:'Ori est configuré !'},
     pairfail:{title:"Impossible d'appairer avec Ori",body:'Le code ne correspondait pas, ou la demande a expiré sur Ori. Choisissez un appareil pour réessayer.',close:'Fermer'},
     settings:{title:'Paramètres',general:'Général',auto:'Démarrage automatique',autoSub:'Lancer au démarrage de Windows',
-      calendar:'Source de calendrier',language:'Langue',about:'À propos',app:'Application',reset:'Réinitialiser'},
+      calendar:'Source de calendrier',language:'Langue',about:'À propos',app:'Version',reset:'Réinitialiser'},
     main:{connected:'Connecté',syncing:'Synchronisation…',disconnected:'Déconnecté',timeOff:'Congé',
       noTimeOffPlanned:'Aucun congé prévu',tapToSet:'Toucher pour définir',notifFilterRow:'Filtre de notifications',
       clockFaceRow:"Cadran de l'horloge",quickActionsRow:'Actions rapides',presenceAvailable:'Disponible',
@@ -1006,11 +1074,17 @@ const I18N={
     discardModal:{title:'Abandonner les modifications ?',body:'Les modifications non enregistrées seront perdues.',keepEditing:'Continuer la modification',discard:'Abandonner'},
     resetModal:{title:"Réinitialiser Ori",
       body:"Toutes les données et appareils associés seront supprimés d'Ori. Tout effacer supprime également votre profil, votre connexion au calendrier et les raccourcis sur ce PC.",
-      factoryReset:"Réinitialisation d'usine",clearAll:'Tout effacer'},
-    fwModal:{title:'Mise à jour du firmware',update:'Mettre à jour',
-      updatingFirmware:'Mise à jour du firmware…',keepPluggedIn:'Gardez Ori branché',verifying:'Vérification…',
+      factoryReset:'Réinitialiser',clearAll:'Tout effacer'},
+    fwModal:{title:"Mise à jour d'Ori disponible",update:'Mettre à jour',
+      updatingFirmware:"Mise à jour d'Ori…",keepPluggedIn:'Gardez Ori branché',verifying:'Vérification…',
       nowRunning:'Exécute maintenant {v}',done:'Terminé',
       changelog:["Ajout de la prise en charge du vietnamien, de l'espagnol et du français","Reconnexion plus rapide après la mise en veille d'Ori","Correction d'un rare plantage lors de la suppression d'une photo de congé"]},
+    orionUpdate:{title:"Mise à jour d'Orion disponible",update:'Mettre à jour',
+      downloading:"Mise à jour d'Orion…",installing:'Installation…',
+      doneTitle:"Mise à jour d'Orion prête",doneBody:"Redémarrez Orion pour terminer la mise à jour vers {v}.",
+      restartNow:'Redémarrer maintenant',later:'Plus tard',
+      rowMain:'Mise à jour disponible',rowSub:'Version {v} · Toucher pour installer',
+      changelog:["Fiabilité de reconnexion améliorée après veille/réveil","Ajout de la prise en charge du français","Correction du scintillement de l'icône de la zone de notification sous Windows 11"]},
     cropOverlay:{title:'Recadrer la photo',apply:'Appliquer',
       hint:'Faites glisser le cadre pour le repositionner · Faites glisser les coins pour redimensionner · Faites défiler ou pincez pour zoomer · Faites glisser hors du cadre pour déplacer'}
   }
@@ -1162,6 +1236,13 @@ function applyI18n(){
   $('fwChangelog').innerHTML=t.fwModal.changelog.map(item=>`<li>${item}</li>`).join('');
   $('fwCancelBtn').textContent=t.common.cancel;
   $('fwUpdateBtn').textContent=t.fwModal.update;
+  $('ouTitle').textContent=t.orionUpdate.title;
+  $('ouChangelog').innerHTML=t.orionUpdate.changelog.map(item=>`<li>${item}</li>`).join('');
+  $('ouCancelBtn').textContent=t.common.cancel;
+  $('ouUpdateBtn').textContent=t.orionUpdate.update;
+  $('ouLaterBtn').textContent=t.orionUpdate.later;
+  $('ouRestartBtn').textContent=t.orionUpdate.restartNow;
+  updateOrionUpdateRow();
   $('cropBackTxt').textContent=t.common.back;
   $('cropTitleTxt').textContent=t.cropOverlay.title;
   $('cropApplyTxt').textContent=t.cropOverlay.apply;
@@ -1328,13 +1409,14 @@ function _navReset(){
   document.querySelectorAll('.modal-bg.show').forEach(m=>m.classList.remove('show'));
   $('m-crop').classList.remove('show');
   $('fw-c').style.display='';$('fw-i').style.display='none'; // reset fw modal to its default (pre-install) sub-view
+  $('ou-c').style.display='';$('ou-i').style.display='none';$('ou-d').style.display='none'; // reset Orion update modal to its default sub-view
   $('sp1').style.display='';$('sp2').style.display='none';$('sp3').style.display='none'; // reset pairing modal to its default (Enter Passkey) sub-view
   stack.length=0;
   document.querySelectorAll('.screen.show,.screen.behind').forEach(el=>{
     el.classList.remove('show','behind');el.style.zIndex='';
   });
   if(_kbdRecSlot) stopKbdRecord();
-  clearTimeout(_suScanTimer);clearTimeout(_suConnectTimer);clearInterval(_suSyncTimer);clearInterval(_fwInstallTimer);
+  clearTimeout(_suScanTimer);clearTimeout(_suConnectTimer);clearInterval(_suSyncTimer);clearInterval(_fwInstallTimer);clearInterval(_ouInstallTimer);
   $('panel').classList.remove('hide');$('tray').classList.add('open');
 }
 
@@ -1366,6 +1448,19 @@ const NAV_PAGES={
     $('fw-c').style.display='none';$('fw-i').style.display='';
     $('fwRing').style.strokeDashoffset=358-(358*45/100);$('fwPct').textContent='45%';
     $('fwLbl').textContent=I18N[appLang].fwModal.keepPluggedIn;$('fwMTitle').textContent=I18N[appLang].fwModal.updatingFirmware;
+  },
+  'modal-orion-update-available':()=>{setConn('on');show('s-settings');simOrionUpdate();showModal('m-orion-update');},
+  'modal-orion-update-installing':()=>{
+    setConn('on');show('s-settings');simOrionUpdate();showModal('m-orion-update');
+    $('ou-c').style.display='none';$('ou-i').style.display='';
+    $('ouRing').style.strokeDashoffset=358-(358*45/100);$('ouPct').textContent='45%';
+    $('ouLbl').textContent=I18N[appLang].orionUpdate.downloading;$('ouInstallTitle').textContent=I18N[appLang].orionUpdate.downloading;
+  },
+  'modal-orion-update-ready':()=>{
+    setConn('on');show('s-settings');simOrionUpdate();showModal('m-orion-update');
+    $('ou-c').style.display='none';$('ou-d').style.display='';
+    $('ouDoneTitle').textContent=I18N[appLang].orionUpdate.doneTitle;
+    $('ouDoneBody').textContent=I18N[appLang].orionUpdate.doneBody.replace('{v}',orionUpdateVersion);
   },
 };
 

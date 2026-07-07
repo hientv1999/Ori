@@ -47,8 +47,11 @@
       <div class="group-title">Modals</div>
       <button data-page="modal-reset" onclick="navTo('modal-reset')">Reset Ori / Clear All</button>
       <button data-page="modal-pairing-fail" onclick="navTo('modal-pairing-fail')">Pairing Failed</button>
-      <button data-page="modal-fw-available" onclick="navTo('modal-fw-available')">Firmware Update Available</button>
-      <button data-page="modal-fw-installing" onclick="navTo('modal-fw-installing')">Firmware Updating</button>
+      <button data-page="modal-fw-available" onclick="navTo('modal-fw-available')">Ori Update Available</button>
+      <button data-page="modal-fw-installing" onclick="navTo('modal-fw-installing')">Ori Updating</button>
+      <button data-page="modal-orion-update-available" onclick="navTo('modal-orion-update-available')">Orion Update Available</button>
+      <button data-page="modal-orion-update-installing" onclick="navTo('modal-orion-update-installing')">Orion Updating</button>
+      <button data-page="modal-orion-update-ready" onclick="navTo('modal-orion-update-ready')">Orion Update Ready (Restart)</button>
     </div>
 
     <div class="footer">Nav is prototype-only chrome for design review — it isn't part of the real Orion app.</div>
@@ -606,10 +609,10 @@
             <div class="co-chk">✓</div>
           </div>
         </div>
-        <div id="msSignInRow" style="padding:0 14px 14px;display:none;">
+        <div id="msSignInRow" style="padding:0 14px 14px;display:none;text-align:center;">
           <button class="btn btn-sec btn-full" onclick="signMicrosoft()" id="msSignBtn">Sign out from Microsoft</button>
         </div>
-        <div id="ggSignInRow" style="padding:0 14px 14px;">
+        <div id="ggSignInRow" style="padding:0 14px 14px;text-align:center;">
           <button class="btn btn-sec btn-full" onclick="signGoogle()" id="ggSignBtn">Sign in with Google</button>
         </div>
       </div>
@@ -831,10 +834,17 @@
         <div class="pg-section">
           <div class="pg-lbl" id="settingsAboutLbl">About</div>
           <div class="pg-card">
-            <div class="about-row"><span id="settingsAppLbl">App</span><span>v1.0.0</span></div>
+            <div class="about-row"><span id="settingsAppLbl">Version</span><span id="settingsAppVer">v1.0.0</span></div>
+            <div class="pg-row" id="orionUpdateRow" style="display:none;cursor:pointer;" onclick="showModal('m-orion-update')">
+              <div>
+                <div class="pg-row-main" id="orionUpdateMain" style="color:var(--accent);">Update available</div>
+                <div class="pg-row-sub" id="orionUpdateSub">Version v1.1.0 · Tap to install</div>
+              </div>
+              <div class="chev">›</div>
+            </div>
           </div>
         </div>
-        <div style="padding:8px 14px 4px;">
+        <div style="padding:8px 14px 4px;text-align:center;">
           <button class="btn btn-dng btn-full" id="settingsResetBtn" onclick="showModal('m-reset')">Reset</button>
         </div>
         <div style="height:12px;"></div>
@@ -860,8 +870,8 @@
       <div class="modal">
         <div class="modal-title" id="resetTitle">Reset Ori</div>
         <div class="modal-body" id="resetBody">All data and paired devices will be removed from Ori. Clear All also erases your profile, calendar sign-in, and shortcuts on this PC.</div>
-        <div style="display:flex;flex-direction:column;gap:8px;margin-top:16px;">
-          <button class="btn btn-dng btn-full" id="resetFactoryBtn" onclick="doFactoryReset()">Factory Reset</button>
+        <div style="display:flex;flex-direction:column;align-items:center;gap:8px;margin-top:16px;">
+          <button class="btn btn-dng btn-full" id="resetFactoryBtn" onclick="doFactoryReset()">Reset</button>
           <button class="btn btn-dng btn-full" id="resetClearBtn" onclick="doClearAll()">Clear All</button>
           <button class="btn btn-sec btn-full" id="resetCancelBtn" onclick="hideModal('m-reset')">Cancel</button>
         </div>
@@ -927,7 +937,7 @@
     <div class="modal-bg" id="m-fw">
       <div class="modal">
         <div id="fw-c">
-          <div class="modal-title" id="fwTitle">Firmware Update</div>
+          <div class="modal-title" id="fwTitle">Ori Update Available</div>
           <div class="modal-body">
             <span style="color:var(--t1);font-weight:600;">v1.0.0 → v1.1.0</span>
             <ul class="fw-changelog" id="fwChangelog">
@@ -942,7 +952,7 @@
           </div>
         </div>
         <div id="fw-i" style="display:none;">
-          <div class="modal-title" id="fwMTitle">Updating firmware…</div>
+          <div class="modal-title" id="fwMTitle">Updating Ori…</div>
           <div class="ring-c">
             <svg width="132" height="132" viewBox="0 0 132 132">
               <circle class="ring-bg" cx="66" cy="66" r="57" />
@@ -951,6 +961,46 @@
             <div class="ring-n" id="fwPct">0%</div>
           </div>
           <div class="ring-sub" id="fwLbl">Keep Ori plugged in</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Orion app update (separate from Ori firmware update above) -->
+    <div class="modal-bg" id="m-orion-update">
+      <div class="modal">
+        <div id="ou-c">
+          <div class="modal-title" id="ouTitle">Orion Update Available</div>
+          <div class="modal-body">
+            <span style="color:var(--t1);font-weight:600;" id="ouVerLine">v1.0.0 → v1.1.0</span>
+            <ul class="fw-changelog" id="ouChangelog">
+              <li>Improved reconnect reliability after sleep/wake</li>
+              <li>Added French language support</li>
+              <li>Fixed tray icon flicker on Windows 11</li>
+            </ul>
+          </div>
+          <div class="btn-row" style="margin-top:16px;">
+            <button class="btn btn-sec btn-full" id="ouCancelBtn" onclick="hideModal('m-orion-update')">Cancel</button>
+            <button class="btn btn-primary btn-full" id="ouUpdateBtn" onclick="startOrionInstall()">Update</button>
+          </div>
+        </div>
+        <div id="ou-i" style="display:none;">
+          <div class="modal-title" id="ouInstallTitle">Updating Orion…</div>
+          <div class="ring-c">
+            <svg width="132" height="132" viewBox="0 0 132 132">
+              <circle class="ring-bg" cx="66" cy="66" r="57" />
+              <circle class="ring-fill" id="ouRing" cx="66" cy="66" r="57" />
+            </svg>
+            <div class="ring-n" id="ouPct">0%</div>
+          </div>
+          <div class="ring-sub" id="ouLbl">Updating Orion…</div>
+        </div>
+        <div id="ou-d" style="display:none;text-align:center;">
+          <div class="modal-title" id="ouDoneTitle">Orion Update Ready</div>
+          <div class="modal-body" id="ouDoneBody">Restart Orion to finish updating to v1.1.0.</div>
+          <div class="btn-row" style="margin-top:16px;">
+            <button class="btn btn-sec btn-full" id="ouLaterBtn" onclick="hideModal('m-orion-update')">Later</button>
+            <button class="btn btn-primary btn-full" id="ouRestartBtn" onclick="restartOrion()">Restart Now</button>
+          </div>
         </div>
       </div>
     </div>
