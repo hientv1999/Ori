@@ -43,6 +43,12 @@ widget_profile_card::Presence g_presence    = widget_profile_card::Presence::Off
 bool                          g_pc_connected = true;
 widget_status_bar::Mode       g_status_mode  = widget_status_bar::Mode::Calendar;
 
+// 'W' debug-cycler state — see debug_handle_key() case 'W'. Starts hidden
+// (g_weather_shown = false) to mirror the real device's pre-first-sync
+// default (widget_profile_card's own g_default_weather_visible).
+widget_profile_card::WeatherCondition g_weather_cond = widget_profile_card::WeatherCondition::Clear;
+bool                                  g_weather_shown = false;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // apply_state_defaults — set widget defaults to current runtime values before
 // any screen create() call.  Called by the debug cycler before each load and
@@ -145,6 +151,7 @@ void print_keymap() {
     LOG("  k   Media mode\n");
     LOG("  C   5-minute countdown modal\n");
     LOG("  P   Cycle Teams presence\n");
+    LOG("  W   Cycle weather badge (Clear -> ... -> Fog, 72F)\n");
     LOG("  X   Toggle PC link state\n");
     LOG("  f   Factory reset modal\n");
     LOG("  F   FACTORY RESET — wipe NVS + BLE bonds + reboot (no confirmation)\n");
@@ -222,6 +229,18 @@ void debug_handle_key(char c) {
             auto eff = g_pc_connected ? g_presence : P::Offline;
             widget_profile_card::set_default_presence(eff);
             LOG("[scr] presence -> %d\n", (int)eff);
+            break;
+        }
+        case 'W': {
+            using WC = widget_profile_card::WeatherCondition;
+            if (g_weather_shown) {
+                g_weather_cond = (g_weather_cond == WC::Fog)
+                    ? WC::Clear
+                    : static_cast<WC>(static_cast<uint8_t>(g_weather_cond) + 1);
+            }
+            g_weather_shown = true;
+            widget_profile_card::set_default_weather(g_weather_cond, 72, true);
+            LOG("[scr] weather -> condition=%d (72F)\n", (int)g_weather_cond);
             break;
         }
         case 'X':

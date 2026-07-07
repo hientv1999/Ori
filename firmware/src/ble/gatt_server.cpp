@@ -38,6 +38,7 @@ void ble_post_presence_event(widget_profile_card::Presence p);
 void ble_post_clock_face_event(uint8_t face);
 void ble_post_unpair_phone_event();
 void ble_post_ancs_filter_event(uint8_t level);
+void ble_post_weather_event(uint8_t condition, int16_t temp_f);
 void ble_post_shortcut_update_event();
 void ble_post_media_meta_event();
 void ble_post_album_art_event(uint8_t* buf, size_t len);
@@ -931,6 +932,8 @@ private:
         char    slot1[20] = {}, slot2[20] = {}, slot3[20] = {};
         bool    has_clock    = false; uint8_t clock_val = 0;
         bool    has_filter   = false; uint8_t filter_val = 0;
+        bool    has_weather_cond = false; uint8_t weather_cond_val = 0;
+        bool    has_weather_temp = false; int16_t weather_temp_val = 0;
         bool    parse_error  = false;
 
         cbor_value_enter_container(&root, &map_val);
@@ -965,6 +968,14 @@ private:
                 uint64_t v; cbor_value_get_uint64(&map_val, &v);
                 if (v > 3) { parse_error = true; break; }
                 filter_val = (uint8_t)v; has_filter = true;
+            } else if (strcmp(key, "w") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
+                uint64_t v; cbor_value_get_uint64(&map_val, &v);
+                if (v > 6) { parse_error = true; break; }
+                weather_cond_val = (uint8_t)v; has_weather_cond = true;
+            } else if (strcmp(key, "d") == 0 && cbor_value_is_integer(&map_val)) {
+                int64_t v; cbor_value_get_int64(&map_val, &v);
+                if (v < -40 || v > 140) { parse_error = true; break; }
+                weather_temp_val = (int16_t)v; has_weather_temp = true;
             }
             if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
         }
@@ -1004,6 +1015,17 @@ private:
             // NVS write + ancs_client::set_filter() deferred to main task via event.
             ble_post_ancs_filter_event(filter_val);
             LOG("[gatt] DeviceSettings: ancs_filter=0x%02X\n", (unsigned)filter_val);
+        }
+        if (has_weather_cond && has_weather_temp) {
+            // Ephemeral, like presence — not persisted, not read back. Only
+            // applied when BOTH fields are present in this write (defensive:
+            // a message with just one of the two shouldn't half-apply).
+            ble_post_weather_event(weather_cond_val, weather_temp_val);
+            LOG("[gatt] DeviceSettings: weather condition=%u temp_f=%d\n",
+                (unsigned)weather_cond_val, (int)weather_temp_val);
+        } else if (has_weather_cond != has_weather_temp) {
+            LOG("[gatt] DeviceSettings: weather partial write ignored (w=%d d=%d)\n",
+                (int)has_weather_cond, (int)has_weather_temp);
         }
     }
 

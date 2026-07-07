@@ -126,6 +126,13 @@ void set_pc_connected(bool connected);
 // Offline while it's down.
 void set_presence(uint8_t presence_byte);
 
+// Cache the most recent weather condition + temperature pushed by Orion via
+// the Device Settings characteristic ("w"/"d" fields — ble-protocol.md §3/§4,
+// §6.4). Ephemeral, like presence: apply_widget_defaults() reflects it while
+// the PC link is up and hides the badge/bubble entirely (no "unverified"
+// enum value, unlike presence's Offline) while it's down.
+void set_weather(uint8_t condition, int16_t temp_f);
+
 // Update whether a phone BLE bond / link exists.
 void set_phone_connected(bool connected);
 

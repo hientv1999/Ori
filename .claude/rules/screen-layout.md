@@ -34,6 +34,7 @@ Always visible. Contents:
 - Circular profile photo, **228 × 228 px** (or Ori wordmark if no photo) — **border colour reflects Teams presence** (see below)
 - Full name — single line, ellipsis on overflow (Orion enforces ≤ 32 chars at input)
 - Job title — single line, ellipsis on overflow (Orion enforces ≤ 32 chars at input)
+- Weather badge (top-left corner, outside the photo) + temperature bubble (bottom-right corner, outside the photo) — see below
 
 Data pulled from Orion during initial pairing, stored in flash, persists across power cycles and connection loss.
 
@@ -51,6 +52,15 @@ Data pulled from Orion during initial pairing, stored in flash, persists across 
 **Device-side fallback:** when the BLE-PC link is down, force `#8A8884` regardless of the last cached value — never claim a presence that can't be verified.
 
 Border colour transitions animate at ~300 ms ease.
+
+### Weather badge + temperature bubble
+
+Two small elements hang just outside the profile-photo circle, pushed by Orion via the Device Settings characteristic (`"w"`/`"d"` fields — `ble-protocol.md` §3/§4/§6.4):
+
+- **Weather badge** — 46 px circle, top-left corner, `--screen-elev` background + a thin border, holding a condition glyph. Seven conditions: Clear, Partly Cloudy, Cloudy, Rain, Thunderstorm, Snow, Fog. Every glyph is built from plain circles, rounded rects, and line strokes (no bezier art) so it maps directly to LVGL primitives (`lv_obj` circles/rounded-rects, `lv_line`) — no bitmap asset needed. Reference implementation: `WEATHER_ICONS` in `Ori_UI_Prototype.js`.
+- **Temperature bubble** — white pill, bottom-right corner, whole-number degrees Fahrenheit with a `°` suffix (e.g. "72°").
+
+**Device-side fallback:** same policy as presence — before the first Device Settings write containing `"w"`/`"d"`, and whenever the BLE-PC link is down, both elements are hidden entirely (no placeholder glyph, no stale reading). They reappear once Orion reconnects and re-pushes.
 
 ## Left Panel
 

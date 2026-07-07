@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=1200, initial-scale=1">
-  <title>Ori â€” UI Prototype</title>
+  <title>Ori — UI Prototype</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@200;300;400;500;600;700&display=swap"
@@ -27,16 +27,16 @@
       --accent-line: rgba(224, 184, 106, 0.55);
       --danger: #D86A6A;
       --ok: #7FB48A;
-      /* Teams-presence palette for the profile-photo border â€” colors match the
+      /* Teams-presence palette for the profile-photo border — colors match the
      actual Microsoft Teams presence swatches so users get instant recognition. */
       --presence-available: #92C353;
-      /* Teams green  â€” "Available" */
+      /* Teams green  — "Available" */
       --presence-busy: #C4314B;
-      /* Teams red    â€” "Busy", "Do Not Disturb", "In a call/meeting", "Presenting" */
+      /* Teams red    — "Busy", "Do Not Disturb", "In a call/meeting", "Presenting" */
       --presence-away: #FFAA44;
-      /* Teams amber  â€” "Be Right Back", "Appear Away" */
+      /* Teams amber  — "Be Right Back", "Appear Away" */
       --presence-offline: #8A8884;
-      /* Teams grey   â€” "Appear Offline", OR Ori-side fallback when Orion is offline */
+      /* Teams grey   — "Appear Offline", OR Ori-side fallback when Orion is offline */
       --font: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     }
 
@@ -310,6 +310,15 @@
       background: linear-gradient(180deg, var(--screen-bg) 0%, #000000 100%);
     }
 
+    /* Wraps the circular photo so the weather badge + temperature bubble can be
+   positioned relative to it, hanging just outside its edge. */
+    .profile-photo-wrap {
+      position: relative;
+      width: 228px;
+      height: 228px;
+      flex-shrink: 0;
+    }
+
     .profile-photo {
       width: 228px;
       height: 228px;
@@ -328,6 +337,55 @@
       cursor: pointer;
       flex-shrink: 0;
       transition: border-color 0.3s ease, box-shadow 0.3s ease;
+    }
+
+    /* Weather icon badge — top-left corner, outside the photo circle. */
+    .weather-badge {
+      position: absolute;
+      top: -8px;
+      left: -8px;
+      width: 46px;
+      height: 46px;
+      border-radius: 50%;
+      background: var(--screen-elev);
+      border: 2px solid var(--divider-strong);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.55);
+      z-index: 2;
+    }
+
+    .weather-badge svg {
+      width: 28px;
+      height: 28px;
+      display: block;
+    }
+
+    /* Temperature bubble — bottom-right corner, outside the photo circle.
+   White background per spec so it reads clearly against the dark UI.
+   Fixed circle (not a text-width pill) — diameter sized to fit the widest
+   value in the valid range (-40..140, ble-protocol.md §10), e.g. "-40°"/"104°". */
+    .temp-bubble {
+      position: absolute;
+      bottom: -6px;
+      right: -10px;
+      width: 54px;
+      height: 54px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #FFFFFF;
+      color: #14161A;
+      font-size: 18px;
+      font-weight: 600;
+      line-height: 1;
+      border-radius: 50%;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.55);
+      font-variant-numeric: tabular-nums;
+      letter-spacing: -0.2px;
+      white-space: nowrap;
+      z-index: 2;
     }
 
     /* Teams-presence border colors. Applied via a class set by setScreen(); the
@@ -352,7 +410,7 @@
       box-shadow: none;
     }
 
-    /* Name uses 30px (matches status-bar time + after-hours clock date â€” the
+    /* Name uses 30px (matches status-bar time + after-hours clock date — the
    three "primary identity" type sizes). Allowed to wrap onto up to 2 lines
    when long. -webkit-line-clamp caps at 2 lines so anything longer
    ellipsises. */
@@ -371,7 +429,7 @@
       word-wrap: break-word;
     }
 
-    /* Title uses font_meta (24 px) â€” matches meeting-location and media-artist. */
+    /* Title uses font_meta (24 px) — matches meeting-location and media-artist. */
     .profile-title {
       margin-top: 6px;
       font-size: 24px;
@@ -462,7 +520,7 @@
       opacity: 0.7;
     }
 
-    /* In-progress (start <= now <= end) â€” danger-red title + time so the user
+    /* In-progress (start <= now <= end) — danger-red title + time so the user
    spots the meeting they're currently supposed to be in at a glance. */
     .meeting.in-progress .time-block .start {
       color: var(--danger);
@@ -477,7 +535,7 @@
       color: var(--danger);
     }
 
-    /* Title â€” single line with ellipsis; tap the row to see the full title in an overlay */
+    /* Title — single line with ellipsis; tap the row to see the full title in an overlay */
     .meeting .title {
       color: var(--text-1);
       font-size: 26px;
@@ -1249,7 +1307,7 @@
     }
 
     /* 267px = right-panel grid width. padding-top 18px = (396 - ~359px group) / 2,
-   where the group is photo(240px) + name(14+71px, 2 lines at 30pxÃ—1.18)
+   where the group is photo(240px) + name(14+71px, 2 lines at 30px×1.18)
    + title(6+29px) = 359px. padding 0 8px matches the right-panel's
    horizontal padding so the photo center aligns too. */
     .profile-photo-col {
@@ -1482,7 +1540,7 @@
       justify-content: center;
     }
 
-    /* Centre glyphs for the OTA "ready to install" and "failed" screens â€”
+    /* Centre glyphs for the OTA "ready to install" and "failed" screens —
        sized to sit where the downloading ring sits. */
     .ota-install-glyph,
     .ota-error-glyph {
@@ -1619,7 +1677,7 @@
       z-index: 2;
     }
 
-    /* Mode toggle button in status bar â€” switches between calendar and media modes */
+    /* Mode toggle button in status bar — switches between calendar and media modes */
     .mode-toggle {
       width: 60px;
       height: 60px;
@@ -1653,9 +1711,9 @@
       height: 32px;
     }
 
-    /* Media mode â€” left panel content. The album art is the dominant element
+    /* Media mode — left panel content. The album art is the dominant element
    and doubles as the interaction surface (tap=play/pause, horiz swipe=prev/next,
-   vert swipe=volume). No persistent volume slider â€” volume HUD appears
+   vert swipe=volume). No persistent volume slider — volume HUD appears
    momentarily during the vertical swipe and fades. */
     .kbd-mode {
       height: 100%;
@@ -1666,8 +1724,8 @@
       box-sizing: border-box;
     }
 
-    /* Album art â€” 484Ã—216 â€” fills the full usable left-panel width
-   (528 px panel âˆ’ 22 px padding each side). Height fixed at 216 px. */
+    /* Album art — 484×216 — fills the full usable left-panel width
+   (528 px panel − 22 px padding each side). Height fixed at 216 px. */
     .kbd-art-wrap {
       width: 484px;
       height: 216px;
@@ -1768,7 +1826,7 @@
       transform: translateX(40px);
     }
 
-    /* Volume HUD â€” momentary overlay during vertical-swipe-on-art. Shows a
+    /* Volume HUD — momentary overlay during vertical-swipe-on-art. Shows a
    tall vertical bar fill + percentage. Fades out after the gesture ends. */
     .kbd-art-hud {
       position: absolute;
@@ -1824,7 +1882,7 @@
       transition: height 0.05s linear;
     }
 
-    /* "Nothing playing" empty-state â€” replaces the gradient with a muted dark fill,
+    /* "Nothing playing" empty-state — replaces the gradient with a muted dark fill,
    and uses the Ori brand mark (accent-gold ring + inner circle) as the placeholder. */
     .kbd-art-wrap.empty .kbd-art {
       background: radial-gradient(circle at 50% 45%, #1B2029 0%, #0c0f14 80%);
@@ -1914,8 +1972,8 @@
       margin-top: 10px;
     }
 
-    /* Title uses font_title (26 px) â€” matches meeting title. Artist uses font_meta (24 px)
-   â€” matches meeting location and profile job-title. */
+    /* Title uses font_title (26 px) — matches meeting title. Artist uses font_meta (24 px)
+   — matches meeting location and profile job-title. */
     .kbd-meta .title {
       color: var(--text-1);
       font-size: 26px;
@@ -1997,8 +2055,8 @@
 <body>
   <div class="app">
     <aside class="nav">
-      <h1>Ori â€” UI Prototype</h1>
-      <div class="sub">800 Ã— 480 Â· ESP32-S3 4.3" panel</div>
+      <h1>Ori — UI Prototype</h1>
+      <div class="sub">800 × 480 · ESP32-S3 4.3" panel</div>
       <div class="group">
         <div class="group-title">Primary states</div>
         <button data-screen="meeting-list" class="active">Meeting list</button>
@@ -2023,11 +2081,11 @@
       <div class="group">
         <div class="group-title">Setup flow</div>
         <button data-screen="setup-welcome">Welcome aboard</button>
-        <button data-screen="setup-install">Step 1 Â· Install Orion</button>
-        <button data-screen="setup-link-orion">Step 2 Â· Link Orion</button>
-        <button data-screen="setup-passkey">Step 2 Â· Passkey</button>
-        <button data-screen="setup-orioning">Step 2 Â· Orioning</button>
-        <button data-screen="setup-phone">Step 3 Â· Pair iPhone</button>
+        <button data-screen="setup-install">Step 1 · Install Orion</button>
+        <button data-screen="setup-link-orion">Step 2 · Link Orion</button>
+        <button data-screen="setup-passkey">Step 2 · Passkey</button>
+        <button data-screen="setup-orioning">Step 2 · Orioning</button>
+        <button data-screen="setup-phone">Step 3 · Pair iPhone</button>
         <button data-screen="setup-done">Setup complete</button>
       </div>
       <div class="group">
@@ -2038,11 +2096,11 @@
       </div>
       <div class="group">
         <div class="group-title">OTA update</div>
-        <button data-screen="ota-updating">1 Â· Updating firmware</button>
-        <button data-screen="ota-ready">2 Â· Firmware Install</button>
-        <button data-screen="ota-installing">3 Â· Installing (dark)</button>
-        <button data-screen="ota-updated-ack">4 Â· Updated (boot ack)</button>
-        <button data-screen="ota-error">âš  Update failed</button>
+        <button data-screen="ota-updating">1 · Updating firmware</button>
+        <button data-screen="ota-ready">2 · Firmware Install</button>
+        <button data-screen="ota-installing">3 · Installing (dark)</button>
+        <button data-screen="ota-updated-ack">4 · Updated (boot ack)</button>
+        <button data-screen="ota-error">⚠ Update failed</button>
       </div>
       <div class="group">
         <div class="group-title">Teams presence</div>
@@ -2050,6 +2108,16 @@
         <button data-screen="presence-busy">Busy / DND (red)</button>
         <button data-screen="presence-away">Be right back / Away (yellow)</button>
         <button data-screen="presence-offline">Appear offline (grey)</button>
+      </div>
+      <div class="group">
+        <div class="group-title">Weather</div>
+        <button data-screen="weather-clear">Clear</button>
+        <button data-screen="weather-partly-cloudy">Partly cloudy</button>
+        <button data-screen="weather-cloudy">Cloudy</button>
+        <button data-screen="weather-rain">Rain</button>
+        <button data-screen="weather-thunderstorm">Thunderstorm</button>
+        <button data-screen="weather-snow">Snow</button>
+        <button data-screen="weather-fog">Fog</button>
       </div>
       <div class="group">
         <div class="group-title">Edge cases</div>
@@ -2066,7 +2134,7 @@
     <main class="stage">
       <div class="stage-meta">
         <div class="label" id="meta-label">Primary state</div>
-        <h2 id="meta-title">Meeting list â€” work hours</h2>
+        <h2 id="meta-title">Meeting list — work hours</h2>
         <div class="desc" id="meta-desc"></div>
       </div>
       <div class="bezel">
@@ -2074,7 +2142,7 @@
           <div class="status-bar" id="status-bar">
             <div class="status-datetime" id="status-datetime">
               <span class="t-time">14:30</span>
-              <span class="t-sep">Â·</span>
+              <span class="t-sep">·</span>
               <span class="t-date">Wed, May 14</span>
             </div>
             <div class="status-spacer"></div>
@@ -2086,7 +2154,11 @@
             <div class="left-panel" id="left-panel"></div>
             <div class="vertical-divider"></div>
             <div class="right-panel">
-              <div class="profile-photo" id="profile-photo">XT</div>
+              <div class="profile-photo-wrap">
+                <div class="profile-photo" id="profile-photo">XT</div>
+                <div class="weather-badge" id="weather-badge"></div>
+                <div class="temp-bubble" id="temp-bubble">72&deg;</div>
+              </div>
               <div class="profile-name" id="profile-name">Xander To</div>
               <div class="profile-title" id="profile-title">Founder, Ori</div>
             </div>
@@ -2095,7 +2167,7 @@
           <div id="modal-layer"></div>
         </div>
       </div>
-      <div class="panel-label">800 Ã— 480 â€” Waveshare ESP32-S3 4.3" Touch LCD</div>
+      <div class="panel-label">800 × 480 — Waveshare ESP32-S3 4.3" Touch LCD</div>
     </main>
   </div>
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">

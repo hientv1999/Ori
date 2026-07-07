@@ -70,6 +70,7 @@ enum class BleEventType : uint8_t {
     UnpairPhone,       // Orion wrote the iPhone unpair magic to Device Command (char 0008)
     AncsFilterUpdate,  // Orion wrote ANCS Notification Filter via Device Settings (char 000E)
     ShortcutUpdate,    // Orion wrote shortcut slots via Device Settings (char 000E) — repaint shortcuts row
+    WeatherUpdate,     // Orion wrote weather condition + temp via Device Settings (char 000E)
 };
 
 struct BleEvent {
@@ -83,6 +84,7 @@ struct BleEvent {
         uint16_t conn_handle;
         uint8_t  pct;            // OrioningProgress
         uint32_t total_bytes;    // SyncBegin — declared total from SyncControl{BEGIN}
+        struct { uint8_t condition; int16_t temp_f; } weather; // WeatherUpdate
     } data;
     uint8_t peer_addr[6]; // populated for bonded events
 };
@@ -563,6 +565,13 @@ void poll() {
                 // set_clock_face() writes NVS and (if the Clock state is on
                 // screen) rebuilds it — both must run on the main task.
                 state_machine::set_clock_face(ev.data.clock_face);
+                break;
+
+            case BleEventType::WeatherUpdate:
+                // Cache in state_machine (mirrors PresenceUpdate) so
+                // apply_widget_defaults() reflects it on future screen
+                // rebuilds and the PC-link-down fallback can hide it.
+                state_machine::set_weather(ev.data.weather.condition, ev.data.weather.temp_f);
                 break;
 
             case BleEventType::MediaMetaUpdated: {
@@ -1270,6 +1279,16 @@ void ble_post_clock_face_event(uint8_t face) {
     BleEvent ev = {};
     ev.type = BleEventType::ClockFaceUpdate;
     ev.data.clock_face = face;
+    eq_push(ev);
+}
+
+// Deferred weather update (from Device Settings write handler — only posted
+// when both "w" and "d" were present in the same write, ble-protocol.md §6.4).
+void ble_post_weather_event(uint8_t condition, int16_t temp_f) {
+    BleEvent ev = {};
+    ev.type = BleEventType::WeatherUpdate;
+    ev.data.weather.condition = condition;
+    ev.data.weather.temp_f    = temp_f;
     eq_push(ev);
 }
 

@@ -69,6 +69,24 @@ constexpr uint32_t COLOR_PRESENCE_BUSY_DARK       = 0x6E0E20;  // deep crimson
 constexpr uint32_t COLOR_PRESENCE_AWAY_DARK       = 0x8C4400;  // deep burnt amber
 constexpr uint32_t COLOR_PRESENCE_OFFLINE_DARK    = 0x282826;  // near-black charcoal
 
+// Weather badge + temperature bubble palette (profile-photo overlay,
+// `screen-layout.md` "Weather badge + temperature bubble"). Values are
+// ported 1:1 from `WEATHER_ICONS` in Ori_UI_Prototype.js. The sun (Clear /
+// PartlyCloudy) intentionally reuses COLOR_ACCENT instead of the prototype's
+// near-duplicate gold (#F0B84C) — close enough to keep the palette tighter.
+constexpr uint32_t COLOR_WEATHER_CLOUD_FRONT = 0xE7EAEE;  // front cloud fill — PartlyCloudy, Cloudy
+constexpr uint32_t COLOR_WEATHER_CLOUD_BACK  = 0x9AA2AE;  // back/peeking cloud fill — Cloudy
+constexpr uint32_t COLOR_WEATHER_CLOUD_LIGHT = 0xC7CDD6;  // cloud fill — Rain, Snow
+constexpr uint32_t COLOR_WEATHER_CLOUD_STORM = 0x8B93A1;  // cloud fill — Thunderstorm
+constexpr uint32_t COLOR_WEATHER_RAIN_DROP   = 0x5FB4E0;  // raindrop stroke — Rain
+constexpr uint32_t COLOR_WEATHER_BOLT        = 0xF0C93E;  // lightning-bolt stroke — Thunderstorm
+constexpr uint32_t COLOR_WEATHER_SNOW        = 0xDCEEFF;  // snowflake stroke — Snow
+constexpr uint32_t COLOR_WEATHER_FOG         = 0xAAB2BD;  // fog-line stroke — Fog
+constexpr uint32_t COLOR_WEATHER_TEMP_BG     = 0xFFFFFF;  // temperature-bubble background — explicit
+                                                           // white per spec, intentional contrast
+                                                           // against the dark UI
+constexpr uint32_t COLOR_WEATHER_TEMP_TEXT   = 0x14161A;  // temperature-bubble text — near-black
+
 // Font getters — return pointers to Hanken Grotesk Medium fonts.
 // Sizes were selected to mirror the prototype's CSS scale.
 const lv_font_t* font_body();         // 20 px — default text

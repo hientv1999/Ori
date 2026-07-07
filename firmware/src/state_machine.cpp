@@ -76,6 +76,19 @@ bool     g_setup_complete_hold = false;
 // persisted to NVS (presence is ephemeral, §6.4).
 uint8_t  g_presence_byte   = 0x03;
 
+// Most recent weather condition + temperature pushed by Orion via the Device
+// Settings "w"/"d" fields (ble-protocol.md §3/§4). Unlike presence there is
+// no "unverified" enum value to fall back to, so g_weather_valid gates
+// visibility instead — apply_widget_defaults() hides the badge/bubble
+// entirely (rather than rendering a fallback condition/temp) whenever the PC
+// link is down or Orion has never sent weather this boot. The cached
+// condition/temp are NOT reset on disconnect — only g_weather_valid is —
+// there's no reason to discard the last-known numbers, just stop showing
+// them until Orion re-confirms (mirrors set_pc_connected()'s presence reset).
+uint8_t  g_weather_condition_byte = 0;
+int16_t  g_weather_temp_f         = 0;
+bool     g_weather_valid          = false;
+
 // Post-OTA acknowledgement (read from NVS at init). When pending, the boot
 // screen is the "Firmware updated" ack and stays sticky until the user taps
 // Close (which clears the NVS flag). g_ota_ack_version holds the new version.
@@ -244,6 +257,15 @@ void apply_widget_defaults() {
         g_pc_connected
             ? static_cast<widget_profile_card::Presence>(g_presence_byte)
             : widget_profile_card::Presence::Offline);
+
+    // Reflect the cached weather condition/temp while the PC link is up and
+    // Orion has actually sent weather this boot; hide the badge + bubble
+    // entirely otherwise — there's no "unverified" enum value like Offline
+    // to fall back to (ble-protocol.md §6.4).
+    widget_profile_card::set_default_weather(
+        static_cast<widget_profile_card::WeatherCondition>(g_weather_condition_byte),
+        g_weather_temp_f,
+        g_pc_connected && g_weather_valid);
 
     // Mode-toggle is shown when PC is connected OR when in Clock/Calendar
     // (the toggle acts as a "return" button there, works even offline).
@@ -984,6 +1006,16 @@ void set_presence(uint8_t presence_byte) {
             : widget_profile_card::Presence::Offline);
 }
 
+void set_weather(uint8_t condition, int16_t temp_f) {
+    g_weather_condition_byte = condition;
+    g_weather_temp_f = temp_f;
+    g_weather_valid = true;
+    widget_profile_card::set_default_weather(
+        static_cast<widget_profile_card::WeatherCondition>(g_weather_condition_byte),
+        g_weather_temp_f,
+        g_pc_connected && g_weather_valid);
+}
+
 void set_pc_connected(bool connected) {
     bool changed = (connected != g_pc_connected);
     g_pc_connected = connected;
@@ -992,6 +1024,11 @@ void set_pc_connected(bool connected) {
         // Never show a stale presence after the link drops — reset so a
         // future reconnect starts from Offline until Orion re-pushes.
         g_presence_byte = 0x03;
+        // Same "don't show what can't be verified" rule for weather — hide
+        // the badge/bubble on the next apply_widget_defaults() rebuild
+        // (triggered below), but keep the cached condition/temp numbers;
+        // only the visibility gate needs to reset.
+        g_weather_valid = false;
         if (g_mode == 1) {
             g_mode = 0;
             nvs::set_mode(0);

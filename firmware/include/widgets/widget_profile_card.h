@@ -23,6 +23,20 @@ enum class Presence : uint8_t {
     Offline   = 0x03,
 };
 
+// Weather condition enum matching the BLE Device Settings "w" field
+// (`ble-protocol.md` §3/§4, char 000E). Drives the weather-badge glyph
+// overlaid on the profile photo (`screen-layout.md` "Weather badge +
+// temperature bubble").
+enum class WeatherCondition : uint8_t {
+    Clear        = 0,
+    PartlyCloudy = 1,
+    Cloudy       = 2,
+    Rain         = 3,
+    Thunderstorm = 4,
+    Snow         = 5,
+    Fog          = 6,
+};
+
 lv_obj_t* create(lv_obj_t* parent);
 
 // Long-press handling (factory reset) is wired in M4. M3 exposes the
@@ -100,5 +114,18 @@ const char* get_profile_name();
 const char* get_profile_title();
 const char* get_profile_email();
 const char* get_profile_phone();
+
+// Update the weather badge + temperature bubble on the given card.
+// visible=false hides BOTH elements entirely (LV_OBJ_FLAG_HIDDEN, no placeholder
+// glyph) — used before the first weather data ever arrives, and whenever the
+// BLE-PC link is down (ble-protocol.md §6.4 — same "don't show what can't be
+// verified" policy as presence-offline). When visible=true, condition/temp_f
+// are applied and both elements are shown.
+void set_weather(lv_obj_t* card, WeatherCondition condition, int temp_f, bool visible);
+
+// Default weather applied to newly-created cards — mirrors set_default_presence().
+// Call this (not set_weather directly) from application code; it updates
+// g_active_card itself, same pattern as set_default_presence().
+void set_default_weather(WeatherCondition condition, int temp_f, bool visible);
 
 } // namespace widget_profile_card
