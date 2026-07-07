@@ -89,10 +89,6 @@ void init() {
                   (unsigned)LCD_W, (unsigned)LCD_H, panel->getFramebuffer());
 }
 
-void* framebuffer() {
-    return panel ? (void*)panel->getFramebuffer() : nullptr;
-}
-
 void stop() {
     // Halt the LCD_CAM peripheral (gates clock + asserts reset): stops the RGB
     // DMA scan-out and, crucially, its VSYNC "restart transmission" interrupt,
@@ -135,21 +131,7 @@ void flush_area(int16_t x1, int16_t y1, int16_t x2, int16_t y2,
     // Force CPU data-cache write-back to physical PSRAM for the updated region.
     // LCD_CAM DMA reads physical PSRAM directly (bypasses CPU cache); without
     // this sync it may read stale pixels, leaving old arc/spinner traces.
-    // esp_cache_msync requires both address and size aligned to the cache-line
-    // boundary (0x20 = 32 bytes), so we round down the start and round up the
-    // size to cover the full affected region.
-    {
-        constexpr uintptr_t LINE = 0x20;
-        uint16_t*  fb       = static_cast<uint16_t*>(panel->getFramebuffer());
-        uintptr_t  raw      = reinterpret_cast<uintptr_t>(fb)
-                              + (size_t)y1 * LCD_W * sizeof(uint16_t);
-        uintptr_t  aligned  = raw & ~(LINE - 1);
-        size_t     bytes    = (size_t)(y2 - y1 + 1) * LCD_W * sizeof(uint16_t)
-                              + (raw - aligned);
-        bytes = (bytes + LINE - 1) & ~(LINE - 1);
-        esp_cache_msync(reinterpret_cast<void*>(aligned), bytes,
-                        ESP_CACHE_MSYNC_FLAG_DIR_C2M);
-    }
+    sync_area(x1, y1, x2, y2);
 }
 
 } // namespace lcd_panel

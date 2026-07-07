@@ -12,6 +12,7 @@
 - **Title: single line, ellipsis on overflow.** Row height is fixed; no wrapping.
 - **Location: single line, ellipsis on overflow.** Truncates before the organizer dot-separator so the organizer name stays visible.
 - **Tap-to-expand:** tapping a meeting row opens a full-screen detail overlay showing the full title, full location, and start–end time. Dismissed via **Close** button only. Text-only — no countdown ring.
+- **Imminent-meeting exception:** if the tapped meeting starts within the 5-minute countdown window (`state-machine.md`'s pre-meeting alert, `0 ≤ start − now ≤ 300 s`), tapping opens the same full-screen countdown modal the automatic alert uses instead of the detail overlay — ring, title, organizer, location, **Close** button. This also marks the meeting as alerted, so the automatic alert doesn't pop up again for it later in the same window.
 
 ## Sorting and Overlaps
 

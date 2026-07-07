@@ -6,6 +6,7 @@
 #include <esp_mac.h>
 #include <esp_heap_caps.h>
 #include "nvs_store.h"
+#include "time_format.h"
 
 namespace app_state {
 
@@ -303,15 +304,17 @@ static long days_from_civil(int y, int m, int d) {
 //   this year       → "3 Jun"
 //   older           → "3 Jun 2025"
 // `hhmm_fallback` (TZ-free "HH:MM" from the ANCS Date) is used when the device
-// clock isn't synced, so we never render a bogus relative time. 24-hour clock
-// to match the status bar / clock screen.
+// clock isn't synced, so we never render a bogus relative time. Times honour the
+// user's 12-/24-hour preference (time_format) to match the status bar / clock.
 static void format_notif_time(time_t when, time_t now,
                               const char* hhmm_fallback,
                               char* out, size_t sz) {
     out[0] = '\0';
     bool clock_ok = now > 1600000000;   // ~2020-09 — device clock has been synced
     if (when <= 0 || !clock_ok) {
-        if (hhmm_fallback && hhmm_fallback[0]) snprintf(out, sz, "%s", hhmm_fallback);
+        // hhmm_fallback is a canonical 24-hour "HH:MM" from the ANCS Date field;
+        // render it in the user's configured format.
+        if (hhmm_fallback && hhmm_fallback[0]) time_format::reformat(hhmm_fallback, out, sz);
         return;
     }
     long delta = (long)(now - when);
@@ -327,12 +330,14 @@ static void format_notif_time(time_t when, time_t now,
     long day_diff = days_from_civil(n.tm_year + 1900, n.tm_mon + 1, n.tm_mday)
                   - days_from_civil(w.tm_year + 1900, w.tm_mon + 1, w.tm_mday);
 
+    char tbuf[16];
+    time_format::hhmm(tbuf, sizeof(tbuf), w.tm_hour, w.tm_min);
     if (day_diff <= 0) {                       // earlier today (≥ 4h ago)
-        snprintf(out, sz, "%02d:%02d", w.tm_hour, w.tm_min);
+        snprintf(out, sz, "%s", tbuf);
     } else if (day_diff == 1) {
-        snprintf(out, sz, "Yesterday, %02d:%02d", w.tm_hour, w.tm_min);
+        snprintf(out, sz, "Yesterday, %s", tbuf);
     } else if (day_diff < 7) {
-        snprintf(out, sz, "%s, %02d:%02d", kWeekday[w.tm_wday], w.tm_hour, w.tm_min);
+        snprintf(out, sz, "%s, %s", kWeekday[w.tm_wday], tbuf);
     } else if (w.tm_year == n.tm_year) {
         snprintf(out, sz, "%d %s", w.tm_mday, kMonth[w.tm_mon]);
     } else {

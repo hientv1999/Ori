@@ -41,26 +41,6 @@ void on_reset(lv_event_t* /*e*/) {
     lv_timer_create(factory_reset_timer_cb, 50, nullptr);
 }
 
-lv_obj_t* make_warn_circle(lv_obj_t* parent) {
-    lv_obj_t* circle = lv_obj_create(parent);
-    lv_obj_set_size(circle, 96, 96);
-    lv_obj_set_style_radius(circle, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(circle, theme::color(theme::COLOR_DANGER_SOFT), 0);
-    lv_obj_set_style_bg_opa(circle, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(circle, 0, 0);
-    lv_obj_set_style_pad_all(circle, 0, 0);
-    lv_obj_clear_flag(circle, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(circle, LV_OBJ_FLAG_CLICKABLE);
-
-    // "!" glyph — light-weight stand-in for the prototype's warning triangle.
-    lv_obj_t* bang = lv_label_create(circle);
-    lv_label_set_text(bang, "!");
-    lv_obj_set_style_text_color(bang, theme::color(theme::COLOR_DANGER), 0);
-    lv_obj_set_style_text_font(bang, theme::font_large(), 0);
-    lv_obj_center(bang);
-    return circle;
-}
-
 } // namespace
 
 namespace modal_factory_reset {
@@ -76,7 +56,7 @@ lv_obj_t* create(lv_obj_t* base_screen) {
     lv_obj_set_size(spacer_top, 0, 0);
     lv_obj_set_flex_grow(spacer_top, 1);
 
-    make_warn_circle(scroll_area);
+    ui::make_alert_glyph_circle(scroll_area);
 
     lv_obj_t* heading = lv_label_create(scroll_area);
     lv_label_set_text(heading, "Factory reset Ori?");

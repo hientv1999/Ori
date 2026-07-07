@@ -1,6 +1,7 @@
 ﻿#include "widgets/widget_status_bar.h"
 
 #include <cstdio>
+#include <cstring>
 #include <functional>
 #include <time.h>
 
@@ -9,10 +10,10 @@
 #include "screens/modal_ancs_notification.h"
 #include "screens/modal_incoming_call.h"
 #include "screens/modal_unpair_phone.h"
-// #include "screens/screen_repair_phone.h" // removed obsolete repair screen
 #include "state_machine.h"
 #include "screens/screen_setup.h" // for screen_setup::create
 #include "theme.h"
+#include "time_format.h"
 
 // Status bar: 800 x 84 px, full panel width, anchored top.
 //
@@ -35,22 +36,27 @@ constexpr int16_t ICON_GAP      = 14;
 constexpr int16_t PHONE_SIZE    = 64;
 constexpr int16_t DATETIME_GAP  = 12;
 
-// Format current local time into the two display strings.
-// Fills time_buf/date_buf and returns whether the clock is actually set. Before
-// the first time sync (e.g. after a cold power cycle) there is no valid time, so
-// both strings are emptied and the caller hides the whole clock — no "--:--"
-// placeholder, no fabricated ~1970 value.
+// Format current local time into the display strings. Fills time_buf (the
+// "H:MM" portion, always at font_time() size), ampm_buf (the "AM"/"PM"
+// suffix — emptied in 24-hour format, since it renders as its own smaller
+// subtext label rather than being appended to time_buf), and date_buf.
+// Returns whether the clock is actually set. Before the first time sync
+// (e.g. after a cold power cycle) there is no valid time, so every string is
+// emptied and the caller hides the whole clock — no "--:--" placeholder, no
+// fabricated ~1970 value.
 static bool format_real_time(char* time_buf, size_t time_sz,
+                              char* ampm_buf, size_t ampm_sz,
                               char* date_buf, size_t date_sz) {
     if (!app_state::clock_is_set()) {
         if (time_sz) time_buf[0] = '\0';
+        if (ampm_sz) ampm_buf[0] = '\0';
         if (date_sz) date_buf[0] = '\0';
         return false;
     }
     time_t t = time(nullptr);
     struct tm tm;
     localtime_r(&t, &tm);
-    snprintf(time_buf, time_sz, "%02d:%02d", tm.tm_hour, tm.tm_min);
+    time_format::hhmm_split(time_buf, time_sz, ampm_buf, ampm_sz, tm.tm_hour, tm.tm_min);
     char day[4], mon[4];
     strftime(day, sizeof(day), "%a", &tm);
     strftime(mon, sizeof(mon), "%b", &tm);
@@ -60,10 +66,21 @@ static bool format_real_time(char* time_buf, size_t time_sz,
 
 struct StatusBarState {
     lv_obj_t*   datetime_row;
+    lv_obj_t*   time_row;    // wraps time_label + ampm_label with a tight gap
     lv_obj_t*   time_label;
+    lv_obj_t*   ampm_label;  // "AM"/"PM" subtext — hidden in 24-hour format
     lv_obj_t*   sep_label;
     lv_obj_t*   date_label;
-    lv_obj_t*   right_row;
+    // Last-rendered clock strings — update_clock_labels() runs every second on
+    // almost every screen, but the displayed values only actually change once
+    // a minute (time/ampm) or once a day (date). Caching lets it skip the
+    // lv_label_set_text() + hidden-flag churn on the ~59/60 ticks where
+    // nothing visibly changes.
+    char        last_time_buf[8];
+    char        last_ampm_buf[4];
+    char        last_date_buf[20];
+    bool        last_clock_set;
+    bool        clock_labels_initialized; // false until the first tick renders
     lv_timer_t* clock_timer;  // 1 s self-update timer
     lv_timer_t* time_long_press_timer; // custom-duration press-and-hold timer (datetime_row only)
     bool        time_long_press_fired; // true once the timer above has fired, until the next press
@@ -87,9 +104,30 @@ struct StatusBarState {
 static void update_clock_labels(lv_obj_t* bar) {
     auto* s = static_cast<StatusBarState*>(lv_obj_get_user_data(bar));
     if (!s) return;
-    char time_buf[8], date_buf[20];
-    bool clock_set = format_real_time(time_buf, sizeof(time_buf), date_buf, sizeof(date_buf));
+    char time_buf[8], ampm_buf[4], date_buf[20];
+    bool clock_set = format_real_time(time_buf, sizeof(time_buf), ampm_buf, sizeof(ampm_buf),
+                                       date_buf, sizeof(date_buf));
+
+    // Skip the redraw entirely when nothing displayed actually changed since
+    // last tick (time/ampm change once a minute, date once a day — this runs
+    // every second on almost every screen the whole time Ori is powered on).
+    bool unchanged = s->clock_labels_initialized &&
+                      clock_set == s->last_clock_set &&
+                      strcmp(time_buf, s->last_time_buf) == 0 &&
+                      strcmp(ampm_buf, s->last_ampm_buf) == 0 &&
+                      strcmp(date_buf, s->last_date_buf) == 0;
+    if (unchanged) return;
+    s->clock_labels_initialized = true;
+    s->last_clock_set = clock_set;
+    strncpy(s->last_time_buf, time_buf, sizeof(s->last_time_buf) - 1);
+    s->last_time_buf[sizeof(s->last_time_buf) - 1] = '\0';
+    strncpy(s->last_ampm_buf, ampm_buf, sizeof(s->last_ampm_buf) - 1);
+    s->last_ampm_buf[sizeof(s->last_ampm_buf) - 1] = '\0';
+    strncpy(s->last_date_buf, date_buf, sizeof(s->last_date_buf) - 1);
+    s->last_date_buf[sizeof(s->last_date_buf) - 1] = '\0';
+
     lv_label_set_text(s->time_label, time_buf);
+    lv_label_set_text(s->ampm_label, ampm_buf);
     lv_label_set_text(s->date_label, date_buf);
     // No local time yet (e.g. after a cold power cycle, before the first Orion or
     // iPhone time sync): hide the WHOLE clock — time, "·" separator and date —
@@ -102,6 +140,13 @@ static void update_clock_labels(lv_obj_t* bar) {
         lv_obj_add_flag(s->time_label, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s->sep_label,  LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s->date_label, LV_OBJ_FLAG_HIDDEN);
+    }
+    // ampm_label is hidden in 24-hour format too (ampm_buf empty) — not just
+    // when the clock is unset — so time_row's gap doesn't leave a blank slot.
+    if (clock_set && ampm_buf[0] != '\0') {
+        lv_obj_clear_flag(s->ampm_label, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(s->ampm_label, LV_OBJ_FLAG_HIDDEN);
     }
 }
 
@@ -254,7 +299,7 @@ lv_obj_t* make_ancs_tile(lv_obj_t* parent, const char* token, uint32_t uid, uint
 // red when disconnected. No diagonal slash — the icon is now a permanent
 // status-bar button (tap → unpair when connected / re-pair when not).
 //
-// Layout inside the 64 px square (centred to the right_row):
+// Layout inside the 64 px square:
 //
 //          mic strip  (a short horizontal line near the top of the body)
 //         ┌──────────┐
@@ -704,9 +749,33 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_flex_align(state->datetime_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(state->datetime_row, DATETIME_GAP, 0);
 
-    state->time_label = lv_label_create(state->datetime_row);
+    // time_row wraps time_label + ampm_label with a tight 4 px gap — much
+    // closer than DATETIME_GAP, so "2:30 PM" reads as one unit rather than
+    // three evenly-spaced blocks. Not clickable itself (lv_obj_create()
+    // defaults to clickable) so taps still bubble to datetime_row's handlers.
+    state->time_row = lv_obj_create(state->datetime_row);
+    lv_obj_set_size(state->time_row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(state->time_row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(state->time_row, 0, 0);
+    lv_obj_set_style_pad_all(state->time_row, 0, 0);
+    lv_obj_clear_flag(state->time_row, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(state->time_row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_flex_flow(state->time_row, LV_FLEX_FLOW_ROW);
+    // Cross-axis CENTER so the smaller AM/PM subtext is vertically centered
+    // against the larger time digits.
+    lv_obj_set_flex_align(state->time_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(state->time_row, 4, 0);
+
+    state->time_label = lv_label_create(state->time_row);
     lv_obj_set_style_text_color(state->time_label, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(state->time_label, theme::font_time(), 0);
+
+    // AM/PM subtext — smaller than the hour:minute text; hidden entirely in
+    // 24-hour format (update_clock_labels() toggles this every second).
+    state->ampm_label = lv_label_create(state->time_row);
+    lv_obj_set_style_text_color(state->ampm_label, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
+    lv_obj_set_style_text_font(state->ampm_label, theme::font_body(), 0);
+    lv_obj_add_flag(state->ampm_label, LV_OBJ_FLAG_HIDDEN); // shown by the first update_clock_labels() tick if 12h
 
     state->sep_label = lv_label_create(state->datetime_row);
     lv_label_set_text_static(state->sep_label, "\xC2\xB7");  // U+00B7 MIDDLE DOT, static literal
@@ -739,12 +808,9 @@ lv_obj_t* create(lv_obj_t* parent) {
     // in the same flex cell. Putting them in the bar directly lets the
     // bar's flex use the spacer's flex_grow to absorb the slack.
     //
-    // `right_row` is kept as an alias for `ancs_row` because some
-    // existing code references it (and `ancs_row` is the only sub-
-    // container that needs its own flex — for the variable number of
-    // ANCS tiles with the right inter-tile gap).
+    // `ancs_row` is the only sub-container that needs its own flex — for
+    // the variable number of ANCS tiles with the right inter-tile gap.
     state->ancs_row = lv_obj_create(bar);
-    state->right_row = state->ancs_row;  // alias for legacy references
     // Width is recomputed by refresh() based on the actual tile count
     // (LV_SIZE_CONTENT does NOT re-expand reliably after lv_obj_delete_children()).
     // Start at 0 — refresh() runs at the end of create() and sets the

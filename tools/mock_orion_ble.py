@@ -29,11 +29,12 @@ Interactive commands (shown on connect):
     m  — push media now (manual one-shot push of the current Windows
          now-playing session — title, artist, embedded album art)
     k  — push clock face (toggles DIGITAL <-> ANALOG, char 000E Device Settings)
+    h  — push time format (toggles 24-HOUR <-> 12-HOUR, char 000E Device Settings)
     n  — push ANCS filter (cycles DISABLED -> CALL_ONLY -> IMPORTANT -> ALL -> ...)
     w  — push weather (cycles CLEAR -> PARTLY_CLOUDY -> CLOUDY -> RAIN ->
          THUNDERSTORM -> SNOW -> FOG -> ..., see WEATHER_CYCLE for the
          paired temperature each condition sends)
-    r  — read Device Settings (clock_face + ancs_filter currently in Ori's NVS)
+    r  — read Device Settings (clock_face + time_format + ancs_filter currently in Ori's NVS)
     f  — factory reset           (§7.2)
     q  — quit
 
@@ -68,8 +69,9 @@ Presence and weather are both pushed separately from the sync flow — neither h
 a manifest or hash, and neither is returned by Device Settings read (Orion is the
 sole source of truth for both). A fresh value of each is written right after
 connecting (--presence default AVAILABLE, --weather default CLEAR); re-push
-anytime with 'p' / 'w'. Weather's two fields ("w" condition + "d" temp_f) are
-always sent together — Ori ignores a write with only one of the two. Clock face
+anytime with 'p' / 'w'. Weather's three fields ("w" condition + "d" temp_c +
+"u" unit) are always sent together — Ori ignores a write with only some of the
+three. Clock face
 and ANCS filter ARE recovered via a Device Settings read on connect ('r' to
 re-read manually), so 'k' starts from Ori's actual persisted value rather than a
 script-side assumption.
@@ -192,24 +194,30 @@ FACTORY_RESET_MAGIC = bytes([0xFA, 0xC7, 0x5E, 0x5E])
 # Device Settings field value names (ble-protocol.md §4 DeviceSettings schema).
 PRESENCE_NAMES   = {0x00: "AVAILABLE", 0x01: "BUSY", 0x02: "AWAY", 0x03: "OFFLINE"}
 CLOCK_FACE_NAMES = {0x00: "DIGITAL", 0x01: "ANALOG"}
+TIME_FORMAT_NAMES = {0x00: "24-HOUR", 0x01: "12-HOUR"}
 ANCS_FILTER_NAMES = {0x00: "DISABLED", 0x01: "CALL_ONLY", 0x02: "IMPORTANT", 0x03: "ALL"}
 WEATHER_NAMES = {
     0x00: "CLEAR", 0x01: "PARTLY_CLOUDY", 0x02: "CLOUDY", 0x03: "RAIN",
     0x04: "THUNDERSTORM", 0x05: "SNOW", 0x06: "FOG",
 }
 
-# (condition, temp_f) pairs to cycle through with 'w' — a plausible temperature
-# per condition rather than a random number, so the badge + bubble combination
-# looks sane on Ori's screen while hand-testing (ble-protocol.md §4 DeviceSettings
-# "w"/"d", always written together).
+# (condition, temp_c) pairs to cycle through with 'w'. Values default to a
+# Celsius scale — this mock always declares unit=Celsius via push_weather()'s
+# temp_unit=1; Ori renders whatever integer + unit it's told, never converts,
+# see ble-protocol.md §4) and are deliberately spread across the width extremes
+# of the temperature-text label ("-40°C".."140°C", cap in ble-protocol.md §10)
+# rather than all being plausible-looking, so 'w' exercises: a normal 2-digit
+# positive (Clear/Partly Cloudy/Thunderstorm), a 1-digit positive (Cloudy), a
+# 1-digit negative (Rain), a 2-digit negative (Snow), and the min-cap boundary
+# (Fog).
 WEATHER_CYCLE = [
-    (0x00, 78),   # Clear
-    (0x01, 68),   # Partly Cloudy
-    (0x02, 58),   # Cloudy
-    (0x03, 52),   # Rain
-    (0x04, 71),   # Thunderstorm
-    (0x05, 28),   # Snow
-    (0x06, 49),   # Fog
+    (0x00, 26),    # Clear            — 2-digit positive
+    (0x01, 20),    # Partly Cloudy    — 2-digit positive
+    (0x02, 8),     # Cloudy           — 1-digit positive
+    (0x03, -3),    # Rain             — 1-digit negative
+    (0x04, 22),    # Thunderstorm     — 2-digit positive
+    (0x05, -22),   # Snow             — 2-digit negative
+    (0x06, -40),   # Fog              — min-cap boundary (widest label: "-40°C")
 ]
 
 # Shortcut icon token combos to cycle through with 'c' (media-mode.md /
@@ -586,14 +594,19 @@ def build_device_settings(presence: Optional[int] = None,
                           slot2: Optional[str] = None,
                           slot3: Optional[str] = None,
                           clock_face: Optional[int] = None,
+                          time_format: Optional[int] = None,
                           ancs_filter: Optional[int] = None,
                           weather_condition: Optional[int] = None,
-                          temp_f: Optional[int] = None) -> bytes:
+                          temp_c: Optional[int] = None,
+                          temp_unit: Optional[int] = None) -> bytes:
     # Device Settings (char 000E) — all fields optional; absent keys leave
     # Ori's current state unchanged. Applied immediately outside BEGIN/END.
-    # Keys: "p"=presence, "1"/"2"/"3"=shortcut slots, "c"=clock_face, "f"=ancs_filter,
-    # "w"=weather_condition, "d"=temp_f. Firmware only applies weather when both
-    # "w" and "d" are present in the same write — always pass them together.
+    # Keys: "p"=presence, "1"/"2"/"3"=shortcut slots, "c"=clock_face,
+    # "h"=time_format (0=24-hour, 1=12-hour), "f"=ancs_filter,
+    # "w"=weather_condition, "d"=temperature, "u"=temp_unit (0=Fahrenheit,
+    # 1=Celsius — this mock always declares Celsius, see WEATHER_CYCLE).
+    # Firmware only applies weather when "w", "d", AND "u" are all present in
+    # the same write — always pass all three together.
     d: dict = {}
     if presence is not None:
         d["p"] = presence
@@ -605,12 +618,16 @@ def build_device_settings(presence: Optional[int] = None,
         d["3"] = slot3
     if clock_face is not None:
         d["c"] = clock_face
+    if time_format is not None:
+        d["h"] = time_format
     if ancs_filter is not None:
         d["f"] = ancs_filter
     if weather_condition is not None:
         d["w"] = weather_condition
-    if temp_f is not None:
-        d["d"] = temp_f
+    if temp_c is not None:
+        d["d"] = temp_c
+    if temp_unit is not None:
+        d["u"] = temp_unit
     return cbor2.dumps(d)
 
 def build_host_volume_state(level: int, mute: bool = False) -> bytes:
@@ -843,14 +860,15 @@ class MockOrion:
         payload = build_device_settings(presence=value)
         await self.write(UUID_DEV_SETTINGS, payload, f"DeviceSettings presence={name}")
 
-    async def push_weather(self, condition: int, temp_f: int):
-        # Weather is "w"/"d" in Device Settings (char 000E) — ephemeral like
-        # presence, always written together (firmware ignores a lone field —
-        # ble-protocol.md §6.4). Must push fresh on every connect.
+    async def push_weather(self, condition: int, temp_c: int):
+        # Weather is "w"/"d"/"u" in Device Settings (char 000E) — ephemeral
+        # like presence, always written together (firmware ignores a write
+        # with only some of the three — ble-protocol.md §6.4). Must push
+        # fresh on every connect. This mock always declares Celsius (u=1).
         name = WEATHER_NAMES.get(condition, f"0x{condition:02X}")
-        payload = build_device_settings(weather_condition=condition, temp_f=temp_f)
+        payload = build_device_settings(weather_condition=condition, temp_c=temp_c, temp_unit=1)
         await self.write(UUID_DEV_SETTINGS, payload,
-                         f"DeviceSettings weather={name} temp_f={temp_f}")
+                         f"DeviceSettings weather={name} temp_c={temp_c} unit=C")
 
     async def push_clock_face(self, value: int):
         # Clock Face is "c" in Device Settings — persisted to NVS; only write
@@ -858,6 +876,13 @@ class MockOrion:
         name = CLOCK_FACE_NAMES.get(value, f"0x{value:02X}")
         payload = build_device_settings(clock_face=value)
         await self.write(UUID_DEV_SETTINGS, payload, f"DeviceSettings clock_face={name}")
+
+    async def push_time_format(self, value: int):
+        # Time Format is "h" in Device Settings — persisted to NVS; only write
+        # when the user changes it, not on every reconnect.
+        name = TIME_FORMAT_NAMES.get(value, f"0x{value:02X}")
+        payload = build_device_settings(time_format=value)
+        await self.write(UUID_DEV_SETTINGS, payload, f"DeviceSettings time_format={name}")
 
     async def push_ancs_filter(self, value: int):
         # ANCS filter is "f" in Device Settings — persisted to NVS; only write
@@ -867,19 +892,23 @@ class MockOrion:
         await self.write(UUID_DEV_SETTINGS, payload, f"DeviceSettings ancs_filter={name}")
 
     async def read_device_settings(self) -> dict:
-        # Read Device Settings (char 000E) to recover the two NVS-persisted fields:
+        # Read Device Settings (char 000E) to recover the NVS-persisted fields:
         #   "c" = clock_face (0=Digital, 1=Analog)
+        #   "h" = time_format (0=24-hour, 1=12-hour)
         #   "f" = ancs_filter (0=Disabled, 1=CallOnly, 2=Important, 3=All)
-        # Presence and shortcuts are NOT returned — Orion is the source of truth
+        #   "1"/"2"/"3" = shortcut slot tokens
+        # Presence and weather are NOT returned — Orion is the source of truth
         # for both. ble-protocol.md §6.4 / §4 DeviceSettings schema.
         try:
             raw = await self.client.read_gatt_char(UUID_DEV_SETTINGS)
             msg = cbor2.loads(bytes(raw))
             cf  = msg.get("c")
+            tf  = msg.get("h")
             af  = msg.get("f")
             cf_name = CLOCK_FACE_NAMES.get(cf,   f"0x{cf:02X}" if isinstance(cf, int) else "?")
+            tf_name = TIME_FORMAT_NAMES.get(tf,  f"0x{tf:02X}" if isinstance(tf, int) else "?")
             af_name = ANCS_FILTER_NAMES.get(af,   f"0x{af:02X}" if isinstance(af, int) else "?")
-            print(f"  [read] DeviceSettings: clock_face={cf_name}  ancs_filter={af_name}")
+            print(f"  [read] DeviceSettings: clock_face={cf_name}  time_format={tf_name}  ancs_filter={af_name}")
             return msg
         except Exception as exc:
             print(f"  [read] DeviceSettings: error {exc}")
@@ -1340,11 +1369,12 @@ Commands:
   m — push media now  (manual one-shot; media also auto-pushes in the
                         background on every track change — see media_watcher)
   k — push clock face (toggle DIGITAL <-> ANALOG, char 000E Device Settings)
+  h — push time format (toggle 24-HOUR <-> 12-HOUR, char 000E Device Settings)
   n — push ANCS filter (cycle DISABLED -> CALL_ONLY -> IMPORTANT -> ALL -> ...)
   w — push weather    (cycle CLEAR -> PARTLY_CLOUDY -> CLOUDY -> RAIN ->
                         THUNDERSTORM -> SNOW -> FOG -> ..., each with a
                         plausible temp — see WEATHER_CYCLE)
-  r — read Device Settings (show Ori's current clock_face + ancs_filter from NVS)
+  r — read Device Settings (show Ori's current clock_face + time_format + ancs_filter from NVS)
   f — factory reset   (§7.2)
   q — quit
 """
@@ -1358,6 +1388,8 @@ async def command_loop(orion: MockOrion, initial_settings: Optional[dict] = None
     # Seed clock_face from Ori's actual NVS value (read on connect) so 'k'
     # toggles relative to what the device is actually showing, not a guess.
     clock_face = [int(initial_settings.get("c", 0x00)) if initial_settings else 0x00]
+    # Same for time format ('h' toggle), seeded from Ori's actual NVS value.
+    time_format = [int(initial_settings.get("h", 0x00)) if initial_settings else 0x00]
     print(MENU)
     while not orion.disconnected:
         try:
@@ -1385,13 +1417,16 @@ async def command_loop(orion: MockOrion, initial_settings: Optional[dict] = None
         elif cmd == "k":
             clock_face[0] = 0x00 if clock_face[0] else 0x01
             await orion.push_clock_face(clock_face[0])
+        elif cmd == "h":
+            time_format[0] = 0x00 if time_format[0] else 0x01
+            await orion.push_time_format(time_format[0])
         elif cmd == "n":
             ancs_idx[0] = (ancs_idx[0] + 1) % 4
             await orion.push_ancs_filter(ancs_idx[0])
         elif cmd == "w":
-            condition, temp_f = WEATHER_CYCLE[weather_idx[0]]
+            condition, temp_c = WEATHER_CYCLE[weather_idx[0]]
             weather_idx[0] = (weather_idx[0] + 1) % len(WEATHER_CYCLE)
-            await orion.push_weather(condition, temp_f)
+            await orion.push_weather(condition, temp_c)
         elif cmd == "r":
             await orion.read_device_settings()
         elif cmd == "f":
@@ -1401,7 +1436,7 @@ async def command_loop(orion: MockOrion, initial_settings: Optional[dict] = None
             print("  Goodbye.")
             break
         elif cmd:
-            print("  Unknown command. Type s / p / c / t / m / k / n / w / r / f / q")
+            print("  Unknown command. Type s / p / c / t / m / k / h / n / w / r / f / q")
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -1495,7 +1530,7 @@ async def main(args):
         await orion.push_presence(args.presence)
         # Weather is likewise ephemeral — push fresh on every connect so the
         # badge isn't left hidden from a previous disconnect (ble-protocol.md §6.4).
-        weather_temp = dict(WEATHER_CYCLE).get(args.weather, 72)
+        weather_temp = dict(WEATHER_CYCLE).get(args.weather, 20)
         await orion.push_weather(args.weather, weather_temp)
         # Sync automatically on connect — Ori reports which sections differ and we
         # send only those. Running it immediately also satisfies Ori's first-pair

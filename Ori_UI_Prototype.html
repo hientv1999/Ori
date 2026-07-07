@@ -339,53 +339,53 @@
       transition: border-color 0.3s ease, box-shadow 0.3s ease;
     }
 
-    /* Weather icon badge — top-left corner, outside the photo circle. */
+    /* Weather icon — bare condition glyph, no bubble/background/border.
+   top-left corner, outside the profile-photo circle (228px photo + 6px
+   border = 240px visible circle, radius 120 from .profile-photo-wrap's own
+   centre at 114,114). left/top target the icon's own CENTRE (translate
+   -50%/-50%), offset (-100,-130) from the wrap centre — far enough to clear
+   the 120px-radius circle with margin on the diagonal, regardless of the
+   icon's exact box size. Mirrors widget_profile_card.cpp's
+   CORNER_OFFSET_X/CORNER_OFFSET_Y. */
     .weather-badge {
       position: absolute;
-      top: -8px;
-      left: -8px;
-      width: 46px;
-      height: 46px;
-      border-radius: 50%;
-      background: var(--screen-elev);
-      border: 2px solid var(--divider-strong);
+      left: 14px;
+      top: -16px;
+      transform: translate(-50%, -50%);
+      width: 42px;
+      height: 42px;
       display: flex;
       align-items: center;
       justify-content: center;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.55);
       z-index: 2;
+      pointer-events: none;
     }
 
     .weather-badge svg {
-      width: 28px;
-      height: 28px;
+      width: 42px;
+      height: 42px;
       display: block;
     }
 
-    /* Temperature bubble — bottom-right corner, outside the photo circle.
-   White background per spec so it reads clearly against the dark UI.
-   Fixed circle (not a text-width pill) — diameter sized to fit the widest
-   value in the valid range (-40..140, ble-protocol.md §10), e.g. "-40°"/"104°". */
+    /* Temperature text — plain white text, no bubble/background/border.
+   top-right corner, same centre-offset technique as .weather-badge above
+   (mirrored horizontally), sized to clear the 120px-radius circle even for
+   the widest value + unit letter in the valid range (-40..140,
+   ble-protocol.md §10), e.g. "-40°C"/"140°F". */
     .temp-bubble {
       position: absolute;
-      bottom: -6px;
-      right: -10px;
-      width: 54px;
-      height: 54px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: #FFFFFF;
-      color: #14161A;
-      font-size: 18px;
+      left: 214px;
+      top: -16px;
+      transform: translate(-50%, -50%);
+      color: #FFFFFF;
+      font-size: 22px;
       font-weight: 600;
       line-height: 1;
-      border-radius: 50%;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.55);
       font-variant-numeric: tabular-nums;
       letter-spacing: -0.2px;
       white-space: nowrap;
       z-index: 2;
+      pointer-events: none;
     }
 
     /* Teams-presence border colors. Applied via a class set by setScreen(); the
@@ -2058,6 +2058,11 @@
       <h1>Ori — UI Prototype</h1>
       <div class="sub">800 × 480 · ESP32-S3 4.3" panel</div>
       <div class="group">
+        <div class="group-title">Device settings</div>
+        <button id="tf-24" class="tf-btn active" onclick="setTimeFormat(false)">Clock · 24-hour</button>
+        <button id="tf-12" class="tf-btn" onclick="setTimeFormat(true)">Clock · 12-hour</button>
+      </div>
+      <div class="group">
         <div class="group-title">Primary states</div>
         <button data-screen="meeting-list" class="active">Meeting list</button>
         <button data-screen="no-meetings">No meetings today</button>
@@ -2157,7 +2162,7 @@
               <div class="profile-photo-wrap">
                 <div class="profile-photo" id="profile-photo">XT</div>
                 <div class="weather-badge" id="weather-badge"></div>
-                <div class="temp-bubble" id="temp-bubble">72&deg;</div>
+                <div class="temp-bubble" id="temp-bubble">72&deg;F</div>
               </div>
               <div class="profile-name" id="profile-name">Xander To</div>
               <div class="profile-title" id="profile-title">Founder, Ori</div>

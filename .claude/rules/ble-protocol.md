@@ -241,21 +241,31 @@ DeviceSettings = {             // Orion → Ori, write (response). All fields op
                        // changes a slot. Orion reads back on (re)connect (same policy as "c"/"f").
   "c": uint,           // clock_face. 0=Digital 1=Analog. Persisted to NVS; survives power cycles.
                        // Orion writes only when the user changes the setting.
+  "h": uint,           // time_format. 0=24-hour (default) 1=12-hour. Governs every wall-clock
+                       // display (status bar, digital + analog clock, meeting list times, ANCS
+                       // notification timestamps). 12-hour renders "2:30 PM"; 24-hour "14:30".
+                       // Persisted to NVS; Orion writes only when the user changes the setting
+                       // (same write-only-on-change + read-back policy as "c").
   "f": uint,           // ancs_filter. 0=Disabled 1=CallOnly 2=Important 3=All (default).
                        // Persisted to NVS; Orion writes only when the user changes the setting.
                        // Filter levels: Disabled=no notifications; CallOnly=ANCS CategoryID 1
                        // only; Important=IncomingCall OR ANCS Important flag; All=all events.
   "w": uint,           // weather_condition. 0=Clear 1=PartlyCloudy 2=Cloudy 3=Rain
                        // 4=Thunderstorm 5=Snow 6=Fog. Not persisted to NVS — ephemeral like
-                       // presence. Always sent together with "d" (never one without the other).
-  "d": int             // temperature_f. Whole-number degrees Fahrenheit (wire unit is fixed —
-                       // no Celsius conversion; revisit if int'l units are ever needed). Signed
-                       // to allow sub-zero readings. Not persisted to NVS.
+                       // presence. Always sent together with "d" and "u" (never a subset).
+  "d": int,            // temperature. Whole-number degrees in whichever unit "u" declares —
+                       // Orion picks the unit (e.g. per the user's locale/setting) and Ori just
+                       // renders the raw integer + the unit letter ("72°F"/"22°C"), never
+                       // converts between units. Signed to allow sub-zero readings. Not
+                       // persisted to NVS. Always sent together with "w" and "u".
+  "u": uint            // temperature_unit. 0=Fahrenheit 1=Celsius. Not persisted to NVS —
+                       // ephemeral like "w"/"d", and always sent together with them (a write
+                       // with only some of "w"/"d"/"u" present is ignored — ble-protocol.md §6.4).
 }
 // Any field value outside its valid range → NACK_CBOR_DECODE via SyncControl notify.
 //
 // Read (Orion → Ori): returns all NVS-persisted fields —
-//   {"c": <clock_face>, "f": <ancs_filter>, "1": <slot1>, "2": <slot2>, "3": <slot3>}.
+//   {"c": <clock_face>, "h": <time_format>, "f": <ancs_filter>, "1": <slot1>, "2": <slot2>, "3": <slot3>}.
 // Presence and weather are not returned (both ephemeral; Orion is source of truth).
 // Orion reads on (re)connect to restore its settings UI without having to cache what it last wrote.
 
@@ -426,8 +436,8 @@ Orion writes Device Settings (shortcuts — always; clock face / ANCS filter if 
   → Applied immediately on Ori — outside the BEGIN/END staging pipeline.
 Orion writes Presence Status (via Device Settings "p" field)
   → Also applied immediately.
-Orion writes Weather (via Device Settings "w"/"d" fields) — always, both together
-  → Also applied immediately. Ori was showing no weather badge (or a stale one
+Orion writes Weather (via Device Settings "w"/"d"/"u" fields) — always, all three together
+  → Also applied immediately. Ori was showing no weather icon (or a stale one
     it can no longer trust) while disconnected — this repopulates it.
 Orion writes Time Sync (always — ~20 bytes, clock may drift)
 Orion writes Sync Manifest: { profile_sha, photo_sha, meetings_sha, to_sha }
@@ -454,8 +464,8 @@ Ori notifies Device Status = RUNTIME_READY → overlay dismissed.
 | Profile Info / Photo | User edit in Orion | Hash-check, push if needed |
 | Shortcut Config | User changes slot | Write Device Settings {"1","2","3"} outside BEGIN/END; read back on (re)connect |
 | Presence Status | Teams change or ~60 s poll | Write Device Settings {"p"} (only when value changes) |
-| Weather | Weather-API poll, ~15–30 min | Write Device Settings {"w","d"} together (only when either value changes) |
-| Clock Face / ANCS Filter | User changes setting | Write Device Settings {"c"} or {"f"} |
+| Weather | Weather-API poll, ~15–30 min | Write Device Settings {"w","d","u"} together (only when any value changes) |
+| Clock Face / Time Format / ANCS Filter | User changes setting | Write Device Settings {"c"}, {"h"}, or {"f"} |
 
 Periodic refreshes set `RUNTIME_SYNCING` briefly but do **not** trigger the reconnecting overlay.
 
@@ -464,14 +474,15 @@ Periodic refreshes set `RUNTIME_SYNCING` briefly but do **not** trigger the reco
 Device Settings (char `000E`) is outside the BEGIN/END pipeline. Each field is ephemeral or user-configured:
 
 - **Presence** (`"p"`): ephemeral. Orion writes on every (re)connect and on every Teams state change. Before the first write, Ori displays `Offline`. On BLE link drop, Ori immediately renders `Offline` — stale presence would lie about reality.
-- **Weather** (`"w"`/`"d"`): ephemeral, same treatment as Presence. Orion writes both fields together on every (re)connect and whenever its weather-API poll detects a change (~15–30 min cadence — only write when the condition or temperature actually differs from the last push, not on every poll tick). Before the first write, and on BLE link drop, Ori hides the weather badge and temperature bubble entirely (no neutral/placeholder icon) — a cached reading can't be verified as current, same "don't show what you can't verify" policy as Presence-offline and the status-bar clock before a time source connects.
+- **Weather** (`"w"`/`"d"`/`"u"`): ephemeral, same treatment as Presence. Orion writes all three fields together on every (re)connect and whenever its weather-API poll detects a change (~15–30 min cadence — only write when the condition, temperature, or unit actually differs from the last push, not on every poll tick). Before the first write, and on BLE link drop, Ori hides the weather icon and temperature text entirely (no neutral/placeholder glyph) — a cached reading can't be verified as current, same "don't show what you can't verify" policy as Presence-offline and the status-bar clock before a time source connects.
 - **Shortcuts** (`"1"/"2"/"3"`): persisted to NVS. Same write-only-on-change policy as Clock Face — Orion writes only when the user changes a slot. Orion reads Device Settings on (re)connect to recover the current slot tokens and populate its Quick Actions UI.
 - **Clock Face** (`"c"`): persisted to NVS. Orion writes only when the user changes the setting in Orion's UI — not on every reconnect. Ori's NVS retains it across power cycles.
+- **Time Format** (`"h"`): persisted to NVS. 0=24-hour (default), 1=12-hour. Governs every wall-clock display on Ori (status bar, both clock faces, meeting-list times, ANCS notification timestamps). Same write-only-on-change + read-back policy as Clock Face.
 - **ANCS Filter** (`"f"`): persisted to NVS. Same write-only-on-change policy as Clock Face.
 
 Orion can write any subset of fields in a single Device Settings write (e.g. presence-only on Teams state changes, slot update when the user changes a shortcut).
 
-**Read on (re)connect:** Orion reads Device Settings once per connection to recover all five NVS-persisted fields: `"c"` (clock_face), `"f"` (ancs_filter), and `"1"`/`"2"`/`"3"` (shortcut slot tokens). This lets Orion's settings UI show the correct current values without having to cache what it last wrote across app restarts or BLE drops. Presence is not returned (ephemeral; Orion is the source of truth).
+**Read on (re)connect:** Orion reads Device Settings once per connection to recover all six NVS-persisted fields: `"c"` (clock_face), `"h"` (time_format), `"f"` (ancs_filter), and `"1"`/`"2"`/`"3"` (shortcut slot tokens). This lets Orion's settings UI show the correct current values without having to cache what it last wrote across app restarts or BLE drops. Presence is not returned (ephemeral; Orion is the source of truth).
 
 ---
 
@@ -544,9 +555,11 @@ There is no wire-level protocol version negotiation and no compatibility gate �
 | `DeviceSettings.presence` | uint 0–3 |
 | `DeviceSettings.slot1/2/3` | ≤ 19 chars each (firmware buffer) — icon token, e.g. "vol-mute" |
 | `DeviceSettings.clock_face` | uint 0–1 |
+| `DeviceSettings.time_format` | uint 0–1 |
 | `DeviceSettings.ancs_filter` | uint 0–3 |
 | `DeviceSettings.weather_condition` | uint 0–6 |
-| `DeviceSettings.temperature_f` | int −40…140 |
+| `DeviceSettings.temperature` | int −40…140 (unit declared by `"u"` — see §4) |
+| `DeviceSettings.temperature_unit` | uint 0–1 |
 | `PhoneBondStatus.name` | ≤ 63 UTF-8 bytes (firmware `g_phone_name[64]` minus null terminator) |
 | Unpair Phone Command | exactly 4 bytes (0x55 0x4E 0x50 0x52) |
 
@@ -555,7 +568,7 @@ There is no wire-level protocol version negotiation and no compatibility gate �
 ## 11. Implementation owners
 
 - **`esp32-connectivity`** — GATT server, bonding, chunk reassembly, NVS persistence + hashes, factory-reset routine, ANCS client, chars 10–15. No HOGP.
-- **`orion-sync`** — scanning + connection lifecycle, bonding storage, hash-manifest delta, chunked writes, background keep-alive, USB CDC OTA path (`ota.md`), media-mode OS bridge (§12). Reads char 15 (Phone Bond Status) on connect and subscribes to notifies; writes Unpair Phone magic bytes via char 8 (Device Command) on user request; writes char 14 (Device Settings) on reconnect (shortcuts + presence + weather), on every Teams presence change, on every weather-API poll that detects a change, and when the user changes clock face or ANCS filter.
+- **`orion-sync`** — scanning + connection lifecycle, bonding storage, hash-manifest delta, chunked writes, background keep-alive, USB CDC OTA path (`ota.md`), media-mode OS bridge (§12). Reads char 15 (Phone Bond Status) on connect and subscribes to notifies; writes Unpair Phone magic bytes via char 8 (Device Command) on user request; writes char 14 (Device Settings) on reconnect (shortcuts + presence + weather), on every Teams presence change, on every weather-API poll that detects a change, and when the user changes clock face, time format, or ANCS filter.
 
 Pre-release: no need to bump a version header per change — just keep this file in sync with the firmware/Orion implementations as the contract evolves.
 
@@ -579,7 +592,7 @@ Orion is two native codebases sharing this contract: **WinUI 3 / C# on Windows**
 
 ¹ Requires macOS Accessibility permission, granted on first launch; Controls-mode features stay inert until granted.
 
-Supported shortcut actions (configured per slot in Orion settings): `vol-mute`, `mic-mute`, `screenshot`, `lock-screen`, `favorite` (user-defined custom action). No dedicated `mute` op — mute is the `vol-mute` shortcut.
+Supported shortcut actions (configured per slot in Orion settings): `vol-mute`, `mic-mute`, `screenshot`, `lock-screen`, `favorite` (user-defined custom action), `calculator` (launch the OS calculator app). No dedicated `mute` op — mute is the `vol-mute` shortcut.
 
 ### Shortcut icon assignment — Orion → Ori
 

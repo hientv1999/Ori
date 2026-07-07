@@ -5,7 +5,6 @@
 #include <lvgl.h>
 #include <cstdio>
 
-// #include "screens/screen_repair_phone.h" // removed obsolete repair screen
 #include "ble/ancs_client.h"
 #include "state_machine.h"
 #include "theme.h"
@@ -30,33 +29,10 @@ void on_unpair_confirm(lv_event_t* e) {
     lv_obj_t* scrim = static_cast<lv_obj_t*>(lv_event_get_user_data(e));
     lv_obj_delete(scrim);
     LOG("[modal_unpair_phone] Unpair confirmed\n");
-    // Notify state machine (M5 wires BLE bond wipe here).
+    // Notify state machine (M5 wires BLE bond wipe here). The user re-pairs
+    // later by tapping the phone icon (setup-flow.md "Runtime Re-Pair iPhone")
+    // — unpairing does not auto-navigate to a re-pair screen.
     state_machine::on_unpair_phone();
-    // After unpairing, load the re-pair phone screen so the user can
-    // immediately re-bond if they want.
-    // lv_scr_load_anim(screen_repair_phone::create(), LV_SCR_LOAD_ANIM_FADE_ON, 300, 0, true); // removed obsolete repair screen
-}
-
-// Phone icon circle — mirrors make_warn_circle from modal_factory_reset but
-// uses a phone glyph ("!") stand-in (M8: replace with a proper phone icon).
-lv_obj_t* make_phone_circle(lv_obj_t* parent) {
-    lv_obj_t* circle = lv_obj_create(parent);
-    lv_obj_set_size(circle, 96, 96);
-    lv_obj_set_style_radius(circle, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(circle, theme::color(theme::COLOR_DANGER_SOFT), 0);
-    lv_obj_set_style_bg_opa(circle, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(circle, 0, 0);
-    lv_obj_set_style_pad_all(circle, 0, 0);
-    lv_obj_clear_flag(circle, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(circle, LV_OBJ_FLAG_CLICKABLE);
-
-    // Placeholder phone glyph — M8 replaces with a proper icon asset.
-    lv_obj_t* glyph = lv_label_create(circle);
-    lv_label_set_text(glyph, "!");
-    lv_obj_set_style_text_color(glyph, theme::color(theme::COLOR_DANGER), 0);
-    lv_obj_set_style_text_font(glyph, theme::font_large(), 0);
-    lv_obj_center(glyph);
-    return circle;
 }
 
 } // namespace
@@ -74,7 +50,9 @@ lv_obj_t* create(lv_obj_t* base_screen) {
     lv_obj_set_size(spacer_top, 0, 0);
     lv_obj_set_flex_grow(spacer_top, 1);
 
-    make_phone_circle(scroll_area);
+    // M8: replace with a proper phone icon asset — shares the same alert
+    // circle shape as modal_factory_reset's warning glyph.
+    ui::make_alert_glyph_circle(scroll_area);
 
     lv_obj_t* heading = lv_label_create(scroll_area);
     lv_label_set_text(heading, "Unpair iPhone?");

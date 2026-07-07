@@ -19,6 +19,7 @@ extern "C" {
     extern const lv_image_dsc_t discord;
     extern const lv_image_dsc_t telegram;
     extern const lv_image_dsc_t youtube;
+    extern const lv_image_dsc_t youtube_music;
     extern const lv_image_dsc_t tiktok;
     extern const lv_image_dsc_t spotify;
     extern const lv_image_dsc_t wechat;
@@ -88,7 +89,8 @@ static const Entry k_table[] = {
     { "phone",       0x34C759 },
     { "discord",     0x5865F2 },
     { "telegram",    0x26A5E4 },
-    { "youtube",     0xFF0000 },
+    { "youtube",       0xFF0000 },
+    { "youtube_music", 0xFF0000 },
     { "tiktok",      0xFF0050 },
     { "spotify",     0x1DB954 },
     { "wechat",      0x07C160 },
@@ -151,7 +153,8 @@ static const ImageEntry k_images[] = {
     { "phone",       &phone       },
     { "discord",     &discord     },
     { "telegram",    &telegram    },
-    { "youtube",     &youtube     },
+    { "youtube",       &youtube       },
+    { "youtube_music", &youtube_music },
     { "tiktok",      &tiktok      },
     { "spotify",     &spotify     },
     { "wechat",      &wechat      },

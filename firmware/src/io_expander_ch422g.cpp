@@ -75,14 +75,4 @@ bool write_output(uint8_t pin, bool high) {
     return true;
 }
 
-bool set_all_outputs(uint8_t mask) {
-    if (!i2c_write_byte(REG_OUT_LOWER, mask)) return false;
-    shadow_mask = mask;
-    return true;
-}
-
-uint8_t get_output_state() {
-    return shadow_mask;
-}
-
 } // namespace ch422g

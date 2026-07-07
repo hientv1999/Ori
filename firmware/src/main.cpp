@@ -54,6 +54,7 @@
 #include "assets/time_off_placeholder.h"
 #include "photo_cache.h"
 #include "screen_manager.h"
+#include "time_format.h"
 #include "screens/screen_boot_splash.h"
 #include "state_machine.h"
 #include "theme.h"
@@ -100,6 +101,7 @@ void setup() {
     mem_snapshot("boot");
 
     nvs::init();
+    time_format::init();  // load 12/24-hour preference before any clock renders
     app_state::init();  // PSRAM-allocate the ANCS notification-detail store
     // Prime the BLE bond-address RAM cache now, before state_machine::init()
     // (reads the iPhone slot) and ble_manager::init() (starts the BLE stack).

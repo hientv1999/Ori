@@ -74,7 +74,7 @@ Three icon-only square buttons, 72 px tall (was 82 px — shrunk to make room fo
 
 **Unrecognized token → hide the slot.** If a token doesn't match any compiled-in icon (e.g. Orion and firmware drift out of sync on the supported set), Ori hides that slot's button entirely rather than showing a placeholder — the remaining valid slot(s) stay centred in the row. The sync itself doesn't reject unknown tokens; only rendering treats them as absent.
 
-Supported icon tokens (5 total):
+Supported icon tokens (6 total):
 
 | Token | Action |
 |---|---|
@@ -83,6 +83,7 @@ Supported icon tokens (5 total):
 | `screenshot` | Screenshot |
 | `lock-screen` | Lock screen |
 | `favorite` | User-configured custom action (set in Orion settings) |
+| `calculator` | Launch the OS calculator app |
 
 Default mock config: slot 1 = `vol-mute`, slot 2 = `mic-mute`, slot 3 = `screenshot`.
 

@@ -47,6 +47,21 @@ inline void clear_container(lv_obj_t* obj) {
 lv_obj_t* make_screen_body(lv_obj_t* screen);
 lv_obj_t* make_panel_divider(lv_obj_t* parent);
 
+// Full-screen (800x480, pinned at 0,0) scrim: COLOR_SCRIM bg at SCRIM_OPA, no
+// border/padding/radius, not scrollable. Shared by every modal/overlay that
+// dims the whole screen — countdown, setup passkey/Orioning, meeting detail,
+// and make_modal_layout() below.
+// absorb_taps: true (default) makes the scrim clickable so taps on empty
+// space don't fall through to whatever is behind it — every dismissable
+// modal wants this. The non-dismissable Orioning progress overlay is the one
+// exception (screen_setup.cpp) and passes false.
+lv_obj_t* make_scrim(lv_obj_t* parent, bool absorb_taps = true);
+
+// 96x96 circular alert glyph: COLOR_DANGER_SOFT fill, centered "!" in
+// COLOR_DANGER at font_large. Shared by the factory-reset and unpair-phone
+// confirmation modals (identical in both).
+lv_obj_t* make_alert_glyph_circle(lv_obj_t* parent);
+
 // Ori wordmark — flanking gradient lines + "ori" label (lowercase, "r" in
 // accent gold, theme::font_time()). Used on every setup-flow screen and the
 // boot splash; mirrors brandMarkHTML() in the UI prototype.

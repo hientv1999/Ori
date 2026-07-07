@@ -53,6 +53,12 @@ void notify_keyboard_command(const char* op, uint32_t arg);
 // leave stale staged data for the next BEGIN. ble-protocol.md §6.0/§7.
 void abort_sync_stage();
 
+// Poll all chunk-reassembly contexts (Profile Photo, Meeting List, Time Off,
+// Media Album Art) for the 10 s no-progress timeout (ble-protocol.md §5).
+// Frees the PSRAM staging buffer and NACKs via on_complete for any context
+// that stalled. Call once per second from ble_manager::poll().
+void poll_chunk_timeouts();
+
 // Apply all staged sync data to NVS/UI in one burst (§6.0), then transition
 // Device Status and signal SyncEnd. Must run on the main task — call only
 // from ble_manager::poll() in response to a deferred SyncCommit event.

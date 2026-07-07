@@ -41,7 +41,6 @@ constexpr uint32_t COLOR_ACCENT_LINE      = 0x7B653A;   // accent at 55% over bl
 constexpr uint32_t COLOR_DANGER           = 0xD86A6A;
 constexpr uint32_t COLOR_DANGER_SOFT      = 0x1E0F0F;   // danger at 14% over black
 constexpr uint32_t COLOR_OK               = 0x7FB48A;
-constexpr uint32_t COLOR_OK_SOFT          = 0x121913;   // ok at 14% over black
 constexpr uint32_t COLOR_SCRIM            = 0x000000;   // modal scrim base (pure black)
 constexpr lv_opa_t  SCRIM_OPA             = LV_OPA_90;  // opacity for every overlay scrim
 
@@ -69,8 +68,8 @@ constexpr uint32_t COLOR_PRESENCE_BUSY_DARK       = 0x6E0E20;  // deep crimson
 constexpr uint32_t COLOR_PRESENCE_AWAY_DARK       = 0x8C4400;  // deep burnt amber
 constexpr uint32_t COLOR_PRESENCE_OFFLINE_DARK    = 0x282826;  // near-black charcoal
 
-// Weather badge + temperature bubble palette (profile-photo overlay,
-// `screen-layout.md` "Weather badge + temperature bubble"). Values are
+// Weather icon + temperature text palette (profile-photo overlay,
+// `screen-layout.md` "Weather icon + temperature text"). Values are
 // ported 1:1 from `WEATHER_ICONS` in Ori_UI_Prototype.js. The sun (Clear /
 // PartlyCloudy) intentionally reuses COLOR_ACCENT instead of the prototype's
 // near-duplicate gold (#F0B84C) — close enough to keep the palette tighter.
@@ -82,10 +81,7 @@ constexpr uint32_t COLOR_WEATHER_RAIN_DROP   = 0x5FB4E0;  // raindrop stroke —
 constexpr uint32_t COLOR_WEATHER_BOLT        = 0xF0C93E;  // lightning-bolt stroke — Thunderstorm
 constexpr uint32_t COLOR_WEATHER_SNOW        = 0xDCEEFF;  // snowflake stroke — Snow
 constexpr uint32_t COLOR_WEATHER_FOG         = 0xAAB2BD;  // fog-line stroke — Fog
-constexpr uint32_t COLOR_WEATHER_TEMP_BG     = 0xFFFFFF;  // temperature-bubble background — explicit
-                                                           // white per spec, intentional contrast
-                                                           // against the dark UI
-constexpr uint32_t COLOR_WEATHER_TEMP_TEXT   = 0x14161A;  // temperature-bubble text — near-black
+constexpr uint32_t COLOR_WEATHER_TEMP_TEXT   = 0xFFFFFF;  // temperature text — white, no bubble background
 
 // Font getters — return pointers to Hanken Grotesk Medium fonts.
 // Sizes were selected to mirror the prototype's CSS scale.

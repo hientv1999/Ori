@@ -20,6 +20,9 @@ function togglePanel(){
   const p=$('panel'),t=$('tray'),hide=!p.classList.contains('hide');
   p.classList.toggle('hide',hide);t.classList.toggle('open',!hide);
 }
+function minimizePanel(){
+  $('panel').classList.add('hide');$('tray').classList.remove('open');
+}
 
 const stack=[];
 function show(id){
@@ -61,6 +64,7 @@ function backWithCheck(){
   if(top==='s-calendar'&&calPending!==calSrc){_discardAction=discardCalSource;showModal('m-discard');return;}
   if(top==='s-ancs'&&ancsPending!==ancsLevel){_discardAction=discardAncs;showModal('m-discard');return;}
   if(top==='s-clock'&&clockPending!==clockFace){_discardAction=discardClock;showModal('m-discard');return;}
+  if(top==='s-timeformat'&&timeFormatPending!==timeFormat){_discardAction=discardTimeFormat;showModal('m-discard');return;}
   if(top==='s-shortcuts'){
     if(_kbdRecSlot) stopKbdRecord();
     if(_isSlotsDirty()){_discardAction=discardShortcuts;showModal('m-discard');return;}
@@ -610,7 +614,8 @@ const siImgMap={
   'mic-mute':'../firmware/img/shortcut_icons/mic-mute.png',
   'screenshot':'../firmware/img/shortcut_icons/screenshot.png',
   'lock-screen':'../firmware/img/shortcut_icons/lock-screen.png',
-  'favorite':'../firmware/img/shortcut_icons/favorite.png'
+  'favorite':'../firmware/img/shortcut_icons/favorite.png',
+  'calculator':'../firmware/img/shortcut_icons/calculator.png'
 };
 function applySlot(n){
   const v=$('ss'+n).value;
@@ -637,6 +642,7 @@ const _kbdCombos=[[],[],[]];
 // Committed (saved) state for subscreens with Save buttons
 let ancsLevel=3;let ancsPending=3;
 let clockFace='digital';let clockPending='digital';
+let timeFormat='24';let timeFormatPending='24';
 const slotCommitted=['vol-mute','mic-mute','screenshot'];
 const kbdCommitted=[[],[],[]];
 
@@ -714,6 +720,20 @@ function _updateClockSave(){
   const d=clockPending!==clockFace;
   if(d)$('clockSaveBtn').removeAttribute('disabled');else $('clockSaveBtn').setAttribute('disabled','');
 }
+function _renderTimeFormat(f){
+  $('tf-24').classList.toggle('sel',f==='24');$('tf-12').classList.toggle('sel',f==='12');
+}
+function _updateTimeFormatSave(){
+  const d=timeFormatPending!==timeFormat;
+  if(d)$('tfSaveBtn').removeAttribute('disabled');else $('tfSaveBtn').setAttribute('disabled','');
+}
+// Renders the main-row preview using a fixed sample time (2:30 PM) so it
+// reflects both the chosen format and the active app language's locale.
+function _renderMainTimeFormatPreview(){
+  const sample=new Date(2024,0,1,14,30);
+  $('mainTimeFormatPreview').textContent=
+    sample.toLocaleTimeString(LOCALE_MAP[appLang],{hour:'numeric',minute:'2-digit',hour12:timeFormat==='12'});
+}
 function _updateAncsSave(){
   const d=ancsPending!==ancsLevel;
   if(d)$('ancsSaveBtn').removeAttribute('disabled');else $('ancsSaveBtn').setAttribute('disabled','');
@@ -740,6 +760,9 @@ function openAncs(){
 function openClock(){
   clockPending=clockFace;_renderClock(clockPending);_updateClockSave();show('s-clock');
 }
+function openTimeFormat(){
+  timeFormatPending=timeFormat;_renderTimeFormat(timeFormatPending);_updateTimeFormatSave();show('s-timeformat');
+}
 function openShortcuts(){
   [1,2,3].forEach(n=>{$('ss'+n).value=slotCommitted[n-1];_kbdCombos[n-1]=[...kbdCommitted[n-1]];applySlot(n);});
   _updateSlotSave();show('s-shortcuts');
@@ -748,6 +771,7 @@ function openShortcuts(){
 // ── Subscreen option selection ───────────────────────────────────────────────
 function setClock(f){clockPending=f;_renderClock(f);_updateClockSave();}
 function setAncs(level){ancsPending=level;_renderAncs(level);_updateAncsSave();}
+function setTimeFormat(f){timeFormatPending=f;_renderTimeFormat(f);_updateTimeFormatSave();}
 
 // ── Save handlers ────────────────────────────────────────────────────────────
 function saveAncs(){
@@ -758,6 +782,11 @@ function saveAncs(){
 function saveClock(){
   clockFace=clockPending;
   $('mcDig').style.display=clockFace==='digital'?'flex':'none';$('mcAna').style.display=clockFace==='analog'?'block':'none';
+  back();
+}
+function saveTimeFormat(){
+  timeFormat=timeFormatPending;
+  _renderMainTimeFormatPreview();
   back();
 }
 function saveSlots(){
@@ -771,6 +800,7 @@ function saveSlots(){
 // ── Discard handlers ─────────────────────────────────────────────────────────
 function discardAncs(){ancsPending=ancsLevel;_renderAncs(ancsPending);back();}
 function discardClock(){clockPending=clockFace;_renderClock(clockPending);back();}
+function discardTimeFormat(){timeFormatPending=timeFormat;_renderTimeFormat(timeFormatPending);back();}
 function discardShortcuts(){
   if(_kbdRecSlot) stopKbdRecord();
   [1,2,3].forEach(n=>{$('ss'+n).value=slotCommitted[n-1];_kbdCombos[n-1]=[...kbdCommitted[n-1]];applySlot(n);});
@@ -896,8 +926,8 @@ const I18N={
       calendar:'Calendar Source',language:'Language',about:'About',app:'Version',reset:'Reset'},
     main:{connected:'Connected',syncing:'Syncing…',disconnected:'Disconnected',timeOff:'Time Off',
       noTimeOffPlanned:'No Time Off planned',tapToSet:'Tap to set',notifFilterRow:'Notification Filter',
-      clockFaceRow:'Clock Face',quickActionsRow:'Quick Actions',presenceAvailable:'Available',
-      settingsIcoTitle:'Settings',fwUpToDate:'Firmware up to date',fwAvailable:'Firmware update available'},
+      clockFaceRow:'Clock Face',timeFormatRow:'Time Format',quickActionsRow:'Quick Actions',presenceAvailable:'Available',
+      settingsIcoTitle:'Settings',minimizeIcoTitle:'Minimize',fwUpToDate:'Firmware up to date',fwAvailable:'Firmware update available'},
     profileEditor:{title:'Profile'},
     timeOffEditor:{periodLbl:'Period',selectDates:'Select dates…',selectStartDate:'Select start date',
       selectEndDate:'Now select end date',destinationLbl:'Destination',destinationPh:'City, Country',
@@ -907,8 +937,9 @@ const I18N={
       signInMicrosoft:'Sign in with Microsoft',signOutMicrosoft:'Sign out from Microsoft'},
     quickActions:{slotPrefix:'Slot',notSet:'Not set',clickToSet:'Click to set',clickToChange:'Click to change',
       pressShortcut:'Press shortcut…',escToCancel:'Esc to cancel',
-      actionLabels:{'vol-mute':'Volume Mute','mic-mute':'Mic Mute',screenshot:'Screenshot','lock-screen':'Lock Screen',favorite:'Favorite'}},
+      actionLabels:{'vol-mute':'Volume Mute','mic-mute':'Mic Mute',screenshot:'Screenshot','lock-screen':'Lock Screen',favorite:'Favorite',calculator:'Calculator'}},
     clockFace:{digitalLbl:'Digital',digitalSub:'Large digits',analogLbl:'Analog',analogSub:'Tick dial with hands'},
+    timeFormat:{h24Lbl:'24-hour',h24Sub:'e.g. 14:30',h12Lbl:'12-hour',h12Sub:'e.g. 2:30 PM'},
     notifFilter:{disabledLbl:'Disabled',disabledSub:'No notifications shown on Ori',callOnlyLbl:'Call Only',
       callOnlySub:'Incoming calls only',importantLbl:'Important',importantSub:'Calls and high-priority alerts',
       allLbl:'All',allSub:'Every notification (default)'},
@@ -949,8 +980,8 @@ const I18N={
       calendar:'Nguồn lịch',language:'Ngôn ngữ',about:'Giới thiệu',app:'Phiên bản',reset:'Đặt lại'},
     main:{connected:'Đã kết nối',syncing:'Đang đồng bộ…',disconnected:'Đã ngắt kết nối',timeOff:'Nghỉ phép',
       noTimeOffPlanned:'Chưa có lịch nghỉ phép',tapToSet:'Nhấn để đặt',notifFilterRow:'Bộ lọc thông báo',
-      clockFaceRow:'Mặt đồng hồ',quickActionsRow:'Thao tác nhanh',presenceAvailable:'Đang hoạt động',
-      settingsIcoTitle:'Cài đặt',fwUpToDate:'Firmware đã mới nhất',fwAvailable:'Có bản cập nhật firmware'},
+      clockFaceRow:'Mặt đồng hồ',timeFormatRow:'Định dạng giờ',quickActionsRow:'Thao tác nhanh',presenceAvailable:'Đang hoạt động',
+      settingsIcoTitle:'Cài đặt',minimizeIcoTitle:'Thu nhỏ',fwUpToDate:'Firmware đã mới nhất',fwAvailable:'Có bản cập nhật firmware'},
     profileEditor:{title:'Hồ sơ'},
     timeOffEditor:{periodLbl:'Khoảng thời gian',selectDates:'Chọn ngày…',selectStartDate:'Chọn ngày bắt đầu',
       selectEndDate:'Bây giờ chọn ngày kết thúc',destinationLbl:'Điểm đến',destinationPh:'Thành phố, Quốc gia',
@@ -960,8 +991,9 @@ const I18N={
       signInMicrosoft:'Đăng nhập bằng Microsoft',signOutMicrosoft:'Đăng xuất khỏi Microsoft'},
     quickActions:{slotPrefix:'Khe',notSet:'Chưa đặt',clickToSet:'Nhấn để đặt',clickToChange:'Nhấn để đổi',
       pressShortcut:'Nhấn tổ hợp phím…',escToCancel:'Nhấn Esc để hủy',
-      actionLabels:{'vol-mute':'Tắt âm lượng','mic-mute':'Tắt mic',screenshot:'Chụp màn hình','lock-screen':'Khóa màn hình',favorite:'Yêu thích'}},
+      actionLabels:{'vol-mute':'Tắt âm lượng','mic-mute':'Tắt mic',screenshot:'Chụp màn hình','lock-screen':'Khóa màn hình',favorite:'Yêu thích',calculator:'Máy tính'}},
     clockFace:{digitalLbl:'Số',digitalSub:'Chữ số lớn',analogLbl:'Kim',analogSub:'Mặt số kim chỉ giờ'},
+    timeFormat:{h24Lbl:'24 giờ',h24Sub:'VD: 14:30',h12Lbl:'12 giờ',h12Sub:'VD: 2:30 CH'},
     notifFilter:{disabledLbl:'Tắt',disabledSub:'Không hiển thị thông báo trên Ori',callOnlyLbl:'Chỉ cuộc gọi',
       callOnlySub:'Chỉ cuộc gọi đến',importantLbl:'Quan trọng',importantSub:'Cuộc gọi và thông báo quan trọng',
       allLbl:'Tất cả',allSub:'Mọi thông báo (mặc định)'},
@@ -1002,8 +1034,8 @@ const I18N={
       calendar:'Fuente de calendario',language:'Idioma',about:'Acerca de',app:'Versión',reset:'Restablecer'},
     main:{connected:'Conectado',syncing:'Sincronizando…',disconnected:'Desconectado',timeOff:'Tiempo libre',
       noTimeOffPlanned:'Sin tiempo libre planeado',tapToSet:'Toca para configurar',notifFilterRow:'Filtro de notificaciones',
-      clockFaceRow:'Esfera del reloj',quickActionsRow:'Acciones rápidas',presenceAvailable:'Disponible',
-      settingsIcoTitle:'Configuración',fwUpToDate:'Firmware actualizado',fwAvailable:'Actualización de firmware disponible'},
+      clockFaceRow:'Esfera del reloj',timeFormatRow:'Formato de hora',quickActionsRow:'Acciones rápidas',presenceAvailable:'Disponible',
+      settingsIcoTitle:'Configuración',minimizeIcoTitle:'Minimizar',fwUpToDate:'Firmware actualizado',fwAvailable:'Actualización de firmware disponible'},
     profileEditor:{title:'Perfil'},
     timeOffEditor:{periodLbl:'Periodo',selectDates:'Selecciona fechas…',selectStartDate:'Selecciona la fecha de inicio',
       selectEndDate:'Ahora selecciona la fecha de fin',destinationLbl:'Destino',destinationPh:'Ciudad, país',
@@ -1013,8 +1045,9 @@ const I18N={
       signInMicrosoft:'Iniciar sesión con Microsoft',signOutMicrosoft:'Cerrar sesión de Microsoft'},
     quickActions:{slotPrefix:'Ranura',notSet:'Sin definir',clickToSet:'Haz clic para definir',clickToChange:'Haz clic para cambiar',
       pressShortcut:'Presiona el atajo…',escToCancel:'Esc para cancelar',
-      actionLabels:{'vol-mute':'Silenciar volumen','mic-mute':'Silenciar micrófono',screenshot:'Captura de pantalla','lock-screen':'Bloquear pantalla',favorite:'Favorito'}},
+      actionLabels:{'vol-mute':'Silenciar volumen','mic-mute':'Silenciar micrófono',screenshot:'Captura de pantalla','lock-screen':'Bloquear pantalla',favorite:'Favorito',calculator:'Calculadora'}},
     clockFace:{digitalLbl:'Digital',digitalSub:'Dígitos grandes',analogLbl:'Analógico',analogSub:'Esfera con agujas'},
+    timeFormat:{h24Lbl:'24 horas',h24Sub:'p. ej. 14:30',h12Lbl:'12 horas',h12Sub:'p. ej. 2:30 p.m.'},
     notifFilter:{disabledLbl:'Desactivado',disabledSub:'No se muestran notificaciones en Ori',callOnlyLbl:'Solo llamadas',
       callOnlySub:'Solo llamadas entrantes',importantLbl:'Importante',importantSub:'Llamadas y alertas de alta prioridad',
       allLbl:'Todas',allSub:'Todas las notificaciones (predeterminado)'},
@@ -1055,8 +1088,8 @@ const I18N={
       calendar:'Source de calendrier',language:'Langue',about:'À propos',app:'Version',reset:'Réinitialiser'},
     main:{connected:'Connecté',syncing:'Synchronisation…',disconnected:'Déconnecté',timeOff:'Congé',
       noTimeOffPlanned:'Aucun congé prévu',tapToSet:'Toucher pour définir',notifFilterRow:'Filtre de notifications',
-      clockFaceRow:"Cadran de l'horloge",quickActionsRow:'Actions rapides',presenceAvailable:'Disponible',
-      settingsIcoTitle:'Paramètres',fwUpToDate:'Firmware à jour',fwAvailable:'Mise à jour du firmware disponible'},
+      clockFaceRow:"Cadran de l'horloge",timeFormatRow:"Format de l'heure",quickActionsRow:'Actions rapides',presenceAvailable:'Disponible',
+      settingsIcoTitle:'Paramètres',minimizeIcoTitle:'Réduire',fwUpToDate:'Firmware à jour',fwAvailable:'Mise à jour du firmware disponible'},
     profileEditor:{title:'Profil'},
     timeOffEditor:{periodLbl:'Période',selectDates:'Sélectionner les dates…',selectStartDate:'Sélectionner la date de début',
       selectEndDate:'Sélectionnez maintenant la date de fin',destinationLbl:'Destination',destinationPh:'Ville, pays',
@@ -1066,8 +1099,9 @@ const I18N={
       signInMicrosoft:'Se connecter avec Microsoft',signOutMicrosoft:'Se déconnecter de Microsoft'},
     quickActions:{slotPrefix:'Emplacement',notSet:'Non défini',clickToSet:'Cliquer pour définir',clickToChange:'Cliquer pour modifier',
       pressShortcut:'Appuyez sur le raccourci…',escToCancel:'Échap pour annuler',
-      actionLabels:{'vol-mute':'Muet volume','mic-mute':'Muet micro',screenshot:"Capture d'écran",'lock-screen':"Verrouiller l'écran",favorite:'Favori'}},
+      actionLabels:{'vol-mute':'Muet volume','mic-mute':'Muet micro',screenshot:"Capture d'écran",'lock-screen':"Verrouiller l'écran",favorite:'Favori',calculator:'Calculatrice'}},
     clockFace:{digitalLbl:'Numérique',digitalSub:'Grands chiffres',analogLbl:'Analogique',analogSub:'Cadran à aiguilles'},
+    timeFormat:{h24Lbl:'24 heures',h24Sub:'ex. 14:30',h12Lbl:'12 heures',h12Sub:'ex. 2:30 PM'},
     notifFilter:{disabledLbl:'Désactivé',disabledSub:'Aucune notification affichée sur Ori',callOnlyLbl:'Appels uniquement',
       callOnlySub:'Appels entrants uniquement',importantLbl:'Important',importantSub:'Appels et alertes prioritaires',
       allLbl:'Toutes',allSub:'Toutes les notifications (par défaut)'},
@@ -1149,9 +1183,11 @@ function applyI18n(){
   $('mainTimeOffEmptySub').textContent=t.main.tapToSet;
   $('mainAncsLabel').textContent=t.main.notifFilterRow;
   $('mainClockLabel').textContent=t.main.clockFaceRow;
+  $('mainTimeFormatLabel').textContent=t.main.timeFormatRow;
   $('mainQaLabel').textContent=t.main.quickActionsRow;
   $('mainPText').textContent=t.main.presenceAvailable;
   $('gearIco').title=t.main.settingsIcoTitle;
+  $('minimizeIco').title=t.main.minimizeIcoTitle;
   $('fwIco').title=fwAvail?t.main.fwAvailable:t.main.fwUpToDate;
   $('hState').textContent={on:t.main.connected,rec:t.main.syncing,off:t.main.disconnected}[connState];
   // profile editor
@@ -1210,6 +1246,15 @@ function applyI18n(){
   $('clockAnalogSub').textContent=t.clockFace.analogSub;
   $('clockCancelBtn').textContent=t.common.cancel;
   $('clockSaveBtn').textContent=t.common.save;
+  // time format
+  $('tfEditTitle').textContent=t.main.timeFormatRow;
+  $('tf24Lbl').textContent=t.timeFormat.h24Lbl;
+  $('tf24Sub').textContent=t.timeFormat.h24Sub;
+  $('tf12Lbl').textContent=t.timeFormat.h12Lbl;
+  $('tf12Sub').textContent=t.timeFormat.h12Sub;
+  $('tfCancelBtn').textContent=t.common.cancel;
+  $('tfSaveBtn').textContent=t.common.save;
+  _renderMainTimeFormatPreview();
   // notification filter
   $('ancsEditTitle').textContent=t.main.notifFilterRow;
   $('ancsDisabledLbl').textContent=t.notifFilter.disabledLbl;
@@ -1439,6 +1484,7 @@ const NAV_PAGES={
   'calendar-source':()=>{setConn('on');openCalendarSource();},
   'quick-actions':()=>{setConn('on');openShortcuts();},
   'clock-face':()=>{setConn('on');openClock();},
+  'time-format':()=>{setConn('on');openTimeFormat();},
   'notification-filter':()=>{setConn('on');openAncs();},
   'modal-reset':()=>{setConn('on');show('s-settings');showModal('m-reset');},
   'modal-pairing-fail':()=>{openSetupWizard();suShowStep('discover');suSelectDevice('Ori-XT-9F');suShowPairPhase(2);suShowPairFail();},

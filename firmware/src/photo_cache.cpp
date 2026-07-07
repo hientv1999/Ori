@@ -198,22 +198,88 @@ static void erase_file(const char* path) {
 }
 
 // ── Photo state ───────────────────────────────────────────────────────────────
+//
+// Profile photo/placeholder and Time Off image/placeholder are four instances
+// of the same decode-once-cache-in-PSRAM shape. `Slot` holds the live state;
+// `SlotSpec` holds the per-kind constants (LittleFS path, size caps,
+// dimensions); the slot_* helpers below do the actual load/store/clear work
+// generically so init()/store()/clear()/init_*_placeholder() only differ in
+// which slot+spec they pass and which widget (if any) they notify.
 
-uint16_t*      g_profile_buf      = nullptr;
-lv_image_dsc_t g_profile_dsc      = {};
-bool           g_profile_ready    = false;
+struct Slot {
+    uint16_t*      buf   = nullptr;
+    lv_image_dsc_t dsc   = {};
+    bool           ready = false;
+};
 
-uint16_t*      g_profile_ph_buf   = nullptr;
-lv_image_dsc_t g_profile_ph_dsc   = {};
-bool           g_profile_ph_ready  = false;
+struct SlotSpec {
+    const char* path;      // LittleFS path; unused by placeholder slots (compiled-in, no file)
+    size_t      max_jpeg;
+    uint16_t    w, h;
+};
 
-uint16_t*      g_time_off_buf          = nullptr;
-lv_image_dsc_t g_time_off_dsc          = {};
-bool           g_time_off_ready         = false;
+constexpr SlotSpec PROFILE_SPEC  { PATH_PROFILE,  PROFILE_MAX_JPEG,  PHOTO_W,     PHOTO_H };
+constexpr SlotSpec TIME_OFF_SPEC { PATH_TIME_OFF, TIME_OFF_MAX_JPEG, TIME_OFF_W,  TIME_OFF_H };
 
-uint16_t*      g_time_off_ph_buf       = nullptr;
-lv_image_dsc_t g_time_off_ph_dsc       = {};
-bool           g_time_off_ph_ready      = false;
+Slot g_profile;
+Slot g_profile_ph;
+Slot g_time_off;
+Slot g_time_off_ph;
+
+void slot_free(Slot& s) {
+    if (s.buf) { heap_caps_free(s.buf); s.buf = nullptr; }
+    s.dsc   = {};
+    s.ready = false;
+}
+
+// Loads spec.path from LittleFS and decodes it into the slot. Leaves the slot
+// untouched on failure (nothing on disk, or the file is corrupt/oversized).
+bool slot_load(Slot& s, const SlotSpec& spec) {
+    uint16_t* buf = load_and_decode(spec.path, spec.max_jpeg, spec.w, spec.h);
+    if (!buf) return false;
+    if (s.buf) heap_caps_free(s.buf);
+    s.buf   = buf;
+    s.ready = true;
+    build_dsc(&s.dsc, s.buf, spec.w, spec.h);
+    return true;
+}
+
+// Always takes ownership of jpeg (frees it). Saves to spec.path and decodes
+// into the slot. Leaves the slot untouched on failure.
+bool slot_store(Slot& s, const SlotSpec& spec, uint8_t* jpeg, size_t len) {
+    uint16_t* buf = save_and_decode(spec.path, spec.max_jpeg, jpeg, len, spec.w, spec.h);
+    heap_caps_free(jpeg);
+    if (!buf) return false;
+    if (s.buf) heap_caps_free(s.buf);
+    s.buf   = buf;
+    s.ready = true;
+    build_dsc(&s.dsc, s.buf, spec.w, spec.h);
+    return true;
+}
+
+void slot_clear(Slot& s, const SlotSpec& spec) {
+    erase_file(spec.path);
+    slot_free(s);
+}
+
+// Decodes a compiled-in (no file backing) placeholder JPEG into the slot.
+// No-op (false, no log) when jpeg/len are empty — same as a placeholder that
+// was never compiled in; false with jpeg/len set means an actual decode failure.
+bool slot_init_placeholder(Slot& s, const SlotSpec& spec, const uint8_t* jpeg, size_t len) {
+    if (!jpeg || !len) return false;
+    uint16_t* buf = static_cast<uint16_t*>(
+        heap_caps_malloc((size_t)spec.w * spec.h * 2, MALLOC_CAP_SPIRAM));
+    if (!buf) return false;
+    if (!decode_jpeg_to(jpeg, len, buf, spec.w, spec.h)) {
+        heap_caps_free(buf);
+        return false;
+    }
+    if (s.buf) heap_caps_free(s.buf);
+    s.buf   = buf;
+    s.ready = true;
+    build_dsc(&s.dsc, s.buf, spec.w, spec.h);
+    return true;
+}
 
 } // namespace
 
@@ -233,13 +299,8 @@ void mount_fs() {
 // ── Profile photo ─────────────────────────────────────────────────────────────
 
 void init() {
-    uint16_t* buf = load_and_decode(PATH_PROFILE, PROFILE_MAX_JPEG, PHOTO_W, PHOTO_H);
-    if (buf) {
-        if (g_profile_buf) heap_caps_free(g_profile_buf);
-        g_profile_buf   = buf;
-        g_profile_ready = true;
-        build_dsc(&g_profile_dsc, g_profile_buf, PHOTO_W, PHOTO_H);
-        widget_profile_card::set_photo(&g_profile_dsc);
+    if (slot_load(g_profile, PROFILE_SPEC)) {
+        widget_profile_card::set_photo(&g_profile.dsc);
         LOG("[photo_cache] profile photo loaded from LittleFS\n");
     } else {
         widget_profile_card::set_photo(get_profile_placeholder());
@@ -258,64 +319,40 @@ void store(uint8_t* jpeg, size_t len) {
         LOG("[photo_cache] store: invalid (len=%u)\n", (unsigned)len);
         return;
     }
-    uint16_t* buf = save_and_decode(PATH_PROFILE, PROFILE_MAX_JPEG,
-                                     jpeg, len, PHOTO_W, PHOTO_H);
-    heap_caps_free(jpeg);
-    if (buf) {
-        if (g_profile_buf) heap_caps_free(g_profile_buf);
-        g_profile_buf   = buf;
-        g_profile_ready = true;
-        build_dsc(&g_profile_dsc, g_profile_buf, PHOTO_W, PHOTO_H);
+    if (slot_store(g_profile, PROFILE_SPEC, jpeg, len)) {
         LOG("[photo_cache] profile photo stored to LittleFS (%u bytes)\n", (unsigned)len);
-        widget_profile_card::set_photo(&g_profile_dsc);
+        widget_profile_card::set_photo(&g_profile.dsc);
     } else {
         LOG("[photo_cache] profile photo decode failed\n");
     }
 }
 
 const lv_image_dsc_t* get() {
-    return g_profile_ready ? &g_profile_dsc : nullptr;
+    return g_profile.ready ? &g_profile.dsc : nullptr;
 }
 
 void clear() {
-    g_profile_ready = false;
-    erase_file(PATH_PROFILE);
-    if (g_profile_buf) { heap_caps_free(g_profile_buf); g_profile_buf = nullptr; }
-    g_profile_dsc = {};
+    slot_clear(g_profile, PROFILE_SPEC);
     widget_profile_card::set_photo(get_profile_placeholder());
     LOG("[photo_cache] profile photo cleared\n");
 }
 
 void init_profile_placeholder(const uint8_t* jpeg, size_t len) {
-    if (!jpeg || !len) return;
-    uint16_t* buf = static_cast<uint16_t*>(
-        heap_caps_malloc((size_t)PHOTO_W * PHOTO_H * 2, MALLOC_CAP_SPIRAM));
-    if (!buf) { LOG("[photo_cache] profile placeholder PSRAM alloc failed\n"); return; }
-    if (!decode_jpeg_to(jpeg, len, buf, PHOTO_W, PHOTO_H)) {
-        heap_caps_free(buf);
+    if (slot_init_placeholder(g_profile_ph, PROFILE_SPEC, jpeg, len)) {
+        LOG("[photo_cache] profile placeholder ready (%u bytes)\n", (unsigned)len);
+    } else if (jpeg && len) {
         LOG("[photo_cache] profile placeholder decode failed\n");
-        return;
     }
-    if (g_profile_ph_buf) heap_caps_free(g_profile_ph_buf);
-    g_profile_ph_buf   = buf;
-    g_profile_ph_ready = true;
-    build_dsc(&g_profile_ph_dsc, g_profile_ph_buf, PHOTO_W, PHOTO_H);
-    LOG("[photo_cache] profile placeholder ready (%u bytes)\n", (unsigned)len);
 }
 
 const lv_image_dsc_t* get_profile_placeholder() {
-    return g_profile_ph_ready ? &g_profile_ph_dsc : nullptr;
+    return g_profile_ph.ready ? &g_profile_ph.dsc : nullptr;
 }
 
 // ── Time Off image ────────────────────────────────────────────────────────────
 
 void init_time_off() {
-    uint16_t* buf = load_and_decode(PATH_TIME_OFF, TIME_OFF_MAX_JPEG, TIME_OFF_W, TIME_OFF_H);
-    if (buf) {
-        if (g_time_off_buf) heap_caps_free(g_time_off_buf);
-        g_time_off_buf   = buf;
-        g_time_off_ready = true;
-        build_dsc(&g_time_off_dsc, g_time_off_buf, TIME_OFF_W, TIME_OFF_H);
+    if (slot_load(g_time_off, TIME_OFF_SPEC)) {
         LOG("[photo_cache] Time Off image loaded from LittleFS\n");
     }
 }
@@ -331,14 +368,7 @@ void store_time_off(uint8_t* jpeg, size_t len) {
         if (jpeg) heap_caps_free(jpeg);
         return;
     }
-    uint16_t* buf = save_and_decode(PATH_TIME_OFF, TIME_OFF_MAX_JPEG,
-                                     jpeg, len, TIME_OFF_W, TIME_OFF_H);
-    heap_caps_free(jpeg);
-    if (buf) {
-        if (g_time_off_buf) heap_caps_free(g_time_off_buf);
-        g_time_off_buf   = buf;
-        g_time_off_ready = true;
-        build_dsc(&g_time_off_dsc, g_time_off_buf, TIME_OFF_W, TIME_OFF_H);
+    if (slot_store(g_time_off, TIME_OFF_SPEC, jpeg, len)) {
         LOG("[photo_cache] Time Off image stored to LittleFS (%u bytes)\n", (unsigned)len);
     } else {
         LOG("[photo_cache] Time Off image decode failed\n");
@@ -346,36 +376,24 @@ void store_time_off(uint8_t* jpeg, size_t len) {
 }
 
 const lv_image_dsc_t* get_time_off() {
-    return g_time_off_ready ? &g_time_off_dsc : nullptr;
+    return g_time_off.ready ? &g_time_off.dsc : nullptr;
 }
 
 void clear_time_off() {
-    g_time_off_ready = false;
-    erase_file(PATH_TIME_OFF);
-    if (g_time_off_buf) { heap_caps_free(g_time_off_buf); g_time_off_buf = nullptr; }
-    g_time_off_dsc = {};
+    slot_clear(g_time_off, TIME_OFF_SPEC);
     LOG("[photo_cache] Time Off image cleared\n");
 }
 
 void init_time_off_placeholder(const uint8_t* jpeg, size_t len) {
-    if (!jpeg || !len) return;
-    uint16_t* buf = static_cast<uint16_t*>(
-        heap_caps_malloc((size_t)TIME_OFF_W * TIME_OFF_H * 2, MALLOC_CAP_SPIRAM));
-    if (!buf) { LOG("[photo_cache] Time Off placeholder PSRAM alloc failed\n"); return; }
-    if (!decode_jpeg_to(jpeg, len, buf, TIME_OFF_W, TIME_OFF_H)) {
-        heap_caps_free(buf);
+    if (slot_init_placeholder(g_time_off_ph, TIME_OFF_SPEC, jpeg, len)) {
+        LOG("[photo_cache] Time Off placeholder ready (%u bytes)\n", (unsigned)len);
+    } else if (jpeg && len) {
         LOG("[photo_cache] Time Off placeholder decode failed\n");
-        return;
     }
-    if (g_time_off_ph_buf) heap_caps_free(g_time_off_ph_buf);
-    g_time_off_ph_buf   = buf;
-    g_time_off_ph_ready = true;
-    build_dsc(&g_time_off_ph_dsc, g_time_off_ph_buf, TIME_OFF_W, TIME_OFF_H);
-    LOG("[photo_cache] Time Off placeholder ready (%u bytes)\n", (unsigned)len);
 }
 
 const lv_image_dsc_t* get_time_off_placeholder() {
-    return g_time_off_ph_ready ? &g_time_off_ph_dsc : nullptr;
+    return g_time_off_ph.ready ? &g_time_off_ph.dsc : nullptr;
 }
 
 uint16_t* decode_to_psram(const uint8_t* jpeg, size_t len, uint16_t w, uint16_t h) {

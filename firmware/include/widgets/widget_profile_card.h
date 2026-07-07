@@ -24,9 +24,9 @@ enum class Presence : uint8_t {
 };
 
 // Weather condition enum matching the BLE Device Settings "w" field
-// (`ble-protocol.md` §3/§4, char 000E). Drives the weather-badge glyph
-// overlaid on the profile photo (`screen-layout.md` "Weather badge +
-// temperature bubble").
+// (`ble-protocol.md` §3/§4, char 000E). Drives the weather-icon glyph
+// overlaid on the profile photo (`screen-layout.md` "Weather icon +
+// temperature text").
 enum class WeatherCondition : uint8_t {
     Clear        = 0,
     PartlyCloudy = 1,
@@ -37,11 +37,15 @@ enum class WeatherCondition : uint8_t {
     Fog          = 6,
 };
 
-lv_obj_t* create(lv_obj_t* parent);
+// Temperature unit enum matching the BLE Device Settings "u" field
+// (`ble-protocol.md` §3/§4, char 000E). Orion declares the unit; Ori never
+// converts, it just renders the integer + this unit's letter ("72°F"/"22°C").
+enum class TemperatureUnit : uint8_t {
+    Fahrenheit = 0,
+    Celsius    = 1,
+};
 
-// Long-press handling (factory reset) is wired in M4. M3 exposes the
-// photo container so a future caller can attach event callbacks.
-lv_obj_t* photo_object(lv_obj_t* card);
+lv_obj_t* create(lv_obj_t* parent);
 
 // Update the profile-photo border color to reflect the user's current
 // Teams presence (or the offline fallback when the PC link is down).
@@ -96,11 +100,6 @@ void unregister_modal_labels();
 // this call (screen transitions) start with the correct photo.
 void set_photo(const lv_image_dsc_t* img_dsc);
 
-// Returns the cached photo descriptor set by the last set_photo() call, or
-// nullptr if no photo has been provided.  Called by create() so new screens
-// start with the photo already loaded without an explicit post-create call.
-const lv_image_dsc_t* get_photo();
-
 // Store the profile fields that create() and modal_profile use for newly built
 // cards, and update the live card's labels immediately (if one exists on screen).
 // Call at boot (from NVS) and on every BLE ProfileInfo write.
@@ -115,17 +114,19 @@ const char* get_profile_title();
 const char* get_profile_email();
 const char* get_profile_phone();
 
-// Update the weather badge + temperature bubble on the given card.
+// Update the weather icon + temperature text on the given card.
 // visible=false hides BOTH elements entirely (LV_OBJ_FLAG_HIDDEN, no placeholder
 // glyph) — used before the first weather data ever arrives, and whenever the
 // BLE-PC link is down (ble-protocol.md §6.4 — same "don't show what can't be
-// verified" policy as presence-offline). When visible=true, condition/temp_f
+// verified" policy as presence-offline). When visible=true, condition/temp_f/unit
 // are applied and both elements are shown.
-void set_weather(lv_obj_t* card, WeatherCondition condition, int temp_f, bool visible);
+void set_weather(lv_obj_t* card, WeatherCondition condition, int temp_f,
+                  TemperatureUnit unit, bool visible);
 
 // Default weather applied to newly-created cards — mirrors set_default_presence().
 // Call this (not set_weather directly) from application code; it updates
 // g_active_card itself, same pattern as set_default_presence().
-void set_default_weather(WeatherCondition condition, int temp_f, bool visible);
+void set_default_weather(WeatherCondition condition, int temp_f,
+                          TemperatureUnit unit, bool visible);
 
 } // namespace widget_profile_card

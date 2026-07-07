@@ -164,18 +164,44 @@ lv_obj_t* make_panel_divider(lv_obj_t* parent) {
     return div;
 }
 
+lv_obj_t* make_scrim(lv_obj_t* parent, bool absorb_taps) {
+    lv_obj_t* scrim = lv_obj_create(parent);
+    lv_obj_set_size(scrim, 800, 480);
+    lv_obj_set_pos(scrim, 0, 0);
+    lv_obj_set_style_bg_color(scrim, theme::color(theme::COLOR_SCRIM), 0);
+    lv_obj_set_style_bg_opa(scrim, theme::SCRIM_OPA, 0);
+    lv_obj_set_style_radius(scrim, 0, 0);
+    lv_obj_set_style_border_width(scrim, 0, 0);
+    lv_obj_set_style_pad_all(scrim, 0, 0);
+    lv_obj_clear_flag(scrim, LV_OBJ_FLAG_SCROLLABLE);
+    if (absorb_taps) lv_obj_add_flag(scrim, LV_OBJ_FLAG_CLICKABLE);
+    else              lv_obj_clear_flag(scrim, LV_OBJ_FLAG_CLICKABLE);
+    return scrim;
+}
+
+lv_obj_t* make_alert_glyph_circle(lv_obj_t* parent) {
+    lv_obj_t* circle = lv_obj_create(parent);
+    lv_obj_set_size(circle, 96, 96);
+    lv_obj_set_style_radius(circle, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(circle, theme::color(theme::COLOR_DANGER_SOFT), 0);
+    lv_obj_set_style_bg_opa(circle, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(circle, 0, 0);
+    lv_obj_set_style_pad_all(circle, 0, 0);
+    lv_obj_clear_flag(circle, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(circle, LV_OBJ_FLAG_CLICKABLE);
+
+    lv_obj_t* bang = lv_label_create(circle);
+    lv_label_set_text(bang, "!");
+    lv_obj_set_style_text_color(bang, theme::color(theme::COLOR_DANGER), 0);
+    lv_obj_set_style_text_font(bang, theme::font_large(), 0);
+    lv_obj_center(bang);
+    return circle;
+}
+
 ModalLayout make_modal_layout(lv_obj_t* base_screen, lv_coord_t card_w, lv_coord_t card_h) {
     ModalLayout layout{};
 
-    layout.scrim = lv_obj_create(base_screen);
-    lv_obj_set_size(layout.scrim, 800, 480);
-    lv_obj_set_pos(layout.scrim, 0, 0);
-    lv_obj_set_style_bg_color(layout.scrim, theme::color(theme::COLOR_SCRIM), 0);
-    lv_obj_set_style_bg_opa(layout.scrim, theme::SCRIM_OPA, 0);
-    lv_obj_set_style_border_width(layout.scrim, 0, 0);
-    lv_obj_set_style_pad_all(layout.scrim, 0, 0);
-    lv_obj_clear_flag(layout.scrim, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(layout.scrim, LV_OBJ_FLAG_CLICKABLE);
+    layout.scrim = make_scrim(base_screen);
 
     layout.card = lv_obj_create(layout.scrim);
     lv_obj_set_size(layout.card, card_w, card_h);

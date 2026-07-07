@@ -16,7 +16,6 @@
 namespace lcd_panel {
 
 void     init();         // brings up the panel; framebuffer in PSRAM
-void*    framebuffer();  // raw pointer to RGB565 framebuffer (width*height*2 bytes)
 
 // stop — gate + reset the LCD_CAM peripheral, halting the RGB DMA scan-out.
 // Used during USB CDC OTA only. There is intentionally no resume() — every OTA

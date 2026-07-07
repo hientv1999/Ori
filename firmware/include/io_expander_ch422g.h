@@ -41,11 +41,4 @@ bool init();
 // I²C transaction. Returns true on I²C success.
 bool write_output(uint8_t pin, bool high);
 
-// Push an explicit 8-bit mask to all EXIO outputs at once (bit i drives
-// EXIOi). Updates the RAM shadow. Returns true on I²C success.
-bool set_all_outputs(uint8_t mask);
-
-// Return the current RAM shadow (last value successfully written).
-uint8_t get_output_state();
-
 } // namespace ch422g

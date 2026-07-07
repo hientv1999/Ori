@@ -230,15 +230,6 @@ static lv_obj_t* make_sub(lv_obj_t* parent, const char* text) {
     return p;
 }
 
-static lv_obj_t* make_body_text(lv_obj_t* parent, const char* text) {
-    lv_obj_t* p = lv_label_create(parent);
-    lv_label_set_text(p, text);
-    lv_obj_set_style_text_color(p, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
-    lv_obj_set_style_text_font(p, theme::font_title(), 0);
-    lv_obj_set_style_text_align(p, LV_TEXT_ALIGN_CENTER, 0);
-    return p;
-}
-
 static lv_obj_t* make_glyph_circle(lv_obj_t* parent, uint32_t bg, uint32_t border) {
     lv_obj_t* c = lv_obj_create(parent);
     lv_obj_set_size(c, 132, 132);
@@ -329,6 +320,18 @@ static lv_obj_t* make_ok_check(lv_obj_t* parent) {
 
     lv_timer_t* t = lv_timer_create(check_reveal_tick_cb, 800, tick);
     lv_timer_set_repeat_count(t, 1);
+
+    // If `tick` is deleted before the timer fires (e.g. the user taps Close
+    // on create_updated_ack() well within 800 ms), delete the pending timer
+    // too so it never runs against a freed object — mirrors the same guard
+    // on the Setup-complete screen's make_ok_check() (screen_setup.cpp).
+    lv_obj_set_user_data(tick, t);
+    lv_obj_add_event_cb(tick, [](lv_event_t* e) {
+        auto* timer = static_cast<lv_timer_t*>(
+            lv_obj_get_user_data(static_cast<lv_obj_t*>(lv_event_get_target(e))));
+        if (timer) lv_timer_delete(timer);
+    }, LV_EVENT_DELETE, nullptr);
+
     return root;
 }
 
@@ -341,7 +344,7 @@ lv_obj_t* create_updated_ack(const char* version, lv_event_cb_t on_close) {
     lv_obj_t* mid = make_mid(root);
     char buf[72];
     lv_snprintf(buf, sizeof(buf), "Ori is now running version %s", version ? version : "");
-    make_body_text(mid, buf);
+    make_sub(mid, buf);
     lv_obj_t* chk = make_ok_check(mid);
     lv_obj_set_style_margin_top(chk, 24, 0);
     ui::make_btn(root, "Close", ui::BtnStyle::Tertiary, on_close, nullptr,

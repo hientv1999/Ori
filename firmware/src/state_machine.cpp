@@ -4,15 +4,13 @@
 #include "ori_log.h"
 #include <lvgl.h>
 #include <time.h>
-#include <string>
-#include <set>
-#include <vector>
 
 #include "ble/ble_manager.h"
 #include "ble/ancs_client.h"
 #include "factory_reset.h"
 #include "app_state.h"
 #include "nvs_store.h"
+#include "time_format.h"
 #include "ota_receiver.h"
 #include "nvs_sync.h"
 #include <cbor.h>
@@ -28,7 +26,6 @@
 #include "screens/screen_ota_updating.h"
 #include "screens/screen_time_off.h"
 #include "screens/screen_reconnect_syncing.h"
-// #include "screens/screen_repair_phone.h" // removed obsolete repair screen
 #include "screens/screen_setup.h"
 #include "ui_helpers.h"
 #include "widgets/widget_profile_card.h"
@@ -76,17 +73,18 @@ bool     g_setup_complete_hold = false;
 // persisted to NVS (presence is ephemeral, §6.4).
 uint8_t  g_presence_byte   = 0x03;
 
-// Most recent weather condition + temperature pushed by Orion via the Device
-// Settings "w"/"d" fields (ble-protocol.md §3/§4). Unlike presence there is
-// no "unverified" enum value to fall back to, so g_weather_valid gates
-// visibility instead — apply_widget_defaults() hides the badge/bubble
-// entirely (rather than rendering a fallback condition/temp) whenever the PC
-// link is down or Orion has never sent weather this boot. The cached
-// condition/temp are NOT reset on disconnect — only g_weather_valid is —
+// Most recent weather condition + temperature + unit pushed by Orion via the
+// Device Settings "w"/"d"/"u" fields (ble-protocol.md §3/§4). Unlike presence
+// there is no "unverified" enum value to fall back to, so g_weather_valid
+// gates visibility instead — apply_widget_defaults() hides the icon/text
+// entirely (rather than rendering a fallback condition/temp/unit) whenever
+// the PC link is down or Orion has never sent weather this boot. The cached
+// condition/temp/unit are NOT reset on disconnect — only g_weather_valid is —
 // there's no reason to discard the last-known numbers, just stop showing
 // them until Orion re-confirms (mirrors set_pc_connected()'s presence reset).
 uint8_t  g_weather_condition_byte = 0;
 int16_t  g_weather_temp_f         = 0;
+uint8_t  g_weather_unit_byte      = 0;  // 0=Fahrenheit 1=Celsius
 bool     g_weather_valid          = false;
 
 // Post-OTA acknowledgement (read from NVS at init). When pending, the boot
@@ -99,9 +97,14 @@ char     g_ota_ack_version[24] = {};
 // Used by on_reconnect_end() to guarantee RECONNECT_MIN_MS visibility.
 uint32_t g_reconnect_shown_ms = 0;
 
-// Set of meeting start-times (encoded as minutes since midnight) for which
-// the 5-minute alert has already fired this boot.  Cleared on reboot only.
-std::set<int> g_alerted_meetings;
+// Whether the 5-minute alert has already fired this boot for the meeting
+// starting at a given minute-of-day. Cleared on reboot only. Minute-of-day is
+// naturally bounded to [0, 1439) by localtime_r()'s tm_hour/tm_min ranges, so
+// a fixed bitmap (zero heap, O(1) lookup) replaces what used to be a
+// std::set<int> — a red-black tree node-allocated on every unique insert,
+// pure overhead for a key space this small and already bounded.
+constexpr int MINUTES_PER_DAY = 1440;
+bool g_alerted_mins[MINUTES_PER_DAY] = {};
 
 // The current LVGL screen object. Kept so we can destroy it before loading
 // a new one, preventing memory leaks.
@@ -177,12 +180,16 @@ static int now_mins() {
     return tm_buf.tm_hour * 60 + tm_buf.tm_min;
 }
 
-// Current local time as seconds since midnight.
-static long now_seconds() {
-    time_t t = time(nullptr);
+// Current local time as seconds since midnight. Pass an already-computed
+// `tm` (e.g. tick_cb's day-rollover localtime_r()) to skip recomputing it.
+static long now_seconds(const struct tm* cached = nullptr) {
     struct tm tm_buf;
-    localtime_r(&t, &tm_buf);
-    return (long)tm_buf.tm_hour * 3600 + tm_buf.tm_min * 60 + tm_buf.tm_sec;
+    if (!cached) {
+        time_t t = time(nullptr);
+        localtime_r(&t, &tm_buf);
+        cached = &tm_buf;
+    }
+    return (long)cached->tm_hour * 3600 + cached->tm_min * 60 + cached->tm_sec;
 }
 
 // Returns the live meeting list with past meetings removed and in_progress flag
@@ -217,8 +224,9 @@ static bool check_countdown(const char** out_title,
                              const char** out_org,
                              const char** out_loc,
                              int*         out_diff_s,
-                             int*         out_key) {
-    long now_s = now_seconds();
+                             int*         out_key,
+                             const struct tm* now_tm = nullptr) {
+    long now_s = now_seconds(now_tm);
     app_state::MeetingList list = { g_rt_display, g_rt_count };
 
     for (size_t i = 0; i < list.count; ++i) {
@@ -229,9 +237,10 @@ static bool check_countdown(const char** out_title,
 
         long diff = start_s - now_s;
         if (diff < 0 || diff > ALERT_WINDOW_S) continue;
+        if (start_mins >= MINUTES_PER_DAY) continue;  // defensive: keep the array index in bounds
 
         // Within the 5-min window — check if already alerted this boot.
-        if (g_alerted_meetings.count(start_mins)) continue;
+        if (g_alerted_mins[start_mins]) continue;
 
         // New alert.
         *out_title = m.title;
@@ -258,13 +267,14 @@ void apply_widget_defaults() {
             ? static_cast<widget_profile_card::Presence>(g_presence_byte)
             : widget_profile_card::Presence::Offline);
 
-    // Reflect the cached weather condition/temp while the PC link is up and
-    // Orion has actually sent weather this boot; hide the badge + bubble
+    // Reflect the cached weather condition/temp/unit while the PC link is up
+    // and Orion has actually sent weather this boot; hide the icon + text
     // entirely otherwise — there's no "unverified" enum value like Offline
     // to fall back to (ble-protocol.md §6.4).
     widget_profile_card::set_default_weather(
         static_cast<widget_profile_card::WeatherCondition>(g_weather_condition_byte),
         g_weather_temp_f,
+        static_cast<widget_profile_card::TemperatureUnit>(g_weather_unit_byte),
         g_pc_connected && g_weather_valid);
 
     // Mode-toggle is shown when PC is connected OR when in Clock/Calendar
@@ -447,10 +457,15 @@ static void tick_cb(lv_timer_t* /*t*/) {
     //   • CLOCK — nothing to do (it shows the time, not the date).
     //   • everything else — force a normal rebuild of the current screen.
     static int s_last_day_key = -1;
+    // Computed once per tick (when the clock is set) and reused below by
+    // check_countdown() — avoids a second redundant time()+localtime_r() in
+    // the same 1 Hz callback.
+    struct tm lt;
+    bool have_lt = false;
     if (clock_now) {
         time_t now = time(nullptr);
-        struct tm lt;
         localtime_r(&now, &lt);
+        have_lt = true;
         int day_key = (lt.tm_year + 1900) * 1000 + lt.tm_yday;  // unique per calendar day
         if (s_last_day_key != -1 && day_key != s_last_day_key) {
             if (g_state == AppState::CALENDAR_VIEW) {
@@ -475,8 +490,8 @@ static void tick_cb(lv_timer_t* /*t*/) {
         int diff_s        = 0;
         int key           = -1;
 
-        if (check_countdown(&title, &org, &loc, &diff_s, &key)) {
-            g_alerted_meetings.insert(key);
+        if (check_countdown(&title, &org, &loc, &diff_s, &key, have_lt ? &lt : nullptr)) {
+            if (key >= 0 && key < MINUTES_PER_DAY) g_alerted_mins[key] = true;
             LOG("[sm] countdown alert for meeting key=%d\n", key);
             fire_countdown(title, org, loc, diff_s);
             return;  // screen already updated; skip re-evaluate below
@@ -916,6 +931,35 @@ void on_calendar_enter() {
     LOG("[sm] calendar enter (pre_mode=%d)\n", (int)g_pre_clock_mode);
 }
 
+bool show_countdown_if_imminent(const app_state::Meeting& m) {
+    int start_mins = hhmm_to_mins(m.start);
+    if (start_mins < 0) return false;
+
+    long diff = (long)start_mins * 60 - now_seconds();
+    if (diff < 0 || diff > ALERT_WINDOW_S) return false;  // not within the 5-min window
+
+    // Mark it alerted so the automatic tick-driven alert doesn't also pop up
+    // moments later for a meeting the user just looked at directly.
+    if (start_mins < MINUTES_PER_DAY) g_alerted_mins[start_mins] = true;
+
+    LOG("[sm] countdown opened by tap (meeting key=%d)\n", start_mins);
+    fire_countdown(m.title, m.org, m.loc, (int)diff);
+    return true;
+}
+
+void on_countdown_close() {
+    if (g_state != AppState::COUNTDOWN) return;  // already superseded (OTA, factory reset, ...)
+    // Don't call evaluate() synchronously from here — this runs from inside
+    // the countdown modal's own Close click / self-dismiss timer, both of
+    // which are children of the screen evaluate() would tear down. Just clear
+    // the sentinel; the tick already calls evaluate() once a second, and the
+    // modal (built fresh at fire_countdown() time) already reflects the
+    // meeting state accurately in the meantime.
+    g_state = AppState::NO_MEETINGS;
+    g_force_rebuild = true;
+    LOG("[sm] countdown closed\n");
+}
+
 void on_ota_begin() {
     LOG("[sm] on_ota_begin\n");
     // Pause the 1 s meeting-check tick for the whole update: no meeting-expiry,
@@ -1006,13 +1050,15 @@ void set_presence(uint8_t presence_byte) {
             : widget_profile_card::Presence::Offline);
 }
 
-void set_weather(uint8_t condition, int16_t temp_f) {
+void set_weather(uint8_t condition, int16_t temp_f, uint8_t unit) {
     g_weather_condition_byte = condition;
     g_weather_temp_f = temp_f;
+    g_weather_unit_byte = unit;
     g_weather_valid = true;
     widget_profile_card::set_default_weather(
         static_cast<widget_profile_card::WeatherCondition>(g_weather_condition_byte),
         g_weather_temp_f,
+        static_cast<widget_profile_card::TemperatureUnit>(g_weather_unit_byte),
         g_pc_connected && g_weather_valid);
 }
 
@@ -1101,6 +1147,22 @@ void set_clock_face(uint8_t face) {
 
 uint8_t current_clock_face() {
     return g_clock_face;
+}
+
+void set_time_format(uint8_t fmt) {
+    time_format::set(fmt);
+    LOG("[sm] time_format -> %s\n", fmt ? "12h" : "24h");
+    // The status bar and both clock faces reformat on their own 1 s timers, but
+    // the meeting list is static once built, so force a rebuild of the mode-driven
+    // screen. CLOCK is rebuilt explicitly (a forced evaluate() would switch away
+    // from it, since compute_target_state() never returns CLOCK); CALENDAR_VIEW
+    // shows no time-of-day and must not be yanked out from under the user.
+    if (g_state == AppState::CLOCK) {
+        load_screen(build_clock_screen());
+    } else if (g_state != AppState::CALENDAR_VIEW) {
+        g_force_rebuild = true;
+        evaluate();
+    }
 }
 
 } // namespace state_machine

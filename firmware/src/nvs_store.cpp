@@ -14,6 +14,7 @@ constexpr const char* k_sync_step   = "sync_step";  // bool: Orion bonded, await
 constexpr const char* k_phone_step  = "phone_step"; // bool: Orion synced, awaiting iPhone pair
 constexpr const char* k_mode         = "mode";        // uint8: 0=Calendar 1=Controls
 constexpr const char* k_clock_face   = "clock_face";  // uint8: 0=Digital 1=Analog
+constexpr const char* k_time_format  = "time_fmt";    // uint8: 0=24-hour 1=12-hour
 constexpr const char* k_notif_filter = "notif_filt";  // uint8: 0=Disabled 1=CallOnly 2=Important 3=All
 constexpr const char* k_slot1        = "sc_1";         // string: shortcut slot 1 token
 constexpr const char* k_slot2        = "sc_2";         // string: shortcut slot 2 token
@@ -140,6 +141,25 @@ void set_clock_face(uint8_t face) {
         prefs.end();
     }
     LOG("[nvs] clock_face=%d\n", (int)face);
+}
+
+// ── Time format preference (0 = 24-hour, 1 = 12-hour) ──────────────────────
+
+uint8_t get_time_format() {
+    uint8_t v = 0;  // default: 24-hour
+    if (prefs.begin(NAMESPACE, /*readOnly=*/true)) {
+        v = (uint8_t)prefs.getUChar(k_time_format, 0);
+        prefs.end();
+    }
+    return v;
+}
+
+void set_time_format(uint8_t fmt) {
+    if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
+        prefs.putUChar(k_time_format, fmt);
+        prefs.end();
+    }
+    LOG("[nvs] time_format=%d\n", (int)fmt);
 }
 
 // ── ANCS notification filter ───────────────────────────────────────────────

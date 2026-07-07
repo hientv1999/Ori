@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <lvgl.h>
 
+#include "state_machine.h"
 #include "theme.h"
 #include "ui_helpers.h"
 #include "widgets/widget_progress_ring.h"
@@ -54,6 +55,10 @@ void on_scrim_delete(lv_event_t* e) {
     auto* s = static_cast<CountdownState*>(lv_event_get_user_data(e));
     if (s && s->timer) lv_timer_delete(s->timer);
     delete s;
+    // Single choke point for every dismissal path (Close tap, zero-timeout
+    // auto-dismiss, or the modal being torn down by a screen swap) — clears
+    // the state machine's COUNTDOWN sentinel so it doesn't stay wedged there.
+    state_machine::on_countdown_close();
 }
 
 } // namespace
@@ -65,16 +70,7 @@ lv_obj_t* create(lv_obj_t* base_screen,
                  const char* organizer,
                  const char* location,
                  int seconds_remaining) {
-    // Full-screen scrim that absorbs taps.
-    lv_obj_t* scrim = lv_obj_create(base_screen);
-    lv_obj_set_size(scrim, 800, 480);
-    lv_obj_set_pos(scrim, 0, 0);
-    lv_obj_set_style_bg_color(scrim, theme::color(theme::COLOR_SCRIM), 0);
-    lv_obj_set_style_bg_opa(scrim, theme::SCRIM_OPA, 0);
-    lv_obj_set_style_border_width(scrim, 0, 0);
-    lv_obj_set_style_pad_all(scrim, 0, 0);
-    lv_obj_clear_flag(scrim, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(scrim, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t* scrim = ui::make_scrim(base_screen);
 
     // Content column, centered. Full screen width (with side padding) so the
     // title / organizer / location labels below — each lv_pct(100), single-line

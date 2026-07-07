@@ -113,8 +113,7 @@ lv_obj_t* make_ble_pill(lv_obj_t* parent, const char* text) {
     return pill;
 }
 
-// 30 fps spinner — lv_timer at 33 ms replaces lv_spinner_create's 60 fps lv_anim.
-// 8° step × 45 ticks × 33 ms ≈ 1485 ms/rev (≈ original 1400 ms).
+// 24 fps spinner — lv_timer at 42 ms replaces lv_spinner_create's 60 fps lv_anim.
 constexpr uint32_t SPIN_INTERVAL_MS = 42;   // 24 fps
 constexpr uint16_t SPIN_STEP_DEG    = 10;  // 10° × 36 steps × 42 ms ≈ 1512 ms/rev
 
@@ -622,18 +621,16 @@ lv_obj_t* show_passkey_modal(lv_obj_t* screen, uint32_t passkey) {
     if (!s) return nullptr;
     if (s->passkey_modal) return s->passkey_modal;
 
-    // Spinner is invisible under the scrim — stop its animation to save CPU.
-    if (s->pairing_spinner) lv_obj_add_flag(s->pairing_spinner, LV_OBJ_FLAG_HIDDEN);
+    // Spinner is invisible under the scrim — pause its timer too, not just
+    // hide it, so it actually stops costing CPU (a hidden lv_obj still ticks
+    // its own timer and calls lv_arc_set_rotation() every 42 ms otherwise).
+    if (s->pairing_spinner) {
+        lv_obj_add_flag(s->pairing_spinner, LV_OBJ_FLAG_HIDDEN);
+        auto* ss = static_cast<SpinnerState*>(lv_obj_get_user_data(s->pairing_spinner));
+        if (ss) lv_timer_pause(ss->timer);
+    }
 
-    lv_obj_t* scrim = lv_obj_create(screen);
-    lv_obj_set_size(scrim, 800, 480);
-    lv_obj_set_pos(scrim, 0, 0);
-    lv_obj_set_style_bg_color(scrim, theme::color(theme::COLOR_SCRIM), 0);
-    lv_obj_set_style_bg_opa(scrim, theme::SCRIM_OPA, 0);
-    lv_obj_set_style_border_width(scrim, 0, 0);
-    lv_obj_set_style_pad_all(scrim, 0, 0);
-    lv_obj_clear_flag(scrim, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(scrim, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t* scrim = ui::make_scrim(screen);
 
     lv_obj_t* card = lv_obj_create(scrim);
     lv_obj_set_size(card, 540, LV_SIZE_CONTENT);
@@ -677,7 +674,11 @@ void hide_passkey_modal(lv_obj_t* screen) {
     if (!s || !s->passkey_modal) return;
     lv_obj_delete(s->passkey_modal);
     s->passkey_modal = nullptr;
-    if (s->pairing_spinner) lv_obj_clear_flag(s->pairing_spinner, LV_OBJ_FLAG_HIDDEN);
+    if (s->pairing_spinner) {
+        lv_obj_clear_flag(s->pairing_spinner, LV_OBJ_FLAG_HIDDEN);
+        auto* ss = static_cast<SpinnerState*>(lv_obj_get_user_data(s->pairing_spinner));
+        if (ss) lv_timer_resume(ss->timer);
+    }
 }
 
 void dismiss_phone_pairing(lv_obj_t* screen) {
@@ -700,15 +701,7 @@ lv_obj_t* show_orioning_modal(lv_obj_t* screen) {
     if (!s) return nullptr;
     if (s->orioning_modal) return s->orioning_modal;
 
-    lv_obj_t* scrim = lv_obj_create(screen);
-    lv_obj_set_size(scrim, 800, 480);
-    lv_obj_set_pos(scrim, 0, 0);
-    lv_obj_set_style_bg_color(scrim, theme::color(theme::COLOR_SCRIM), 0);
-    lv_obj_set_style_bg_opa(scrim, theme::SCRIM_OPA, 0);
-    lv_obj_set_style_border_width(scrim, 0, 0);
-    lv_obj_set_style_pad_all(scrim, 0, 0);
-    lv_obj_clear_flag(scrim, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(scrim, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t* scrim = ui::make_scrim(screen, /*absorb_taps=*/false);
 
     lv_obj_t* card = lv_obj_create(scrim);
     lv_obj_set_size(card, 540, LV_SIZE_CONTENT);

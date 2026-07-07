@@ -67,7 +67,8 @@ static const BundleMap k_bundle_map[] = {
     { "com.apple.mobilephone",          "phone",       "Phone"       },
     { "com.hammerandchisel.discord",    "discord",     "Discord"     },
     { "ph.telegra.Telegraph",           "telegram",    "Telegram"    },
-    { "com.google.ios.youtube",         "youtube",     "YouTube"     },
+    { "com.google.ios.youtube",         "youtube",       "YouTube"       },
+    { "com.google.ios.youtubemusic",    "youtube_music", "YouTube Music" },
     { "com.zhiliaoapp.musically",       "tiktok",      "TikTok"      },
     { "com.ss.iphone.ugc.Ame",          "tiktok",      "TikTok"      },
     { "com.spotify.client",             "spotify",     "Spotify"     },
@@ -154,11 +155,6 @@ namespace {
 
 ancs_client::QueueEntry g_queue[app_state::MAX_ANCS_NOTIFICATIONS];
 size_t                  g_queue_count = 0;
-
-// ── Pending attributes ────────────────────────────────────────────────────
-
-ancs_client::NotificationInfo g_pending_info;
-bool                          g_pending_valid = false;
 
 // ── BLE handles ──────────────────────────────────────────────────────────
 
@@ -939,14 +935,6 @@ void on_data_source(const uint8_t* data, uint16_t len) {
 
     queue_add(resp_uid, token);
 
-    // Legacy single-slot pending info (kept for compatibility).
-    g_pending_info.uid = resp_uid;
-    strncpy(g_pending_info.app_id, app_id, sizeof(g_pending_info.app_id) - 1);
-    strncpy(g_pending_info.title,  ftitle, sizeof(g_pending_info.title)  - 1);
-    strncpy(g_pending_info.body,   fbody,  sizeof(g_pending_info.body)   - 1);
-    g_pending_info.icon_token = token;
-    g_pending_valid = true;
-
     g_ds_len = 0;
     g_pending_uid = 0;
 
@@ -1019,19 +1007,6 @@ void answer_notification(uint32_t notif_uid) {
         cmd[5] = 0x00; // ActionID Positive
         g_cp_char->writeValue(cmd, 6, true);
     }
-}
-
-const NotificationInfo* pending_notification_info() {
-    return g_pending_valid ? &g_pending_info : nullptr;
-}
-
-void clear_pending_notification_info() {
-    g_pending_valid = false;
-}
-
-const QueueEntry* get_queue(size_t* count_out) {
-    if (count_out) *count_out = g_queue_count;
-    return g_queue;
 }
 
 const char* phone_name() {

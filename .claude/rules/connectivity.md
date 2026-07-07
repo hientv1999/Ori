@@ -33,7 +33,7 @@ Source: `PC_app/`. See `pc-app.md` for app details.
 - Today's meeting list
 - Next Time Off entry (start, end, destination image) — only the next entry, not full history
 - Current local time
-- Weather condition + temperature (badge and bubble on the profile photo — `screen-layout.md`)
+- Weather condition + temperature (icon and text on the profile photo — `screen-layout.md`)
 
 Profile, photo, Time Off, and pairing bonds are cached in NVS and survive power cycles and connection loss. **The meeting list, local time, and weather are RAM-only** — a power cycle clears them. Meetings are re-pushed by Orion on reconnect; the clock is re-supplied by Orion (primary) or the iPhone (secondary backup, see §2); weather is re-pushed by Orion on reconnect and hidden entirely until then (same "don't show what can't be verified" policy as Presence — `ble-protocol.md` §6.4). See `meeting-list.md` for why meetings aren't persisted.
 

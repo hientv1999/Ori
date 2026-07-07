@@ -7,6 +7,7 @@
 
 #include "app_state.h"
 #include "theme.h"
+#include "time_format.h"
 #include "ui_helpers.h"
 #include "widgets/widget_profile_card.h"
 #include "widgets/widget_status_bar.h"
@@ -43,6 +44,13 @@ struct AnalogFaceState {
     lv_point_precise_t hour_pts[2];
     lv_point_precise_t minute_pts[2];
     lv_point_precise_t second_pts[2];
+    // date_lbl only changes once a day (or on a 12h/24h format toggle, since
+    // this face's date strip appends the AM/PM suffix) — unlike the hands,
+    // which must redraw every tick, cache it to skip the redundant
+    // lv_label_set_text() on the ~86399/86400 ticks where it's unchanged.
+    int16_t    last_mday = -1;
+    bool       last_h24  = true;
+    bool       last_clock_set = false;
 };
 
 // angle_deg: 0 = 12 o'clock, increases clockwise — matches a normal clock
@@ -66,10 +74,16 @@ void update_face(AnalogFaceState* af) {
     // unknown. Park the hands at 12 rather than showing a fabricated time —
     // same rule screen_clock.cpp applies to its "--:--" digital readout.
     if (!app_state::clock_is_set()) {
-        lv_label_set_text(af->date_lbl, "WAITING FOR ORION");
-        update_hand(af->hour_hand,   af->hour_pts,   0.0f, 68.0f);
-        update_hand(af->minute_hand, af->minute_pts, 0.0f, 102.0f);
-        update_hand(af->second_hand, af->second_pts, 0.0f, 112.0f);
+        if (af->last_clock_set || af->last_mday != -1) {
+            // Only re-render/re-park once, on the transition into this state
+            // — nothing here changes again until clock_set flips back true.
+            lv_label_set_text(af->date_lbl, "WAITING FOR ORION");
+            update_hand(af->hour_hand,   af->hour_pts,   0.0f, 68.0f);
+            update_hand(af->minute_hand, af->minute_pts, 0.0f, 102.0f);
+            update_hand(af->second_hand, af->second_pts, 0.0f, 112.0f);
+            af->last_clock_set = false;
+            af->last_mday = -1;
+        }
         return;
     }
 
@@ -77,6 +91,7 @@ void update_face(AnalogFaceState* af) {
     struct tm tm;
     localtime_r(&t, &tm);
 
+    // Hands move every second — always redraw these, unlike date_lbl below.
     float hour_deg   = (tm.tm_hour % 12) * 30.0f + tm.tm_min * 0.5f;
     float minute_deg = tm.tm_min * 6.0f + tm.tm_sec * 0.1f;
     float second_deg = tm.tm_sec * 6.0f;
@@ -84,15 +99,27 @@ void update_face(AnalogFaceState* af) {
     update_hand(af->minute_hand, af->minute_pts, minute_deg, 102.0f);
     update_hand(af->second_hand, af->second_pts, second_deg, 112.0f);
 
+    bool h24 = time_format::is_24h();
+    bool date_unchanged = af->last_clock_set && af->last_mday == tm.tm_mday && af->last_h24 == h24;
+    af->last_clock_set = true;
+    af->last_mday = (int16_t)tm.tm_mday;
+    af->last_h24  = h24;
+    if (date_unchanged) return;
+
     char day[16], mon[8];
     strftime(day, sizeof(day), "%A", &tm);
     strftime(mon, sizeof(mon), "%B",  &tm);
     // Uppercase: ESP32 strftime may not support %^A/%^B, so do it manually.
     for (char* p = day; *p; ++p) if (*p >= 'a' && *p <= 'z') *p -= 32;
     for (char* p = mon; *p; ++p) if (*p >= 'a' && *p <= 'z') *p -= 32;
-    const char* ampm = (tm.tm_hour >= 12) ? "PM" : "AM";
     char date_buf[56];
-    snprintf(date_buf, sizeof(date_buf), "%s, %s %d \xc2\xb7 %s", day, mon, tm.tm_mday, ampm);
+    if (h24) {
+        // 24-hour: no AM/PM suffix.
+        snprintf(date_buf, sizeof(date_buf), "%s, %s %d", day, mon, tm.tm_mday);
+    } else {
+        const char* ampm = (tm.tm_hour >= 12) ? "PM" : "AM";
+        snprintf(date_buf, sizeof(date_buf), "%s, %s %d \xc2\xb7 %s", day, mon, tm.tm_mday, ampm);
+    }
     lv_label_set_text(af->date_lbl, date_buf);
 }
 

@@ -8,6 +8,7 @@
 //   "prov"        — bool: setup completed (first-boot flag)
 //   "mode"        — uint8: 0=Calendar, 1=Media (immediate write, infrequent)
 //   "clock_face"  — uint8: 0=Digital, 1=Analog (immediate write, infrequent)
+//   "time_fmt"    — uint8: 0=24-hour, 1=12-hour (immediate write, infrequent)
 //   "notif_filt"  — uint8: ANCS filter level 0-3
 //   "sc_1/2/3"    — string: shortcut slot token (≤19 chars + null)
 //
@@ -46,6 +47,12 @@ void    set_mode(uint8_t mode);
 // screen_clock / screen_clock_analog the Clock state shows.
 uint8_t get_clock_face();
 void    set_clock_face(uint8_t face);
+
+// Time-format preference (0 = 24-hour, 1 = 12-hour). Default 24-hour. Set by
+// Orion via Device Settings (char 000E, key "h"); persisted so it survives
+// power cycles. Drives every wall-clock display via the time_format module.
+uint8_t get_time_format();
+void    set_time_format(uint8_t fmt);
 
 // ANCS notification filter level (0=Disabled, 1=CallOnly, 2=Important, 3=All).
 // Default 3 (All). Set by Orion via Device Settings (char 000E); persisted so the setting

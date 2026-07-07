@@ -36,9 +36,10 @@
 void ble_post_factory_reset_event();
 void ble_post_presence_event(widget_profile_card::Presence p);
 void ble_post_clock_face_event(uint8_t face);
+void ble_post_time_format_event(uint8_t fmt);
 void ble_post_unpair_phone_event();
 void ble_post_ancs_filter_event(uint8_t level);
-void ble_post_weather_event(uint8_t condition, int16_t temp_f);
+void ble_post_weather_event(uint8_t condition, int16_t temp_f, uint8_t unit);
 void ble_post_shortcut_update_event();
 void ble_post_media_meta_event();
 void ble_post_album_art_event(uint8_t* buf, size_t len);
@@ -68,12 +69,9 @@ void ble_post_time_off_photo_event(uint8_t* buf, size_t len);
 #include "nvs_store.h"
 #include "nvs_sync.h"
 #include "state_machine.h"
-#include "factory_reset.h"
 #include "app_state.h"
-#include "screens/screen_setup.h"
 #include "widgets/widget_profile_card.h"
 #include "screens/screen_media_mode.h"
-#include "ota_receiver.h"
 #include "lcd_panel.h"
 #include "ui_helpers.h"
 
@@ -163,28 +161,6 @@ uint32_t      g_vol_swipe_end_ms  = 0;
 // ─────────────────────────────────────────────────────────────────────────
 // CBOR helpers
 // ─────────────────────────────────────────────────────────────────────────
-
-// Encode a CBOR map with one text key and uint value.
-// Writes into buf, returns byte count written (0 on failure).
-static size_t cbor_encode_simple(uint8_t* buf, size_t buf_sz,
-                                  const char* key, uint64_t value) {
-    CborEncoder enc, map;
-    cbor_encoder_init(&enc, buf, buf_sz, 0);
-    cbor_encoder_create_map(&enc, &map, 1);
-    cbor_encode_text_stringz(&map, key);
-    cbor_encode_uint(&map, value);
-    cbor_encoder_close_container(&enc, &map);
-    return cbor_encoder_get_buffer_size(&enc, buf);
-}
-
-// Encode {} empty map.
-static size_t cbor_encode_empty_map(uint8_t* buf, size_t buf_sz) {
-    CborEncoder enc, map;
-    cbor_encoder_init(&enc, buf, buf_sz, 0);
-    cbor_encoder_create_map(&enc, &map, 0);
-    cbor_encoder_close_container(&enc, &map);
-    return cbor_encoder_get_buffer_size(&enc, buf);
-}
 
 // Encode SyncControl { op, seq, reason (optional) }.
 static size_t cbor_encode_sync_ctrl(uint8_t* buf, size_t buf_sz,
@@ -884,16 +860,18 @@ private:
     }
 
     // ── Device Settings read ────────────────────────────────────────────────────
-    // Returns all NVS-persisted fields: "c" (clock_face), "f" (ancs_filter),
-    // and "1"/"2"/"3" (shortcut slot tokens). Presence is not returned —
-    // it's ephemeral and Orion is the source of truth.
+    // Returns all NVS-persisted fields: "c" (clock_face), "h" (time_format),
+    // "f" (ancs_filter), and "1"/"2"/"3" (shortcut slot tokens). Presence and
+    // weather are not returned — ephemeral, Orion is the source of truth.
     void handle_device_settings_read(NimBLECharacteristic* c) {
         CborEncoder enc, map;
         uint8_t buf[128];
         cbor_encoder_init(&enc, buf, sizeof(buf), 0);
-        cbor_encoder_create_map(&enc, &map, 5);
+        cbor_encoder_create_map(&enc, &map, 6);
         cbor_encode_text_stringz(&map, "c");
         cbor_encode_uint(&map, (uint64_t)nvs::get_clock_face());
+        cbor_encode_text_stringz(&map, "h");
+        cbor_encode_uint(&map, (uint64_t)nvs::get_time_format());
         cbor_encode_text_stringz(&map, "f");
         cbor_encode_uint(&map, (uint64_t)nvs::get_notif_filter());
         const app_state::ShortcutSlot* slots = app_state::shortcuts();
@@ -909,9 +887,10 @@ private:
     }
 
     // ── Device Settings (char 000E) — CBOR map, partial-update ───────────────
-    // Merges Presence Status, Shortcut Config, Clock Face, and ANCS Filter into
-    // one characteristic. All fields are optional; absent keys leave state
-    // unchanged. All present fields are validated before any are applied (atomic).
+    // Merges Presence Status, Shortcut Config, Clock Face, Time Format, ANCS
+    // Filter, and Weather into one characteristic. All fields are optional; absent
+    // keys leave state unchanged. All present fields are validated before any are
+    // applied (atomic).
     // Applied immediately, outside the BEGIN/END staging pipeline — same treatment
     // as Clock Face (persisted) and Presence (not persisted) individually.
     void handle_device_settings(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
@@ -931,9 +910,11 @@ private:
         bool    has_slots    = false;
         char    slot1[20] = {}, slot2[20] = {}, slot3[20] = {};
         bool    has_clock    = false; uint8_t clock_val = 0;
+        bool    has_timefmt  = false; uint8_t timefmt_val = 0;
         bool    has_filter   = false; uint8_t filter_val = 0;
         bool    has_weather_cond = false; uint8_t weather_cond_val = 0;
         bool    has_weather_temp = false; int16_t weather_temp_val = 0;
+        bool    has_weather_unit = false; uint8_t weather_unit_val = 0;
         bool    parse_error  = false;
 
         cbor_value_enter_container(&root, &map_val);
@@ -964,6 +945,10 @@ private:
                 uint64_t v; cbor_value_get_uint64(&map_val, &v);
                 if (v > 1) { parse_error = true; break; }
                 clock_val = (uint8_t)v; has_clock = true;
+            } else if (strcmp(key, "h") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
+                uint64_t v; cbor_value_get_uint64(&map_val, &v);
+                if (v > 1) { parse_error = true; break; }
+                timefmt_val = (uint8_t)v; has_timefmt = true;
             } else if (strcmp(key, "f") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
                 uint64_t v; cbor_value_get_uint64(&map_val, &v);
                 if (v > 3) { parse_error = true; break; }
@@ -976,6 +961,10 @@ private:
                 int64_t v; cbor_value_get_int64(&map_val, &v);
                 if (v < -40 || v > 140) { parse_error = true; break; }
                 weather_temp_val = (int16_t)v; has_weather_temp = true;
+            } else if (strcmp(key, "u") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
+                uint64_t v; cbor_value_get_uint64(&map_val, &v);
+                if (v > 1) { parse_error = true; break; }
+                weather_unit_val = (uint8_t)v; has_weather_unit = true;
             }
             if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
         }
@@ -1011,21 +1000,27 @@ private:
             ble_post_clock_face_event(clock_val);
             LOG("[gatt] DeviceSettings: clock_face=0x%02X\n", (unsigned)clock_val);
         }
+        if (has_timefmt) {
+            // NVS write + on-screen clock/meeting rebuild deferred to main task.
+            ble_post_time_format_event(timefmt_val);
+            LOG("[gatt] DeviceSettings: time_format=%s\n", timefmt_val ? "12h" : "24h");
+        }
         if (has_filter) {
             // NVS write + ancs_client::set_filter() deferred to main task via event.
             ble_post_ancs_filter_event(filter_val);
             LOG("[gatt] DeviceSettings: ancs_filter=0x%02X\n", (unsigned)filter_val);
         }
-        if (has_weather_cond && has_weather_temp) {
+        if (has_weather_cond && has_weather_temp && has_weather_unit) {
             // Ephemeral, like presence — not persisted, not read back. Only
-            // applied when BOTH fields are present in this write (defensive:
-            // a message with just one of the two shouldn't half-apply).
-            ble_post_weather_event(weather_cond_val, weather_temp_val);
-            LOG("[gatt] DeviceSettings: weather condition=%u temp_f=%d\n",
-                (unsigned)weather_cond_val, (int)weather_temp_val);
-        } else if (has_weather_cond != has_weather_temp) {
-            LOG("[gatt] DeviceSettings: weather partial write ignored (w=%d d=%d)\n",
-                (int)has_weather_cond, (int)has_weather_temp);
+            // applied when ALL THREE fields are present in this write
+            // (defensive: a message with just some of the three shouldn't
+            // half-apply).
+            ble_post_weather_event(weather_cond_val, weather_temp_val, weather_unit_val);
+            LOG("[gatt] DeviceSettings: weather condition=%u temp_f=%d unit=%u\n",
+                (unsigned)weather_cond_val, (int)weather_temp_val, (unsigned)weather_unit_val);
+        } else if (has_weather_cond || has_weather_temp || has_weather_unit) {
+            LOG("[gatt] DeviceSettings: weather partial write ignored (w=%d d=%d u=%d)\n",
+                (int)has_weather_cond, (int)has_weather_temp, (int)has_weather_unit);
         }
     }
 
@@ -1427,10 +1422,32 @@ void notify_phone_bond_status(bool bonded, bool connected, const char* name) {
 }
 
 void abort_sync_stage() {
+    // Reset any in-flight chunk reassembly unconditionally — g_art_ctx (Media
+    // Album Art) lives outside the BEGIN/END staging pipeline (ble-protocol.md
+    // §12), so it can be mid-transfer even when g_stage/g_sync_in_progress are
+    // both false. Without this, a disconnect mid-fragment leaks that context's
+    // PSRAM buffer permanently (chunked_transfer::reset() is a no-op on an
+    // already-idle context, so this is always safe to call).
+    chunked_transfer::reset(&g_photo_ctx);
+    chunked_transfer::reset(&g_meetings_ctx);
+    chunked_transfer::reset(&g_time_off_ctx);
+    chunked_transfer::reset(&g_art_ctx);
+
     if (!g_stage.active && !g_sync_in_progress) return;
     LOG("[gatt] Sync aborted (disconnect) — discarding staged data\n");
     g_sync_in_progress = false;
     stage_reset();
+}
+
+// Poll all chunk-reassembly contexts for the 10 s no-progress timeout
+// (ble-protocol.md §5 NACK_CHUNK_TIMEOUT) — catches a sender that stalls
+// mid-transfer without disconnecting (abort_sync_stage() above only covers
+// the disconnect case). Call once per second from ble_manager::poll().
+void poll_chunk_timeouts() {
+    chunked_transfer::Context* ctxs[] = {
+        &g_photo_ctx, &g_meetings_ctx, &g_time_off_ctx, &g_art_ctx,
+    };
+    chunked_transfer::poll_timeouts(ctxs, 4);
 }
 
 // Called from ble_manager::poll() (main task) in response to

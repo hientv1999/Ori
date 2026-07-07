@@ -19,9 +19,8 @@ struct CardState {
     lv_obj_t* photo_img;    // lv_image_t child, hidden when no photo
     lv_obj_t* name_label;
     lv_obj_t* title_label;
-    lv_obj_t* weather_badge;  // 46px circle, top-left of photo_ring — condition glyph
-    lv_obj_t* temp_bubble;    // fixed 60px white circle, bottom-right of photo_ring
-    lv_obj_t* temp_label;     // text child of temp_bubble, e.g. "-40°"/"72°"/"140°"
+    lv_obj_t* weather_badge;  // transparent icon container, top-left of photo_ring — condition glyph only, no bubble
+    lv_obj_t* temp_label;     // plain text (no bubble), top-right of photo_ring, e.g. "-40°"/"72°"/"140°"
     bool suppress_click = false;
 };
 
@@ -33,10 +32,12 @@ widget_profile_card::Presence g_default_presence =
 // Default weather applied to newly-created cards — same pattern as
 // g_default_presence. Freshly-booted devices (no weather ever received over
 // BLE) must default to hidden, so the card never flashes a stale reading
-// before the first Device Settings "w"/"d" write (ble-protocol.md §6.4).
+// before the first Device Settings "w"/"d"/"u" write (ble-protocol.md §6.4).
 widget_profile_card::WeatherCondition g_default_weather_condition =
     widget_profile_card::WeatherCondition::Clear;
 int  g_default_weather_temp_f = 0;
+widget_profile_card::TemperatureUnit g_default_weather_unit =
+    widget_profile_card::TemperatureUnit::Fahrenheit;
 bool g_default_weather_visible = false;
 
 // Cached photo descriptor — set by set_photo() so new cards created after a
@@ -78,37 +79,34 @@ char g_phone[33]  = {};
 static const char* display_name()  { return g_name[0]  ? g_name  : "No name"; }
 static const char* display_title() { return g_title[0] ? g_title : "No position"; }
 
-uint32_t color_for_presence(widget_profile_card::Presence p) {
-    switch (p) {
-        case widget_profile_card::Presence::Available: return theme::COLOR_PRESENCE_AVAILABLE;
-        case widget_profile_card::Presence::Busy:      return theme::COLOR_PRESENCE_BUSY;
-        case widget_profile_card::Presence::Away:      return theme::COLOR_PRESENCE_AWAY;
-        case widget_profile_card::Presence::Offline:
-        default:                                       return theme::COLOR_PRESENCE_OFFLINE;
-    }
+// Presence enum values are 0..3 (widget_profile_card.h), matching the BLE
+// wire byte (ble-protocol.md §4 DeviceSettings "p") — a table indexed by the
+// raw value replaces three parallel switches that only ever differed in
+// which theme constant they returned per case.
+struct PresenceColors { uint32_t main, light, dark; };
+
+constexpr PresenceColors PRESENCE_COLOR_TABLE[4] = {
+    { theme::COLOR_PRESENCE_AVAILABLE, theme::COLOR_PRESENCE_AVAILABLE_LIGHT, theme::COLOR_PRESENCE_AVAILABLE_DARK },
+    { theme::COLOR_PRESENCE_BUSY,      theme::COLOR_PRESENCE_BUSY_LIGHT,      theme::COLOR_PRESENCE_BUSY_DARK },
+    { theme::COLOR_PRESENCE_AWAY,      theme::COLOR_PRESENCE_AWAY_LIGHT,      theme::COLOR_PRESENCE_AWAY_DARK },
+    { theme::COLOR_PRESENCE_OFFLINE,   theme::COLOR_PRESENCE_OFFLINE_LIGHT,   theme::COLOR_PRESENCE_OFFLINE_DARK },
+};
+
+// Out-of-range values (shouldn't happen — Presence is an enum class with only
+// these 4 values) fall back to Offline, matching the switch statements' old
+// `default:` case.
+const PresenceColors& presence_colors(widget_profile_card::Presence p) {
+    uint8_t idx = static_cast<uint8_t>(p);
+    return PRESENCE_COLOR_TABLE[idx < 4 ? idx : 3];
 }
+
+uint32_t color_for_presence(widget_profile_card::Presence p)       { return presence_colors(p).main;  }
 
 // Top gradient stop — near-white pastel tint of the presence colour.
-uint32_t color_for_presence_light(widget_profile_card::Presence p) {
-    switch (p) {
-        case widget_profile_card::Presence::Available: return theme::COLOR_PRESENCE_AVAILABLE_LIGHT;
-        case widget_profile_card::Presence::Busy:      return theme::COLOR_PRESENCE_BUSY_LIGHT;
-        case widget_profile_card::Presence::Away:      return theme::COLOR_PRESENCE_AWAY_LIGHT;
-        case widget_profile_card::Presence::Offline:
-        default:                                       return theme::COLOR_PRESENCE_OFFLINE_LIGHT;
-    }
-}
+uint32_t color_for_presence_light(widget_profile_card::Presence p) { return presence_colors(p).light; }
 
 // Bottom gradient stop — deep dark shade of the presence colour.
-uint32_t color_for_presence_dark(widget_profile_card::Presence p) {
-    switch (p) {
-        case widget_profile_card::Presence::Available: return theme::COLOR_PRESENCE_AVAILABLE_DARK;
-        case widget_profile_card::Presence::Busy:      return theme::COLOR_PRESENCE_BUSY_DARK;
-        case widget_profile_card::Presence::Away:      return theme::COLOR_PRESENCE_AWAY_DARK;
-        case widget_profile_card::Presence::Offline:
-        default:                                       return theme::COLOR_PRESENCE_OFFLINE_DARK;
-    }
-}
+uint32_t color_for_presence_dark(widget_profile_card::Presence p)  { return presence_colors(p).dark;  }
 
 // Offline gets no glow — it's the "nothing to report" / fallback state, and a
 // grey glow reads as a render glitch rather than a deliberate status signal.
@@ -133,16 +131,31 @@ void fit_name_label_height(lv_obj_t* label, const char* text) {
     lv_obj_set_height(label, lines * font->line_height);
 }
 
-// ── Weather badge glyph construction ────────────────────────────────────────
+// ── Weather icon glyph construction ─────────────────────────────────────────
 //
 // Ports `WEATHER_ICONS` / `cloudSvg()` in Ori_UI_Prototype.js — every glyph
 // is built only from circles, rounded rects, and straight-line strokes (no
 // bezier art), so each SVG shape maps 1:1 to a stacked lv_obj/lv_line. Source
 // coordinates are the prototype's 32x32 SVG viewBox; ICON_SCALE reproduces
-// the prototype's "28x28 content inside a 46px badge" ratio, and ICON_OFFSET
-// centers that 28x28 icon area inside the badge circle.
-constexpr float ICON_SCALE  = 28.0f / 32.0f;
-constexpr int16_t ICON_OFFSET = 9;  // (46 - 28) / 2
+// the prototype's "content inside the badge" ratio, and ICON_OFFSET centers
+// that icon area inside the (now fully transparent) container.
+constexpr int16_t BADGE_SIZE   = 60;   // transparent icon container — sizes the glyph's coordinate space only, no bubble drawn
+constexpr float   ICON_SCALE   = 42.0f / 32.0f;  // 42px glyph content (was 28, ×1.5)
+// Centre the 42px icon in the container (no border to inset for anymore).
+constexpr int16_t ICON_OFFSET  = (BADGE_SIZE - 42) / 2;
+
+// Offset from photo_ring's centre for the weather icon (top-left) and
+// temperature text (top-right), in raw lv_obj_align units. photo_ring's
+// radius is (widget_profile_card::PHOTO_SIZE + 12) / 2 = 120 px. X/Y differ
+// (Y is 10 px further out) purely per visual preference — both already clear
+// the ring's circle at equal X/Y, this just sits the pair higher above it.
+// Clearance check (distance from ring centre to the FAR corner's content,
+// minus its own half-diagonal, must exceed 120 + a few px of breathing room):
+// the icon's glyph ink reaches ~18-21 px from its own centre, and the widest
+// temp string "140°F"/"-40°C" (adv_w-summed per ori_font_hanken_24.c) has a
+// ~33 px half-diagonal — sqrt(110² + 120²) ≈ 163 px clears both with margin.
+constexpr int16_t CORNER_OFFSET_X = 110;
+constexpr int16_t CORNER_OFFSET_Y = 120;
 
 // Scales a length/radius/stroke-width (no offset). Floors at 1px so thin
 // prototype strokes (e.g. 1.3px snowflakes) stay visible at this size.
@@ -253,30 +266,36 @@ void build_weather_icon(lv_obj_t* badge, widget_profile_card::WeatherCondition c
             break;
         }
         case WC::Cloudy: {
+            // Whole composition nudged right 2.25 units to centre in the badge
+            // (front + back cloud shifted equally so their overlap is preserved).
             // Smaller "back" cloud peeking up-right behind the front cloud.
-            add_wrect(badge, 12, 8, 14, 6.5f, 3.2f, theme::COLOR_WEATHER_CLOUD_BACK);
-            add_wcircle(badge, 16, 7.3f, 3.6f, theme::COLOR_WEATHER_CLOUD_BACK);
-            add_wcircle(badge, 19.7f, 5.4f, 4.4f, theme::COLOR_WEATHER_CLOUD_BACK);
-            add_wcircle(badge, 23.3f, 7.6f, 3.6f, theme::COLOR_WEATHER_CLOUD_BACK);
-            add_wcloud(badge, theme::COLOR_WEATHER_CLOUD_FRONT);
+            add_wrect(badge, 14.25f, 8, 14, 6.5f, 3.2f, theme::COLOR_WEATHER_CLOUD_BACK);
+            add_wcircle(badge, 18.25f, 7.3f, 3.6f, theme::COLOR_WEATHER_CLOUD_BACK);
+            add_wcircle(badge, 21.95f, 5.4f, 4.4f, theme::COLOR_WEATHER_CLOUD_BACK);
+            add_wcircle(badge, 25.55f, 7.6f, 3.6f, theme::COLOR_WEATHER_CLOUD_BACK);
+            add_wcloud(badge, theme::COLOR_WEATHER_CLOUD_FRONT, 2.25f, 0);
             break;
         }
         case WC::Rain: {
-            add_wcloud(badge, theme::COLOR_WEATHER_CLOUD_LIGHT);
+            // Cloud nudged right ~2.25 units so its silhouette centres in the
+            // badge; raindrops below are deliberately left where they are.
+            add_wcloud(badge, theme::COLOR_WEATHER_CLOUD_LIGHT, 2.25f, 0);
             add_wline(badge, {10, 24, 8, 29}, theme::COLOR_WEATHER_RAIN_DROP, 1.8f);
             add_wline(badge, {16, 24, 14, 29}, theme::COLOR_WEATHER_RAIN_DROP, 1.8f);
             add_wline(badge, {22, 24, 20, 29}, theme::COLOR_WEATHER_RAIN_DROP, 1.8f);
             break;
         }
         case WC::Thunderstorm: {
-            add_wcloud(badge, theme::COLOR_WEATHER_CLOUD_STORM);
+            // Cloud nudged right to centre; bolt below is left where it is.
+            add_wcloud(badge, theme::COLOR_WEATHER_CLOUD_STORM, 2.25f, 0);
             // Bolt: unfilled polyline stroke, matching the SVG.
             add_wline(badge, {18.5f, 20, 14, 26.5f, 17, 26.5f, 13.5f, 31.5f},
                       theme::COLOR_WEATHER_BOLT, 2.1f);
             break;
         }
         case WC::Snow: {
-            add_wcloud(badge, theme::COLOR_WEATHER_CLOUD_LIGHT);
+            // Cloud nudged right to centre; snowflakes below are left as-is.
+            add_wcloud(badge, theme::COLOR_WEATHER_CLOUD_LIGHT, 2.25f, 0);
             const uint32_t snow = theme::COLOR_WEATHER_SNOW;
             // Flake 1 (cx=9)
             add_wline(badge, {9, 23.6f, 9, 28.4f}, snow, 1.3f);
@@ -293,32 +312,61 @@ void build_weather_icon(lv_obj_t* badge, widget_profile_card::WeatherCondition c
             break;
         }
         case WC::Fog: {
+            // Lines shifted up 2.5 units — they spanned y 10..27 (centre 18.5),
+            // a bit low; now y 7.5..24.5 centres them in the badge.
             const uint32_t fog = theme::COLOR_WEATHER_FOG;
-            add_wline(badge, {5, 10, 27, 10}, fog, 2.2f);
-            add_wline(badge, {8, 16, 27, 16}, fog, 2.2f);
-            add_wline(badge, {5, 22, 24, 22}, fog, 2.2f);
-            add_wline(badge, {9, 27, 27, 27}, fog, 2.2f);
+            add_wline(badge, {5, 7.5f, 27, 7.5f}, fog, 2.2f);
+            add_wline(badge, {8, 13.5f, 27, 13.5f}, fog, 2.2f);
+            add_wline(badge, {5, 19.5f, 24, 19.5f}, fog, 2.2f);
+            add_wline(badge, {9, 24.5f, 27, 24.5f}, fog, 2.2f);
             break;
         }
     }
 }
 
-// Applies condition/temp_f/visible to one already-built card's badge + bubble.
+// Applies condition/temp_f/unit/visible to one already-built card's icon + text.
 void apply_weather_to(CardState* s, widget_profile_card::WeatherCondition condition,
-                       int temp_f, bool visible) {
-    if (!s || !s->weather_badge || !s->temp_bubble || !s->temp_label) return;
+                       int temp_f, widget_profile_card::TemperatureUnit unit, bool visible) {
+    if (!s || !s->weather_badge || !s->temp_label) return;
     if (!visible) {
         lv_obj_add_flag(s->weather_badge, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(s->temp_bubble, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s->temp_label, LV_OBJ_FLAG_HIDDEN);
         return;
     }
     lv_obj_clean(s->weather_badge);
     build_weather_icon(s->weather_badge, condition);
-    char buf[8];
-    snprintf(buf, sizeof(buf), "%d\xC2\xB0", temp_f);  // U+00B0 DEGREE SIGN, UTF-8
+    char buf[10];
+    char unit_ch = (unit == widget_profile_card::TemperatureUnit::Celsius) ? 'C' : 'F';
+    // U+00B0 DEGREE SIGN (UTF-8) followed by the unit letter, e.g. "72\xC2\xB0F".
+    snprintf(buf, sizeof(buf), "%d\xC2\xB0%c", temp_f, unit_ch);
     lv_label_set_text(s->temp_label, buf);
+
+    // temp_label is aligned to (CORNER_OFFSET_X, CORNER_OFFSET_Y) off
+    // photo_ring's centre (base position set in create(), re-applied here) —
+    // but that centers the label's *advance-width* box, which isn't visually
+    // symmetric: the font's per-glyph side bearings differ between the
+    // leading character ("-" for negative values, or a digit for
+    // positive/zero — digit "1" in particular has a much bigger left bearing
+    // than the other digits, per ori_font_hanken_24.c) and the trailing unit
+    // letter ("F"/"C", each with its own right bearing). Whenever those two
+    // bearings differ, the box is positioned correctly but the visible ink is
+    // not — most noticeable on short strings where 1-2 px is a bigger
+    // fraction of the total width. Recompute the exact correction for THIS
+    // string's actual leading/trailing glyphs instead of guessing a fixed
+    // offset, and fold it into the same alignment call.
+    lv_font_glyph_dsc_t g_first{}, g_last{};
+    int32_t left_bearing = 0, right_bearing = 0;
+    if (lv_font_get_glyph_dsc(theme::font_meta(), &g_first, (uint32_t)(unsigned char)buf[0], 0)) {
+        left_bearing = g_first.ofs_x;
+    }
+    if (lv_font_get_glyph_dsc(theme::font_meta(), &g_last, (uint32_t)(unsigned char)unit_ch, 0)) {
+        right_bearing = (int32_t)g_last.adv_w - g_last.ofs_x - (int32_t)g_last.box_w;
+    }
+    lv_obj_align(s->temp_label, LV_ALIGN_CENTER,
+                 CORNER_OFFSET_X + (right_bearing - left_bearing) / 2, -CORNER_OFFSET_Y);
+
     lv_obj_clear_flag(s->weather_badge, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(s->temp_bubble, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(s->temp_label, LV_OBJ_FLAG_HIDDEN);
 }
 
 } // namespace
@@ -388,11 +436,16 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_style_shadow_opa(s->photo_ring, shadow_opa_for_presence(g_default_presence), LV_PART_MAIN);
     lv_obj_set_style_shadow_ofs_x(s->photo_ring, 0, LV_PART_MAIN);
     lv_obj_set_style_shadow_ofs_y(s->photo_ring, 0, LV_PART_MAIN);
-    // The weather badge + temperature bubble (added below) hang partially
-    // outside photo_ring's own box. LVGL clips a child's draw to its parent's
-    // box by default; OVERFLOW_VISIBLE here relaxes that clip by photo_ring's
-    // own ext_draw_size (its shadow above — ~29 px), comfortably covering the
-    // badge/bubble's ~8-10 px overhang. Same mechanism as `card`'s flag above,
+    // The weather icon + temperature text (added below) sit outside photo_ring's
+    // own box (CORNER_OFFSET_X/Y clears the ring's circle, which exceeds the
+    // box on the diagonal) — up to ~30 px for weather_badge's own (mostly
+    // empty/transparent) 60px container, though its actual glyph ink stays
+    // well inside that. LVGL clips a child's draw to its parent's box by
+    // default; OVERFLOW_VISIBLE here relaxes that clip by photo_ring's own
+    // ext_draw_size — exactly shadow_width/2+1+shadow_spread = 40/2+1+8 = 29 px
+    // for the shadow set below — comfortably covering the actually-visible
+    // content even where the invisible container box overhangs slightly
+    // further. Same mechanism as `card`'s flag above,
     // one level down the tree.
     lv_obj_add_flag(s->photo_ring, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
 
@@ -447,81 +500,41 @@ lv_obj_t* create(lv_obj_t* parent) {
         lv_obj_clear_flag(s->photo_img, LV_OBJ_FLAG_HIDDEN);
     }
 
-    // ── Weather badge ─────────────────────────────────────────────────────────
-    // 46 px circle, hangs over the top-left edge of photo_ring. Children of
-    // this container are rebuilt from scratch on every set_weather() call
-    // (see build_weather_icon()) — cheap, since weather changes at most every
-    // 15-30 min (ble-protocol.md §6.3).
+    // ── Weather icon ──────────────────────────────────────────────────────────
+    // No bubble/background — a transparent container that just holds and
+    // positions the condition glyph (see build_weather_icon()), sitting fully
+    // off the top-left corner of photo_ring (never overlapping the photo or
+    // its presence ring — see CORNER_OFFSET_X/Y). Children of this container
+    // are rebuilt from scratch on every set_weather() call — cheap, since
+    // weather changes at most every 15-30 min (ble-protocol.md §6.3).
     s->weather_badge = lv_obj_create(s->photo_ring);
-    lv_obj_set_size(s->weather_badge, 46, 46);
-    lv_obj_set_style_radius(s->weather_badge, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s->weather_badge, theme::color(theme::COLOR_ELEV), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(s->weather_badge, LV_OPA_COVER, LV_PART_MAIN);
-    // Thin border — reuses the same elevated-surface border colour as modal
-    // cards (ui_helpers.cpp make_modal_layout()) and setup-screen cards.
-    lv_obj_set_style_border_color(s->weather_badge, theme::color(theme::COLOR_DIVIDER_STRONG), LV_PART_MAIN);
-    lv_obj_set_style_border_width(s->weather_badge, 2, LV_PART_MAIN);
+    lv_obj_set_size(s->weather_badge, BADGE_SIZE, BADGE_SIZE);
+    lv_obj_set_style_bg_opa(s->weather_badge, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(s->weather_badge, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(s->weather_badge, 0, LV_PART_MAIN);
-    lv_obj_set_style_clip_corner(s->weather_badge, true, LV_PART_MAIN);
-    lv_obj_set_style_shadow_color(s->weather_badge, theme::color(0x000000), LV_PART_MAIN);
-    lv_obj_set_style_shadow_width(s->weather_badge, 12, LV_PART_MAIN);
-    lv_obj_set_style_shadow_opa(s->weather_badge, LV_OPA_40, LV_PART_MAIN);
-    lv_obj_set_style_shadow_ofs_y(s->weather_badge, 3, LV_PART_MAIN);
     lv_obj_clear_flag(s->weather_badge, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(s->weather_badge, LV_OBJ_FLAG_CLICKABLE);
-    // Top-left corner of the badge sits 8 px above/left of photo_ring's own
-    // top-left corner — mirrors the prototype's `.weather-badge { top:-8px;
-    // left:-8px }` relative to `.profile-photo-wrap` (screen-layout.md).
-    lv_obj_align(s->weather_badge, LV_ALIGN_TOP_LEFT, -8, -8);
+    lv_obj_align(s->weather_badge, LV_ALIGN_CENTER, -CORNER_OFFSET_X, -CORNER_OFFSET_Y);
     lv_obj_add_flag(s->weather_badge, LV_OBJ_FLAG_HIDDEN);
 
-    // ── Temperature bubble ────────────────────────────────────────────────────
-    // Fixed 60x60 px circle (NOT auto-sized) — hangs over the bottom-right edge
-    // of photo_ring. Matches the prototype's `.temp-bubble` fixed-circle change
-    // (54px @ 18px font in Ori_UI_Prototype.html; scaled to the firmware's
-    // smallest available font, font_body() @ 20px, since there's no 18px asset).
-    // 60px comfortably fits the widest string in the valid range, "140\xC2\xB0"
-    // (ble-protocol.md §10: temperature_f is -40..140) — measured off this
-    // font's glyph advance widths, "140\xC2\xB0" renders ~41px wide against a
-    // 60px diameter, leaving ~5-9px clearance at every point of the text's
-    // bounding box, comfortably more than "-40\xC2\xB0" (~37px, the other
-    // extreme). Container + centered child label mirrors the weather_badge
-    // pattern above (fixed shape, content rebuilt/retexted in place).
-    s->temp_bubble = lv_obj_create(s->photo_ring);
-    lv_obj_set_size(s->temp_bubble, 60, 60);
-    lv_obj_set_style_radius(s->temp_bubble, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s->temp_bubble, theme::color(theme::COLOR_WEATHER_TEMP_BG), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(s->temp_bubble, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(s->temp_bubble, 0, LV_PART_MAIN);
-    lv_obj_set_style_border_width(s->temp_bubble, 0, LV_PART_MAIN);
-    lv_obj_set_style_shadow_color(s->temp_bubble, theme::color(0x000000), LV_PART_MAIN);
-    lv_obj_set_style_shadow_width(s->temp_bubble, 12, LV_PART_MAIN);
-    lv_obj_set_style_shadow_opa(s->temp_bubble, LV_OPA_40, LV_PART_MAIN);
-    lv_obj_set_style_shadow_ofs_y(s->temp_bubble, 3, LV_PART_MAIN);
-    lv_obj_clear_flag(s->temp_bubble, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(s->temp_bubble, LV_OBJ_FLAG_CLICKABLE);
-    // Bottom-right corner of the bubble sits 6 px below / 10 px right of
-    // photo_ring's own bottom-right corner — mirrors the prototype's
-    // `.temp-bubble { bottom:-6px; right:-10px }` (screen-layout.md).
-    lv_obj_align(s->temp_bubble, LV_ALIGN_BOTTOM_RIGHT, 10, 6);
-    lv_obj_add_flag(s->temp_bubble, LV_OBJ_FLAG_HIDDEN);
-
-    s->temp_label = lv_label_create(s->temp_bubble);
+    // ── Temperature text ──────────────────────────────────────────────────────
+    // No bubble/background — plain text (COLOR_WEATHER_TEMP_TEXT, white) sits
+    // directly on the card, fully off the top-right corner of photo_ring
+    // (same CORNER_OFFSET_X/Y clearance as the weather icon above). font_meta()
+    // @ 24px. Valid range is -40..140 (ble-protocol.md §10).
+    s->temp_label = lv_label_create(s->photo_ring);
     lv_label_set_text(s->temp_label, "");
-    lv_obj_set_style_text_font(s->temp_label, theme::font_body(), LV_PART_MAIN);
+    lv_obj_set_style_text_font(s->temp_label, theme::font_meta(), LV_PART_MAIN);
     lv_obj_set_style_text_color(s->temp_label, theme::color(theme::COLOR_WEATHER_TEMP_TEXT), LV_PART_MAIN);
-    // Insurance only — at this length ("-40°"/"140°") the label never wraps,
-    // but if a future compiled font's glyph widths ever forced a 2-line wrap,
-    // this keeps both lines centered rather than left-justified.
-    lv_obj_set_style_text_align(s->temp_label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
     lv_obj_clear_flag(s->temp_label, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(s->temp_label, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_center(s->temp_label);
+    lv_obj_add_flag(s->temp_label, LV_OBJ_FLAG_HIDDEN);
 
     // Apply whatever weather was last received (or the hidden default on a
-    // freshly-booted device — see g_default_weather_visible).
+    // freshly-booted device — see g_default_weather_visible). Also sets
+    // temp_label's actual position (CORNER_OFFSET_X/Y + bearing correction).
     apply_weather_to(s, g_default_weather_condition, g_default_weather_temp_f,
-                      g_default_weather_visible);
+                      g_default_weather_unit, g_default_weather_visible);
 
     // Name. Uses font_time() (30 px). Single line with ellipsis per
     // screen-layout.md ("Full name — single line, ellipsis on overflow").
@@ -556,11 +569,6 @@ lv_obj_t* create(lv_obj_t* parent) {
         delete static_cast<CardState*>(lv_event_get_user_data(e));
     }, LV_EVENT_DELETE, s);
     return card;
-}
-
-lv_obj_t* photo_object(lv_obj_t* card) {
-    auto* s = static_cast<CardState*>(lv_obj_get_user_data(card));
-    return s ? s->photo_ring : nullptr;
 }
 
 void set_presence(lv_obj_t* card, Presence p) {
@@ -623,16 +631,19 @@ Presence get_default_presence() {
     return g_default_presence;
 }
 
-void set_weather(lv_obj_t* card, WeatherCondition condition, int temp_f, bool visible) {
+void set_weather(lv_obj_t* card, WeatherCondition condition, int temp_f,
+                  TemperatureUnit unit, bool visible) {
     auto* s = static_cast<CardState*>(lv_obj_get_user_data(card));
-    apply_weather_to(s, condition, temp_f, visible);
+    apply_weather_to(s, condition, temp_f, unit, visible);
 }
 
-void set_default_weather(WeatherCondition condition, int temp_f, bool visible) {
+void set_default_weather(WeatherCondition condition, int temp_f,
+                          TemperatureUnit unit, bool visible) {
     g_default_weather_condition = condition;
     g_default_weather_temp_f = temp_f;
+    g_default_weather_unit = unit;
     g_default_weather_visible = visible;
-    if (g_active_card) set_weather(g_active_card, condition, temp_f, visible);
+    if (g_active_card) set_weather(g_active_card, condition, temp_f, unit, visible);
 }
 
 // Apply a photo descriptor to one image object: show it with the given source,
@@ -660,10 +671,6 @@ void set_photo(const lv_image_dsc_t* img_dsc) {
     // Update the profile detail overlay's photo if it's open, so a photo
     // arriving over BLE while the modal is up appears without reopening it.
     apply_photo_to(g_modal_photo_img, img_dsc);
-}
-
-const lv_image_dsc_t* get_photo() {
-    return g_default_photo;
 }
 
 void set_profile(const char* name, const char* title,

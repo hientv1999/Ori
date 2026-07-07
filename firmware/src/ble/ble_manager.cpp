@@ -20,8 +20,6 @@
 #include <NimBLEAdvertising.h>
 #include <Preferences.h>
 #include <string.h>
-#include <esp_heap_caps.h>
-#include <esp_mac.h>
 
 #include "nvs_store.h"
 #include "nvs_sync.h"
@@ -50,6 +48,7 @@ enum class BleEventType : uint8_t {
     FactoryReset,
     PresenceUpdate,
     ClockFaceUpdate,   // Clock Face char write — 0=Digital, 1=Analog (state_machine::set_clock_face)
+    TimeFormatUpdate,  // Device Settings "h" — 0=24-hour, 1=12-hour (state_machine::set_time_format)
     MediaMetaUpdated,  // MediaMetadata write applied to app_state — repaint media screen
     AlbumArt,
     PhotoReceived,      // profile photo JPEG — forward to photo_cache::store()
@@ -79,12 +78,13 @@ struct BleEvent {
         uint32_t passkey;
         widget_profile_card::Presence presence;
         uint8_t  clock_face;     // ClockFaceUpdate — 0=Digital, 1=Analog
+        uint8_t  time_format;    // TimeFormatUpdate — 0=24-hour, 1=12-hour
         uint8_t  ancs_filter;   // AncsFilterUpdate — 0=Disabled..3=All
         struct { uint8_t* buf; size_t len; } art;
         uint16_t conn_handle;
         uint8_t  pct;            // OrioningProgress
         uint32_t total_bytes;    // SyncBegin — declared total from SyncControl{BEGIN}
-        struct { uint8_t condition; int16_t temp_f; } weather; // WeatherUpdate
+        struct { uint8_t condition; int16_t temp_f; uint8_t unit; } weather; // WeatherUpdate
     } data;
     uint8_t peer_addr[6]; // populated for bonded events
 };
@@ -567,11 +567,18 @@ void poll() {
                 state_machine::set_clock_face(ev.data.clock_face);
                 break;
 
+            case BleEventType::TimeFormatUpdate:
+                // set_time_format() writes NVS and rebuilds the on-screen clock /
+                // meeting list so times re-render immediately — main task only.
+                state_machine::set_time_format(ev.data.time_format);
+                break;
+
             case BleEventType::WeatherUpdate:
                 // Cache in state_machine (mirrors PresenceUpdate) so
                 // apply_widget_defaults() reflects it on future screen
                 // rebuilds and the PC-link-down fallback can hide it.
-                state_machine::set_weather(ev.data.weather.condition, ev.data.weather.temp_f);
+                state_machine::set_weather(ev.data.weather.condition, ev.data.weather.temp_f,
+                                            ev.data.weather.unit);
                 break;
 
             case BleEventType::MediaMetaUpdated: {
@@ -896,6 +903,16 @@ void poll() {
     // here (main task) so the attribute-request CP write and the status-bar
     // LVGL refresh run off the host task — see ancs_client::poll().
     ancs_client::poll(g_orion_connected);
+
+    // Chunk-reassembly stall check (ble-protocol.md §5, NACK_CHUNK_TIMEOUT) —
+    // gated to ~1 Hz since the 10 s timeout doesn't need finer resolution and
+    // poll() itself runs every main-loop iteration.
+    static uint32_t s_last_chunk_poll_ms = 0;
+    uint32_t now_ms = (uint32_t)millis();
+    if (now_ms - s_last_chunk_poll_ms >= 1000) {
+        s_last_chunk_poll_ms = now_ms;
+        gatt_server::poll_chunk_timeouts();
+    }
 }
 
 void quiesce_for_commit() {
@@ -1237,24 +1254,6 @@ void on_iphone_bonded(uint16_t conn_handle, const uint8_t peer_addr[6]) {
     eq_push(ev);
 }
 
-void on_peer_disconnect(uint16_t conn_handle, int reason) {
-    // Called from the server callback — already handled in OriServerCallbacks::onDisconnect.
-    (void)conn_handle;
-    (void)reason;
-}
-
-void on_passkey_display(uint32_t passkey) {
-    LOG("[ble] passkey: %06u\n", (unsigned)passkey);
-    BleEvent ev = {};
-    ev.type       = BleEventType::PasskeyDisplay;
-    ev.data.passkey = passkey;
-    eq_push(ev);
-}
-
-void notify_device_status(uint8_t status_byte) {
-    gatt_server::set_device_status(status_byte);
-}
-
 } // namespace ble_manager
 
 // ── Functions called from gatt_server.cpp (forward-declared there) ─────────
@@ -1282,13 +1281,22 @@ void ble_post_clock_face_event(uint8_t face) {
     eq_push(ev);
 }
 
+// Deferred time-format update (from Device Settings "h" write handler).
+void ble_post_time_format_event(uint8_t fmt) {
+    BleEvent ev = {};
+    ev.type = BleEventType::TimeFormatUpdate;
+    ev.data.time_format = fmt;
+    eq_push(ev);
+}
+
 // Deferred weather update (from Device Settings write handler — only posted
-// when both "w" and "d" were present in the same write, ble-protocol.md §6.4).
-void ble_post_weather_event(uint8_t condition, int16_t temp_f) {
+// when "w", "d", and "u" were all present in the same write, ble-protocol.md §6.4).
+void ble_post_weather_event(uint8_t condition, int16_t temp_f, uint8_t unit) {
     BleEvent ev = {};
     ev.type = BleEventType::WeatherUpdate;
     ev.data.weather.condition = condition;
     ev.data.weather.temp_f    = temp_f;
+    ev.data.weather.unit      = unit;
     eq_push(ev);
 }
 

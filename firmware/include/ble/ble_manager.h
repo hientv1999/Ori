@@ -114,13 +114,4 @@ void confirm_orion_peer();
 // Called when iPhone bond is formed (Step 4 / re-pair).
 void on_iphone_bonded(uint16_t conn_handle, const uint8_t peer_addr[6]);
 
-// Called when any peer disconnects.
-void on_peer_disconnect(uint16_t conn_handle, int reason);
-
-// Called when a 6-digit passkey needs to be displayed (LE SC Passkey Entry).
-void on_passkey_display(uint32_t passkey);
-
-// Called when Device Status should be notified to Orion (from GATT server).
-void notify_device_status(uint8_t status_byte);
-
 } // namespace ble_manager

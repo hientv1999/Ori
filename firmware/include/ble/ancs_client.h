@@ -65,23 +65,6 @@ void drop_notification(uint32_t notif_uid);
 // NOT remove it from the queue: the call becomes active and stays until it ends.
 void answer_notification(uint32_t notif_uid);
 
-// Notification data made available after attributes arrive.
-struct NotificationInfo {
-    uint32_t    uid;
-    char        app_id[128];      // bundle ID, e.g. "com.google.gmail.iphone"
-    char        title[192];       // notification title
-    char        body[512];        // notification body
-    const char* icon_token;       // resolved icon token (see ancs_icons.h)
-};
-
-// Returns the info for the most recently received attributes response,
-// or nullptr if no pending response. Caller should check after request_attributes()
-// returns via the state machine event pump.
-const NotificationInfo* pending_notification_info();
-
-// Clear the pending notification info after the modal has displayed it.
-void clear_pending_notification_info();
-
 // Returns the current live queue as an array of icon tokens.
 // Only the first MAX_ANCS_ICONS entries are displayed; the full queue is
 // tracked up to MAX_ANCS_NOTIFICATIONS entries.
@@ -89,10 +72,6 @@ struct QueueEntry {
     uint32_t    uid;
     char        icon_token[32];
 };
-
-// Returns pointer to the internal queue array (do not free).
-// count_out is filled with the current live entry count.
-const QueueEntry* get_queue(size_t* count_out);
 
 // The connected iPhone's device name (GAP Device Name characteristic,
 // 0x1800/0x2A00 — e.g. "Xander's iPhone"). Read once per connection over

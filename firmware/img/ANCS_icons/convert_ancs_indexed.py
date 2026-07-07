@@ -44,7 +44,7 @@ TOKENS = [
     "linkedin","messenger","microsoft_authenticator","notion","outlook",
     "paypal","phone","reddit","skype","slack","sms","snapchat","spotify",
     "teams","telegram","threads","tiktok","twitch","twitter","uber","venmo",
-    "viber","wechat","whatsapp","youtube","zoom",
+    "viber","wechat","whatsapp","youtube","youtube_music","zoom",
     # category fallbacks + generic
     "cat_call","cat_health","email","entertainment","finance","location",
     "news","schedule","social","unknown",

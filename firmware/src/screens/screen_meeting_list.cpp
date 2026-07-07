@@ -1,9 +1,12 @@
 ﻿#include "screens/screen_meeting_list.h"
 
 #include <lvgl.h>
+#include <cstring>
 
 #include "app_state.h"
+#include "state_machine.h"
 #include "theme.h"
+#include "time_format.h"
 #include "ui_helpers.h"
 #include "widgets/widget_profile_card.h"
 #include "widgets/widget_status_bar.h"
@@ -32,24 +35,26 @@
 
 namespace {
 
+// Color priority shared by every meeting visual (detail modal, row time,
+// row title): in_progress (danger red) > overlap (accent gold) > normal.
+// An in-progress meeting that also overlaps reads as in_progress — "you
+// should be in this room right now" is more actionable than "this overlaps".
+uint32_t meeting_state_color(const app_state::Meeting& m, uint32_t normal_color) {
+    if (m.in_progress) return theme::COLOR_DANGER;
+    if (m.overlap)     return theme::COLOR_ACCENT;
+    return normal_color;
+}
+
 constexpr int16_t LEFT_PANEL_WIDTH  = 528;
-constexpr int16_t TIME_COL_WIDTH    = 108;
+constexpr int16_t TIME_COL_WIDTH    = 108;  // fits "HH:MM" at font_h2 (24-hour)
+constexpr int16_t TIME_COL_WIDTH_12 = 132;  // fits "12:30 PM" at font_h2 (12-hour)
 constexpr int16_t ROW_GAP_X         = 16;
 constexpr int16_t ROW_PAD_Y         = 14;
 
 // Full-screen meeting detail modal — dismissed via the Close button only.
 static void show_meeting_detail(lv_obj_t* screen, const app_state::Meeting& m) {
     // Full-screen scrim — absorbs taps behind the dialog; no click-to-dismiss.
-    lv_obj_t* scrim = lv_obj_create(screen);
-    lv_obj_set_size(scrim, 800, 480);
-    lv_obj_set_pos(scrim, 0, 0);
-    lv_obj_set_style_bg_color(scrim, theme::color(theme::COLOR_SCRIM), 0);
-    lv_obj_set_style_bg_opa(scrim, theme::SCRIM_OPA, 0);
-    lv_obj_set_style_radius(scrim, 0, 0);
-    lv_obj_set_style_border_width(scrim, 0, 0);
-    lv_obj_set_style_pad_all(scrim, 0, 0);
-    lv_obj_clear_flag(scrim, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(scrim, LV_OBJ_FLAG_CLICKABLE);  // absorbs taps outside box
+    lv_obj_t* scrim = ui::make_scrim(screen);
 
     // Outer box — full screen, non-scrollable flex column. Not clickable so
     // taps on empty space fall through to the scrim. OVERFLOW_VISIBLE lets the
@@ -85,11 +90,7 @@ static void show_meeting_detail(lv_obj_t* screen, const app_state::Meeting& m) {
     lv_obj_set_size(spacer_top, 0, 0);
     lv_obj_set_flex_grow(spacer_top, 1);
 
-    // State color: red for in-progress, gold for overlap, white for normal.
-    const uint32_t state_col =
-        m.in_progress ? theme::COLOR_DANGER :
-        m.overlap     ? theme::COLOR_ACCENT :
-                        theme::COLOR_TEXT_PRIMARY;
+    const uint32_t state_col = meeting_state_color(m, theme::COLOR_TEXT_PRIMARY);
 
     // Title — full text, wrapping, state-colored.
     lv_obj_t* title = lv_label_create(scroll_area);
@@ -123,10 +124,13 @@ static void show_meeting_detail(lv_obj_t* screen, const app_state::Meeting& m) {
     lv_obj_set_style_text_align(org, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_top(org, 4, 0);
 
-    // Time range — state-colored, same as title. No dash separator (matches the
-    // dashless list row); the two times are spaced apart.
-    char time_buf[32];
-    lv_snprintf(time_buf, sizeof(time_buf), "%s   %s", m.start, m.end);
+    // Time range — state-colored, same as title. En-dash separator (matches the
+    // prototype's detail overlay and the Time Off date range).
+    char start_disp[16], end_disp[16];
+    time_format::reformat(m.start, start_disp, sizeof(start_disp));
+    time_format::reformat(m.end,   end_disp,   sizeof(end_disp));
+    char time_buf[48];
+    lv_snprintf(time_buf, sizeof(time_buf), "%s \xe2\x80\x93 %s", start_disp, end_disp); // UTF-8 en-dash
     lv_obj_t* time_lbl = lv_label_create(scroll_area);
     lv_label_set_text(time_lbl, time_buf);
     lv_obj_set_style_text_font(time_lbl, theme::font_h2(), 0);
@@ -167,7 +171,10 @@ lv_obj_t* make_meeting_row(lv_obj_t* parent, const app_state::Meeting& m) {
     lv_obj_set_style_bg_color(row, theme::color(theme::COLOR_ELEV), LV_STATE_PRESSED);
     lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_PRESSED);
 
+    // LVGL keeps the pointer (no copy), so col_dsc must persist — hence static.
+    // Every row in a build uses the same format, so updating [0] in place is safe.
     static lv_coord_t col_dsc[] = { TIME_COL_WIDTH, LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST };
+    col_dsc[0] = time_format::is_24h() ? TIME_COL_WIDTH : TIME_COL_WIDTH_12;
     static lv_coord_t row_dsc[] = { LV_GRID_CONTENT, LV_GRID_TEMPLATE_LAST };
     lv_obj_set_grid_dsc_array(row, col_dsc, row_dsc);
     lv_obj_set_layout(row, LV_LAYOUT_GRID);
@@ -181,27 +188,21 @@ lv_obj_t* make_meeting_row(lv_obj_t* parent, const app_state::Meeting& m) {
     lv_obj_set_flex_align(time_block, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_set_grid_cell(time_block, LV_GRID_ALIGN_START, 0, 1, LV_GRID_ALIGN_START, 0, 1);
 
-    // Color priority for the time + title texts:
-    //   in_progress (danger red)  >  overlap (accent gold)  >  default
-    // We don't try to layer the two visuals — an in-progress meeting
-    // that also happens to overlap reads as in_progress, since "you should
-    // be in this room right now" is more actionable than "this overlaps".
-    const uint32_t time_primary_color =
-        m.in_progress ? theme::COLOR_DANGER :
-        m.overlap     ? theme::COLOR_ACCENT :
-                        theme::COLOR_TEXT_PRIMARY;
-    const uint32_t time_secondary_color =
-        m.in_progress ? theme::COLOR_DANGER :
-        m.overlap     ? theme::COLOR_ACCENT :
-                        theme::COLOR_TEXT_TERTIARY;
+    const uint32_t time_primary_color   = meeting_state_color(m, theme::COLOR_TEXT_PRIMARY);
+    const uint32_t time_secondary_color = meeting_state_color(m, theme::COLOR_TEXT_TERTIARY);
+
+    // Meeting times are stored canonical 24-hour ("HH:MM"); reformat for display.
+    char start_disp[16], end_disp[16];
+    time_format::reformat(m.start, start_disp, sizeof(start_disp));
+    time_format::reformat(m.end,   end_disp,   sizeof(end_disp));
 
     lv_obj_t* start = lv_label_create(time_block);
-    lv_label_set_text(start, m.start);
+    lv_label_set_text(start, start_disp);
     lv_obj_set_style_text_font(start, theme::font_h2(), 0);
     lv_obj_set_style_text_color(start, theme::color(time_primary_color), 0);
 
     lv_obj_t* end = lv_label_create(time_block);
-    lv_label_set_text(end, m.end);
+    lv_label_set_text(end, end_disp);
     lv_obj_set_style_text_font(end, theme::font_meta(), 0);
     lv_obj_set_style_text_color(end, theme::color(time_secondary_color), 0);
     lv_obj_set_style_pad_top(end, 2, 0);
@@ -222,10 +223,7 @@ lv_obj_t* make_meeting_row(lv_obj_t* parent, const app_state::Meeting& m) {
     lv_obj_set_height(title, theme::font_title()->line_height); // LVGL 9: LV_SIZE_CONTENT height lets text wrap freely; explicit 1-line height makes LONG_DOT clip instead
     lv_label_set_text(title, m.title);
     lv_obj_set_style_text_font(title, theme::font_title(), 0);
-    lv_obj_set_style_text_color(title, theme::color(
-        m.in_progress ? theme::COLOR_DANGER :
-        m.overlap     ? theme::COLOR_ACCENT :
-                        theme::COLOR_TEXT_PRIMARY), 0);
+    lv_obj_set_style_text_color(title, theme::color(meeting_state_color(m, theme::COLOR_TEXT_PRIMARY)), 0);
 
     // Meta row: location · organizer.
     lv_obj_t* meta = lv_obj_create(content);
@@ -261,9 +259,12 @@ lv_obj_t* make_meeting_row(lv_obj_t* parent, const app_state::Meeting& m) {
     lv_obj_set_style_text_font(org, theme::font_meta(), 0);
     lv_obj_set_style_text_color(org, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
 
-    // Row click → meeting detail modal.
+    // Row click → meeting detail modal, unless the meeting starts within the
+    // 5-minute countdown window, in which case the countdown screen (same one
+    // the automatic pre-meeting alert uses) takes over instead.
     lv_obj_add_event_cb(row, [](lv_event_t* e) {
         const auto* mp = static_cast<const app_state::Meeting*>(lv_event_get_user_data(e));
+        if (state_machine::show_countdown_if_imminent(*mp)) return;
         show_meeting_detail(lv_obj_get_screen((lv_obj_t*)lv_event_get_target(e)), *mp);
     }, LV_EVENT_CLICKED, (void*)&m);
 
@@ -290,16 +291,31 @@ lv_obj_t* make_synced_pill(lv_obj_t* parent) {
     lv_obj_set_style_text_color(label, theme::color(theme::COLOR_TEXT_TERTIARY), 0);
     lv_obj_center(label);
 
-    // Self-contained 1-second timer: updates text directly via user_data pointer.
-    // Cleaned up by LV_EVENT_DELETE — no global label pointer needed, so
-    // deferred screen deletion can never clear a newer screen's state.
+    // Text has minute-granularity ("LAST SYNCED · N min ago") but the timer
+    // ticks every second — cache the last string so 59 out of 60 ticks skip
+    // the redundant lv_label_set_text()/re-layout.
+    struct PillCtx {
+        lv_obj_t* label;
+        char      last_text[48];
+    };
+    auto* ctx = new PillCtx{label, {}};
+    strncpy(ctx->last_text, app_state::synced_pill_text(), sizeof(ctx->last_text) - 1);
+
+    // Self-contained 1-second timer. Cleaned up by LV_EVENT_DELETE — no global
+    // label pointer needed, so deferred screen deletion can never clear a
+    // newer screen's state.
     lv_timer_t* pill_timer = lv_timer_create([](lv_timer_t* t) {
-        lv_obj_t* lbl = (lv_obj_t*)lv_timer_get_user_data(t);
-        lv_label_set_text(lbl, app_state::synced_pill_text());
-    }, 1000, (void*)label);
+        auto* ctx = (PillCtx*)lv_timer_get_user_data(t);
+        const char* text = app_state::synced_pill_text();
+        if (strcmp(text, ctx->last_text) == 0) return;
+        strncpy(ctx->last_text, text, sizeof(ctx->last_text) - 1);
+        ctx->last_text[sizeof(ctx->last_text) - 1] = '\0';
+        lv_label_set_text(ctx->label, text);
+    }, 1000, (void*)ctx);
 
     lv_obj_add_event_cb(label, [](lv_event_t* e) {
         lv_timer_t* t = (lv_timer_t*)lv_event_get_user_data(e);
+        delete (PillCtx*)lv_timer_get_user_data(t);
         lv_timer_delete(t);
     }, LV_EVENT_DELETE, (void*)pill_timer);
 

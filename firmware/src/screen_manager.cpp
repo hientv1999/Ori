@@ -10,6 +10,7 @@
 #include "nvs_store.h"
 #include "ota_receiver.h"
 #include "state_machine.h"
+#include "time_format.h"
 #include "screens/modal_countdown.h"
 #include "screens/modal_factory_reset.h"
 #include "screens/modal_incoming_call.h"
@@ -23,7 +24,6 @@
 #include "screens/screen_ota_updating.h"
 #include "screens/screen_time_off.h"
 #include "screens/screen_reconnect_syncing.h"
-// #include "screens/screen_repair_phone.h" // removed obsolete repair screen
 #include "screens/screen_setup.h"
 #include "widgets/widget_profile_card.h"
 #include "widgets/widget_status_bar.h"
@@ -51,15 +51,26 @@ bool                                  g_weather_shown = false;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // apply_state_defaults — set widget defaults to current runtime values before
-// any screen create() call.  Called by the debug cycler before each load and
-// by state_machine::evaluate() internally.
+// any screen create() call. Called from screen_manager::init() (once, at
+// boot) and from the ORI_DEBUG_SERIAL 'R' key (re-run evaluate() by hand).
+// state_machine.cpp does NOT call this — it has no reference to it; screen
+// creation reads these widget-level defaults independently of the state
+// machine's own AppState.
 // ─────────────────────────────────────────────────────────────────────────────
 
-void apply_state_defaults() {
+// Presence/PC-link/mode fields shared by apply_state_defaults() (production)
+// and debug_apply_defaults() (ORI_DEBUG_SERIAL cycler below) — the two differ
+// only in what the mode-toggle button does, so only that callback is set by
+// each caller individually.
+void apply_default_widget_state() {
     auto eff = g_pc_connected ? g_presence : widget_profile_card::Presence::Offline;
     widget_profile_card::set_default_presence(eff);
     widget_status_bar::set_default_pc_connected(g_pc_connected);
     widget_status_bar::set_default_mode(g_status_mode);
+}
+
+void apply_state_defaults() {
+    apply_default_widget_state();
     widget_status_bar::set_default_mode_toggle_cb([]() {
         state_machine::on_mode_toggle();
     });
@@ -70,10 +81,7 @@ void apply_state_defaults() {
 
 #ifdef ORI_DEBUG_SERIAL
 
-lv_obj_t* g_debug_screen = nullptr;
-
 void debug_load(lv_obj_t* scr) {
-    g_debug_screen = scr;
     // auto_del=true: LVGL fires screen-unload events then immediately deletes
     // d->prev_scr and clears it to nullptr before lv_scr_load_anim() returns.
     // Calling lv_obj_delete(prev) after lv_scr_load() instead leaves d->prev_scr
@@ -99,10 +107,7 @@ lv_obj_t* s = screen_setup::create(st);
 }
 
 void debug_apply_defaults() {
-    auto eff = g_pc_connected ? g_presence : widget_profile_card::Presence::Offline;
-    widget_profile_card::set_default_presence(eff);
-    widget_status_bar::set_default_pc_connected(g_pc_connected);
-    widget_status_bar::set_default_mode(g_status_mode);
+    apply_default_widget_state();
     widget_status_bar::set_default_mode_toggle_cb([]() {
         g_status_mode = (g_status_mode == widget_status_bar::Mode::Calendar)
                       ? widget_status_bar::Mode::Keyboard
@@ -146,6 +151,7 @@ void print_keymap() {
     LOG("  n   No meetings today\n");
     LOG("  c   Digital clock (entered via time tap; sets clock-face pref -> Digital)\n");
     LOG("  a   Analog clock (entered via time tap; sets clock-face pref -> Analog)\n");
+    LOG("  H   Toggle 12-/24-hour time format\n");
     LOG("  v   Calendar month view (entered via time long-press)\n");
     LOG("  p   Time Off scenic\n");
     LOG("  k   Media mode\n");
@@ -198,6 +204,12 @@ void debug_handle_key(char c) {
                 state_machine::set_clock_face(1);
                 debug_load(screen_clock_analog::create());
             break;
+        case 'H': {
+                uint8_t next = time_format::is_24h() ? 1 : 0;  // toggle 24h <-> 12h
+                state_machine::set_time_format(next);
+                LOG("[scr] time_format -> %s\n", next ? "12h" : "24h");
+            break;
+        }
         case 'v':
                 screen_calendar::reset_view();
                 debug_load(screen_calendar::create());
@@ -239,7 +251,8 @@ void debug_handle_key(char c) {
                     : static_cast<WC>(static_cast<uint8_t>(g_weather_cond) + 1);
             }
             g_weather_shown = true;
-            widget_profile_card::set_default_weather(g_weather_cond, 72, true);
+            widget_profile_card::set_default_weather(
+                g_weather_cond, 72, widget_profile_card::TemperatureUnit::Fahrenheit, true);
             LOG("[scr] weather -> condition=%d (72F)\n", (int)g_weather_cond);
             break;
         }
@@ -290,7 +303,6 @@ void debug_handle_key(char c) {
         }
         case 't': debug_load_setup(screen_setup::Step::PhonePairing, false); break;
         case 'e': debug_load_setup(screen_setup::Step::Complete,     false); break;
-        // case 'r': debug_load(screen_repair_phone::create()); // removed obsolete repair screen
         case 'x': debug_load(screen_reconnect_syncing::create());              break;
         // ── OTA update flow (button callbacks walk the flow for visual test) ──
         case 'u': debug_load(screen_ota_updating::create());                  break;
@@ -333,7 +345,6 @@ void init() {
     state_machine::evaluate();
 
 #ifdef ORI_DEBUG_SERIAL
-    g_debug_screen = lv_screen_active();
     print_keymap();
 #endif
 }

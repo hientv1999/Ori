@@ -7,6 +7,10 @@
 // header just for the ota_show() screen-handoff parameter.
 typedef struct _lv_obj_t lv_obj_t;
 
+// Forward declaration — avoids pulling app_state.h into this widely-included
+// header just for the show_countdown_if_imminent() parameter type.
+namespace app_state { struct Meeting; }
+
 // Ori — State Machine (M4)
 //
 // Owns the left-panel priority logic, periodic ticks, 5-minute pre-meeting
@@ -126,12 +130,13 @@ void set_pc_connected(bool connected);
 // Offline while it's down.
 void set_presence(uint8_t presence_byte);
 
-// Cache the most recent weather condition + temperature pushed by Orion via
-// the Device Settings characteristic ("w"/"d" fields — ble-protocol.md §3/§4,
-// §6.4). Ephemeral, like presence: apply_widget_defaults() reflects it while
-// the PC link is up and hides the badge/bubble entirely (no "unverified"
-// enum value, unlike presence's Offline) while it's down.
-void set_weather(uint8_t condition, int16_t temp_f);
+// Cache the most recent weather condition + temperature + unit pushed by Orion
+// via the Device Settings characteristic ("w"/"d"/"u" fields — ble-protocol.md
+// §3/§4, §6.4). Ephemeral, like presence: apply_widget_defaults() reflects it
+// while the PC link is up and hides the icon/text entirely (no "unverified"
+// enum value, unlike presence's Offline) while it's down. unit is 0=Fahrenheit
+// 1=Celsius (widget_profile_card::TemperatureUnit).
+void set_weather(uint8_t condition, int16_t temp_f, uint8_t unit);
 
 // Update whether a phone BLE bond / link exists.
 void set_phone_connected(bool connected);
@@ -154,6 +159,23 @@ void on_clock_enter();
 // on_clock_enter().
 void on_calendar_enter();
 
+// User tapped a meeting row in the list (screen_meeting_list.cpp). If `m`
+// starts within the 5-minute countdown window (same window/logic as the
+// automatic pre-meeting alert), shows the full-screen countdown modal for it
+// — the same one the automatic alert uses — instead of the regular detail
+// overlay, and returns true. Returns false (no-op) when the meeting isn't
+// currently imminent, in which case the caller should fall back to the
+// regular detail overlay.
+bool show_countdown_if_imminent(const app_state::Meeting& m);
+
+// The countdown modal was dismissed (Close tapped, or its own timer reached
+// zero) — clears COUNTDOWN so the next tick's evaluate() resumes normal
+// priority logic instead of staying wedged on COUNTDOWN forever (evaluate()
+// only lets SETUP override it — see the COUNTDOWN case in state_machine.cpp).
+// No-op if COUNTDOWN was already superseded by something else (OTA, factory
+// reset) that set g_state directly. Called from modal_countdown.cpp.
+void on_countdown_close();
+
 // Query the current mode.
 // Returns 0 = Calendar (meeting list), 1 = Media.
 uint8_t current_mode();
@@ -164,5 +186,11 @@ uint8_t current_mode();
 // ORI_DEBUG_SERIAL cycler; eventually an Orion-driven BLE write).
 void    set_clock_face(uint8_t face);
 uint8_t current_clock_face();
+
+// Time-format preference (0 = 24-hour, 1 = 12-hour). Persists to NVS via the
+// time_format module and rebuilds the on-screen clock / meeting list so times
+// re-render immediately. Safe to call from any non-LVGL-timer context (the
+// Device Settings BLE write dispatch, the ORI_DEBUG_SERIAL cycler).
+void    set_time_format(uint8_t fmt);
 
 } // namespace state_machine

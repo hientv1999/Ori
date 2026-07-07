@@ -233,24 +233,4 @@ bool load_time_off_meta(uint32_t* out_start, uint32_t* out_end,
     return g_time_off_cache.start != 0;
 }
 
-// ── Meeting list CBOR blob ─────────────────────────────────────────────────────
-
-bool save_meetings_blob(const uint8_t* buf, size_t len) {
-    if (!buf || !len) return false;
-    if (!prefs.begin(NS, /*readOnly=*/false)) return false;
-    size_t written = prefs.putBytes("m_cbor", buf, len);
-    prefs.end();
-    return written == len;
-}
-
-size_t load_meetings_blob(uint8_t* out, size_t max_len) {
-    if (!out || !max_len) return 0;
-    if (!prefs.begin(NS, /*readOnly=*/true)) return 0;
-    size_t sz = prefs.getBytesLength("m_cbor");
-    if (!sz || sz > max_len) { prefs.end(); return 0; }
-    prefs.getBytes("m_cbor", out, sz);
-    prefs.end();
-    return sz;
-}
-
 } // namespace nvs_sync

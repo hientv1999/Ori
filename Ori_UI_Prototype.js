@@ -6,12 +6,31 @@
 // Long mock name exercises the 2-line wrap path now that the name font is
 // 30px (matching status-bar time + clock date). See `.profile-name` CSS.
 const PROFILE = { name: 'Everstorm Dominion', title: 'Founder, Ori', email: 'everstorm@ori.app', phone: '+1 (415) 555 0192' };
-// Demo-only mock weather data for the badge + bubble on the profile photo.
-// Not part of the BLE contract yet — see ble-protocol.md before wiring this up for real.
+// Demo-only mock weather data for the icon + text on the profile photo.
+// Mirrors the BLE Device Settings "w"/"d"/"u" fields (ble-protocol.md §4/§6.4).
 // `condition` is a key into WEATHER_ICONS (below). Screens can override it via
 // the `weather` field on a SCREENS entry (see the "Weather" nav group), the
 // same pattern SCREENS.presence already uses for the profile-photo border.
-const WEATHER = { tempF: 72, condition: 'partly-cloudy' };
+const WEATHER = { tempF: 72, unit: 'F', condition: 'partly-cloudy' };
+
+// 12-/24-hour clock preference. On the real device this is an NVS-persisted
+// setting Orion pushes over BLE (Device Settings key "h", ble-protocol.md §4);
+// here it's a sidebar toggle. 24-hour is the default (matches firmware). Governs
+// every wall-clock display: status bar, both clock faces, meeting-list times.
+let USE_24H = true;
+
+// Reformat a canonical 24-hour "HH:MM" clock string per USE_24H:
+//   24-hour -> "14:30"   ·   12-hour -> "2:30 PM"
+// (Named fmtClock to avoid colliding with fmtTime(), which formats seconds as
+// m:ss for the media seek bar.)
+function fmtClock(hhmm24) {
+  const [hs, m] = String(hhmm24).split(':');
+  let h = parseInt(hs, 10);
+  if (USE_24H) return h.toString().padStart(2, '0') + ':' + m;
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  h = h % 12 || 12;
+  return h + ':' + m + ' ' + ampm;
+}
 
 // Weather badge icon library. Compact inline SVGs (32x32 viewBox) rendered at
 // 28x28 inside the 46px badge circle. Mirrors typical weather-provider
@@ -60,17 +79,19 @@ const WEATHER_ICONS = {
     label: 'Cloudy',
     // Smaller "back" cloud (same 3-circle + rounded-rect shape, hand-offset
     // up-right) peeking behind the standard front cloud.
+    // Whole composition nudged right 2.25 (front + back shifted equally) to centre.
     svg: '<svg viewBox="0 0 32 32">' +
-      '<rect x="12" y="8" width="14" height="6.5" rx="3.2" fill="#9AA2AE"/>' +
-      '<circle cx="16" cy="7.3" r="3.6" fill="#9AA2AE"/>' +
-      '<circle cx="19.7" cy="5.4" r="4.4" fill="#9AA2AE"/>' +
-      '<circle cx="23.3" cy="7.6" r="3.6" fill="#9AA2AE"/>' +
-      cloudSvg('#E7EAEE') + '</svg>',
+      '<rect x="14.25" y="8" width="14" height="6.5" rx="3.2" fill="#9AA2AE"/>' +
+      '<circle cx="18.25" cy="7.3" r="3.6" fill="#9AA2AE"/>' +
+      '<circle cx="21.95" cy="5.4" r="4.4" fill="#9AA2AE"/>' +
+      '<circle cx="25.55" cy="7.6" r="3.6" fill="#9AA2AE"/>' +
+      cloudSvg('#E7EAEE', 2.25, 0) + '</svg>',
   },
   rain: {
     label: 'Rain',
+    // Cloud nudged right (dx=2.25) to centre; raindrops left where they are.
     svg: '<svg viewBox="0 0 32 32">' +
-      cloudSvg('#C7CDD6') +
+      cloudSvg('#C7CDD6', 2.25, 0) +
       '<g stroke="#5FB4E0" stroke-width="1.8" stroke-linecap="round">' +
       '<line x1="10" y1="24" x2="8" y2="29"/><line x1="16" y1="24" x2="14" y2="29"/><line x1="22" y1="24" x2="20" y2="29"/>' +
       '</g></svg>',
@@ -80,14 +101,14 @@ const WEATHER_ICONS = {
     // Bolt is a plain multi-point polyline stroke (no fill) — an lv_line
     // with the same point list ports directly.
     svg: '<svg viewBox="0 0 32 32">' +
-      cloudSvg('#8B93A1') +
+      cloudSvg('#8B93A1', 2.25, 0) +
       '<polyline points="18.5,20 14,26.5 17,26.5 13.5,31.5" fill="none" ' +
       'stroke="#F0C93E" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   },
   snow: {
     label: 'Snow',
     svg: '<svg viewBox="0 0 32 32">' +
-      cloudSvg('#C7CDD6') +
+      cloudSvg('#C7CDD6', 2.25, 0) +
       '<g stroke="#DCEEFF" stroke-width="1.3" stroke-linecap="round">' +
       '<line x1="9" y1="23.6" x2="9" y2="28.4"/><line x1="6.8" y1="24.6" x2="11.2" y2="27.4"/><line x1="11.2" y1="24.6" x2="6.8" y2="27.4"/>' +
       '<line x1="16" y1="24.6" x2="16" y2="29.4"/><line x1="13.8" y1="25.6" x2="18.2" y2="28.4"/><line x1="18.2" y1="25.6" x2="13.8" y2="28.4"/>' +
@@ -97,14 +118,15 @@ const WEATHER_ICONS = {
   fog: {
     label: 'Fog',
     svg: '<svg viewBox="0 0 32 32">' +
+      // Lines shifted up 2.5 (were y 10..27, centre 18.5) to centre in the badge.
       '<g stroke="#AAB2BD" stroke-width="2.2" stroke-linecap="round">' +
-      '<line x1="5" y1="10" x2="27" y2="10"/><line x1="8" y1="16" x2="27" y2="16"/>' +
-      '<line x1="5" y1="22" x2="24" y2="22"/><line x1="9" y1="27" x2="27" y2="27"/>' +
+      '<line x1="5" y1="7.5" x2="27" y2="7.5"/><line x1="8" y1="13.5" x2="27" y2="13.5"/>' +
+      '<line x1="5" y1="19.5" x2="24" y2="19.5"/><line x1="9" y1="24.5" x2="27" y2="24.5"/>' +
       '</g></svg>',
   },
 };
 
-function applyWeather(condition, tempF) {
+function applyWeather(condition, tempF, unit) {
   const icon = WEATHER_ICONS[condition] || WEATHER_ICONS['partly-cloudy'];
   const badge = document.getElementById('weather-badge');
   const bubble = document.getElementById('temp-bubble');
@@ -112,7 +134,7 @@ function applyWeather(condition, tempF) {
     badge.innerHTML = icon.svg;
     badge.title = icon.label;
   }
-  if (bubble && tempF !== undefined) bubble.textContent = tempF + '°';
+  if (bubble && tempF !== undefined) bubble.textContent = tempF + '°' + (unit || 'F');
 }
 
 const BLE_NAME = 'Ori-XT-9F';
@@ -160,7 +182,7 @@ function applyProfile() {
   document.getElementById('profile-photo').textContent = initialsOf(PROFILE.name);
   document.getElementById('profile-name').textContent = PROFILE.name;
   document.getElementById('profile-title').textContent = PROFILE.title;
-  applyWeather(WEATHER.condition, WEATHER.tempF);
+  applyWeather(WEATHER.condition, WEATHER.tempF, WEATHER.unit);
 }
 
 // Mock "now" is 14:30. The 14:00-15:00 row is marked inProgress so the
@@ -526,8 +548,8 @@ function meetingListHTML(items, cached) {
       (m.inProgress ? ' in-progress' :
         m.overlap ? ' overlap' : '');
     html += '<div class="' + cls + '" onclick="showMeetingDetail(' + i + ')" style="cursor:pointer">' +
-      '<div class="time-block"><div class="start">' + m.start +
-      '</div><div class="end">— ' + m.end + '</div></div>' +
+      '<div class="time-block"><div class="start">' + fmtClock(m.start) +
+      '</div><div class="end">— ' + fmtClock(m.end) + '</div></div>' +
       '<div class="content">' +
       '<div class="title">' + escapeHtml(m.title) + '</div>' +
       '<div class="meta"><span class="loc">' + escapeHtml(m.loc) +
@@ -558,21 +580,25 @@ function meetingDetailHTML(m) {
     '<div class="md-title" style="color:' + stateColor + '">' + escapeHtml(m.title) + '</div>' +
     '<div class="md-loc">' + escapeHtml(m.loc) + '</div>' +
     '<div class="md-org">' + escapeHtml(m.org) + '</div>' +
-    '<div class="md-time" style="color:' + stateColor + '">' + escapeHtml(m.start) + ' – ' + escapeHtml(m.end) + '</div>' +
+    '<div class="md-time" style="color:' + stateColor + '">' + escapeHtml(fmtClock(m.start)) + ' – ' + escapeHtml(fmtClock(m.end)) + '</div>' +
     '<div class="profile-close-row"><button class="btn btn-tertiary" onclick="closeMeetingDetail()">Close</button></div>' +
     '</div>';
 }
 
 function clockHTML() {
   const d = new Date();
-  let h = d.getHours();
+  const h24 = d.getHours();
   const m = d.getMinutes().toString().padStart(2, '0');
-  const ampm = h >= 12 ? 'PM' : 'AM';
-  h = h % 12 || 12;
   const dateStr = d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
-  return '<div class="clock-face"><div class="clock-time"><span>' + h +
+  // 24-hour: zero-padded hour, no AM/PM. 12-hour: 1–12 hour, AM/PM on the date
+  // strip (the device's XL digit-only clock font can't render letters).
+  const hour = USE_24H ? h24.toString().padStart(2, '0') : (h24 % 12 || 12);
+  const dateLine = USE_24H
+    ? dateStr.toUpperCase()
+    : dateStr.toUpperCase() + ' · ' + (h24 >= 12 ? 'PM' : 'AM');
+  return '<div class="clock-face"><div class="clock-time"><span>' + hour +
     '</span><span class="colon">:</span><span>' + m + '</span></div>' +
-    '<div class="clock-date">' + dateStr.toUpperCase() + ' · ' + ampm + '</div></div>';
+    '<div class="clock-date">' + dateLine + '</div></div>';
 }
 
 // Analog face — same data source as clockHTML(), alternate rendering. Orion
@@ -584,7 +610,9 @@ function analogClockHTML() {
   const m = d.getMinutes();
   const s = d.getSeconds();
   const dateStr = d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
-  const ampm = h >= 12 ? 'PM' : 'AM';
+  // AM/PM only makes sense in 12-hour mode.
+  const dateLine = USE_24H ? dateStr.toUpperCase()
+                           : dateStr.toUpperCase() + ' · ' + (h >= 12 ? 'PM' : 'AM');
 
   const cx = 140, cy = 140;
   let ticks = '';
@@ -615,7 +643,7 @@ function analogClockHTML() {
     '</svg>';
 
   return '<div class="analog-clock-face">' + dial +
-    '<div class="clock-date">' + dateStr.toUpperCase() + ' · ' + ampm + '</div></div>';
+    '<div class="clock-date">' + dateLine + '</div></div>';
 }
 
 let _calViewDate = null; // first-of-month being viewed; null = current month
@@ -1427,7 +1455,7 @@ function updateStatusDateTime() {
   const h = d.getHours().toString().padStart(2, '0');
   const m = d.getMinutes().toString().padStart(2, '0');
   const date = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
-  el.innerHTML = '<span class="t-time">' + h + ':' + m + '</span>' +
+  el.innerHTML = '<span class="t-time">' + fmtClock(h + ':' + m) + '</span>' +
     '<span class="t-sep">·</span>' +
     '<span class="t-date">' + date + '</span>';
 }
@@ -1552,7 +1580,9 @@ function setScreen(id) {
     previousScreenId = currentScreenId;
   }
   currentScreenId = id;
-  document.querySelectorAll('.nav button').forEach(b => {
+  // Only screen-nav buttons carry data-screen; the time-format toggle buttons
+  // manage their own active state (see setTimeFormat), so exclude them here.
+  document.querySelectorAll('.nav button[data-screen]').forEach(b => {
     b.classList.toggle('active', b.dataset.screen === id);
   });
   document.getElementById('meta-label').textContent = cfg.label;
@@ -1574,10 +1604,10 @@ function setScreen(id) {
     const presence = pcConnected ? (cfg.presence || 'available') : 'offline';
     photo.classList.add('presence-' + presence);
   }
-  // Weather badge + temp bubble. cfg.weather lets a screen preview a specific
+  // Weather icon + temp text. cfg.weather lets a screen preview a specific
   // condition (see the "Weather" nav group); screens that don't care fall
   // back to the WEATHER mock-data default.
-  applyWeather(cfg.weather || WEATHER.condition, WEATHER.tempF);
+  applyWeather(cfg.weather || WEATHER.condition, WEATHER.tempF, WEATHER.unit);
   const setupLayer = document.getElementById('setup-layer');
   const body = document.getElementById('body');
   const left = document.getElementById('left-panel');
@@ -1618,9 +1648,21 @@ const profilePhotoEl = document.getElementById('profile-photo');
 bindLongPress(profilePhotoEl, () => setScreen('factory-reset'));
 profilePhotoEl.addEventListener('click', showProfileDetail);
 
-document.querySelectorAll('.nav button').forEach(b => {
+document.querySelectorAll('.nav button[data-screen]').forEach(b => {
   b.addEventListener('click', () => setScreen(b.dataset.screen));
 });
+
+// Time-format toggle (sidebar "Device settings" group). Mirrors the device's
+// NVS-persisted 12-/24-hour preference; re-renders so every wall-clock surface
+// (status bar, clock faces, meeting times) reflects the change immediately.
+function setTimeFormat(use12) {
+  USE_24H = !use12;
+  const b24 = document.getElementById('tf-24');
+  const b12 = document.getElementById('tf-12');
+  if (b24) b24.classList.toggle('active', USE_24H);
+  if (b12) b12.classList.toggle('active', !USE_24H);
+  if (currentScreenId) setScreen(currentScreenId);
+}
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({
