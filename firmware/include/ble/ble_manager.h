@@ -114,4 +114,12 @@ void confirm_orion_peer();
 // Called when iPhone bond is formed (Step 4 / re-pair).
 void on_iphone_bonded(uint16_t conn_handle, const uint8_t peer_addr[6]);
 
+// Fires the first-boot ANCS backlog-flush reconnect (see on_iphone_bonded's
+// poll() handler) if one is pending. Deliberately NOT called on a fixed timer
+// right after bonding — call this once the Setup Complete screen hands off to
+// runtime (state_machine::poll()), so the heavier ANCS backlog processing
+// doesn't compete with that screen's checkmark/countdown animations. No-op if
+// nothing is pending or the iPhone already disconnected on its own since.
+void run_pending_ancs_backlog_reconnect();
+
 } // namespace ble_manager

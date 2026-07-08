@@ -443,10 +443,18 @@ static void tick_cb(lv_timer_t* /*t*/) {
     // force one rebuild so the current screen repaints with a valid date — in
     // particular the "No meetings today" calendar glyph, which falls back to a
     // generic grid (no today / no week highlight) while the clock is unset and
-    // would otherwise stay stale once the time arrives.
+    // would otherwise stay stale once the time arrives. Excluded during SETUP:
+    // none of the wizard screens show clock-derived content, and forcing a
+    // rebuild there tears down and recreates the live setup screen (its own
+    // step transitions are already driven explicitly by screen_setup::set_step).
+    // That teardown fires the outgoing screen's DELETE handler, which closes
+    // the iPhone pairing window (ble_manager::set_iphone_pairing_window(false))
+    // — since Time Sync typically lands in the same sync that also advances
+    // Step 3/4 to PhonePairing, this force-rebuild used to slam the just-opened
+    // pairing window shut a moment later with nothing left to reopen it.
     static bool s_clock_was_set = false;
     bool clock_now = app_state::clock_is_set();
-    if (clock_now && !s_clock_was_set) g_force_rebuild = true;
+    if (clock_now && !s_clock_was_set && g_state != AppState::SETUP) g_force_rebuild = true;
     s_clock_was_set = clock_now;
 
     // Day rollover (e.g. past midnight): the calendar glyph and month grid pin
@@ -847,6 +855,11 @@ void poll() {
         LOG("[sm] poll: setup complete — writing NVS + evaluating\n");
         nvs::mark_setup_complete();
         evaluate();
+        // Now that the Setup Complete screen's own animations are done and the
+        // runtime screen is up, run any deferred ANCS backlog-flush reconnect
+        // (ble_manager.h) — see its doc comment for why this is deferred here
+        // rather than fired on a short timer right after the iPhone bonded.
+        ble_manager::run_pending_ancs_backlog_reconnect();
     }
     if (g_unpair_phone_pending) {
         g_unpair_phone_pending = false;

@@ -124,6 +124,14 @@ bool     g_iphone_connected = false;
 uint16_t g_orion_conn       = BLE_HS_CONN_HANDLE_NONE;
 uint16_t g_iphone_conn      = BLE_HS_CONN_HANDLE_NONE;
 
+// First-boot-only ANCS backlog-flush reconnect (see IphoneBonded handling
+// below), deferred until the Setup Complete screen hands off to runtime —
+// state_machine::poll() calls run_pending_ancs_backlog_reconnect() there.
+// Cleared without acting if the iPhone disconnects on its own first (nothing
+// to force; the stashed handle may otherwise be stale/reused by then).
+bool     g_ancs_backlog_reconnect_pending = false;
+uint16_t g_ancs_backlog_reconnect_conn    = BLE_HS_CONN_HANDLE_NONE;
+
 // Deferred iPhone bond wipe. Deleting a bond + writing NVS while the iPhone
 // link is still live corrupts NVS state (crash inside the next Preferences
 // open). When unpairing a CONNECTED iPhone we disconnect first, stash the
@@ -782,26 +790,31 @@ void poll() {
                 // where the bond was just created — only on connections after
                 // that (a power-cycle reconnect proves the firmware-side
                 // backlog handling above already works correctly). Force that
-                // "after the first" condition immediately: drop this fresh
-                // bond a moment after NS/DS subscribe, then let the existing
-                // bonded-disconnect → restart_advertising() → iOS auto-
-                // reconnect path bring it straight back. The status bar is
-                // hidden during setup, so this brief blip is invisible.
+                // "after the first" condition: drop this fresh bond after NS/DS
+                // subscribe, then let the existing bonded-disconnect →
+                // restart_advertising() → iOS auto-reconnect path bring it
+                // straight back.
+                //
+                // Deferred to AFTER the Setup Complete screen hands off to
+                // runtime (state_machine::poll()'s g_setup_complete_pending
+                // drain calls run_pending_ancs_backlog_reconnect()) rather than
+                // fired here on a short fixed timer. ANCS backlog processing —
+                // per-notification parsing plus icon-registry lookups across up
+                // to 48 apps — is comparatively heavy, and running it while
+                // Setup Complete's checkmark-ring/countdown-bar animations are
+                // live competes with LVGL for the same core. The runtime screen
+                // it hands off to has no comparable animation to protect.
+                // Trade-off: the phone icon may briefly show
+                // disconnected/reconnecting on the runtime status bar (Setup's
+                // status bar is hidden, so this used to be invisible).
                 //
                 // Only on initial setup (Step 4) — NOT a runtime re-pair.
                 // The backlog-on-first-bond quirk is specifically a first-boot
                 // condition; a runtime re-pair hasn't been confirmed to need
                 // (or want) a surprise reconnect blip on an otherwise-live device.
                 if (was_first_boot) {
-                    uint16_t handle = ev.data.conn_handle;
-                    lv_timer_t* t = lv_timer_create([](lv_timer_t* timer) {
-                        uint16_t h = (uint16_t)(uintptr_t)lv_timer_get_user_data(timer);
-                        LOG("[ble] forcing iPhone reconnect to flush ANCS backlog (handle=%u)\n",
-                            (unsigned)h);
-                        NimBLEDevice::getServer()->disconnect(h);
-                        lv_timer_delete(timer);
-                    }, 500, (void*)(uintptr_t)handle);
-                    lv_timer_set_repeat_count(t, 1);
+                    g_ancs_backlog_reconnect_pending = true;
+                    g_ancs_backlog_reconnect_conn    = ev.data.conn_handle;
                 }
                 break;
             }
@@ -824,6 +837,12 @@ void poll() {
 
             case BleEventType::IphoneDisconnected: {
                 LOG("[ble:poll] iPhone disconnected\n");
+                // Disconnected before the deferred backlog-flush reconnect fired
+                // (e.g. phone walked out of range during the Setup Complete
+                // linger) — drop the pending request rather than act on a
+                // conn_handle that's now stale (and could be reused by a later,
+                // unrelated connection).
+                g_ancs_backlog_reconnect_pending = false;
                 ancs_client::on_iphone_disconnected();
                 // If an unpair is waiting on this disconnect, delete the bond +
                 // clear NVS now that the link is down (safe — see wipe_iphone_bond).
@@ -1252,6 +1271,21 @@ void on_iphone_bonded(uint16_t conn_handle, const uint8_t peer_addr[6]) {
     ev.data.conn_handle = conn_handle;
     memcpy(ev.peer_addr, peer_addr, 6);
     eq_push(ev);
+}
+
+// Fires the first-boot ANCS backlog-flush reconnect deferred by the
+// IphoneBonded handler in poll() — called from state_machine::poll() once the
+// Setup Complete screen's own timer has handed off to runtime. No-op if
+// nothing is pending, or if the iPhone already disconnected on its own in the
+// meantime (IphoneDisconnected clears the pending flag).
+void run_pending_ancs_backlog_reconnect() {
+    if (!g_ancs_backlog_reconnect_pending) return;
+    g_ancs_backlog_reconnect_pending = false;
+    if (g_iphone_connected && g_iphone_conn == g_ancs_backlog_reconnect_conn) {
+        LOG("[ble] forcing iPhone reconnect to flush ANCS backlog (handle=%u)\n",
+            (unsigned)g_iphone_conn);
+        NimBLEDevice::getServer()->disconnect(g_iphone_conn);
+    }
 }
 
 } // namespace ble_manager

@@ -40,7 +40,14 @@ struct SetupState {
     lv_timer_t*  complete_timer;  // 5 s auto-advance on the Complete step
     lv_obj_t*    prev_screen;     // non-null during runtime re-pair: Skip goes back here
     screen_setup::Step step;
+    uint32_t     id;              // creation order — see g_next_setup_id
 };
+
+// Bumped by every screen_setup::create() call. Lets a screen's own DELETE
+// handler tell whether it was superseded by a NEWER screen_setup screen (id
+// still current -> genuinely leaving the wizard/step; id stale -> just torn
+// down and replaced in place, e.g. by a spurious top-level rebuild).
+uint32_t g_next_setup_id = 0;
 
 void clear_dots(SetupState* s) {
     for (int i = 0; i < 3; ++i) {
@@ -354,7 +361,11 @@ void build_phone_pairing(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
     lv_obj_set_style_pad_top(pill, 10, 0);
 
     lv_obj_t* spinner = make_spinner(mid, 100, 8);
-    lv_obj_set_style_pad_top(spinner, 24, 0);
+    // Shifted up 8px: gap above trimmed 24->16, and the same 8px re-added below
+    // so the centered (title+pill+spinner) block's total height — and thus the
+    // Skip button / dot row below it, both laid out outside this block — don't move.
+    lv_obj_set_style_pad_top(spinner, 16, 0);
+    lv_obj_set_style_pad_bottom(spinner, 8, 0);
 
     // Runtime re-pair (prev_screen set) just returns to the launching screen, so
     // label it "Close". During first-time setup it skips the optional iPhone
@@ -562,6 +573,7 @@ lv_obj_t* create(Step initial, lv_obj_t* prev_screen) {
     s->complete_timer  = nullptr;
     s->prev_screen     = prev_screen;
     s->step            = initial;
+    s->id              = ++g_next_setup_id;
 
     // Dot row — anchored at the fixed y so it never moves between pages.
     s->dots_row = lv_obj_create(screen);
@@ -600,7 +612,21 @@ lv_obj_t* create(Step initial, lv_obj_t* prev_screen) {
         }
         // Runtime re-pair is dismissed by deleting this screen (Skip → prev
         // screen) without a step change, so close the pairing window here too.
-        if (ss && ss->step == screen_setup::Step::PhonePairing) {
+        //
+        // Guard against a spurious top-level rebuild that tears this screen
+        // down and replaces it with ANOTHER PhonePairing-step screen (e.g.
+        // state_machine::evaluate() rebuilding AppState::SETUP from scratch
+        // while already on Step 3/4 — see state-machine.md tick_cb notes).
+        // A brand-new screen_setup::create() bumps g_next_setup_id BEFORE
+        // load_screen() tears this one down (construction, including
+        // rebuild_for()'s own set_iphone_pairing_window(true), runs fully
+        // before the old screen is deleted). So if a newer setup screen has
+        // since been created, this one's id is stale — skip closing, since
+        // the newer screen's rebuild_for() already set the window correctly
+        // and closing it here would just slam shut what it opened, with
+        // nothing left to reopen it.
+        if (ss && ss->step == screen_setup::Step::PhonePairing &&
+            ss->id == g_next_setup_id) {
             ble_manager::set_iphone_pairing_window(false);
         }
         delete ss;
