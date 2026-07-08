@@ -7,7 +7,6 @@
 
 #include "app_state.h"
 #include "theme.h"
-#include "time_format.h"
 #include "ui_helpers.h"
 #include "widgets/widget_profile_card.h"
 #include "widgets/widget_status_bar.h"
@@ -44,12 +43,10 @@ struct AnalogFaceState {
     lv_point_precise_t hour_pts[2];
     lv_point_precise_t minute_pts[2];
     lv_point_precise_t second_pts[2];
-    // date_lbl only changes once a day (or on a 12h/24h format toggle, since
-    // this face's date strip appends the AM/PM suffix) — unlike the hands,
-    // which must redraw every tick, cache it to skip the redundant
-    // lv_label_set_text() on the ~86399/86400 ticks where it's unchanged.
+    // date_lbl only changes once a day — unlike the hands, which must redraw
+    // every tick, cache it to skip the redundant lv_label_set_text() on the
+    // ~86399/86400 ticks where it's unchanged.
     int16_t    last_mday = -1;
-    bool       last_h24  = true;
     bool       last_clock_set = false;
 };
 
@@ -99,11 +96,9 @@ void update_face(AnalogFaceState* af) {
     update_hand(af->minute_hand, af->minute_pts, minute_deg, 102.0f);
     update_hand(af->second_hand, af->second_pts, second_deg, 112.0f);
 
-    bool h24 = time_format::is_24h();
-    bool date_unchanged = af->last_clock_set && af->last_mday == tm.tm_mday && af->last_h24 == h24;
+    bool date_unchanged = af->last_clock_set && af->last_mday == tm.tm_mday;
     af->last_clock_set = true;
     af->last_mday = (int16_t)tm.tm_mday;
-    af->last_h24  = h24;
     if (date_unchanged) return;
 
     char day[16], mon[8];
@@ -112,14 +107,11 @@ void update_face(AnalogFaceState* af) {
     // Uppercase: ESP32 strftime may not support %^A/%^B, so do it manually.
     for (char* p = day; *p; ++p) if (*p >= 'a' && *p <= 'z') *p -= 32;
     for (char* p = mon; *p; ++p) if (*p >= 'a' && *p <= 'z') *p -= 32;
+    // No AM/PM suffix — the analog dial has no digital time readout to pair it
+    // with, so it just reads as a plain date. Year included (unlike the
+    // digital face's date strip, which shares the same "%s, %s %d, %d" shape).
     char date_buf[56];
-    if (h24) {
-        // 24-hour: no AM/PM suffix.
-        snprintf(date_buf, sizeof(date_buf), "%s, %s %d", day, mon, tm.tm_mday);
-    } else {
-        const char* ampm = (tm.tm_hour >= 12) ? "PM" : "AM";
-        snprintf(date_buf, sizeof(date_buf), "%s, %s %d \xc2\xb7 %s", day, mon, tm.tm_mday, ampm);
-    }
+    snprintf(date_buf, sizeof(date_buf), "%s, %s %d, %d", day, mon, tm.tm_mday, tm.tm_year + 1900);
     lv_label_set_text(af->date_lbl, date_buf);
 }
 
@@ -198,8 +190,8 @@ lv_obj_t* create() {
     lv_obj_clear_flag(hub, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(hub, LV_OBJ_FLAG_CLICKABLE);
 
-    // Date strip below — "WEDNESDAY, MAY 14 · PM" (no digital time readout on
-    // the dial itself, so AM/PM rides along with the date like the prototype).
+    // Date strip below — "WEDNESDAY, MAY 14, 2026". No AM/PM (see update_face()) —
+    // the dial has no digital time readout to pair a suffix with.
     lv_obj_t* date = lv_label_create(left);
     lv_obj_set_style_text_color(date, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
     lv_obj_set_style_text_font(date, theme::font_time(), 0);

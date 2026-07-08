@@ -371,10 +371,12 @@
    top-right corner, same centre-offset technique as .weather-badge above
    (mirrored horizontally), sized to clear the 120px-radius circle even for
    the widest value + unit letter in the valid range (-40..140,
-   ble-protocol.md §10), e.g. "-40°C"/"140°F". */
+   ble-protocol.md §10), e.g. "-40°C"/"140°F". Shifted 10px left of the
+   mirrored position (214px, .weather-badge's mirror image) so the
+   degree/unit suffix doesn't crowd the right screen edge. */
     .temp-bubble {
       position: absolute;
-      left: 214px;
+      left: 204px;
       top: -16px;
       transform: translate(-50%, -50%);
       color: #FFFFFF;
@@ -444,7 +446,10 @@
     .meeting-list {
       height: 100%;
       overflow-y: auto;
-      padding: 12px 18px 14px 22px;
+      /* Left padding + .meeting's own 4px left padding = 22px, matching the
+         status-bar's 22px padding so a meeting row's time text lines up
+         vertically with the status-bar hour:minute text above it. */
+      padding: 12px 18px 14px 18px;
       scrollbar-width: auto;
       scrollbar-color: var(--text-3) rgba(255, 255, 255, 0.05);
     }

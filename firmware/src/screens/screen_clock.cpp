@@ -99,7 +99,7 @@ static void update_clock_labels(ClockFaceState* cf) {
     // No AM/PM suffix here anymore (it moved to ampm_lbl next to the time) —
     // the date strip is now the same width/format in both 12h and 24h, so it
     // stays centered under the clock in either mode.
-    snprintf(date_buf, sizeof(date_buf), "%s, %s %d", day, mon, tm.tm_mday);
+    snprintf(date_buf, sizeof(date_buf), "%s, %s %d, %d", day, mon, tm.tm_mday, tm.tm_year + 1900);
     lv_label_set_text(cf->date_lbl, date_buf);
 
     if (h24) {
@@ -230,7 +230,7 @@ lv_obj_t* create() {
     lv_obj_align(ampm, LV_ALIGN_LEFT_MID, 6, 0);
     lv_obj_add_flag(ampm, LV_OBJ_FLAG_HIDDEN); // shown by the first update_clock_labels() call if 12h
 
-    // Date strip below — "WEDNESDAY, MAY 14"
+    // Date strip below — "WEDNESDAY, MAY 14, 2026"
     lv_obj_t* date = lv_label_create(left);
     lv_obj_set_style_text_color(date, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
     lv_obj_set_style_text_font(date, theme::font_time(), 0);

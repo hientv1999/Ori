@@ -154,8 +154,16 @@ constexpr int16_t ICON_OFFSET  = (BADGE_SIZE - 42) / 2;
 // the icon's glyph ink reaches ~18-21 px from its own centre, and the widest
 // temp string "140°F"/"-40°C" (adv_w-summed per ori_font_hanken_24.c) has a
 // ~33 px half-diagonal — sqrt(110² + 120²) ≈ 163 px clears both with margin.
+// (temp_label additionally shifts in by TEMP_LABEL_SHIFT_X below, which only
+// tightens that margin — sqrt(100² + 120²) ≈ 156 px still clears the 120 px
+// ring radius comfortably.)
 constexpr int16_t CORNER_OFFSET_X = 110;
 constexpr int16_t CORNER_OFFSET_Y = 120;
+
+// Temperature text sits close enough to CORNER_OFFSET_X that its degree/unit
+// suffix crowds the right screen edge. Shift it left independently of
+// CORNER_OFFSET_X, which the weather icon on the opposite corner also uses.
+constexpr int16_t TEMP_LABEL_SHIFT_X = 10;
 
 // Scales a length/radius/stroke-width (no offset). Floors at 1px so thin
 // prototype strokes (e.g. 1.3px snowflakes) stay visible at this size.
@@ -363,7 +371,8 @@ void apply_weather_to(CardState* s, widget_profile_card::WeatherCondition condit
         right_bearing = (int32_t)g_last.adv_w - g_last.ofs_x - (int32_t)g_last.box_w;
     }
     lv_obj_align(s->temp_label, LV_ALIGN_CENTER,
-                 CORNER_OFFSET_X + (right_bearing - left_bearing) / 2, -CORNER_OFFSET_Y);
+                 CORNER_OFFSET_X - TEMP_LABEL_SHIFT_X + (right_bearing - left_bearing) / 2,
+                 -CORNER_OFFSET_Y);
 
     lv_obj_clear_flag(s->weather_badge, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(s->temp_label, LV_OBJ_FLAG_HIDDEN);

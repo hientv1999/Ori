@@ -352,7 +352,11 @@ lv_obj_t* create(app_state::MeetingList list, bool cached) {
     lv_obj_set_style_border_width(list_obj, 0, 0);
     lv_obj_set_style_pad_top(list_obj, 12, 0);
     lv_obj_set_style_pad_bottom(list_obj, 14, 0);
-    lv_obj_set_style_pad_left(list_obj, 22, 0);
+    // 8 px here + each row's own 4 px pad_left (make_meeting_row) = 12 px from
+    // the screen edge — matches the status bar's PAD_X (widget_status_bar.cpp),
+    // so a meeting row's time text lines up vertically with the status-bar
+    // hour:minute text above it.
+    lv_obj_set_style_pad_left(list_obj, 8, 0);
     lv_obj_set_style_pad_right(list_obj, 18, 0);
     lv_obj_set_flex_flow(list_obj, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(list_obj, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);

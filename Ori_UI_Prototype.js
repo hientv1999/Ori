@@ -589,7 +589,7 @@ function clockHTML() {
   const d = new Date();
   const h24 = d.getHours();
   const m = d.getMinutes().toString().padStart(2, '0');
-  const dateStr = d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+  const dateStr = d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
   // 24-hour: zero-padded hour, no AM/PM. 12-hour: 1–12 hour, AM/PM on the date
   // strip (the device's XL digit-only clock font can't render letters).
   const hour = USE_24H ? h24.toString().padStart(2, '0') : (h24 % 12 || 12);
@@ -609,10 +609,9 @@ function analogClockHTML() {
   const h = d.getHours();
   const m = d.getMinutes();
   const s = d.getSeconds();
-  const dateStr = d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
-  // AM/PM only makes sense in 12-hour mode.
-  const dateLine = USE_24H ? dateStr.toUpperCase()
-                           : dateStr.toUpperCase() + ' · ' + (h >= 12 ? 'PM' : 'AM');
+  const dateStr = d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+  // No AM/PM — the analog dial has no digital time readout to pair a suffix with.
+  const dateLine = dateStr.toUpperCase();
 
   const cx = 140, cy = 140;
   let ticks = '';

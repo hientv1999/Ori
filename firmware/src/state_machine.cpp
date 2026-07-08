@@ -498,6 +498,33 @@ static void tick_cb(lv_timer_t* /*t*/) {
         }
     }
 
+    // Meeting content changed under our feet — a meeting crossed into/out of
+    // "in progress" or expired off the front — without the MEETING_LIST vs
+    // NO_MEETINGS *AppState* changing (compute_target_state() only tells them
+    // apart by count>0). evaluate()'s "unchanged" no-op guard would otherwise
+    // leave a stale in-progress highlight or an expired row on screen until
+    // some unrelated event forces a rebuild (meeting-list.md's "now crosses
+    // start → row turns red" / "now crosses end → row is removed" promises
+    // this happens every tick). Diff against the last-seen snapshot and force
+    // a rebuild when it doesn't match. Scoped to Calendar mode (g_mode == 0)
+    // — in Controls/media mode this state renders the media screen instead,
+    // which has nothing meeting-related to refresh.
+    if (clock_now && g_mode == 0 &&
+        (g_state == AppState::MEETING_LIST || g_state == AppState::NO_MEETINGS)) {
+        static size_t s_last_count = (size_t)-1;
+        static bool   s_last_in_progress[32] = {};
+        app_state::MeetingList list = filtered_meetings();
+        bool changed = list.count != s_last_count;
+        for (size_t i = 0; !changed && i < list.count; ++i) {
+            changed = list.items[i].in_progress != s_last_in_progress[i];
+        }
+        if (changed) {
+            s_last_count = list.count;
+            for (size_t i = 0; i < list.count; ++i) s_last_in_progress[i] = list.items[i].in_progress;
+            g_force_rebuild = true;
+        }
+    }
+
     state_machine::evaluate();
 }
 
