@@ -55,11 +55,11 @@ Three vertical sections, centred. No transport buttons; no persistent volume sli
 
 Volume sensitivity: ~400 px swipe = full 0..100 range (firmware `V_SENS_NUM`/`V_SENS_DEN` in `screen_media_mode.cpp`). Swipe up = louder. Orion applies volume via OS API and writes back `Host Volume State`; Ori ignores incoming pushes while a swipe is in progress (drag-wins override — see `ble-protocol.md` §12).
 
-**Playtime progress bar (seek):** a 46 px overlay at the bottom of the art — track, accent playhead fill, thumb dot, current/duration timestamps — shown only when Orion reports `can_seek:true` with a valid duration (`MediaMetadata`'s `"c"`/`"o"`/`"d"` fields). Drag anywhere on it to scrub live; release emits `{op:"seek", arg:seconds}`. **Hidden by default** even when eligible — touching the art (tap, swipe, or a press on the bar itself) reveals it, and it hides itself again after **5 s** of no further touch on the art (`TL_AUTO_HIDE_MS`, `screen_media_mode.cpp`). Dragging past 5 s keeps resetting the countdown so it can't vanish mid-scrub. Becoming ineligible (track changes to non-seekable, or nothing playing) drops any pending reveal — a later eligible track always starts hidden again, never inheriting a stale "shown" state from an unrelated one.
+**Playtime progress bar (seek):** a 46 px overlay at the bottom of the art — track, accent playhead fill, thumb dot, current/duration timestamps — shown only when Orion reports `can_seek:true` with a valid duration (`MediaMetadata`'s `"c"`/`"o"`/`"d"`). Drag to scrub live; release emits `{op:"seek", arg:seconds}`. **Hidden by default** even when eligible — any touch on the art reveals it, hiding again after **5 s** of no further touch (`TL_AUTO_HIDE_MS`); dragging past 5 s keeps resetting the countdown. Becoming ineligible (non-seekable track, or nothing playing) drops any pending reveal — a later eligible track always starts hidden.
 
-**Tap is two-step once a track is seek-eligible:** the first tap on a hidden bar only reveals it (same as any other touch) — it does NOT also toggle play/pause. Only once the bar is already visible does a tap toggle playback (and, same as any touch, refresh the 5 s reveal countdown). This avoids the bar and a play/pause toggle both firing off the same single tap. Non-seekable tracks (bar never applies) are unaffected — tap toggles play/pause immediately, same as before this bar existed.
+**Tap is two-step once seek-eligible:** the first tap on a hidden bar only reveals it, without toggling play/pause; only once visible does a tap toggle playback (and refresh the reveal countdown) — avoids both firing off one tap. Non-seekable tracks are unaffected — tap toggles play/pause immediately.
 
-**Paused:** art dims to ~55% with centred play-triangle overlay — applies to both the gradient placeholder and the real decoded album-art image once one has loaded (they're separate layered objects; both must dim together, see `apply_paused_visual()`).
+**Paused:** art dims to ~55% with a centred play-triangle overlay, applied to both the gradient placeholder and the real album-art image (separate layered objects — both must dim together, `apply_paused_visual()`).
 
 **Nothing playing:** slot shows a muted dark radial gradient with the **Ori wordmark** centred. Title = "Nothing playing"; artist = em-dash. Gestures still emit commands (Orion may interpret a tap to wake/resume).
 
@@ -74,9 +74,9 @@ Centred, ~10 px below art. Single-line ellipsis only — no wrapping.
 
 Three icon-only square buttons, 72 px tall (was 82 px — shrunk to make room for the taller title/artist boxes above), 14 px gap, full row width (~152 px wide each in firmware). 8 px top padding, 10 px bottom padding. Each emits `KeyboardCommand{op:"shortcut", arg:1|2|3}`; Orion runs the configured action.
 
-**Icon assets are compiled into firmware flash.** Ori ships with a fixed set of icon glyphs. Orion's settings UI lets the user pick one per slot from that set and writes the selection to Ori as an icon token over **Shortcut Config** (`ble-protocol.md` §3/§12) — staged like Profile Info, but RAM-only and sent unconditionally on every sync, like Time Sync (no NVS, no hash, no manifest entry — see `ble-protocol.md` §6.0). Adding new icon types to the available set requires a firmware update — there is no runtime asset delivery path.
+**Icon assets are compiled into firmware flash.** Orion's settings UI lets the user pick one per slot and writes the selection to Ori as an icon token over Device Settings (`ble-protocol.md` §3/§12). Adding new icon types requires a firmware update — no runtime asset delivery path.
 
-**Unrecognized token → hide the slot.** If a token doesn't match any compiled-in icon (e.g. Orion and firmware drift out of sync on the supported set), Ori hides that slot's button entirely rather than showing a placeholder — the remaining valid slot(s) stay centred in the row. The sync itself doesn't reject unknown tokens; only rendering treats them as absent.
+**Unrecognized token → hide the slot.** A token not matching any compiled-in icon (Orion/firmware drift) hides that slot's button entirely rather than a placeholder — remaining valid slots stay centred. The sync itself doesn't reject unknown tokens; only rendering treats them as absent.
 
 Supported icon tokens (14 total):
 

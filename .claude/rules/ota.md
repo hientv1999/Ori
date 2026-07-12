@@ -114,20 +114,20 @@ There is **no "Firmware Install / Update now" gate** — the download flows stra
 
 ### Installing screen specifics (screen 2)
 
-`set_installing()` transforms the live download screen in place rather than building a new one, so the Updating→Installing transition is seamless:
-- **Title** retitled "Installing firmware" and pinned at the **same Y as the "Updating firmware" title** — the download title's laid-out Y is captured (`lv_obj_get_y` after `lv_obj_update_layout`) and the title is pinned there with `LV_OBJ_FLAG_IGNORE_LAYOUT` so hiding the ring doesn't shift it.
-- **Progress ring hidden** (`LV_OBJ_FLAG_HIDDEN`) — there's no live percentage during the flash commit.
-- **Instruction text** ("Screen goes dark for a few seconds — keep Ori plugged in. It restarts when done.") is taken out of the flex flow (`LV_OBJ_FLAG_IGNORE_LAYOUT`) and pinned to the **centre of the screen**, independent of the top title.
-- **Countdown bar** at the very bottom: a **6 px** (2× the 3 px Setup-Complete bar) accent strip (`COLOR_ELEV` track, `COLOR_ACCENT` indicator) that fills 0→100 linearly over `linger_ms`, so the user can see how long until the screen blanks. Mirrors the Setup-Complete countdown bar; created on the top-level screen and cleaned up with it.
+`set_installing()` transforms the live download screen in place (seamless Updating→Installing transition):
+- **Title** retitled "Installing firmware", pinned at the same Y as the download title (`LV_OBJ_FLAG_IGNORE_LAYOUT` so hiding the ring doesn't shift it).
+- **Progress ring hidden** — no live percentage during the flash commit.
+- **Instruction text** ("Screen goes dark for a few seconds — keep Ori plugged in. It restarts when done.") pinned to screen centre, independent of the title.
+- **Countdown bar** at the bottom: 6 px accent strip filling 0→100 over `linger_ms`, mirroring the Setup-Complete countdown bar.
 
 ### Behaviour
 
 - All touch inert — mode-toggle and long-press triggers do nothing.
-- **Meeting-check tick paused.** The 1 s state-machine tick (meeting expiry / 5-minute alert / `evaluate()`) is paused for the whole update via `lv_timer_pause()` in `on_ota_begin`, resumed in `on_reconnect_end` only if the update fails (success reboots). No meeting/alert logic runs or touches state while the OTA owns the device. (Other timers are screen-local — the status bar, profile card, and any countdown modal are deleted when the OTA screen replaces the runtime screen, cleaning up their timers.)
-- **BLE quiesced before the flash commit** (`ble_manager::quiesce_for_commit()` — stops advertising + `NimBLEDevice::deinit`), so nothing BLE-side executes or triggers an NVS/flash write while `Update.write()` has the cache disabled.
-- **BLE writes NACKed** for all data characteristics (Profile Info, Photo, Meeting List, Time Off Entry, Factory Reset Command) while `is_active()` — Orion retries after reboot.
+- **Meeting-check tick paused** for the whole update (`lv_timer_pause()` in `on_ota_begin`), resumed in `on_reconnect_end` only on failure (success reboots). Other timers are screen-local and cleaned up when the OTA screen replaces the runtime screen.
+- **BLE quiesced before the flash commit** (`ble_manager::quiesce_for_commit()` — stops advertising + `NimBLEDevice::deinit`), so nothing BLE-side triggers an NVS/flash write while `Update.write()` has the cache disabled.
+- **BLE writes NACKed** for all data characteristics while `is_active()` — Orion retries after reboot.
 - **`Keyboard Command` notifies suspended** for the duration.
-- Download phase is interruptible (unplug = partial image discarded, active slot untouched, no resume — Orion restarts from `BEGIN`). Once the image verifies and the Installing linger starts, the commit runs through to reboot.
+- Download phase is interruptible (unplug = partial image discarded, no resume — restart from `BEGIN`). Once the image verifies and the Installing linger starts, the commit runs through to reboot.
 
 ### Serial test commands (`ORI_DEBUG_SERIAL`)
 
@@ -148,13 +148,13 @@ USB CDC OTA does **not** require a BLE bond — physical cable access is suffici
 
 ## Version & rollback policy
 
-- **The only version rejection is claim-vs-binary mismatch.** The version check compares two inputs and rejects only when they DISAGREE:
+- **The only version rejection is claim-vs-binary mismatch.** Compares two inputs, rejects only when they DISAGREE:
   1. *BEGIN claim:* the `fw_version` string Orion declares at `BEGIN` (required; stored as `g_claimed_version`).
-  2. *Binary truth:* every Ori image embeds a contiguous marker `"OriFwVer=<version>"` (= `ORI_FW_VERSION`). After the hash verifies, `ota_receiver` scans the staged PSRAM image for this marker (`g_ori_fw_marker` + `extract_image_version()` in `firmware/src/ota_receiver.cpp`).
+  2. *Binary truth:* every Ori image embeds a contiguous marker `"OriFwVer=<version>"` (= `ORI_FW_VERSION`). After the hash verifies, `ota_receiver` scans the staged PSRAM image for it (`g_ori_fw_marker` + `extract_image_version()` in `firmware/src/ota_receiver.cpp`).
 
-  If the binary's version ≠ the BEGIN claim (or the marker is absent → can't verify) → `FAILED { "version_mismatch" }`. Otherwise the update proceeds and the binary's version is shown on the post-reboot ack. This is a **consistency/integrity** check that Orion labelled the image honestly — it does NOT block any particular version.
-  - The marker must be a single `char[]` (one string literal) and must be *referenced* somewhere (e.g. the boot log in `ota_receiver::init()`), or `-O2` ICF / `--gc-sections` will split or drop it. The scanner's search pattern is XOR-obfuscated so the scanner's own copy can't be a false match.
-  - Why not `esp_app_desc.version`: on this precompiled Arduino core it's the core's git hash (`arduino-lib-builder`), not ours.
+  Mismatch or absent marker → `FAILED { "version_mismatch" }`. Otherwise the update proceeds and the binary's version shows on the post-reboot ack. Consistency/integrity check only — does NOT block any particular version.
+  - The marker must be a single referenced `char[]` literal (e.g. logged in `ota_receiver::init()`), or `-O2` ICF/`--gc-sections` will split or drop it. The scanner's search pattern is XOR-obfuscated so the scanner's own copy can't be a false match.
+  - Not `esp_app_desc.version`: on this precompiled Arduino core it's the core's git hash, not ours.
 - **Downgrades and same-version re-installs are allowed.** There is **no** `already_current` reject and **no** semver "is-newer" gate. Re-flashing the running version, or an older one, is permitted as long as the BEGIN claim matches the binary. Do not add anti-rollback enforcement (eFuse secure-version, etc.).
 - **Integrity, not authenticity.** The `sha256` check proves the bytes are intact; the binary marker proves the label matches the binary. Neither proves origin — a malicious binary can stamp any version and a matching claim. True authenticity needs Secure Boot.
 - **Firmware signing**: if/when "only our firmware runs" is enforced, the chosen path is **ESP32-S3 Secure Boot v2 (+ Flash Encryption)** at factory provisioning — *not* an app-level signature check in the OTA receiver (a UART reflash bypasses app-level checks). Deferred to M8. Configure Secure Boot **without** anti-rollback, consistent with the downgrade-allowed policy above.
@@ -177,11 +177,11 @@ If USB CDC won't enumerate or won't respond to `BEGIN`: open the enclosure, conn
 
 ## Orion (sender) implementation guide
 
-This is the end-to-end algorithm `orion-sync` implements to push an update. It is the authoritative how-to for the host side; the firmware side is in `ota_receiver.cpp`. A working reference sender lives in `tools/mock_orion_ota.py`, which also scripts 9 failure-mode scenarios (broken cable / wrong version / oversized image / corrupted hash / truncated transfer / declared-size overflow / concurrent BEGIN / malformed BEGIN, plus the happy path) against the reason table in step 6 below — useful as an end-to-end checklist for Orion's error handling.
+This is the end-to-end algorithm `orion-sync` implements to push an update. Authoritative how-to for the host side; the firmware side is in `ota_receiver.cpp`. A working reference sender lives in `tools/mock_orion_ota.py`, which also scripts 9 failure-mode scenarios (broken cable / wrong version / oversized image / corrupted hash / truncated transfer / declared-size overflow / concurrent BEGIN / malformed BEGIN, plus the happy path) against the reason table in step 6 — a useful checklist for Orion's error handling.
 
 ### 0. Read the .bin (before opening the port)
 
-1. **Extract the firmware version from the binary** — do NOT hardcode or guess it. Scan the image bytes for the ASCII marker `OriFwVer=` and read the null-terminated version that follows (e.g. `OriFwVer=1.2.3\0` → `"1.2.3"`). This is the value sent as `fw_version` in `BEGIN`; the device re-reads the *same* marker from the staged image and **rejects with `version_mismatch` if Orion's claim disagrees**. If the marker is absent, the file is not a valid Ori image — abort with a clear error.
+1. **Extract the firmware version from the binary** — never hardcode/guess. Scan for the ASCII marker `OriFwVer=` and read the null-terminated version after it (e.g. `OriFwVer=1.2.3\0` → `"1.2.3"`) — this is the `fw_version` sent in `BEGIN`; the device re-reads the same marker from the staged image and **rejects with `version_mismatch` if Orion's claim disagrees**. Absent marker = not a valid Ori image — abort.
    ```
    i = bytes.find(b"OriFwVer="); version = bytes[i+9 : bytes.index(0, i+9)]
    ```
@@ -191,19 +191,17 @@ This is the end-to-end algorithm `orion-sync` implements to push an update. It i
 
 ### 1. Open the port
 
-- Find Ori's CDC port (ESP32-S3 native USB, VID `0x303A`). If none: prompt *"Plug Ori into this PC, then try again."* If more than one port matches the VID (e.g. another ESP32-S3 dev board attached), don't guess — list the candidates and ask the user to pick one.
+- Find Ori's CDC port (ESP32-S3 native USB, VID `0x303A`). If none: prompt *"Plug Ori into this PC, then try again."* If more than one port matches the VID, don't guess — list candidates and ask the user to pick.
 - Open it and **assert DTR = true** (HWCDC only transmits when DTR is asserted), RTS = false. Baud is irrelevant over USB CDC.
 
 ### 2. Frame reader — robust to log noise (production vs dev)
 
-Every device→host response is a framed message (`§ Framing`): magic `0x4F54`, op, uint24-LE length, payload. The reader must:
+Every device→host response is a framed message (`§ Framing`): magic `0x4F54`, op, uint24-LE length, payload.
 
-- **Scan for the magic `0x4F54`**, then validate `op` is a known response op AND `payload_len ≤ a sane cap (e.g. 4 KB)` before accepting — this skips false-positive `"OT"` byte pairs.
-- **Never parse log text for state.** All state comes from frames (`READY` / `PROGRESS` / `VALIDATED` / `FAILED` / `REJECT`). Logs are diagnostics only.
+- **Scan for the magic `0x4F54`**, validate `op` is known AND `payload_len ≤` a sane cap (e.g. 4 KB) before accepting — skips false-positive `"OT"` byte pairs.
+- **Never parse log text for state.** All state comes from frames (`READY`/`PROGRESS`/`VALIDATED`/`FAILED`/`REJECT`). Logs are diagnostics only.
 
-> **Production vs development — important.** In production the firmware's USB logging is **disabled**, so the CDC port carries **only OTA frames** (a clean stream). In development (`ORI_DEBUG_SERIAL` / `Serial.printf`) the port also carries log text and boot logs interleaved between frames. The same magic-scanning reader handles **both**: it ignores the (absent-in-production) log bytes and locks onto frames. Two rules follow:
-> - Orion must **not depend on any log line** being present (there are none in production) — e.g. confirm the post-update version over BLE (Firmware Revision String characteristic), never by reading a boot-log string.
-> - Orion must **not be confused by** log bytes when they *are* present (dev) — hence the magic-scan + validation. Device→host frames are written atomically by the firmware, so a log line can only appear *between* frames, never inside one.
+> **Production vs development.** Production disables USB logging, so the CDC port carries only OTA frames. Dev builds (`ORI_DEBUG_SERIAL`) interleave log/boot text between frames. The same magic-scanning reader handles both — it ignores absent-in-production log bytes and locks onto frames written atomically (a log line can only appear *between* frames, never inside one). Consequently: Orion must not depend on any log line being present (confirm post-update version over BLE, never a boot-log string), and must not be confused by log bytes when present (dev).
 
 ### 3. BEGIN handshake
 

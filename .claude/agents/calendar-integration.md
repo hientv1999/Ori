@@ -31,7 +31,7 @@ Before doing implementation work in this agent, confirm the source decision with
 Always consult:
 - `.claude/rules/pc-app.md` — what data Orion pushes to Ori (defines what you must produce)
 - `.claude/rules/meeting-list.md` — sort, overlap, lifecycle rules (so your normalized output makes sense to the device)
-- `.claude/memory.md` — fixed constants (work hours window, etc.)
+- `.claude/memory.md` — fixed constants
 
 ## Interfaces with other agents
 

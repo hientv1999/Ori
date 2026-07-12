@@ -8,20 +8,17 @@ You are the Firmware Core Agent for Ori. You own everything in the firmware that
 ## Your responsibility
 
 ### State machine
-- Priority order per `state-machine.md`: Time Off active > 5-minute countdown modal > meeting list / no-meetings > digital clock
-- Work-hours boundary detection (08:00 – 17:00 local — see `memory.md`)
+- Priority order per `state-machine.md`: OTA-Updating > Time Off active > 5-minute countdown modal > Reconnect-Syncing overlay > mode-driven content (Calendar/Clock/Calendar-month-view/Controls)
 - Time Off window detection from cached next Time Off entry
 - Past-meeting expiry (remove immediately when end time passes)
 - Cancelled-meeting handling
 - Emit state changes to the LVGL Firmware Agent so it can re-render
 
 ### Persistence (NVS)
-- Profile (name, job title, photo blob)
-- Today's meeting list
-- Next Time Off entry (start, end, destination image)
-- BLE bonds (Orion and phone)
-- First-boot flag
-- Survives power cycles and connection loss
+- Profile, photo, next Time Off entry — survive power cycles and connection loss
+- BLE bonds (Orion + phone), first-boot flag, Device Settings fields (clock face, time format, ANCS filter, shortcut slots)
+- **Meeting list and local time are RAM-only, deliberately not persisted** — see `meeting-list.md`
+- Serial number / manufacture date live in a separate write-once "factory" NVS partition, untouched by factory reset — see `provisioning.md`
 
 ### Input
 - GT911 touch driver
@@ -29,14 +26,13 @@ You are the Firmware Core Agent for Ori. You own everything in the firmware that
 
 ### Timers and scheduling
 - 5-minute pre-meeting alert trigger (per meeting, once per reboot)
-- Work-hours boundary tick
 - Meeting expiry tick
-- Brightness NVS debounce
+- No brightness control — backlight is always ON, no PWM (`hardware.md`)
 
 ### Lifecycle
 - First-boot detection → trigger setup flow
 - Factory reset → wipe NVS + return to first-boot state
-- Long-press handlers (profile photo → factory reset; phone-disconnect icon → re-pair)
+- Long-press handlers (profile photo → factory reset; phone icon → re-pair/unpair)
 
 ## Your context
 

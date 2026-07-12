@@ -50,7 +50,11 @@ function back(){
   if(el){el.classList.remove('show');el.style.zIndex='';}
   if(stack.length){const prev=$(stack[stack.length-1]);if(prev)prev.classList.remove('behind');}
 }
-document.addEventListener('keydown',e=>{if(e.key==='Escape') backWithCheck();});
+document.addEventListener('keydown',e=>{
+  if(e.key!=='Escape') return;
+  if(closeTopOverlay()) return;
+  backWithCheck();
+});
 
 let _discardAction=null;
 function backWithCheck(){
@@ -216,6 +220,48 @@ function openModalFrom(toId){
   const from=currentOpenModal();
   if(from && from!==toId) switchModal(from,toId);
   else showModal(toId);
+}
+
+// Esc always closes whatever's on top the SAME way its own Close/Cancel/Back
+// button would — never a bare hideModal() — so dirty-state guards (discard-
+// changes prompt) and in-flight-transfer locks are respected identically to
+// a mouse click. Returns whether it handled anything, so the document
+// listener below falls through to backWithCheck() (screen-stack Back) only
+// when no modal/overlay was open. m-crop is checked first since it isn't a
+// .modal-bg (crop-ovl has its own layer) and can sit on top of one.
+function closeTopOverlay(){
+  if($('m-crop').classList.contains('show')){ cancelCrop(); return true; }
+  const id=currentOpenModal();
+  if(!id) return false;
+  switch(id){
+    case 'm-ori-info': closeOriInfoModal(); break;
+    case 'm-iphone-info': hideModal('m-iphone-info'); break;
+    case 'm-ancs-list': ancsListBack(); break;
+    case 'm-ancs-detail': ancsBackToList($('ancsDetailCard').dataset.bucket); break;
+    case 'm-discard': hideModal('m-discard'); break; // "Keep editing" — Esc must never fire the destructive Discard action
+    case 'm-reset': hideModal('m-reset'); break;
+    case 'm-unpair-phone': hideModal('m-unpair-phone'); break;
+    case 'm-pairfail': suPairFailClose(); break;
+    case 'm-pair':
+      // Only phase 1 (Enter Passkey) has a Cancel button — phases 2/3
+      // (Connecting/Syncing) are non-dismissable, same as they render with
+      // no Cancel button at all.
+      if($('sp1').style.display!=='none') suCancelPairing();
+      break;
+    case 'm-fw':
+      // fw-i (installing) is non-dismissable once accepted (ota.md) — no
+      // Cancel button renders there either.
+      if($('fw-i').style.display==='none') hideModal('m-fw');
+      break;
+    case 'm-orion-update':
+      // ou-i (installing) is non-dismissable; ou-c (Cancel) and ou-d
+      // (Later) both just close the modal.
+      if($('ou-i').style.display==='none') hideModal('m-orion-update');
+      break;
+    case 'm-incoming-call': hideModal('m-incoming-call'); break;
+    default: hideModal(id);
+  }
+  return true;
 }
 
 let fwAvail=false;

@@ -19,8 +19,9 @@ Two independent BLE links, simultaneously:
 - Report Orion-synced vs. BLE-only sub-state to the core
 
 ### 2. Phone link (ANCS client)
-- BLE client to the phone's Apple Notification Center Service (or equivalent on Android via GATT)
-- Notification icons only — never content, text, or counts
+- BLE client to the iPhone's Apple Notification Center Service — iPhone only, ANCS is Apple-proprietary; Android is explicitly out of scope
+- On-device status bar: notification icons only — never content, text, or counts
+- Full notification content (title/body) and call state also relay to Orion over chars 16–18, filter-gated identically to the status bar — see `ble-protocol.md` §13
 - Report icon state changes to the core for status bar rendering
 - Independent of the Orion link's state
 
