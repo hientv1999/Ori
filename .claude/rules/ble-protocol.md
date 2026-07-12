@@ -16,7 +16,7 @@ This document defines the single BLE GATT contract between Ori and the Orion PC 
 | **Ori (Arduino on ESP32-S3)** | GATT server + Advertiser. Hosts every characteristic below. |
 | **Orion** — one Tauri v2 (Rust) codebase, both Windows and macOS (`memory.md`) | GATT client via `btleplug`. The only side that can issue Read/Write requests. |
 
-LE Secure Connections with Passkey Entry (6-digit numeric, MITM-protected) is mandatory. After first pairing the device is bonded; subsequent reconnects are silent. Passkey confirmation itself is handled by the OS's own Bluetooth pairing UI on both platforms, not a custom Orion screen — see §6.1 and `memory.md`'s pairing-UX decision.
+LE Secure Connections with Passkey Entry (6-digit numeric, MITM-protected) is mandatory. After first pairing the device is bonded; subsequent reconnects are silent. On Windows, Orion owns the passkey-entry UI (custom digit-box modal driving WinRT's `DeviceInformationCustomPairing`) rather than the OS's default pairing flyout — see §6.1 and `memory.md`'s pairing-UX decision. macOS has no equivalent app-level pairing hook and is deferred until that build starts.
 
 ---
 
@@ -88,7 +88,7 @@ Orion uses the mode flag to detect "Ori factory-reset since last bond" without c
 
 ## 3. Service and characteristics
 
-**One service, fifteen characteristics** — plus a separate BLE SIG standard service for firmware version (§3.1).
+**One service, eighteen characteristics** — plus a separate BLE SIG standard service for firmware version (§3.1).
 
 ```
 Ori Sync Service:  6F726900-0000-4F72-9F00-000000000000
@@ -107,14 +107,19 @@ Each characteristic UUID replaces bytes 4–5 of the base with the offset below.
 | 7 | Sync Control | `0007` | Write, Notify | Orion ↔ Ori | Yes |
 | 8 | **Device Command** | `0008` | Write (response) | Orion → Ori | Yes |
 | 9 | Sync Manifest | `0009` | Write, Notify | Orion ↔ Ori | Yes |
-| 10 | **Keyboard Command** | `000A` | Notify | Ori → Orion (notify) | Yes |
+| 10 | **Keyboard Command** | `000A` | Read, Notify | Ori → Orion (notify) | Yes |
 | 11 | **Host Volume State** | `000B` | Read, Write (response) | Orion → Ori (+ Orion reads) | Yes |
 | 12 | **Media Metadata** | `000C` | Write, Notify | Orion → Ori | Yes |
 | 13 | **Media Album Art** | `000D` | Write (no response) | Orion → Ori (chunked) | Yes |
 | 14 | **Device Settings** | `000E` | Read, Write (response) | Orion → Ori (+ Orion reads) | Yes |
 | 15 | **Phone Bond Status** | `000F` | Read, Notify | Ori → Orion (notify) | Yes |
+| 16 | **ANCS Notification** | `0010` | Read, Notify | Ori → Orion (notify) | Yes |
+| 17 | **ANCS Call State** | `0011` | Read, Notify | Ori → Orion (notify) | Yes |
+| 18 | **ANCS Notification Action** | `0012` | Write (response) | Orion → Ori | Yes |
 
-Reads/writes on encrypted characteristics over an unencrypted link return `INSUFFICIENT_AUTHENTICATION`.
+Reads/writes on encrypted characteristics over an unencrypted link return `INSUFFICIENT_AUTHENTICATION`. Chars 16–18 are covered in full in §13.
+
+**Every notify characteristic MUST also declare the base `Read` property (chars 1, 10, 15, 16, 17 above all do), even though Orion only ever subscribes and never reads chars 10/16/17.** This is a hard Windows requirement, not a style choice: the WinRT GATT stack silently refuses to raise `ValueChanged` (i.e. delivers no notifications) for a characteristic that lacks `Read` — `subscribe()` still returns success and the CCCD write still ACKs, so the failure is invisible except that notifications never arrive. Found 2026-07-11: chars 10/16/17 were originally `Notify` + MITM only, and every notification Ori sent on them (confirmed leaving the firmware, `rc=0`) was dropped by WinRT before reaching Orion — the "PhoneBondStatus count is right but the notification list is empty" bug (char 15 has `Read`, so its count survived via the connect-time read). Adding `Read` (kept MITM-gated via READ_AUTHEN; the readable value is just the last-notified payload) fixed delivery. Do not remove `Read` from a notify characteristic to "tighten" it.
 
 ### 3.1 Device Information Service (BLE SIG standard — separate from Ori Sync Service)
 
@@ -272,14 +277,131 @@ DeviceSettings = {             // Orion → Ori, write (response). All fields op
 PhoneBondStatus = {            // Ori → Orion, notify + readable (CBOR)
   "b": bool,     // bonded.    true = iPhone NVS slot is occupied (a bond exists).
   "c": bool,     // connected. true = BLE link to iPhone is currently up.
-  "n": text      // name.      iPhone's GAP Device Name (e.g. "Xander's iPhone"),
+  "n": text,     // name.      iPhone's GAP Device Name (e.g. "Xander's iPhone"),
                  //            or "" when not connected / read failed. ≤ 63 UTF-8 bytes.
+  "m": uint,     // missed_calls.    live count of active ANCS notifications with
+                 //                  CategoryID MissedCall (2) that currently pass
+                 //                  `ancs_filter` (Device Settings "f", §6.4).
+  "u": uint,     // unread_messages. live count of active ANCS notifications with
+                 //                  CategoryID Social (4) — ANCS' closest category
+                 //                  to "message" apps (Messages/WhatsApp/etc. all
+                 //                  report Social) — that currently pass `ancs_filter`.
+  "t": uint,     // total_notifications. live count of active ANCS notifications
+                 //                      in every OTHER category (excluding calls,
+                 //                      which never count here — see below) that
+                 //                      currently pass `ancs_filter` — excludes
+                 //                      whatever's already counted in "m"/"u" so
+                 //                      the three counts are mutually exclusive
+                 //                      (a missed call isn't double-counted under
+                 //                      the bell/notifications badge too).
+  "s": uint      // signal_bars. 0-4, bucketed from the live iPhone connection RSSI
+                 //              (NimBLEClient::getRssi() / ble_gap_conn_rssi — a
+                 //              real per-connection reading, not a stale scan-time
+                 //              value, since Ori holds this link directly).
 }
-// Ori notifies Orion on every iPhone state change: bond formed, connected
-// (reconnect or first bond), disconnected (plain disconnect or after wipe).
-// Orion reads on (re)connect to recover initial state without waiting for a
-// notify. Value is always kept current; the stored characteristic value equals
-// the last-notified state.
+// "m"/"u"/"t" are filtered through the SAME `ancs_filter` gate as the
+// AncsNotification relay (chars 16–17, §13's `passes_current_filter()` —
+// not a second implementation), and exclude calls entirely (INCOMING_CALL /
+// ACTIVE_CALL never counted here — they relay exclusively via AncsCallState,
+// same exclusion the relay and the on-device drill-down apply). This keeps
+// Orion's badge counts and its own drill-down list (fed by that same relay)
+// always in agreement, and means a filter change (Device Settings "f") is
+// immediately followed by an updated PhoneBondStatus notify
+// (`ancs_client::set_filter()` calls `push_phone_stats()`), not just on the
+// next queue event. Ori's own on-device tile counts and drill-down list
+// (`ancs_client::phone_stats()` / `list_bucket_groups()`) apply the SAME
+// gate — every surface counts exactly what its list shows (policy changed
+// 2026-07-11; the on-device drill-down previously bypassed the filter).
+// "m"/"u"/"t"/"s" are always 0 when "c" is false — nothing left to verify once
+// the link drops (same policy as Presence/Weather, §6.4). Ori notifies Orion
+// on every iPhone state change (bond formed, connected, disconnected) AND
+// whenever the notification counts or signal bucket change while connected
+// (ancs_client, on every ANCS queue change, filter change, or a 5 s RSSI poll)
+// — the stats fields are not staged through §6.0's BEGIN/END pipeline, same
+// as the rest of this characteristic. Orion reads on (re)connect to recover
+// initial state without waiting for a notify. Value is always kept current;
+// the stored characteristic value equals the last-notified state.
+
+AncsNotification = {          // Ori → Orion, notify (char 0010) — see §13
+  "o": "add" | "remove" | "clear",  // op. "add" covers both a genuinely-new
+                          // notification AND an ANCS Modified event (Orion
+                          // replaces its stored copy in place, keyed by "u");
+                          // "remove" carries only "u" — every other field is
+                          // absent. "clear" carries no other fields at all —
+                          // wipe the entire local mirror (see §13's filter-
+                          // change handling: firmware doesn't track which
+                          // uids it previously relayed, it just sends
+                          // "clear" then re-sends "add" for everything that
+                          // currently passes the new filter).
+  "u": uint,              // uid. ANCS notification UID — stable identity used
+                          // for row/detail keying and as the Action target
+                          // (char 0012). Absent/ignored for "clear".
+  "k": text,              // icon_token. "add" only. Same token vocabulary as
+                          // firmware's ancs_icons.h (`firmware.md`'s list) —
+                          // Orion maps it to the identical icon Ori's own status
+                          // bar shows. "" / unrecognised → category fallback glyph.
+  "c": uint,              // category. "add" only. AncsCategory, 0-12 (§13).
+  "a": text,              // app. "add" only. Display name, e.g. "Gmail".
+  "t": text,              // title. "add" only. Sender / notification title.
+  "b": text,              // body. "add" only. Message preview — short by design
+                          // (§10 cap); full content stays phone-only, same as
+                          // Ori's own on-device overlay's 3-line clip.
+  "e": uint,              // recv_epoch. "add" only. Unix epoch the notification
+                          // arrived (0 = unknown) — Orion derives its own
+                          // "X min ago" from this rather than a pre-formatted string.
+  "p": text,              // pos_label. "add" only. ANCS PositiveActionLabel;
+                          // "" = no positive action (never fabricated by Orion —
+                          // ble-protocol.md's existing "don't hardcode" rule for
+                          // action button text applies here at the source).
+  "n": text,              // neg_label. "add" only. ANCS NegativeActionLabel.
+  "g": bool,              // has_neg_action. "add" only. EventFlags NEGATIVE_ACTION bit.
+  "s": bool               // silent. "add" only. EventFlags SILENT bit.
+}
+
+AncsCallState = {             // Ori → Orion, notify (char 0011) — see §13
+  "st": uint,   // state. 0 = none/ended, 1 = ringing, 2 = active.
+  "u": uint,    // uid. the call's ANCS UID (0 when st == 0).
+  "e": uint,    // elapsed_s. only meaningful when st == 2 — seconds since answered,
+                // so Orion's timer resumes correctly after a reconnect mid-call
+                // instead of restarting at 00:00.
+  "a": text,    // app. caller-identity fields, populated for st==1/2, "" for st==0
+                // (nothing to show once a call ends) — same wire caps as
+                // AncsNotification's "a"/"t"/"p"/"n" (§10; a caller name is
+                // functionally a notification title, same size budget).
+                // display_name, e.g. "Phone".
+  "t": text,    // title. caller name/number.
+  "p": text,    // pos_label. ANCS PositiveActionLabel; "" once active (iOS drops
+                // the answer action once a call is picked up — that transition
+                // is how Ori itself tells "ringing" from "on call").
+  "n": text,    // neg_label. ANCS NegativeActionLabel (Decline while ringing,
+                // Hang Up / End once active — whatever iOS actually labelled it,
+                // never fabricated by Orion).
+  "g": bool,    // has_neg_action.
+  "k": text     // icon_token. calling app's icon token, SAME vocabulary as
+                // AncsNotification's "k" (ancs_icons.h / §13's icon list),
+                // populated for st==1/2, "" for st==0. Lets Orion render the
+                // real calling-app icon (Viber/Phone/…) for the call — in its
+                // incoming/in-call view AND its header call chip — instead of a
+                // generic call glyph; "" / unrecognised → category call glyph
+                // fallback, same as AncsNotification. Calls carry no char-0010
+                // payload (§13), so this is the ONLY source of a call's icon.
+}
+
+AncsNotificationAction = {    // Orion → Ori, write (response) (char 0012) — see §13
+  "u": uint,    // uid. target notification (or call) UID.
+  "a": uint     // action. 0 = Positive, 1 = Negative — ANCS PerformNotificationAction.
+                // 0 → ancs_client::answer_notification(). 1 → the SAME choice
+                // Ori's own on-device swipe makes (modal_ancs_list.cpp's
+                // commit_row_delete): dismiss_notification() (send the ANCS
+                // Negative) when the notification HAS a negative action, else
+                // drop_notification() (remove from Ori's queue locally, no
+                // ANCS action). Sending a Negative to a notification that has
+                // none is a no-op the phone may answer by re-asserting the
+                // notification (Modified/Added), which bounces the queue +
+                // PhoneBondStatus count straight back — so a plain "clear this
+                // from my list" must NOT hit the phone. NACK_CBOR_DECODE (via
+                // SyncControl notify, reused) if "u" is no longer live.
+}
 
 ```
 
@@ -561,14 +683,27 @@ There is no wire-level protocol version negotiation and no compatibility gate �
 | `DeviceSettings.temperature` | int −40…140 (unit declared by `"u"` — see §4) |
 | `DeviceSettings.temperature_unit` | uint 0–1 |
 | `PhoneBondStatus.name` | ≤ 63 UTF-8 bytes (firmware `g_phone_name[64]` minus null terminator) |
+| `PhoneBondStatus.missed_calls/unread_messages/total_notifications` | uint 0–255 (capped at `MAX_ANCS_NOTIFICATIONS` = 50 in practice) |
+| `PhoneBondStatus.signal_bars` | uint 0–4 |
 | Unpair Phone Command | exactly 4 bytes (0x55 0x4E 0x50 0x52) |
+| `AncsNotification.icon_token` | ≤ 24 UTF-8 bytes (longest known firmware token, `microsoft_authenticator`, is 23) |
+| `AncsNotification.app` | ≤ 24 UTF-8 bytes |
+| `AncsNotification.title` | ≤ 32 UTF-8 bytes, truncated on a UTF-8 boundary past that |
+| `AncsNotification.body` | ≤ 48 UTF-8 bytes, truncated past that — deliberately short; see §13 |
+| `AncsNotification.pos_label` / `neg_label` | ≤ 12 UTF-8 bytes each (real ANCS action labels are short standard strings) |
+| `AncsNotification.category` | uint 0–12 |
+| `AncsCallState.state` | uint 0–2 |
+| `AncsCallState.icon_token` | ≤ 24 UTF-8 bytes (same vocabulary + cap as `AncsNotification.icon_token`) |
+| `AncsNotificationAction.action` | uint 0–1 |
+
+`AncsNotification`'s caps are sized so a worst-case `"add"` (every optional field at max length) still fits one unchunked 238-byte fragment — see §13's "No chunking" note. If real-world CBOR encoding of max-length content ever measures over budget, tighten these caps further rather than adding chunking to a third notify-only characteristic.
 
 ---
 
 ## 11. Implementation owners
 
-- **`esp32-connectivity`** — GATT server, bonding, chunk reassembly, NVS persistence + hashes, factory-reset routine, ANCS client, chars 10–15. No HOGP.
-- **`orion-sync`** — scanning + connection lifecycle, bonding storage, hash-manifest delta, chunked writes, background keep-alive, USB CDC OTA path (`ota.md`), media-mode OS bridge (§12). Reads char 15 (Phone Bond Status) on connect and subscribes to notifies; writes Unpair Phone magic bytes via char 8 (Device Command) on user request; writes char 14 (Device Settings) on reconnect (shortcuts + presence + weather), on every Teams presence change, on every weather-API poll that detects a change, and when the user changes clock face, time format, or ANCS filter.
+- **`esp32-connectivity`** — GATT server, bonding, chunk reassembly, NVS persistence + hashes, factory-reset routine, ANCS client, chars 10–18. No HOGP. Owns the filter-gated relay logic (§13) — the SAME filter evaluation used for the on-device status bar, not a second implementation.
+- **`orion-sync`** — scanning + connection lifecycle, bonding storage, hash-manifest delta, chunked writes, background keep-alive, USB CDC OTA path (`ota.md`), media-mode OS bridge (§12), ANCS relay (§13). Reads char 15 (Phone Bond Status) on connect and subscribes to notifies; writes Unpair Phone magic bytes via char 8 (Device Command) on user request; writes char 14 (Device Settings) on reconnect (shortcuts + presence + weather), on every Teams presence change, on every weather-API poll that detects a change, and when the user changes clock face, time format, or ANCS filter. Subscribes to chars 16–17 (ANCS Notification, ANCS Call State) and maintains Orion's local notification mirror from them; writes char 18 (ANCS Notification Action) on Answer/Decline/End-call/Dismiss taps. Owns bringing the Orion window to the foreground on `AncsCallState{st:1}` (`orion-frontend` owns the in-app UI that follows).
 
 Pre-release: no need to bump a version header per change — just keep this file in sync with the firmware/Orion implementations as the contract evolves.
 
@@ -592,7 +727,7 @@ Orion is one Tauri v2 (Rust) codebase covering this contract on both platforms �
 
 ¹ Requires macOS Accessibility permission, granted on first launch; Controls-mode features stay inert until granted.
 
-Supported shortcut actions (configured per slot in Orion settings): `vol-mute`, `mic-mute`, `screenshot`, `lock-screen`, `favorite` (user-defined custom action), `calculator` (launch the OS calculator app). No dedicated `mute` op — mute is the `vol-mute` shortcut.
+Supported shortcut actions (configured per slot in Orion settings): `vol-mute`, `mic-mute`, `screenshot`, `lock-screen`, `favorite-1`/`favorite-2`/`favorite-3` (three independently-configured user-defined custom actions, each with its own keyboard combo — `pc-app.md`), `calculator` (launch the OS calculator app), `copy`/`cut`/`paste`/`undo`/`redo`/`save` (standard edit shortcuts — Ctrl+C/X/V/Z/Y/S — replayed via the same key-injection path as a recorded Favorite combo, just with a fixed combo instead of a user-recorded one). No dedicated `mute` op — mute is the `vol-mute` shortcut.
 
 ### Shortcut icon assignment — Orion → Ori
 
@@ -611,3 +746,38 @@ While a vertical swipe is active (≥ 25 px threshold): Ori ignores incoming `Ho
 
 - `HostVolumeState` is read on (re)connect so the next swipe starts from the correct level.
 - `MediaMetadata` and `MediaAlbumArt` are PSRAM-cached (not NVS); on reconnect Orion re-pushes the current track, or writes `MediaMetadata{title:"", artist:""}` if nothing is playing.
+
+---
+
+## 13. ANCS relay to Orion
+
+Orion's iPhone Info modal drill-down (missed calls / messages / other notifications, tap-to-read, incoming-call banner) needs individual notification content and live call state — none of which chars 1–15 carry (`PhoneBondStatus`, char `000F`, is aggregate counts only). Chars 16–18 close that gap. `esp32-connectivity` owns the firmware side; `orion-sync` owns the BLE central + local mirror; `orion-frontend` owns the UI those events drive.
+
+### Filter gates the relay, not just the display
+
+Every notification Ori tracks is gated by the **same** `ancs_filter` level (Device Settings `"f"`, §3/§6.4) that already governs the on-device status bar — evaluated once, centrally, before either display path runs. **`Disabled` means Orion receives nothing from chars 16–17 at all** — no `AncsNotification{op:"add"}`, no `AncsCallState` transitions, not even for an incoming call. Orion's "bring the window to front on a ringing call" behavior therefore needs no filter check of its own on the Orion side: it simply never fires, because the notify that would trigger it never arrives. `CallOnly`/`Important`/`All` narrow or widen exactly which notifications qualify, identically to what's already documented for the status bar (`ancs_client.h`).
+
+**Filter changes re-evaluate live state**, not just future events: when the user changes `"f"`, Ori reconciles Orion immediately by sending `AncsNotification{op:"clear"}` followed by `{op:"add"}` for every currently-queued notification that passes the new filter. This is deliberately a full clear-and-repopulate rather than a diff — firmware never has to track which uids it previously relayed (ordinary `queue_add`/`queue_remove` handling doesn't need that state either: relay `"add"` whenever a notification passes the filter at add/modify time, relay `"remove"` unconditionally on every `queue_remove` — a `"remove"` for a uid Orion never received is a harmless no-op on Orion's side). Orion's mirror always reflects "what the current filter allows," never a stale snapshot from connect time or from before the filter changed.
+
+### Notification lifecycle
+
+- `{op:"add"}` fires for a notification that (a) passes the current filter and (b) Ori hasn't already relayed — or that Ori HAS already relayed but iOS just sent a Modified event for (Orion replaces its stored copy in place, keyed by `"u"`; same semantics as firmware's own `app_state::set_ancs_detail`).
+- `{op:"remove"}` fires whenever a previously-relayed notification leaves Ori's queue for **any** reason: user reads/dismisses it on Ori's own screen, the iPhone clears it, an ANCS Removed event arrives, or the queue evicts it (FIFO overflow past `MAX_ANCS_NOTIFICATIONS`). If the notification was never relayed (the filter was already excluding it), Ori does not send `"remove"` either — Orion never knew about it.
+- **Orion must close a stale open detail.** If the notification currently shown in Orion's detail modal is removed, Orion closes the modal and returns to the drill-down list it was opened from (same path the UI's own action buttons already use to back out) — the content on screen no longer exists on the phone, so it can't stay open waiting for a tap that can no longer do anything.
+- Stacking (same app + title grouped into one row, §-equivalent of firmware's `app_state::ancs_collect_same_title`) is a display-only concept on both sides — the wire only ever carries individual notifications; both UIs group them locally.
+
+### Call takeover
+
+`AncsCallState{st:1}` (ringing) is Orion's cue to raise itself the same way clicking its taskbar entry would (Tauri: show the window, set focus, un-minimize if minimized) and present the incoming-call view — the point is the user notices a call is happening even if Orion was in the background. `{st:2}` (active — e.g. Orion reconnects mid-call) resumes the in-call view with its duration timer seeded from `"e"` instead of restarting at zero. `{st:0}` closes whatever call view is open (declined/ended from the phone itself, or the iPhone link dropping — `ancs_client`'s existing `close_all()` on iPhone disconnect covers the latter).
+
+### Actions
+
+Orion writes `AncsNotificationAction` only in direct response to a user tap (Answer / Decline / End call / Dismiss / Read all — one write per UID for a "Read all" on a stacked group, mirroring firmware's own `on_read()` loop in `modal_ancs_notification.cpp`). Ori performs the identical action an on-device tap would trigger — there is no separate "remote action" code path in `ancs_client`, just a second caller — including for a Negative (`"a":1`) the same **dismiss-vs-drop** choice the on-device swipe makes: `dismiss_notification()` (send the ANCS Negative) only when the notification has a negative action, else `drop_notification()` (local queue removal, no ANCS write). The **removal relay back to Orion is emitted from `queue_remove()` itself** — a single choke-point that fires `AncsNotification{op:"remove"}` (normal) or `AncsCallState{st:0}` (call) while the notification's category is still live — so it lands correctly no matter which path removed it (phone-side Removed event, local dismiss, or this Orion-relayed action). It must NOT be emitted from the phone's own Removed-event handler, which runs after a local dismiss has already dropped the category and would misfire. Orion does **not** update its own UI optimistically on write: it waits for the `AncsNotification{op:"remove"}` / `AncsCallState` transition the resulting ANCS event produces, same as every other state change in this protocol (§6 never assumes a write succeeded before the corresponding notify confirms it).
+
+### No chunking
+
+`AncsNotification`'s field caps (§10) are sized so a worst-case `"add"` fits one unchunked 238-byte fragment at MTU 247 — simpler than extending §5's chunking (built for Orion→Ori writes) to a new Ori→Orion notify direction, and consistent with this protocol's existing "tiny, frequent payloads" design philosophy (§4). The trade-off is a short body preview, not the full notification text — matching the limit Ori's own on-device overlay already imposes (3-line clip); full content is always available by checking the phone.
+
+### Icon tokens
+
+`"k"` reuses firmware's existing per-bundle icon token vocabulary (`ancs_icons.h`, `firmware.md`'s 49-token list) — Orion needs matching icon assets keyed by the same tokens (or a category-based fallback glyph, mirroring `ancs_icons::category_image()`) to stay visually consistent with what's shown on the device itself. Adding a new brand icon is a firmware change on Ori's side (`firmware.md`) plus an asset addition on Orion's, same two-sided update the device's own icon set already requires.

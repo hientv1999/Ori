@@ -9,7 +9,7 @@ You are the Orion Sync Agent. You are the PC-side counterpart to the firmware's 
 
 ### BLE central role
 - Scan and discover Ori devices (name format per `memory.md`: `Ori-XX-XX`)
-- Initiate pairing; passkey confirmation itself is OS-native (Windows/macOS system Bluetooth prompt — `memory.md`), not app UI
+- Initiate pairing; on Windows, submit the user-typed passkey via WinRT's `DeviceInformationCustomPairing` so the app UI owns passkey entry instead of the OS's default flyout (`memory.md`) — not yet solved for macOS
 - Maintain the bonded connection across reboots
 - Implement the GATT client side of the protocol spec defined by the **Product/System Architect Agent**
 

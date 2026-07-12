@@ -18,6 +18,9 @@
     <div class="group">
       <div class="group-title">Main Panel</div>
       <button data-page="main-connected" onclick="navTo('main-connected')">Connected</button>
+      <button data-page="main-connected-phone-off" onclick="navTo('main-connected-phone-off')">Connected · iPhone disconnected</button>
+      <button data-page="main-connected-no-phone" onclick="navTo('main-connected-no-phone')">Connected · no iPhone bonded</button>
+      <button data-page="main-connecting" onclick="navTo('main-connecting')">Connecting</button>
       <button data-page="main-syncing" onclick="navTo('main-syncing')">Syncing</button>
       <button data-page="main-disconnected" onclick="navTo('main-disconnected')">Disconnected</button>
     </div>
@@ -46,6 +49,10 @@
 
     <div class="group">
       <div class="group-title">Modals</div>
+      <button data-page="modal-ori-info" onclick="navTo('modal-ori-info')">Ori Info / Stats</button>
+      <button data-page="modal-iphone-info" onclick="navTo('modal-iphone-info')">iPhone Info / Stats</button>
+      <button data-page="modal-incoming-call" onclick="navTo('modal-incoming-call')">Incoming Call</button>
+      <button data-page="modal-on-call" onclick="navTo('modal-on-call')">On Call</button>
       <button data-page="modal-reset" onclick="navTo('modal-reset')">Reset</button>
       <button data-page="modal-pairing-fail" onclick="navTo('modal-pairing-fail')">Pairing Failed</button>
       <button data-page="modal-fw-available" onclick="navTo('modal-fw-available')">Ori Update Available</button>
@@ -141,12 +148,27 @@
       <div class="main-hdr">
         <div class="conn-area">
           <div class="h-dot on" id="hDot"></div>
-          <div class="h-device">
+          <div class="h-device" onclick="openOriInfoModal()">
             <div class="h-name" id="hName">Ori-XT-9F</div>
             <div class="h-state" id="hState">Connected</div>
           </div>
         </div>
         <div class="hdr-icons">
+          <!-- Read-only: Orion just observes Ori's iPhone/ANCS bond (char 000F) —
+               it doesn't manage phone pairing, that's done on Ori's own screen.
+               Hidden entirely when no iPhone has ever been bonded; neutral color
+               when connected, danger red when not (mirrors Ori's own status-bar
+               phone icon convention, screen-layout.md). -->
+          <div class="h-ico h-ico-lg" id="phoneIco" title="iPhone connected" onclick="openIphoneInfoModal()" style="display:none;">
+            <svg width="26" height="26" viewBox="0 0 20 20" fill="none">
+              <rect x="5" y="1.5" width="10" height="17" rx="2.2" stroke="currentColor" stroke-width="1.7" />
+              <path d="M8.5 15.5h3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+              <!-- Disconnected-only slash — shown/hidden via .phone-disconnected
+                   on the parent (see CSS); same neutral currentColor as the
+                   rest of the glyph, no red tint. -->
+              <line class="phone-slash" x1="2.5" y1="17.5" x2="17.5" y2="2.5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" />
+            </svg>
+          </div>
           <div class="h-ico" id="fwIco" title="Firmware up to date" onclick="clickFw()" style="display:none;">
             <svg width="14" height="14" viewBox="0 0 20 20" fill="none">
               <path d="M10 3v11M6 9.5l4-4 4 4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"
@@ -154,8 +176,8 @@
               <path d="M4 17h12" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" />
             </svg>
           </div>
-          <div class="h-ico" id="gearIco" title="Settings" onclick="show('s-settings')">
-            <svg width="15" height="15" viewBox="0 0 20 20" fill="none">
+          <div class="h-ico h-ico-lg" id="gearIco" title="Settings" onclick="show('s-settings')">
+            <svg width="30" height="30" viewBox="0 0 20 20" fill="none">
               <path d="M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z" stroke="currentColor" stroke-width="1.7" />
               <path
                 d="M17 10a7 7 0 01-.1.9l1.8 1.4a.5.5 0 010 .6l-1.7 3a.5.5 0 01-.6.2l-2.1-.9c-.5.4-1 .7-1.5.9l-.3 2.3a.5.5 0 01-.5.4H9a.5.5 0 01-.5-.4l-.3-2.3a6.6 6.6 0 01-1.5-.9l-2.1.9a.5.5 0 01-.6-.2l-1.7-3a.5.5 0 010-.6L4.1 11A7 7 0 014 10a7 7 0 01.1-.9L2.3 7.7a.5.5 0 010-.6l1.7-3a.5.5 0 01.6-.2l2.1.9c.5-.4 1-.7 1.5-.9L8.5 1.6A.5.5 0 019 1.2h2a.5.5 0 01.5.4l.3 2.3c.5.2 1 .5 1.5.9l2.1-.9a.5.5 0 01.6.2l1.7 3a.5.5 0 010 .6l-1.8 1.4c.1.3.1.6.1.9z"
@@ -671,7 +693,9 @@
                 <option value="screenshot">Screenshot</option>
                 <option value="lock-screen">Lock Screen</option>
                 <option value="calculator">Calculator</option>
-                <option value="favorite">Favorite</option>
+                <option value="favorite-1">Favorite 1</option>
+                <option value="favorite-2">Favorite 2</option>
+                <option value="favorite-3">Favorite 3</option>
               </select>
               <div class="fav-kbd" id="fav1">
                 <div class="kbd-recorder" id="kbdRec1" onclick="startKbdRecord(1)">
@@ -692,7 +716,9 @@
                 <option value="screenshot">Screenshot</option>
                 <option value="lock-screen">Lock Screen</option>
                 <option value="calculator">Calculator</option>
-                <option value="favorite">Favorite</option>
+                <option value="favorite-1">Favorite 1</option>
+                <option value="favorite-2">Favorite 2</option>
+                <option value="favorite-3">Favorite 3</option>
               </select>
               <div class="fav-kbd" id="fav2">
                 <div class="kbd-recorder" id="kbdRec2" onclick="startKbdRecord(2)">
@@ -713,7 +739,9 @@
                 <option value="screenshot" selected>Screenshot</option>
                 <option value="lock-screen">Lock Screen</option>
                 <option value="calculator">Calculator</option>
-                <option value="favorite">Favorite</option>
+                <option value="favorite-1">Favorite 1</option>
+                <option value="favorite-2">Favorite 2</option>
+                <option value="favorite-3">Favorite 3</option>
               </select>
               <div class="fav-kbd" id="fav3">
                 <div class="kbd-recorder" id="kbdRec3" onclick="startKbdRecord(3)">
@@ -920,6 +948,27 @@
 
     <!-- ── MODALS ── -->
 
+    <!-- Ori device info / stats -->
+    <div class="modal-bg" id="m-ori-info">
+      <div class="modal">
+        <div class="modal-title" id="oriInfoTitle">Ori-XT-9F</div>
+        <div class="prof-pres" style="justify-content:center;margin:6px 0 16px;">
+          <span class="p-dot available" id="oriInfoDot"></span>
+          <span id="oriInfoState">Connected</span>
+        </div>
+        <div class="pg-card" style="text-align:left;">
+          <div class="about-row"><span id="oriInfoFwLbl">Firmware</span><span id="oriInfoFw">1.2.3</span></div>
+          <div class="about-row"><span id="oriInfoAddrLbl">Address</span><span id="oriInfoAddr" style="font-family:ui-monospace,'Cascadia Mono',Consolas,monospace;font-size:12.5px;">58:96:1D:B1:14:2F</span></div>
+          <div class="about-row"><span id="oriInfoSigLbl">Signal</span><span class="sig-bars" id="oriInfoSigBars"><span></span><span></span><span></span><span></span></span></div>
+          <div class="about-row"><span id="oriInfoPhoneLbl">iPhone</span><span id="oriInfoPhone">Bonded</span></div>
+          <div class="about-row"><span id="oriInfoSyncLbl">Synced</span><span id="oriInfoSync">Just now</span></div>
+        </div>
+        <div class="btn-row" style="margin-top:16px;">
+          <button class="btn btn-sec btn-full" id="oriInfoCloseBtn" onclick="hideModal('m-ori-info')">Close</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Discard unsaved changes -->
     <div class="modal-bg" id="m-discard">
       <div class="modal">
@@ -940,6 +989,86 @@
         <div class="btn-row" style="margin-top:16px;">
           <button class="btn btn-sec btn-full" id="resetCancelBtn" onclick="hideModal('m-reset')">Cancel</button>
           <button class="btn btn-dng btn-full" id="resetBtn" onclick="doReset()">Reset</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- iPhone info / stats — tapping the header phone icon (while paired) opens
+         this instead of jumping straight to the Unpair confirm. Unpair here
+         routes to m-unpair-phone for the actual confirmation. -->
+    <div class="modal-bg" id="m-iphone-info">
+      <div class="modal">
+        <div class="modal-title" id="ipInfoTitle">Xander's iPhone</div>
+        <div class="prof-pres" style="justify-content:space-between;margin:6px 0 16px;">
+          <span style="display:flex;align-items:center;gap:5px;">
+            <span class="p-dot available" id="ipInfoDot"></span>
+            <span id="ipInfoState">Connected</span>
+          </span>
+          <span class="sig-bars" id="ipInfoSigBars"><span></span><span></span><span></span><span></span></span>
+        </div>
+        <div class="ip-stats">
+          <div class="ip-stat" id="ipInfoMissedTile">
+            <div class="ip-icon-wrap">
+              <svg id="ipInfoMissedIco" viewBox="0 0 24 24" fill="none">
+                <path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+              </svg>
+              <span class="ip-badge" id="ipInfoMissedBadge">2</span>
+            </div>
+          </div>
+          <div class="ip-stat" id="ipInfoUnreadTile">
+            <div class="ip-icon-wrap">
+              <svg id="ipInfoUnreadIco" viewBox="0 0 24 24" fill="none">
+                <path d="M6 4 H18 A3 3 0 0 1 21 7 V14 A3 3 0 0 1 18 17 L13 17 8 21 8 17 6 17 A3 3 0 0 1 3 14 V7 A3 3 0 0 1 6 4 Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/>
+              </svg>
+              <span class="ip-badge" id="ipInfoUnreadBadge">5</span>
+            </div>
+          </div>
+          <div class="ip-stat" id="ipInfoNotifTile">
+            <div class="ip-icon-wrap">
+              <svg id="ipInfoNotifIco" viewBox="0 0 24 24" fill="none">
+                <path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span class="ip-badge" id="ipInfoNotifBadge">7</span>
+            </div>
+          </div>
+        </div>
+        <div class="btn-row" style="margin-top:16px;">
+          <button class="btn btn-sec btn-full" id="ipInfoCancelBtn" onclick="hideModal('m-iphone-info')">Cancel</button>
+          <button class="btn btn-dng btn-full" id="ipInfoUnpairBtn" onclick="ipInfoToUnpair()">Unpair</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ANCS drill-down list — tap a call/message/notifications icon in the
+         iPhone Info modal. Orion-only (see Orion_UI_Prototype.js). -->
+    <div class="modal-bg" id="m-ancs-list">
+      <div class="modal ancs-list-modal">
+        <div class="modal-title" id="ancsListTitle">Notifications</div>
+        <div class="ancs-list-body" id="ancsListBody"></div>
+        <div class="btn-row" style="margin-top:14px;">
+          <button class="btn btn-sec btn-full" onclick="ancsListBack()">Back</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ANCS drill-down detail — same layout as Ori's own ANCS overlay
+         (Ori_UI_Prototype.html .ancs-detail). Content + action buttons are
+         built entirely in JS (openAncsDetail) since the button set/labels
+         are dynamic (pos_label/neg_label/has_neg_action from Ori), not a
+         fixed template. -->
+    <div class="modal-bg" id="m-ancs-detail">
+      <div class="modal" style="width:300px;" id="ancsDetailCard"></div>
+    </div>
+
+    <!-- Unpair iPhone -->
+    <div class="modal-bg" id="m-unpair-phone">
+      <div class="modal">
+        <div class="modal-title" id="unpairPhoneTitle">Unpair iPhone</div>
+        <div class="modal-body" id="unpairPhoneBody">Xander's iPhone will stop sharing notifications with Ori. Re-pair a phone from Ori's own screen when you're ready.</div>
+        <div class="btn-row" style="margin-top:16px;">
+          <button class="btn btn-sec btn-full" id="unpairPhoneCancelBtn" onclick="hideModal('m-unpair-phone')">Cancel</button>
+          <button class="btn btn-dng btn-full" id="unpairPhoneBtn" onclick="doUnpairPhone()">Unpair</button>
         </div>
       </div>
     </div>
@@ -1069,6 +1198,18 @@
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- Incoming call — auto-appears over whatever Orion is currently
+         showing the moment a call notification arrives (mirrors Ori's own
+         modal_incoming_call.cpp exactly: ringing banner -> Answer/Decline;
+         once answered, an in-call view with a live duration timer that
+         keeps running independent of the dialog's visibility). Placed last
+         in the DOM so it stacks above every other modal-bg. Content is
+         built entirely in JS (showIncomingCall/showActiveCall in
+         Orion_UI_Prototype.js), same as the ANCS detail modal. -->
+    <div class="modal-bg" id="m-incoming-call">
+      <div class="modal" style="width:300px;" id="callCard"></div>
     </div>
 
     <!-- ── CROP OVERLAY ── -->

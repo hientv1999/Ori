@@ -296,6 +296,21 @@ const SCREENS = {
     leftRender: () => meetingListHTML(TODAY_MEETINGS),
     modal: () => profileDetailHTML(),
   },
+  'iphone-info': {
+    label: 'Modal popup', title: 'iPhone info / stats',
+    desc: 'Tap the status-bar phone icon while an iPhone is paired. Shows the iPhone name, live connection status, missed-call and unread-message counts, total active notifications, and link signal — all derived from Ori\'s own ANCS client + the iPhone BLE link (Ori sees the iPhone directly, not Orion). "Unpair" hands off to the existing Unpair confirmation; "Cancel" dismisses. Replaces the old behaviour where tapping the phone icon jumped straight to Unpair. Tap a missed-call / unread-message / notification tile to drill in.',
+    statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
+    leftRender: () => meetingListHTML(TODAY_MEETINGS),
+    modal: () => iphoneInfoHTML(),
+  },
+  'ancs-list': {
+    label: 'Modal popup', title: 'ANCS drill-down list',
+    desc: 'Reached by tapping a missed-call / unread-message / notification tile in the iPhone Info modal. One row per app+title group (multiple notifications from the same sender stack into one row with a count badge); tap a row for its full detail. Swipe a row left past ~35% of its width to clear it (or its whole stacked group) — the row slides and fades with the drag, no revealed panel underneath. Same list + swipe-left design as the Orion PC app\'s own drill-down (PC_app/Orion_UI_Prototype.html) — this is the on-device mirror of it. "Back" returns to iPhone Info.',
+    statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
+    leftRender: () => meetingListHTML(TODAY_MEETINGS),
+    modal: () => ancsListModalHTML('unread'),
+    modalInit: () => ancsInitRowGestures(document.getElementById('ancsListBody')),
+  },
   'kbd-mode': {
     label: 'Primary state', title: 'Media mode (BLE bridge)',
     desc: 'Touch surface acts as a secondary controller for the paired PC — large album art (tap = play/pause, swipe ↔ = prev/next, swipe ↕ = volume with momentary HUD), now-playing title + artist, three user-assignable shortcut buttons (default mock: mute audio, mute mic, screen capture). All commands travel as custom BLE messages to Orion which bridges to OS APIs. Tap the toggle in the status bar to switch back to calendar mode.',
@@ -1041,6 +1056,360 @@ function unpairPhoneHTML() {
     '</div>';
 }
 
+// iPhone info / stats overlay — opened by tapping the (paired) status-bar phone
+// icon. Everything shown here is natively available to Ori: it holds the iPhone
+// BLE bond directly (name via GAP 0x2A00, link RSSI) and runs the ANCS client,
+// so missed-call / unread-message / notification counts come straight from
+// counting live ANCS notifications by category (MissedCall = category 2,
+// message apps under Social/Other, etc.). All mock in the prototype. "Unpair"
+// proceeds to the existing Unpair confirmation so the destructive action still
+// takes a deliberate second tap.
+const IPHONE_INFO = { name: "Hien Van's iPhone", connected: true, missed: 2, unread: 5, notifications: 7, signal: 4 };
+function sigBarsHTML(level) {
+  let s = '<span class="sig-bars">';
+  for (let i = 0; i < 4; i++) s += '<span class="' + (i < level ? 'active' : '') + '"></span>';
+  return s + '</span>';
+}
+function iphoneInfoHTML() {
+  const i = IPHONE_INFO;
+  // Disconnected: counts can't be verified without a live link, so every
+  // icon renders disabled/dimmed with no badge — a stale count is worse
+  // than no count (same "don't show what can't be verified" policy as
+  // presence/weather), but the icons themselves stay put for a stable,
+  // consistent layout rather than swapping in a placeholder text block.
+  // Tap-to-drill-down — clickable whenever connected, even at zero count
+  // (opens the empty state, e.g. "No calls", rather than being
+  // inert — a dimmed icon means "nothing here right now," not "you can't
+  // check"). Opens the ANCS list modal for that one category (see
+  // openAncsListModal below).
+  const stat = (icon, n, label, bucket) => {
+    const shown = i.connected ? n : 0;
+    const count = shown > 99 ? '99+' : shown;
+    const badge = (i.connected && shown > 0) ? '<span class="ip-badge">' + count + '</span>' : '';
+    const clickable = i.connected;
+    const attrs = clickable ? ' onclick="openAncsListModal(\'' + bucket + '\')"' : '';
+    return '<div class="ip-stat' + (clickable ? ' clickable' : '') + '" title="' + label + '"' + attrs + '>' +
+      '<div class="ip-icon-wrap">' +
+      '<svg class="' + (shown === 0 ? 'zero' : '') + '" viewBox="0 0 24 24"><use href="#' + icon + '"/></svg>' +
+      badge +
+      '</div></div>';
+  };
+  return '<div class="ip-card" onclick="event.stopPropagation()">' +
+    '<h3>' + escapeHtml(i.name) + '</h3>' +
+    '<div class="ip-status">' +
+    '<div class="ip-status-left"><span class="dot ' + (i.connected ? 'on' : 'off') + '"></span>' +
+    (i.connected ? 'Connected' : 'Disconnected') + '</div>' +
+    sigBarsHTML(i.connected ? i.signal : 0) +
+    '</div>' +
+    '<div class="ip-stats">' +
+    stat('i-call', i.missed, 'Calls', 'missed') +
+    stat('i-message', i.unread, 'Unread messages', 'unread') +
+    stat('i-bell', i.notifications, 'Notifications', 'other') +
+    '</div>' +
+    '<div class="actions">' +
+    '<button class="btn btn-tertiary" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn btn-danger" onclick="window._unpairPrev=\'meeting-list\';setScreen(\'unpair-phone\')">Unpair</button>' +
+    '</div>' +
+    '</div>';
+}
+
+// ── ANCS drill-down list — tap a missed-call / unread-message / notification
+// tile in the iPhone Info modal above to see the underlying notifications for
+// that one category, then tap a row for its detail. Same list + swipe-left-
+// to-delete design as the Orion PC app's own drill-down
+// (PC_app/Orion_UI_Prototype.js) — this is the on-device mirror of it.
+//
+// Mock data only for now — today's BLE contract (ble-protocol.md
+// PhoneBondStatus) only relays the four aggregate counts (m/u/t/s), not
+// individual notification content. Wiring this for real on-device needs the
+// same kind of ANCS-relay design already built for Orion (ble-protocol.md
+// §13), applied to Ori's own screen instead of relayed onward — a follow-up,
+// not part of this prototype pass.
+const ANCS_ICON_KIND = { missed: 'call', unread: 'message', other: 'bell' };
+const ANCS_LIST_TITLES = { missed: 'Calls', unread: 'Messages', other: 'Notifications' };
+const ANCS_LIST_EMPTY = { missed: 'No calls', unread: 'No messages', other: 'No notifications' };
+
+// Two "Alex Chen" entries share the same app+title to demonstrate stacking —
+// grouped into one row/detail, same rule as the status bar's own same-title
+// collapse (app_state::ancs_collect_same_title). Newest-first per bucket.
+// pos_label is "" wherever real ANCS wouldn't offer a positive action:
+// missed calls (iOS blocks ANCS peripherals from dialing out) and
+// message/other notifications (no composing/sending a reply, product-intent.md).
+const ANCS_LIST_MOCK = {
+  missed: [
+    { uid: 101, app: 'Phone', title: 'Mom', body: 'Missed call from Mom.', time: '10m ago', posLabel: '', negLabel: 'Clear', hasNegAction: true },
+    { uid: 102, app: 'Phone', title: 'Unknown', body: 'Missed call from an unknown number.', time: '2h ago', posLabel: '', negLabel: 'Clear', hasNegAction: true },
+  ],
+  unread: [
+    { uid: 201, app: 'Messenger', title: 'Alex Chen', body: 'Hey, are we still on for lunch? I was thinking that new place downtown.', time: '3m ago', posLabel: '', negLabel: 'Dismiss', hasNegAction: true },
+    { uid: 206, app: 'Messenger', title: 'Alex Chen', body: "Also, I found a great taco place if you're interested.", time: '15m ago', posLabel: '', negLabel: 'Dismiss', hasNegAction: true },
+    { uid: 202, app: 'WhatsApp', title: 'Sarah', body: 'Sent the files, check your email — let me know if anything looks off.', time: '25m ago', posLabel: '', negLabel: 'Dismiss', hasNegAction: true },
+    { uid: 203, app: 'Messages', title: '+1 (555) 019-2839', body: 'Your package has shipped and is on its way.', time: '1h ago', posLabel: '', negLabel: 'Dismiss', hasNegAction: true },
+    { uid: 204, app: 'Messenger', title: 'Design Team', body: "Priya: updated the mockups based on yesterday's feedback.", time: '2h ago', posLabel: '', negLabel: 'Dismiss', hasNegAction: true },
+  ],
+  other: [
+    { uid: 301, app: 'GitHub', title: 'GitHub', body: '[Ori] New pull request opened: "Fix reconnect overlay timing".', time: '5m ago', posLabel: '', negLabel: 'Dismiss', hasNegAction: true },
+    { uid: 302, app: 'Slack', title: '#general', body: 'Jordan: deploy is live — thanks everyone for the quick turnaround.', time: '40m ago', posLabel: '', negLabel: 'Dismiss', hasNegAction: true },
+    { uid: 303, app: 'Calendar', title: 'Calendar', body: 'Standup in 15 minutes — Daily Sync, Room 2 / video call.', time: '50m ago', posLabel: '', negLabel: 'Dismiss', hasNegAction: true },
+    { uid: 304, app: 'Twitter', title: 'Twitter', body: 'You have 3 new followers this week.', time: '3h ago', posLabel: '', negLabel: 'Dismiss', hasNegAction: true },
+    { uid: 305, app: 'Spotify', title: 'Spotify', body: 'Your Discover Weekly is ready — 30 new tracks picked for you.', time: '6h ago', posLabel: '', negLabel: 'Dismiss', hasNegAction: true, silent: true },
+    { uid: 306, app: 'News', title: 'News', body: 'Breaking: local team wins championship in a last-minute finish.', time: '8h ago', posLabel: '', negLabel: 'Dismiss', hasNegAction: true },
+    { uid: 307, app: 'Reminders', title: 'Reminders', body: 'Pick up the dry cleaning.', time: '9h ago', posLabel: '', negLabel: 'Dismiss', hasNegAction: true },
+  ],
+};
+
+function ancsCategoryClass(bucket) {
+  return bucket === 'missed' ? 'cat-missed' : bucket === 'unread' ? 'cat-unread' : 'cat-other';
+}
+
+// Groups raw notifications by (app, title) — same rule the status bar's own
+// same-title collapse uses. Mock arrays are newest-first, so the first item
+// seen for a key is the group's reference (most recent).
+function ancsGroupItems(bucket) {
+  const items = ANCS_LIST_MOCK[bucket] || [];
+  const order = [];
+  const byKey = {};
+  items.forEach(it => {
+    const key = it.app + '|' + it.title;
+    if (!byKey[key]) { byKey[key] = { uids: [], items: [] }; order.push(byKey[key]); }
+    byKey[key].uids.push(it.uid);
+    byKey[key].items.push(it);
+  });
+  return order.map(g => ({ uids: g.uids, items: g.items, ref: g.items[0], count: g.items.length }));
+}
+function ancsFindGroup(bucket, uid) {
+  return ancsGroupItems(bucket).find(g => g.uids.indexOf(uid) !== -1);
+}
+
+// Row shows icon + title + latest preview only — no timestamp (shown in the
+// detail overlay once opened) — and one row per GROUP, not per raw
+// notification. Swiping is only wired when there's actually a negative
+// action to send (data-has-del), mirroring the detail modal's danger button.
+function ancsListBodyHTML(bucket) {
+  const groups = ancsGroupItems(bucket);
+  if (groups.length === 0) return '<div class="ancs-list-empty">' + ANCS_LIST_EMPTY[bucket] + '</div>';
+  return groups.map(g => {
+    const it = g.ref;
+    const stacked = g.count > 1;
+    // Both badges overlap the icon's top-right corner, so they're mutually
+    // exclusive — count wins when a stacked group's reference happens to
+    // also be silent.
+    // Prefixed "ancs-list-row" (not plain "ancs-row") — the status bar
+    // already uses id/class "ancs-row" for its own icon-row container
+    // (Ori_UI_Prototype.html), so a bare "ancs-row" here would collide and
+    // leak this row's padding/background/cursor styling onto it.
+    const countBadge = stacked ? '<div class="ancs-list-row-count">' + (g.count > 9 ? '9+' : g.count) + '</div>' : '';
+    const silentBadge = (!stacked && it.silent)
+      ? '<div class="ancs-list-row-silent-badge" title="Delivered silently"><svg viewBox="0 0 24 24"><use href="#i-bell-off"/></svg></div>' : '';
+    return '<div class="ancs-list-row-wrap">' +
+      '<div class="ancs-list-row" data-uid="' + it.uid + '" data-bucket="' + bucket + '" data-has-del="' + (it.hasNegAction ? '1' : '') + '">' +
+      '<div class="ancs-list-row-icon-wrap">' +
+      '<div class="ancs-list-row-icon ' + ancsCategoryClass(bucket) + '"><svg viewBox="0 0 24 24"><use href="#i-' + ANCS_ICON_KIND[bucket] + '"/></svg></div>' +
+      countBadge + silentBadge +
+      '</div>' +
+      '<div class="ancs-list-row-text">' +
+      '<div class="ancs-list-row-title">' + escapeHtml(it.title) + '</div>' +
+      '<div class="ancs-list-row-preview">' + escapeHtml(it.body) + '</div>' +
+      '</div>' +
+      '</div>' +
+      '</div>';
+  }).join('');
+}
+
+function ancsListModalHTML(bucket) {
+  return '<div class="ancs-list-modal" onclick="event.stopPropagation()">' +
+    '<h3>' + ANCS_LIST_TITLES[bucket] + '</h3>' +
+    '<div class="ancs-list-body" id="ancsListBody">' + ancsListBodyHTML(bucket) + '</div>' +
+    '<div class="profile-close-row"><button class="btn btn-tertiary" onclick="ancsListBack()">Back</button></div>' +
+    '</div>';
+}
+
+// Opened by tapping a tile in the iPhone Info modal (openAncsListModal is
+// called directly, not via setScreen, so it layers over whichever screen the
+// phone icon was originally tapped from — same pattern as showProfileDetail).
+function openAncsListModal(bucket) {
+  document.getElementById('modal-layer').innerHTML =
+    '<div class="modal-scrim">' + ancsListModalHTML(bucket) + '</div>';
+  ancsInitRowGestures(document.getElementById('ancsListBody'));
+}
+// Back from the list → iPhone Info (re-render so any change above shows).
+function ancsListBack() {
+  setScreen('iphone-info');
+}
+
+// Swipe-left-to-delete — dragging a row left past ANCS_SWIPE_COMMIT of its
+// own width and releasing clears it (or its whole stacked group); releasing
+// short of that snaps back. No revealed background/icon — the row itself
+// just slides with the drag and fades proportionally (further dragged =
+// fainter), so the delete affordance is the fade itself, not a colored panel
+// underneath. Pointer events cover touch and mouse alike; only one row can
+// be mid-drag at a time.
+const ANCS_SWIPE_COMMIT = 0.35; // fraction of row width that commits the delete
+let ancsSwipeState = null;
+
+function ancsInitRowGestures(container) {
+  if (!container) return;
+  container.querySelectorAll('.ancs-list-row').forEach(row => {
+    row.addEventListener('pointerdown', ancsSwipeStart);
+    row.addEventListener('click', ancsRowClick);
+  });
+}
+
+function ancsRowClick(e) {
+  const row = e.currentTarget;
+  // A completed drag (in either direction) shouldn't also open the detail —
+  // pointerup fires just before click. The flag is cleared here, one-shot.
+  if (row.dataset.suppressClick) { delete row.dataset.suppressClick; return; }
+  openAncsListDetail(Number(row.dataset.uid), row.dataset.bucket);
+}
+
+function ancsSwipeStart(e) {
+  if (e.button !== undefined && e.button !== 0) return; // primary mouse button / touch / pen only
+  const row = e.currentTarget;
+  if (!row.dataset.hasDel) return; // nothing to swipe to
+  const rect = row.getBoundingClientRect();
+  ancsSwipeState = { row, startX: e.clientX, dx: 0, width: rect.width, dragging: false, pointerId: e.pointerId };
+  row.addEventListener('pointermove', ancsSwipeMove);
+  row.addEventListener('pointerup', ancsSwipeEnd);
+  row.addEventListener('pointercancel', ancsSwipeEnd);
+}
+
+function ancsSwipeMove(e) {
+  const s = ancsSwipeState;
+  if (!s || e.pointerId !== s.pointerId) return;
+  const rawDx = e.clientX - s.startX;
+  if (!s.dragging) {
+    if (Math.abs(rawDx) < 6) return; // ignore tiny jitter so plain clicks stay clicks
+    s.dragging = true;
+    s.row.style.transition = 'none';
+    s.row.setPointerCapture(s.pointerId);
+  }
+  s.dx = Math.max(-s.width, Math.min(0, rawDx)); // left only, clamped to the row's own width
+  s.row.style.transform = 'translateX(' + s.dx + 'px)';
+  // Fade proportionally to how far it's been dragged — at dx=0 fully
+  // opaque, at dx=-width fully transparent. This IS the delete affordance;
+  // there's no separate revealed panel to look at instead.
+  s.row.style.opacity = String(Math.max(0, 1 - Math.abs(s.dx) / s.width));
+}
+
+function ancsSwipeEnd(e) {
+  const s = ancsSwipeState;
+  if (!s || e.pointerId !== s.pointerId) return;
+  s.row.removeEventListener('pointermove', ancsSwipeMove);
+  s.row.removeEventListener('pointerup', ancsSwipeEnd);
+  s.row.removeEventListener('pointercancel', ancsSwipeEnd);
+  const committed = s.dragging && Math.abs(s.dx) > s.width * ANCS_SWIPE_COMMIT;
+  const uid = Number(s.row.dataset.uid), bucket = s.row.dataset.bucket;
+  s.row.style.transition = 'transform .18s ease-out, opacity .18s ease-out';
+  if (committed) {
+    s.row.style.transform = 'translateX(-100%)';
+    s.row.style.opacity = '0';
+    setTimeout(() => { ancsRowQuickDismiss(uid, bucket); }, 160);
+  } else {
+    s.row.style.transform = 'translateX(0)';
+    s.row.style.opacity = '1';
+  }
+  if (s.dragging) s.row.dataset.suppressClick = '1';
+  ancsSwipeState = null;
+}
+
+// Button set/labels are derived from the notification's own fields — same
+// rule the status-bar ANCS overlay follows: positive action (if any) as the
+// accent button, negative action (if any) as the danger button, and a plain
+// Close only when neither is offered. Never a hardcoded "Answer"/"Decline"/
+// "Dismiss" string — whatever pos/neg label says is what renders. (Stacked
+// groups skip this — single "Read all" instead, below.)
+function ancsListActionsHTML(it, uid, bucket) {
+  let html = '';
+  if (it.posLabel) html += '<button class="btn btn-primary" onclick="ancsListPositive(' + uid + ',\'' + bucket + '\')">' + escapeHtml(it.posLabel) + '</button>';
+  if (it.hasNegAction) html += '<button class="btn btn-danger" onclick="ancsListNegative(' + uid + ',\'' + bucket + '\')">' + escapeHtml(it.negLabel || 'Dismiss') + '</button>';
+  if (!it.posLabel && !it.hasNegAction) html += '<button class="btn btn-tertiary" onclick="ancsListDetailBack(\'' + bucket + '\')">Close</button>';
+  return html;
+}
+
+// Layout mirrors ancsDetailHTML()/.ancs-detail above: silent badge top-left,
+// icon, title, body/time, actions. Stacked groups (count > 1) replace the
+// single body/time/action-buttons with every message (oldest first,
+// divider-split) and one "Read all" button.
+function openAncsListDetail(uid, bucket) {
+  const g = ancsFindGroup(bucket, uid);
+  if (!g) return;
+  const it = g.ref;
+  const stacked = g.count > 1;
+  const catCls = ancsCategoryClass(bucket);
+  const silentBadge = it.silent
+    ? '<div class="ad-silent-badge"><svg viewBox="0 0 24 24"><use href="#i-bell-off"/></svg>Silent</div>' : '';
+
+  let bodyHtml;
+  if (stacked) {
+    // Message count is unbounded (a busy sender can stack many), but the
+    // screen is a fixed 480px tall with no scroll on the overlay itself —
+    // so the message list scrolls internally instead, keeping the icon/
+    // title above and the "Read all" button below always on screen.
+    const oldestFirst = g.items.slice().reverse();
+    bodyHtml = '<div class="ad-count">' + g.count + ' messages</div>' +
+      '<div class="ad-stack-scroll">' +
+      oldestFirst.map((m, idx) => (idx > 0 ? '<div class="ad-divider"></div>' : '') +
+        '<div class="ad-body">' + escapeHtml(m.body) + '</div>' +
+        '<div class="ad-time">' + escapeHtml(m.time) + '</div>'
+      ).join('') +
+      '</div>';
+  } else {
+    bodyHtml = '<div class="ad-body">' + escapeHtml(it.body) + '</div>' +
+      '<div class="ad-time">' + escapeHtml(it.time) + '</div>';
+  }
+  const actions = stacked
+    ? '<button class="btn btn-danger" onclick="ancsListReadAll(' + it.uid + ',\'' + bucket + '\')">Read all</button>'
+    : ancsListActionsHTML(it, it.uid, bucket);
+
+  document.getElementById('modal-layer').innerHTML =
+    '<div class="modal-scrim">' +
+    '<div class="ancs-detail' + (it.silent ? ' has-silent' : '') + '" onclick="event.stopPropagation()">' +
+    silentBadge +
+    '<div class="ad-app-icon ' + catCls + '"><svg viewBox="0 0 24 24"><use href="#i-' + ANCS_ICON_KIND[bucket] + '"/></svg></div>' +
+    '<div class="ad-title">' + escapeHtml(it.title) + '</div>' +
+    bodyHtml +
+    '<div class="ad-actions">' + actions + '</div>' +
+    '</div></div>';
+}
+
+// Dismissing a detail — by action, Read all, or Close — always returns to
+// the list it was opened from, not the screen behind everything.
+function ancsListDetailBack(bucket) {
+  openAncsListModal(bucket);
+}
+
+// Mock only — clearing an item (or a whole stacked group) just removes it
+// from the queue and decrements the matching iPhone Info count (same
+// visible effect a real ANCS PerformNotificationAction would have, sent
+// once per uid for a group).
+function ancsListClearUids(uids, bucket) {
+  const drop = new Set(uids);
+  ANCS_LIST_MOCK[bucket] = (ANCS_LIST_MOCK[bucket] || []).filter(x => !drop.has(x.uid));
+  const n = uids.length;
+  if (bucket === 'other') IPHONE_INFO.notifications = Math.max(0, IPHONE_INFO.notifications - n);
+  else if (bucket === 'missed') IPHONE_INFO.missed = Math.max(0, IPHONE_INFO.missed - n);
+  else if (bucket === 'unread') IPHONE_INFO.unread = Math.max(0, IPHONE_INFO.unread - n);
+}
+function ancsListPositive(uid, bucket) {
+  const g = ancsFindGroup(bucket, uid);
+  if (g) ancsListClearUids([uid], bucket);
+  ancsListDetailBack(bucket);
+}
+function ancsListNegative(uid, bucket) { ancsListPositive(uid, bucket); }
+function ancsListReadAll(refUid, bucket) {
+  const g = ancsFindGroup(bucket, refUid);
+  if (g) ancsListClearUids(g.uids, bucket);
+  ancsListDetailBack(bucket);
+}
+// Row's own swipe-to-delete — clears the whole group (if stacked) without
+// leaving the list.
+function ancsRowQuickDismiss(uid, bucket) {
+  const g = ancsFindGroup(bucket, uid);
+  if (g) ancsListClearUids(g.uids, bucket);
+  openAncsListModal(bucket);
+}
+
 // ---- Keyboard mode (BLE-bridged secondary controller) ----
 //
 // Architecture: Ori → custom BLE GATT command → Orion (always-running
@@ -1080,11 +1449,15 @@ const MOCK_MEDIA = {
 // Three user-assignable shortcut slots. The icons here are mock defaults
 // for the prototype — in production each slot's icon (and the action it
 // triggers) is configured in Orion's settings UI. No text label on the
-// device by design. Mock config: mute audio, mute mic, screen capture.
+// device by design.
+// PROPOSED-FEATURE DEMO: all three slots set to Favorite 1/2/3 so the new
+// numbered-star icon (favorite slots are no longer a single generic token —
+// see Orion_UI_Prototype's Quick Actions dropdown) can be reviewed in place.
+// Revert to the documented default (vol-mute, mic-mute, screenshot) once approved.
 const KBD_SHORTCUTS = [
-  { icon: 'i-vol-mute' },  // Mute audio
-  { icon: 'i-mic-mute' },  // Mute mic
-  { icon: 'i-screenshot' },  // Screen capture
+  { icon: 'i-star-1' },  // Favorite 1
+  { icon: 'i-star-2' },  // Favorite 2
+  { icon: 'i-star-3' },  // Favorite 3
 ];
 
 function mediaModeHTML() {
@@ -1515,19 +1888,33 @@ function renderStatusBar(cfg) {
   } else {
     ancsRow.innerHTML = '';
   }
-  if (cfg.phoneConnected) {
-    phoneSlot.innerHTML = '';
-  } else {
-    phoneSlot.innerHTML = '<div class="phone-disconnect-wrap" id="phone-disconnect-wrap" title="Long-press to manage phone pairing"><svg class="phone-disconnect" viewBox="0 0 24 24"><use href="#i-phone-broken"/></svg></div>';
-    bindLongPress(document.getElementById('phone-disconnect-wrap'), () => {
-      if (cfg.phonePaired) {
-        window._unpairPrev = currentScreenId;
-        setScreen('unpair-phone');
-      } else {
-        setScreen('repair-phone');
-      }
-    });
-  }
+  // Routing is by BOND state, not connection state (matches the real
+  // device's on_phone_icon_tap(), which binds the identical handler to both
+  // LV_EVENT_CLICKED and LV_EVENT_LONG_PRESSED): bonded — connected or not —
+  // always opens the iPhone Info/Stats overlay, which shows Connected/
+  // Disconnected internally and is where Unpair actually lives now. Only an
+  // unbonded phone routes to the re-pair screen. The glyph (slash or not)
+  // still reflects live connection state independently of this routing.
+  // Connected implies paired (you can't be connected without a bond) — most
+  // screen configs only ever set phoneConnected and never bothered also
+  // setting phonePaired redundantly, so paired must be derived, not read
+  // from cfg.phonePaired alone, or every ordinary connected screen would
+  // wrongly route to the re-pair flow.
+  const paired = !!(cfg.phonePaired || cfg.phoneConnected);
+  const icon = cfg.phoneConnected ? 'i-phone' : 'i-phone-broken';
+  const iconClass = cfg.phoneConnected ? 'phone-glyph' : 'phone-disconnect';
+  const title = paired ? 'iPhone info' : 'Long-press to manage phone pairing';
+  phoneSlot.innerHTML = '<div class="phone-disconnect-wrap" id="phone-icon-wrap" title="' + title + '"><svg class="' + iconClass + '" viewBox="0 0 24 24"><use href="#' + icon + '"/></svg></div>';
+  const openPhoneScreen = () => {
+    // IPHONE_INFO is a standalone mock object (its own dedicated sidebar
+    // entry shows it as-is) — but when reached via this icon from some other
+    // screen, sync its connected flag first so the modal actually reflects
+    // the screen you tapped from, instead of always showing the mock's own
+    // hardcoded default.
+    if (paired) IPHONE_INFO.connected = !!cfg.phoneConnected;
+    setScreen(paired ? 'iphone-info' : 'repair-phone');
+  };
+  bindTapAndLongPress(document.getElementById('phone-icon-wrap'), openPhoneScreen, openPhoneScreen);
 }
 
 function bindLongPress(el, action, ms) {
@@ -1629,6 +2016,7 @@ function setScreen(id) {
   const modalLayer = document.getElementById('modal-layer');
   if (cfg.modal) {
     modalLayer.innerHTML = '<div class="modal-scrim" onclick="dismissModalIfTappable()">' + cfg.modal() + '</div>';
+    if (cfg.modalInit) cfg.modalInit();
   } else {
     modalLayer.innerHTML = '';
   }

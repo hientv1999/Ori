@@ -275,13 +275,26 @@
     }
 
     .phone-disconnect-wrap:active {
-      background: rgba(216, 106, 106, 0.10);
+      background: rgba(255, 255, 255, 0.06);
     }
 
+    /* Neutral (not danger-red) — the diagonal slash cut into the glyph
+       itself (via #i-phone-broken's mask) is what conveys "disconnected",
+       not a color change, so it reads the same whether or not the viewer
+       can distinguish red from grey. */
     .phone-disconnect {
       width: 58px;
       height: 58px;
-      color: var(--danger);
+      color: var(--text-2);
+      pointer-events: none;
+    }
+
+    /* Connected phone icon — same neutral glyph, no slash. Always visible in
+       the status bar so tapping it opens the iPhone info / stats overlay. */
+    .phone-glyph {
+      width: 58px;
+      height: 58px;
+      color: var(--text-2);
       pointer-events: none;
     }
 
@@ -1109,6 +1122,137 @@
       justify-content: center;
     }
 
+    /* iPhone info / stats modal */
+    .ip-card {
+      width: 560px;
+      background: var(--screen-card);
+      border: 1px solid var(--divider-strong);
+      border-radius: 18px;
+      padding: 30px 34px;
+      text-align: center;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.7);
+    }
+
+    .ip-card h3 {
+      font-size: 32px;
+      font-weight: 500;
+      color: var(--text-1);
+    }
+
+    .ip-card .ip-status {
+      margin-top: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 24px;
+      color: var(--text-2);
+    }
+
+    .ip-card .ip-status-left {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    }
+
+    .ip-card .ip-status .dot {
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+    }
+
+    .ip-card .ip-status .dot.on {
+      background: var(--presence-available);
+    }
+
+    .ip-card .ip-status .dot.off {
+      background: var(--presence-offline);
+    }
+
+    /* RSSI-style signal bars — replaces a plain "Strong"/"Weak" text value
+       wherever a signal reading is shown (iPhone info + Ori info modals). */
+    .sig-bars {
+      display: flex;
+      align-items: flex-end;
+      gap: 5px;
+      height: 33px;
+    }
+
+    .sig-bars span {
+      width: 8px;
+      border-radius: 3px;
+      background: var(--divider-strong);
+    }
+
+    .sig-bars span:nth-child(1) { height: 35%; }
+    .sig-bars span:nth-child(2) { height: 55%; }
+    .sig-bars span:nth-child(3) { height: 75%; }
+    .sig-bars span:nth-child(4) { height: 100%; }
+
+    .sig-bars span.active {
+      background: var(--presence-available);
+    }
+
+    .ip-stats {
+      display: flex;
+      justify-content: center;
+      gap: 56px;
+      margin-top: 30px;
+    }
+
+    .ip-stat {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* Icon + badge share this wrapper so the badge can be positioned
+       relative to the ICON itself (and overlap its corner, iOS-style). */
+    .ip-icon-wrap {
+      position: relative;
+      width: 70px;
+      height: 70px;
+    }
+
+    .ip-stat svg {
+      width: 70px;
+      height: 70px;
+      color: var(--text-2);
+    }
+
+    .ip-stat svg.zero {
+      color: var(--text-3);
+    }
+
+    /* Count bubble, overlapping the icon's top-right corner — same
+       language as iOS's unread-notification badge. Hidden entirely at
+       zero (nothing to flag), not shown as an empty/greyed bubble. */
+    .ip-badge {
+      position: absolute;
+      top: -11px;
+      right: -14px;
+      min-width: 36px;
+      height: 36px;
+      padding: 0 8px;
+      border-radius: 999px;
+      background: var(--danger);
+      color: #fff;
+      font-size: 21px;
+      font-weight: 700;
+      line-height: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-variant-numeric: tabular-nums;
+      box-shadow: 0 0 0 4px var(--screen-card);
+    }
+
+    .ip-card .actions {
+      margin-top: 24px;
+      display: flex;
+      gap: 14px;
+      justify-content: center;
+    }
+
     .btn {
       padding: 18px 36px;
       border-radius: 999px;
@@ -1274,6 +1418,286 @@
       display: flex;
       gap: 14px;
       justify-content: center;
+    }
+
+    /* ── ANCS drill-down list — tap a missed-call / unread-message /
+       notification tile in the iPhone Info modal. Same list + swipe-left-
+       to-delete design as the Orion PC app's own drill-down
+       (PC_app/Orion_UI_Prototype.js) — this is the on-device mirror of it. */
+    .ip-stat.clickable {
+      cursor: pointer;
+    }
+
+    .ip-stat.clickable:active {
+      opacity: 0.6;
+    }
+
+    /* Fixed card height regardless of item count — a 1-row list and a
+       7-row list are the same card size; fewer rows just leave empty space
+       below instead of the whole card shrinking to fit. Title/Back stay
+       put (flex:0 0 auto); the list body is the only part that scrolls. */
+    .ancs-list-modal {
+      width: 480px;
+      height: 380px;
+      background: var(--screen-card);
+      border: 1px solid var(--divider-strong);
+      border-radius: 18px;
+      padding: 30px 34px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.7);
+      display: flex;
+      flex-direction: column;
+      text-align: center;
+      color: var(--text-1);
+    }
+
+    .ancs-list-modal h3 {
+      font-size: 28px;
+      font-weight: 500;
+      flex: 0 0 auto;
+    }
+
+    .ancs-list-modal .profile-close-row {
+      flex: 0 0 auto;
+      margin-top: 18px;
+    }
+
+    .ancs-list-body {
+      flex: 1;
+      min-height: 0;
+      margin-top: 16px;
+      overflow-y: auto;
+      text-align: left;
+      padding-right: 6px;
+      scrollbar-width: auto;
+      scrollbar-color: var(--text-3) rgba(255, 255, 255, 0.05);
+    }
+
+    .ancs-list-body::-webkit-scrollbar {
+      width: 10px;
+    }
+
+    .ancs-list-body::-webkit-scrollbar-track {
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 5px;
+      margin: 4px 0;
+    }
+
+    .ancs-list-body::-webkit-scrollbar-thumb {
+      background: var(--text-3);
+      border-radius: 5px;
+      min-height: 40px;
+      border: 2px solid rgba(0, 0, 0, 0);
+      background-clip: padding-box;
+    }
+
+    .ancs-list-body::-webkit-scrollbar-thumb:hover {
+      background: var(--text-2);
+      background-clip: padding-box;
+    }
+
+    .ancs-list-empty {
+      text-align: center;
+      color: var(--text-3);
+      font-size: 24px;
+      padding: 40px 0;
+    }
+
+    /* Swipe-left-to-delete — no revealed background panel; the row itself
+       slides left and fades proportionally to drag distance (further
+       dragged = fainter). .ancs-list-row-wrap owns the border/clipping
+       since .ancs-list-row itself moves during the drag. Pointer events
+       cover touch and mouse alike.
+       Named "ancs-list-row*" (not "ancs-row*") — the status bar already
+       uses id/class "ancs-row" for its own icon-row container above; a bare
+       "ancs-row" here would collide and leak this row's padding/background/
+       cursor styling onto it. */
+    .ancs-list-row-wrap {
+      position: relative;
+      overflow: hidden;
+      border-bottom: 3px solid var(--divider);
+    }
+
+    .ancs-list-row-wrap:last-child {
+      border-bottom: none;
+    }
+
+    .ancs-list-row {
+      position: relative;
+      background: var(--screen-card);
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 4px;
+      cursor: pointer;
+      touch-action: pan-y;
+      user-select: none;
+      transition: background 0.12s;
+    }
+
+    .ancs-list-row:hover {
+      background: var(--screen-elev);
+    }
+
+    /* Icon is always a circle, never a rounded square — reads consistently
+       against the round count/silent badges overlapping its corner. */
+    .ancs-list-row-icon-wrap {
+      position: relative;
+      flex: 0 0 auto;
+    }
+
+    .ancs-list-row-icon {
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .ancs-list-row-icon svg {
+      width: 26px;
+      height: 26px;
+      color: #fff;
+    }
+
+    .ancs-list-row-icon.cat-missed {
+      background: var(--danger);
+    }
+
+    .ancs-list-row-icon.cat-unread {
+      background: var(--accent);
+    }
+
+    .ancs-list-row-icon.cat-other {
+      background: var(--text-3);
+    }
+
+    /* Stacked-count badge — multiple notifications sharing the same app AND
+       title collapse into one row; this is the only visible sign there's
+       more than one. Mutually exclusive with the silent badge (count wins
+       when a stacked group's reference item also happens to be silent). */
+    .ancs-list-row-count {
+      position: absolute;
+      top: -4px;
+      right: -4px;
+      min-width: 22px;
+      height: 22px;
+      padding: 0 5px;
+      border-radius: 999px;
+      background: var(--danger);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-variant-numeric: tabular-nums;
+      box-shadow: 0 0 0 3px var(--screen-card);
+    }
+
+    .ancs-list-row-silent-badge {
+      position: absolute;
+      top: -4px;
+      right: -4px;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: var(--text-3);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0 0 3px var(--screen-card);
+    }
+
+    .ancs-list-row-silent-badge svg {
+      width: 12px;
+      height: 12px;
+    }
+
+    .ancs-list-row-text {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .ancs-list-row-title {
+      font-size: 24px;
+      font-weight: 500;
+      color: var(--text-1);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .ancs-list-row-preview {
+      font-size: 21px;
+      color: var(--text-2);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-top: 2px;
+    }
+
+    /* List-driven detail reuses .ancs-detail/.ad-* above — these category-
+       color variants apply only to the generic call/message/bell glyph used
+       here, not the brand app icons the status-bar ANCS detail uses. */
+    .ancs-detail .ad-app-icon.cat-missed {
+      background: var(--danger);
+    }
+
+    .ancs-detail .ad-app-icon.cat-unread {
+      background: var(--accent);
+    }
+
+    .ancs-detail .ad-app-icon.cat-other {
+      background: var(--text-3);
+    }
+
+    .ancs-detail .ad-app-icon.cat-missed svg,
+    .ancs-detail .ad-app-icon.cat-unread svg,
+    .ancs-detail .ad-app-icon.cat-other svg {
+      color: #fff;
+      width: 40px;
+      height: 40px;
+    }
+
+    .ancs-detail .ad-count {
+      margin-top: 4px;
+      font-size: 21px;
+      font-weight: 500;
+      color: var(--accent);
+    }
+
+    /* Stacked-message list scrolls internally — the overlay itself doesn't,
+       and with no per-message cap, several messages can otherwise overflow
+       the fixed 480px screen height and clip the action button below. */
+    .ancs-detail .ad-stack-scroll {
+      max-height: 180px;
+      overflow-y: auto;
+      margin-top: 8px;
+      scrollbar-width: thin;
+      scrollbar-color: var(--text-3) rgba(255, 255, 255, 0.05);
+    }
+
+    .ancs-detail .ad-stack-scroll::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    .ancs-detail .ad-stack-scroll::-webkit-scrollbar-track {
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 4px;
+    }
+
+    .ancs-detail .ad-stack-scroll::-webkit-scrollbar-thumb {
+      background: var(--text-3);
+      border-radius: 4px;
+    }
+
+    .ancs-detail .ad-divider {
+      height: 1px;
+      background: var(--divider);
+      margin: 14px 0;
     }
 
     .profile-box {
@@ -2087,6 +2511,8 @@
         <button data-screen="ancs-notification">ANCS notification detail</button>
         <button data-screen="ancs-notification-silent">ANCS silent notification</button>
         <button data-screen="profile-detail">Profile detail overlay</button>
+        <button data-screen="iphone-info">iPhone info / stats</button>
+        <button data-screen="ancs-list">ANCS drill-down list</button>
       </div>
       <div class="group">
         <div class="group-title">Setup flow</div>
@@ -2242,6 +2668,12 @@
         </g>
         <line x1="3" y1="21" x2="21" y2="3" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" />
       </symbol>
+      <symbol id="i-phone" viewBox="0 0 24 24">
+        <rect x="6" y="2.5" width="11" height="19" rx="2.4" fill="none" stroke="currentColor" stroke-width="1.7" />
+        <circle cx="11.5" cy="18" r="0.9" fill="currentColor" />
+        <line x1="9.5" y1="5" x2="13.5" y2="5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"
+          opacity="0.7" />
+      </symbol>
       <symbol id="i-cal" viewBox="0 0 24 24">
         <rect x="3" y="5" width="18" height="16" rx="2" fill="none" stroke="currentColor" stroke-width="1.6" />
         <path d="M3 9h18" stroke="currentColor" stroke-width="1.6" />
@@ -2293,6 +2725,21 @@
         <path d="M22 17H7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
         <line x1="1" y1="1" x2="23" y2="23" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
       </symbol>
+      <symbol id="i-bell" viewBox="0 0 24 24">
+        <path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M13.73 21a2 2 0 0 1-3.46 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </symbol>
+      <symbol id="i-message" viewBox="0 0 24 24">
+        <path fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"
+          d="M6 4 H18 A3 3 0 0 1 21 7 V14 A3 3 0 0 1 18 17 L13 17 8 21 8 17 6 17 A3 3 0 0 1 3 14 V7 A3 3 0 0 1 6 4 Z"/>
+      </symbol>
+      <symbol id="i-phone-missed" viewBox="0 0 24 24">
+        <path d="M7.5 11.4c1.7 3 4.1 5.4 7.1 7.1l1.9-1.9c.3-.3.7-.4 1.1-.2 1 .4 2.1.6 3.2.6.6 0 1 .4 1 1V21c0 .6-.4 1-1 1C10.8 22 2 13.2 2 3c0-.6.4-1 1-1h2.9c.6 0 1 .4 1 1 0 1.1.2 2.2.6 3.2.1.4 0 .8-.2 1.1L7.5 11.4Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+        <path d="M22 4 16 10M16 4h6v6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+      </symbol>
+      <symbol id="i-call" viewBox="0 0 24 24">
+        <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/>
+      </symbol>
       <symbol id="i-play" viewBox="0 0 24 24">
         <path fill="currentColor" d="M7 5v14l12-7z" />
       </symbol>
@@ -2339,6 +2786,22 @@
       <symbol id="i-star" viewBox="0 0 24 24">
         <path fill="currentColor"
           d="m12 2.2 3.05 6.18 6.82 0.99-4.94 4.81 1.17 6.79L12 17.78 5.9 20.97l1.17-6.79L2.13 9.37l6.82-0.99z" />
+      </symbol>
+      <!-- Numbered favorite-slot variants — same star shape as i-star (reused
+           via nested <use>), with the slot number "cut out" using the
+           button's own background colour so it reads as a punched digit
+           regardless of the icon's current (button) colour. -->
+      <symbol id="i-star-1" viewBox="0 0 24 24">
+        <use href="#i-star" />
+        <text x="12" y="16" text-anchor="middle" font-size="9" font-weight="800" fill="var(--screen-card)">1</text>
+      </symbol>
+      <symbol id="i-star-2" viewBox="0 0 24 24">
+        <use href="#i-star" />
+        <text x="12" y="16" text-anchor="middle" font-size="9" font-weight="800" fill="var(--screen-card)">2</text>
+      </symbol>
+      <symbol id="i-star-3" viewBox="0 0 24 24">
+        <use href="#i-star" />
+        <text x="12" y="16" text-anchor="middle" font-size="9" font-weight="800" fill="var(--screen-card)">3</text>
       </symbol>
     </defs>
   </svg>

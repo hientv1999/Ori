@@ -16,7 +16,7 @@ Every item below is a **view inside that one panel** (a stack/content-swap drive
 ## Your responsibility
 
 ### Views (all inside the one panel)
-- **Pairing wizard** — discover nearby Ori devices, initiate pairing. Passkey confirmation itself is **OS-native** (Windows/macOS system Bluetooth prompt, not a custom in-app modal — CoreBluetooth exposes no app-level pairing UI hook, a hard macOS constraint independent of tech stack, decided 2026-07-08). The in-app modal is guidance ("confirm the code shown on Ori in the system prompt"), not digit-entry boxes.
+- **Pairing wizard** — discover nearby Ori devices, initiate pairing. On Windows, the passkey step is a **custom in-app modal**: six digit boxes with auto-advance focus, matching what Ori's own screen displays (drives WinRT's `DeviceInformationCustomPairing` on the backend side). macOS has no equivalent app-level pairing hook (CoreBluetooth exposes none — a hard constraint independent of tech stack) and is deferred, not designed, until that build starts — see `memory.md`.
 - **Settings** — calendar source selection, profile management, app lifecycle (run at login, etc.)
 - **Profile editor** — name, job title, photo capture/upload/crop
 - **Calendar source selection** — pick which provider/account to read meetings from

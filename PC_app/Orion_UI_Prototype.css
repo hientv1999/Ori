@@ -89,14 +89,23 @@ body{font-family:var(--fn);background:radial-gradient(ellipse at 20% 15%,rgba(12
 .h-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
 .h-dot.on{background:var(--success);box-shadow:0 0 7px rgba(146,195,83,.5);}
 .h-dot.off{background:var(--muted);}
-.h-dot.rec{background:var(--away);animation:bk 1.2s ease-in-out infinite;}
-.h-device{min-width:0;}
+.h-dot.rec,.h-dot.connecting{background:var(--away);animation:bk 1.2s ease-in-out infinite;}
+.h-device{min-width:0;cursor:pointer;border-radius:8px;padding:4px 6px;margin:-4px -6px;transition:background .1s;}
+.h-device:hover{background:rgba(255,255,255,.025);}
 .h-name{font-size:16px;font-weight:600;color:var(--t1);}
 .h-state{font-size:13px;color:var(--t2);margin-top:1px;}
 .hdr-icons{display:flex;align-items:center;gap:2px;flex-shrink:0;}
 .h-ico{width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--t3);transition:background .12s,color .14s;}
 .h-ico:hover{background:rgba(255,255,255,.06);color:var(--t2);}
+/* Phone + Settings icons render visibly small at the default 28px box (13px/
+   15px glyphs) — bumped to a larger box + 2x glyph size for legibility. */
+.h-ico-lg{width:34px;height:34px;}
 .h-ico.fw-on{color:var(--accent);background:rgba(224,184,106,.12);border-radius:6px;box-shadow:0 0 0 1px rgba(224,184,106,.25);animation:fw-pulse 2s ease-in-out infinite;}
+/* Disconnected state is conveyed by the slash line inside #phoneIco (see
+   HTML), not a colour change — legible regardless of red/grey perception.
+   The icon stays the same neutral colour as any other header icon. */
+.phone-slash{display:none;}
+.h-ico.phone-disconnected .phone-slash{display:block;}
 @keyframes fw-pulse{0%,100%{box-shadow:0 0 0 1px rgba(224,184,106,.25),0 0 8px rgba(224,184,106,.2);}50%{box-shadow:0 0 0 1px rgba(224,184,106,.5),0 0 14px rgba(224,184,106,.45);}}
 
 /* ── BODY ──────────────────── */
@@ -228,6 +237,152 @@ body{font-family:var(--fn);background:radial-gradient(ellipse at 20% 15%,rgba(12
 .about-row span:first-child{color:var(--t2);}
 .about-row span:last-child{color:var(--t1);font-weight:500;}
 
+/* ── iPhone info modal — missed-call / unread-message / notification icons.
+   No tile background/border (removed per design feedback) — just the icon,
+   enlarged, with an iOS-style count bubble overlapping its corner. */
+.ip-stats{display:flex;justify-content:center;gap:26px;margin-top:16px;margin-bottom:6px;}
+.ip-stat{display:flex;align-items:center;justify-content:center;}
+.ip-icon-wrap{position:relative;width:34px;height:34px;}
+.ip-stat svg{width:34px;height:34px;color:var(--t2);}
+.ip-stat svg.zero{color:var(--t3);}
+
+/* Count bubble, overlapping the icon's top-right corner — same language as
+   iOS's unread-notification badge. Hidden entirely when disconnected or at
+   zero (nothing to flag) rather than shown as an empty/greyed bubble. */
+.ip-badge{position:absolute;top:-7px;right:-9px;min-width:18px;height:18px;padding:0 4px;border-radius:999px;background:var(--danger);color:#fff;font-size:11px;font-weight:700;line-height:1;display:flex;align-items:center;justify-content:center;font-variant-numeric:tabular-nums;box-shadow:0 0 0 2px #16161a;}
+
+/* RSSI-style signal bars — replaces a plain "Strong"/"Weak" text value
+   wherever a signal reading is shown (Ori info + iPhone info modals). */
+.sig-bars{display:flex;align-items:flex-end;gap:3px;height:20px;}
+.sig-bars span{width:5px;border-radius:2px;background:var(--brd);}
+.sig-bars span:nth-child(1){height:35%;}
+.sig-bars span:nth-child(2){height:55%;}
+.sig-bars span:nth-child(3){height:75%;}
+.sig-bars span:nth-child(4){height:100%;}
+.sig-bars span.active{background:var(--success);}
+
+/* ── ANCS drill-down list (tap a call/message/notifications icon in the
+   iPhone Info modal) and its per-row detail modal. Orion-only — Ori itself
+   has no equivalent screen; the iPhone Info icons there are informational. ── */
+/* Fixed height regardless of item count — a 1-row list and a 10-row list
+   are the same card size; fewer rows just leave empty space below instead
+   of the whole modal shrinking to fit. Title/Back stay put (flex:0 0 auto),
+   the list body is the only part that grows/scrolls (flex:1). */
+.ancs-list-modal{width:360px;height:460px;text-align:left;display:flex;flex-direction:column;}
+.ancs-list-modal .modal-title{flex:0 0 auto;text-align:center;margin-bottom:2px;}
+.ancs-list-modal .btn-row{flex:0 0 auto;}
+/* Overlay-style scrollbar — invisible until the list is hovered (so it
+   doesn't sit as a bright system-grey bar against the dark card at rest),
+   then a soft neutral pill that warms to the app's own accent gold while
+   actively hovered/dragged. Inset via the border+background-clip trick
+   (same technique as Ori_UI_Prototype.html's own .meeting-list scrollbar)
+   so the thumb floats clear of the track edge rather than touching it. */
+.ancs-list-body{
+  flex:1;min-height:0;margin-top:10px;overflow-y:auto;padding-right:6px;
+  scrollbar-width:thin;scrollbar-color:transparent transparent;
+  transition:scrollbar-color .15s;
+}
+.ancs-list-body:hover{scrollbar-color:rgba(255,255,255,.20) transparent;}
+.ancs-list-body::-webkit-scrollbar{width:8px;}
+.ancs-list-body::-webkit-scrollbar-track{background:transparent;}
+.ancs-list-body::-webkit-scrollbar-thumb{
+  background:transparent;border-radius:999px;
+  border:2px solid transparent;background-clip:padding-box;
+  transition:background .15s;
+}
+.ancs-list-body:hover::-webkit-scrollbar-thumb{background:rgba(255,255,255,.20);background-clip:padding-box;}
+.ancs-list-body::-webkit-scrollbar-thumb:hover{background:rgba(224,184,106,.65);background-clip:padding-box;}
+.ancs-list-empty{text-align:center;color:var(--t3);font-size:13.5px;padding:28px 0;}
+
+/* Swipe-left-to-delete — no revealed background, just the row itself
+   sliding left and fading out proportionally to drag distance (the further
+   dragged, the fainter it gets) — see ancsSwipeStart() in
+   Orion_UI_Prototype.js. .ancs-row-wrap owns the border/clipping since
+   .ancs-row itself moves. */
+.ancs-row-wrap{position:relative;overflow:hidden;border-radius:8px;border-bottom:1px solid var(--div);}
+.ancs-row-wrap:last-child{border-bottom:none;}
+.ancs-row{
+  position:relative;background:#16161a;
+  display:flex;align-items:center;gap:12px;padding:10px 2px;cursor:pointer;
+  border-radius:8px;transition:background .12s;
+  touch-action:pan-y; /* vertical list-scroll stays native; horizontal drag is ours */
+  user-select:none;
+}
+.ancs-row:hover{background:var(--elev2);}
+
+/* Icon is ALWAYS a circle — never a rounded square — regardless of category
+   or (eventually) brand-icon source, so it reads consistently against the
+   round count badges elsewhere in this modal family. Wrapped so the stacked-
+   count badge (below) can overlap its corner, same idiom as .ip-icon-wrap/
+   .ip-badge in the iPhone Info modal. */
+.ancs-row-icon-wrap{position:relative;flex:0 0 auto;}
+.ancs-row-icon{width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;}
+.ancs-row-icon svg{width:19px;height:19px;color:#fff;}
+.ancs-row-icon.cat-missed{background:var(--danger);}
+.ancs-row-icon.cat-unread{background:var(--accent);}
+.ancs-row-icon.cat-other{background:var(--t3);}
+.ancs-row-icon.cat-ringing{background:var(--danger);animation:ancs-ring-pulse 1.1s ease-in-out infinite;}
+@keyframes ancs-ring-pulse{
+  0%,100%{box-shadow:0 0 0 0 rgba(196,49,75,.45);}
+  50%{box-shadow:0 0 0 6px rgba(196,49,75,0);}
+}
+
+/* Stacked-count badge — multiple notifications sharing the same app AND
+   title (e.g. several messages from one sender) collapse into one row; this
+   is the only visible sign there's more than one. Same red-pill language as
+   the status-bar tile's stacked badge on Ori itself. */
+.ancs-row-count{position:absolute;top:-3px;right:-3px;min-width:16px;height:16px;padding:0 3px;border-radius:999px;background:var(--danger);color:#fff;font-size:9.5px;font-weight:700;display:flex;align-items:center;justify-content:center;font-variant-numeric:tabular-nums;box-shadow:0 0 0 2px #16161a;}
+
+.ancs-row-text{flex:1;min-width:0;}
+.ancs-row-title{font-size:14px;font-weight:600;color:var(--t1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.ancs-row-preview{font-size:12.5px;color:var(--t2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px;}
+
+/* Silent badge — same top-right corner overlap as the stacked-count badge
+   above (and mutually exclusive with it, see openAncsListModal); icon-only
+   at this scale, same bell-off glyph as the detail modal's .ad-silent-badge. */
+.ancs-row-silent-badge{position:absolute;top:-3px;right:-3px;width:16px;height:16px;border-radius:50%;background:var(--t3);color:#fff;display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 2px #16161a;}
+.ancs-row-silent-badge svg{width:9px;height:9px;}
+
+/* Notification/call detail — same layout as Ori's own ANCS overlay
+   (Ori_UI_Prototype.html .ancs-detail/.ad-*), scaled ~0.5x for Orion's
+   compact panel: app icon, title, body (3-line clamp), timestamp, app
+   name, then a dynamic action row. Icon here is a rounded SQUARE (18px
+   radius scaled to 9px) — matches Ori's own overlay exactly; only the
+   drill-down LIST rows above are round. */
+.ancs-detail{position:relative;text-align:center;color:var(--t1);}
+.ancs-detail.has-silent{padding-top:20px;}
+.ad-silent-badge{position:absolute;top:0;left:0;display:flex;align-items:center;gap:4px;padding:3px 8px 3px 6px;background:rgba(255,255,255,.06);border:1px solid var(--brd);border-radius:999px;font-size:10.5px;color:var(--t3);white-space:nowrap;}
+.ad-silent-badge svg{width:10px;height:10px;flex-shrink:0;}
+.ad-app-icon{width:40px;height:40px;border-radius:9px;overflow:hidden;margin:0 auto 8px;display:flex;align-items:center;justify-content:center;}
+.ad-app-icon svg{width:20px;height:20px;color:#fff;}
+.ad-app-icon.cat-missed{background:var(--danger);}
+.ad-app-icon.cat-unread{background:var(--accent);}
+.ad-app-icon.cat-other{background:var(--t3);}
+.ad-app-icon.cat-ringing{background:var(--danger);}
+/* Incoming/active-call eyebrow ("Incoming call" / "On call") — UI chrome,
+   not ANCS content, so unlike the action buttons this IS a fixed literal
+   (mirrors modal_incoming_call.cpp's own hardcoded "INCOMING CALL"/
+   "ON CALL" eyebrow text). */
+.ad-eyebrow{font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--accent);margin-bottom:2px;}
+.ad-title{font-size:15px;font-weight:600;line-height:1.3;word-wrap:break-word;}
+.ad-body{margin-top:8px;font-size:13px;color:var(--t2);line-height:1.5;text-align:left;word-wrap:break-word;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;}
+.ad-time{margin-top:4px;font-size:11.5px;color:var(--t3);text-align:left;}
+/* Live call-duration timer — replaces .ad-body/.ad-time in the "on call"
+   view. Centred (not left-aligned like a message body) since it's a single
+   glanceable value, matching Ori's own in-call dialog. */
+.ad-call-timer{margin-top:10px;font-size:24px;font-weight:300;font-variant-numeric:tabular-nums;color:var(--t1);letter-spacing:.5px;text-align:center;}
+/* Stacked group only — "N messages" count line, then each message's body +
+   time repeated, oldest first, divider-split (mirrors Ori's own stacked
+   overlay in modal_ancs_notification.cpp). */
+.ad-count{margin-top:8px;font-size:11.5px;font-weight:600;color:var(--accent);text-align:left;}
+.ad-divider{height:1px;background:var(--div);margin:8px 0;}
+.ad-actions{margin-top:14px;display:flex;gap:8px;justify-content:center;}
+/* Close — always top-right, regardless of whether action buttons exist
+   below (mirrors Ori's ui::add_close_x, which is likewise unconditional). */
+.ad-close-x{position:absolute;top:-4px;right:-4px;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--t3);cursor:pointer;}
+.ad-close-x:hover{background:var(--elev2);color:var(--t1);}
+.ad-close-x svg{width:12px;height:12px;}
+
 /* ── BUTTONS ───────────────── */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:5px;padding:7px 14px;border-radius:999px;font-size:14.5px;font-weight:500;font-family:var(--fn);cursor:pointer;border:none;transition:all .14s;line-height:1.3;}
 .btn-primary{background:transparent;color:var(--accent);font-weight:600;border:3px solid rgba(224,184,106,.65);animation:btn-glow-accent 2.4s ease-in-out infinite;}
@@ -248,7 +403,12 @@ body{font-family:var(--fn);background:radial-gradient(ellipse at 20% 15%,rgba(12
 .btn-row{display:flex;gap:7px;margin-top:10px;justify-content:center;}
 
 /* ── MODALS ────────────────── */
-.modal-bg{position:absolute;inset:0;background:rgba(0,0,0,.7);backdrop-filter:blur(12px);z-index:50;display:flex;align-items:center;justify-content:center;border-radius:var(--r);opacity:0;pointer-events:none;transition:opacity .18s;}
+/* .modal-bg fills .screen-stack (position:relative, inset:0), which starts
+   below .app-titlebar — a flat seam, not the panel's actual corner — and
+   ends at the panel's real bottom edge. Only the bottom corners are ever
+   physically rounded (via .panel's own overflow:hidden clip); the top must
+   stay sharp or it visibly floats free of the titlebar's straight edge. */
+.modal-bg{position:absolute;inset:0;background:rgba(0,0,0,.7);backdrop-filter:blur(12px);z-index:50;display:flex;align-items:center;justify-content:center;border-radius:0 0 var(--r) var(--r);opacity:0;pointer-events:none;transition:opacity .18s;}
 .modal-bg.show{opacity:1;pointer-events:auto;}
 .modal{width:300px;background:rgba(22,22,26,.99);border:1px solid var(--brd);border-radius:12px;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,.6);text-align:center;}
 .modal-title{font-size:17px;font-weight:700;color:var(--t1);margin-bottom:6px;}

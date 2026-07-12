@@ -105,16 +105,598 @@ function setConn(s){
     connSections.style.display='';toDivider.style.display='none';
     fwIco.style.display=fwAvail?'':'none';
     readSlotsFromDevice(); // simulate Orion reading Device Settings from Ori on connect
+    setPhoneBondStatus({b:true,c:true,n:"Xander's iPhone"}); // demo default — see setPhoneBondStatus
+  } else if(s==='connecting'){
+    name.textContent='Ori-XT-9F';state.textContent=t.connecting;
+    connSections.style.display='none';toDivider.style.display='';
+    fwIco.style.display='none';
+    setPhoneBondStatus({b:false,c:false,n:''});
   } else if(s==='rec'){
     name.textContent='Ori-XT-9F';state.textContent=t.syncing;
     connSections.style.display='none';toDivider.style.display='';
     fwIco.style.display='none';
+    setPhoneBondStatus({b:false,c:false,n:''});
   } else {
     name.textContent='Ori-XT-9F';state.textContent=t.disconnected;
     connSections.style.display='none';toDivider.style.display='';
     fwIco.style.display='none';
+    setPhoneBondStatus({b:false,c:false,n:''});
   }
   back();
+}
+
+// Orion just observes Ori's iPhone/ANCS bond (char 000F, ble-protocol.md
+// §3/§11) — read once on connect, then updated on every notify. Read-only:
+// Orion has no phone-pairing action of its own to offer (that's done on
+// Ori's own screen), so this is purely informational. Hidden whenever
+// Orion isn't connected to Ori (nothing live to report) or no iPhone has
+// ever been bonded (b:false — nothing to show). Disconnected state is a
+// diagonal slash (.phone-slash in the SVG), not a colour change, mirroring
+// Ori's own status-bar phone icon convention (screen-layout.md).
+let lastPhoneBondStatus={b:false,c:false,n:''};
+function setPhoneBondStatus(status){
+  lastPhoneBondStatus=status;
+  const ico=$('phoneIco');
+  if(connState!=='on'||!status.b){
+    ico.style.display='none';
+    return;
+  }
+  ico.style.display='';
+  const t=I18N[appLang].main;
+  if(status.c){
+    ico.classList.remove('phone-disconnected');
+    ico.title=t.phoneConnectedTitle.replace('{name}',status.n||t.phoneUnknownName);
+  } else {
+    ico.classList.add('phone-disconnected');
+    ico.title=t.phoneDisconnectedTitle;
+  }
+}
+
+// Tapping the header phone icon offers to unpair the bonded iPhone — the
+// one phone-pairing action Orion can actually take (re-pairing still only
+// happens on Ori's own screen, per the comment above). Available whether or
+// not the phone link is currently connected: the bond lives in Ori's NVS
+// either way, and Unpair Phone (Device Command char 0008, ble-protocol.md
+// §3) only needs the Orion<->Ori link up, not the iPhone one.
+function openUnpairPhoneModal(){
+  const t=I18N[appLang].unpairPhoneModal;
+  const name=lastPhoneBondStatus.n||t.fallbackName;
+  $('unpairPhoneBody').textContent=t.body.replace('{name}',name);
+  showModal('m-unpair-phone');
+}
+function doUnpairPhone(){
+  hideModal('m-unpair-phone');
+  // Real app: invoke('unpair_phone'); Ori notifies Phone Bond Status back
+  // to {b:false,c:false}, which setPhoneBondStatus already renders as
+  // "no bond" (icon hidden) — simulated here directly since this prototype
+  // has no backend.
+  setPhoneBondStatus({b:false,c:false,n:''});
+}
+
+// iPhone info / stats — tapping the header phone icon (while an iPhone is
+// bonded) now opens this read-only snapshot instead of jumping straight to the
+// Unpair confirm. On the real device the counts + signal come from Ori's ANCS
+// client (Ori sees the iPhone link, not Orion), relayed to Orion over the sync
+// channel; here they're mock. No name shown — the phone icon that opens this
+// is already the identifying context. The Unpair button routes to the existing
+// confirm modal (m-unpair-phone) so the destructive action still takes a
+// deliberate second tap.
+const IPHONE_STATS={missed:2,unread:7,notifications:7,signal:4};
+
+// Lights up the first `level` (0-4) bars of a .sig-bars element — shared by
+// the Ori info modal (Ori↔Orion link) and the iPhone info modal (Ori↔iPhone
+// link, relayed here).
+function renderSigBars(id,level){
+  const el=$(id); if(!el) return;
+  [...el.children].forEach((b,i)=>b.classList.toggle('active',i<level));
+}
+
+function openIphoneInfoModal(){
+  const t=I18N[appLang].iphoneInfoModal;
+  const s=lastPhoneBondStatus;
+  $('ipInfoTitle').textContent=s.n||I18N[appLang].unpairPhoneModal.fallbackName;
+  $('ipInfoState').textContent=s.c?I18N[appLang].main.connected:I18N[appLang].main.disconnected;
+  $('ipInfoDot').className='p-dot '+(s.c?'available':'offline');
+  renderSigBars('ipInfoSigBars',s.c?IPHONE_STATS.signal:0);
+  $('ipInfoSigBars').title=t.sigLbl;
+
+  // Counts + badges are only meaningful while the iPhone link is actually up.
+  // Disconnected: icons stay visible but dimmed (.zero) and badges hidden —
+  // not replaced with a text hint (matches the final Ori_UI_Prototype.js design).
+  const setStat=(icoId,badgeId,tileId,count,label)=>{
+    const shown=s.c?count:0;
+    $(icoId).classList.toggle('zero',shown===0);
+    const badge=$(badgeId);
+    badge.style.display=(s.c&&shown>0)?'':'none';
+    badge.textContent=shown>99?'99+':shown;
+    $(tileId).title=label;
+  };
+  setStat('ipInfoMissedIco','ipInfoMissedBadge','ipInfoMissedTile',IPHONE_STATS.missed,t.missedLbl);
+  setStat('ipInfoUnreadIco','ipInfoUnreadBadge','ipInfoUnreadTile',IPHONE_STATS.unread,t.unreadLbl);
+  setStat('ipInfoNotifIco','ipInfoNotifBadge','ipInfoNotifTile',IPHONE_STATS.notifications,t.notifLbl);
+  // Tap-to-drill-down — only meaningful while connected and non-zero (same
+  // gate the badge/dim-icon visibility already uses).
+  $('ipInfoMissedTile').onclick=s.c&&IPHONE_STATS.missed>0?()=>openAncsListModal('missed'):null;
+  $('ipInfoUnreadTile').onclick=s.c&&IPHONE_STATS.unread>0?()=>openAncsListModal('unread'):null;
+  $('ipInfoNotifTile').onclick=s.c&&IPHONE_STATS.notifications>0?()=>openAncsListModal('other'):null;
+  $('ipInfoMissedTile').style.cursor=$('ipInfoMissedTile').onclick?'pointer':'';
+  $('ipInfoUnreadTile').style.cursor=$('ipInfoUnreadTile').onclick?'pointer':'';
+  $('ipInfoNotifTile').style.cursor=$('ipInfoNotifTile').onclick?'pointer':'';
+  $('ipInfoCancelBtn').textContent=I18N[appLang].common.cancel;
+  $('ipInfoUnpairBtn').textContent=I18N[appLang].unpairPhoneModal.unpair;
+  showModal('m-iphone-info');
+}
+// Unpair from the info modal → hand off to the existing confirm modal.
+function ipInfoToUnpair(){
+  hideModal('m-iphone-info');
+  openUnpairPhoneModal();
+}
+
+// ── ANCS drill-down — tap a call/message/notifications icon in the iPhone
+// Info modal to see the underlying notifications for that one category, then
+// tap a row for its detail (or, for a still-ringing call, Answer/Decline).
+// Orion-only: Ori's own iPhone Info icons are informational, this drill-down
+// doesn't exist on the device screen.
+//
+// Mock data only for now — today's BLE contract (ble-protocol.md
+// PhoneBondStatus) only relays the four aggregate counts (m/u/t/s), not
+// individual notification content, and there's no command path yet for
+// Orion to send an ANCS Answer/Decline action back through Ori to the
+// iPhone. Both are a real protocol extension to design before this can be
+// wired to live data — this prototype is the design-first step.
+const ANCS_ICON_PATHS={
+  call:'<path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>',
+  message:'<path d="M6 4 H18 A3 3 0 0 1 21 7 V14 A3 3 0 0 1 18 17 L13 17 8 21 8 17 6 17 A3 3 0 0 1 3 14 V7 A3 3 0 0 1 6 4 Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/>',
+  bell:'<path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M13.73 21a2 2 0 0 1-3.46 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>',
+  close:'<path d="M5 5 L19 19 M19 5 L5 19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+  'bell-off':'<path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M13.73 21a2 2 0 0 1-3.46 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 3 L21 21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
+};
+function ancsIconSvg(kind){
+  return '<svg viewBox="0 0 24 24" fill="none">'+ANCS_ICON_PATHS[kind]+'</svg>';
+}
+// Icon is always a circle (background-color bubble), never a rounded square.
+function ancsCategoryClass(bucket){
+  return bucket==='missed'?'cat-missed':bucket==='unread'?'cat-unread':'cat-other';
+}
+function ancsIconKind(bucket,it){
+  if(it&&it.ringing) return 'call';
+  return bucket==='missed'?'call':bucket==='unread'?'message':'bell';
+}
+
+// Each entry mirrors Ori's app_state::AncsNotification fields — display_name,
+// title, body, time_ago, pos_label, neg_label, has_neg_action, silent —
+// because the action button(s) and silent badge below are built FROM these
+// fields, not hardcoded. Once the BLE relay exists, Ori sends exactly these
+// (from ANCS attributes/EventFlags); Orion only renders whatever arrives.
+// pos_label is "" wherever real ANCS/Ori wouldn't offer a positive action:
+// missed calls (iOS blocks ANCS peripherals from dialing out —
+// modal_ancs_notification.cpp suppresses it explicitly) and message/other
+// notifications (no composing/sending a reply — product-intent.md).
+//
+// Two pairs share the same app+title (Alex Chen, Design Team) to demonstrate
+// stacking — grouped into one row/detail, same rule as Ori's own
+// app_state::ancs_collect_same_title. Array order is newest-first per bucket.
+const ANCS_MOCK={
+  missed:[
+    {uid:101,app:'Phone',title:'Mom',body:'Missed call from Mom.',time:'10m ago',pos_label:'',neg_label:'Clear',has_neg_action:true},
+    {uid:102,app:'Phone',title:'Unknown',body:'Missed call from an unknown number.',time:'2h ago',pos_label:'',neg_label:'Clear',has_neg_action:true},
+  ],
+  unread:[
+    {uid:201,app:'Messenger',title:'Alex Chen',body:'Hey, are we still on for lunch? I was thinking that new place downtown.',time:'3m ago',pos_label:'',neg_label:'Dismiss',has_neg_action:true},
+    {uid:206,app:'Messenger',title:'Alex Chen',body:"Also, I found a great taco place if you're interested.",time:'15m ago',pos_label:'',neg_label:'Dismiss',has_neg_action:true},
+    {uid:202,app:'WhatsApp',title:'Sarah',body:'Sent the files, check your email — let me know if anything looks off.',time:'25m ago',pos_label:'',neg_label:'Dismiss',has_neg_action:true},
+    {uid:203,app:'Messages',title:'+1 (555) 019-2839',body:'Your package has shipped and is on its way. Track it at the link below.',time:'1h ago',pos_label:'',neg_label:'Dismiss',has_neg_action:true},
+    {uid:204,app:'Messenger',title:'Design Team',body:"Priya: updated the mockups based on yesterday's feedback, take a look when you can.",time:'2h ago',pos_label:'',neg_label:'Dismiss',has_neg_action:true},
+    {uid:207,app:'Messenger',title:'Design Team',body:'Marcus: pushed the updated color tokens too, check the shared library.',time:'3h ago',pos_label:'',neg_label:'Dismiss',has_neg_action:true},
+    {uid:205,app:'WhatsApp',title:'Dad',body:'Call me when you get a chance, nothing urgent.',time:'4h ago',pos_label:'',neg_label:'Dismiss',has_neg_action:true},
+  ],
+  other:[
+    {uid:399,app:'Phone',title:'Jordan Lee',body:'',time:'now',ringing:true,pos_label:'Answer',neg_label:'Decline',has_neg_action:true},
+    {uid:301,app:'GitHub',title:'GitHub',body:'[Ori] New pull request opened: "Fix reconnect overlay timing".',time:'5m ago',pos_label:'',neg_label:'Dismiss',has_neg_action:true},
+    {uid:302,app:'Slack',title:'#general',body:'Jordan: deploy is live — thanks everyone for the quick turnaround.',time:'40m ago',pos_label:'',neg_label:'Dismiss',has_neg_action:true},
+    {uid:303,app:'Calendar',title:'Calendar',body:'Standup in 15 minutes — Daily Sync, Room 2 / video call.',time:'50m ago',pos_label:'',neg_label:'Dismiss',has_neg_action:true},
+    {uid:304,app:'Twitter',title:'Twitter',body:'You have 3 new followers this week.',time:'3h ago',pos_label:'',neg_label:'Dismiss',has_neg_action:true},
+    {uid:305,app:'Spotify',title:'Spotify',body:'Your Discover Weekly is ready — 30 new tracks picked for you.',time:'6h ago',pos_label:'',neg_label:'Dismiss',has_neg_action:true,silent:true},
+    {uid:306,app:'News',title:'News',body:'Breaking: local team wins championship in a last-minute finish.',time:'8h ago',pos_label:'',neg_label:'Dismiss',has_neg_action:true},
+  ],
+};
+
+const ANCS_LIST_TITLES={missed:'Missed Calls',unread:'Messages',other:'Notifications'};
+const ANCS_LIST_EMPTY={missed:'No missed calls',unread:'No messages',other:'No notifications'};
+
+// Groups raw notifications by (app, title) — same rule Ori's own
+// app_state::ancs_collect_same_title uses for the status-bar tiles and the
+// stacked-message overlay. Mock arrays are newest-first, so the first item
+// seen for a key is the group's reference (most recent).
+function ancsGroupItems(bucket){
+  const items=ANCS_MOCK[bucket]||[];
+  const order=[];
+  const byKey={};
+  items.forEach(it=>{
+    const key=it.app+'|'+it.title;
+    if(!byKey[key]){
+      byKey[key]={uids:[],items:[]};
+      order.push(byKey[key]);
+    }
+    byKey[key].uids.push(it.uid);
+    byKey[key].items.push(it);
+  });
+  return order.map(g=>({uids:g.uids,items:g.items,ref:g.items[0],count:g.items.length}));
+}
+function ancsFindGroup(bucket,uid){
+  return ancsGroupItems(bucket).find(g=>g.uids.indexOf(uid)!==-1);
+}
+
+// Row shows icon + title + latest preview only — no timestamp (shown in the
+// detail modal once opened) and one row per GROUP, not per raw notification.
+function openAncsListModal(bucket){
+  $('ancsListTitle').textContent=ANCS_LIST_TITLES[bucket];
+  const groups=ancsGroupItems(bucket);
+  const bodyEl=$('ancsListBody');
+  bodyEl.dataset.bucket=bucket;
+  bodyEl.innerHTML=groups.length===0?'<div class="ancs-list-empty">'+ANCS_LIST_EMPTY[bucket]+'</div>':
+    groups.map(g=>{
+      const it=g.ref;
+      const stacked=g.count>1;
+      // Both badges overlap the icon's top-right corner, so they're
+      // mutually exclusive — count wins when a stacked group's reference
+      // happens to also be silent, same priority as Ori's own status-bar
+      // tile (stacked-count is the more load-bearing signal of the two).
+      const countBadge=stacked?'<div class="ancs-row-count">'+(g.count>9?'9+':g.count)+'</div>':'';
+      const silentBadge=(!stacked && it.silent)?
+        '<div class="ancs-row-silent-badge" title="Delivered silently">'+ancsIconSvg('bell-off')+'</div>':'';
+      // Swiping is only wired when there's actually a negative action to
+      // send (mirrors the detail modal's danger/Read-all button — same
+      // has_neg_action field) — a row with nothing to dismiss doesn't swipe.
+      // data-uid/data-bucket/data-has-del drive the gesture handler
+      // (ancsSwipeStart) and the tap-to-open handler (ancsRowClick) below,
+      // since both are plain listeners now, not inline onclick.
+      return '<div class="ancs-row-wrap">'+
+        '<div class="ancs-row" data-uid="'+it.uid+'" data-bucket="'+bucket+'" data-has-del="'+(it.has_neg_action?'1':'')+'">'+
+          '<div class="ancs-row-icon-wrap">'+
+            '<div class="ancs-row-icon '+(it.ringing?'cat-ringing':ancsCategoryClass(bucket))+'">'+ancsIconSvg(ancsIconKind(bucket,it))+'</div>'+
+            countBadge+
+            silentBadge+
+          '</div>'+
+          '<div class="ancs-row-text">'+
+            '<div class="ancs-row-title">'+it.title+'</div>'+
+            '<div class="ancs-row-preview">'+(it.ringing?'Incoming call…':it.body)+'</div>'+
+          '</div>'+
+        '</div>'+
+      '</div>';
+    }).join('');
+  ancsInitRowGestures(bodyEl);
+  hideModal('m-iphone-info');
+  showModal('m-ancs-list');
+}
+
+// Swipe-left-to-delete — replaces the earlier hover-reveal X button with a
+// drag gesture: dragging a row left past ANCS_SWIPE_COMMIT of its own width
+// and releasing clears it (or its whole stacked group) via the same
+// ancsRowQuickDismiss path the old button used; releasing short of that
+// snaps the row back. No revealed background/icon — the row itself just
+// slides with the drag and fades proportionally (further dragged = fainter),
+// so the delete affordance is the fade itself, not a colored panel
+// underneath. Pointer events cover mouse drag and trackpad/touch alike.
+// Only one row can be mid-drag at a time (ancsSwipeState).
+const ANCS_SWIPE_COMMIT = 0.35; // fraction of row width that commits the delete
+let ancsSwipeState = null;
+
+function ancsInitRowGestures(container){
+  container.querySelectorAll('.ancs-row').forEach(row=>{
+    row.addEventListener('pointerdown', ancsSwipeStart);
+    row.addEventListener('click', ancsRowClick);
+  });
+}
+
+function ancsRowClick(e){
+  const row=e.currentTarget;
+  // A completed drag (in either direction) shouldn't also open the detail —
+  // pointerup fires just before click. The flag is cleared here, one-shot.
+  if(row.dataset.suppressClick){ delete row.dataset.suppressClick; return; }
+  openAncsDetail(Number(row.dataset.uid), row.dataset.bucket);
+}
+
+function ancsSwipeStart(e){
+  if(e.button!==undefined && e.button!==0) return; // primary mouse button / touch / pen only
+  const row=e.currentTarget;
+  if(!row.dataset.hasDel) return; // nothing to swipe to
+  const rect=row.getBoundingClientRect();
+  ancsSwipeState={row,startX:e.clientX,dx:0,width:rect.width,dragging:false,pointerId:e.pointerId};
+  row.addEventListener('pointermove', ancsSwipeMove);
+  row.addEventListener('pointerup', ancsSwipeEnd);
+  row.addEventListener('pointercancel', ancsSwipeEnd);
+}
+
+function ancsSwipeMove(e){
+  const s=ancsSwipeState;
+  if(!s || e.pointerId!==s.pointerId) return;
+  const rawDx=e.clientX-s.startX;
+  if(!s.dragging){
+    if(Math.abs(rawDx)<6) return; // ignore tiny jitter so plain clicks stay clicks
+    s.dragging=true;
+    s.row.style.transition='none';
+    s.row.setPointerCapture(s.pointerId);
+  }
+  s.dx=Math.max(-s.width,Math.min(0,rawDx)); // left only, clamped to the row's own width
+  s.row.style.transform='translateX('+s.dx+'px)';
+  // Fade proportionally to how far it's been dragged — at dx=0 fully
+  // opaque, at dx=-width fully transparent. This IS the delete affordance;
+  // there's no separate revealed panel to look at instead.
+  s.row.style.opacity=String(Math.max(0,1-Math.abs(s.dx)/s.width));
+}
+
+function ancsSwipeEnd(e){
+  const s=ancsSwipeState;
+  if(!s || e.pointerId!==s.pointerId) return;
+  s.row.removeEventListener('pointermove', ancsSwipeMove);
+  s.row.removeEventListener('pointerup', ancsSwipeEnd);
+  s.row.removeEventListener('pointercancel', ancsSwipeEnd);
+  const committed=s.dragging && Math.abs(s.dx)>s.width*ANCS_SWIPE_COMMIT;
+  const uid=Number(s.row.dataset.uid), bucket=s.row.dataset.bucket;
+  s.row.style.transition='transform .18s ease-out, opacity .18s ease-out';
+  if(committed){
+    s.row.style.transform='translateX(-100%)';
+    s.row.style.opacity='0';
+    setTimeout(()=>{ ancsRowQuickDismiss(uid,bucket); },160);
+  } else {
+    s.row.style.transform='translateX(0)';
+    s.row.style.opacity='1';
+  }
+  if(s.dragging) s.row.dataset.suppressClick='1';
+  ancsSwipeState=null;
+}
+
+// Button set/labels are derived from the notification's own fields — same
+// rule Ori's modal_ancs_notification.cpp uses: positive action (if any) as
+// the accent button, negative action (if any) as the danger button, and a
+// plain Close only when NEITHER is offered. Never a hardcoded "Answer" /
+// "Decline" / "Dismiss" string — whatever pos_label/neg_label says is what
+// renders. (Stacked groups skip this — single "Read all" instead, below.)
+function ancsActionsHTML(it,uid,bucket){
+  const hasPos=!!it.pos_label;
+  const hasNeg=!!it.has_neg_action;
+  let html='';
+  if(hasPos) html+='<button class="btn btn-primary btn-full" onclick="ancsPositiveAction('+uid+',\''+bucket+'\')">'+it.pos_label+'</button>';
+  if(hasNeg) html+='<button class="btn btn-dng btn-full" onclick="ancsNegativeAction('+uid+',\''+bucket+'\')">'+(it.neg_label||'Dismiss')+'</button>';
+  if(!hasPos&&!hasNeg) html+='<button class="btn btn-sec btn-full" onclick="ancsBackToList(\''+bucket+'\')">Close</button>';
+  return html;
+}
+
+// Layout mirrors Ori_UI_Prototype.html's ancsDetailHTML()/.ancs-detail:
+// silent badge top-left, close-X top-right (both corners; the X dismisses
+// unconditionally, same as Ori's ui::add_close_x, regardless of which
+// action buttons are below), icon, title, body/time, actions. No app-name
+// line — the icon + title already identify the source. Stacked groups
+// (count > 1) replace the single body/time/action-buttons with every
+// message (oldest first, divider-split) and one "Read all" button.
+function openAncsDetail(uid,bucket){
+  const g=ancsFindGroup(bucket,uid);
+  if(!g) return;
+  const it=g.ref;
+  const stacked=g.count>1;
+  const iconCls=it.ringing?'cat-ringing':ancsCategoryClass(bucket);
+  const silentBadge=it.silent?
+    '<div class="ad-silent-badge">'+ancsIconSvg('bell-off')+'Silent</div>':'';
+
+  let bodyHtml;
+  if(stacked){
+    const oldestFirst=g.items.slice().reverse();
+    bodyHtml='<div class="ad-count">'+g.count+' messages</div>'+
+      oldestFirst.map((m,i)=>(i>0?'<div class="ad-divider"></div>':'')+
+        '<div class="ad-body">'+m.body+'</div>'+
+        '<div class="ad-time">'+m.time+'</div>'
+      ).join('');
+  } else {
+    bodyHtml=(it.body?'<div class="ad-body">'+it.body+'</div>':'')+
+      '<div class="ad-time">'+it.time+'</div>';
+  }
+  const actions=stacked?
+    '<button class="btn btn-dng btn-full" onclick="ancsReadAllGroup('+it.uid+',\''+bucket+'\')">Read all</button>'
+    :ancsActionsHTML(it,it.uid,bucket);
+
+  $('ancsDetailCard').innerHTML=
+    '<div class="ancs-detail'+(it.silent?' has-silent':'')+'">'+
+      silentBadge+
+      '<div class="ad-close-x" onclick="ancsBackToList(\''+bucket+'\')">'+ancsIconSvg('close')+'</div>'+
+      '<div class="ad-app-icon '+iconCls+'">'+ancsIconSvg(ancsIconKind(bucket,it))+'</div>'+
+      '<div class="ad-title">'+it.title+(it.ringing?' — Incoming call':'')+'</div>'+
+      bodyHtml+
+      '<div class="ad-actions">'+actions+'</div>'+
+    '</div>';
+  hideModal('m-ancs-list');
+  showModal('m-ancs-detail');
+}
+
+// Dismissing a detail — by action, Read all, or the corner X — always
+// returns to the list it was opened from, not the screen behind everything.
+// The user drilled in one level at a time, so they back out the same way.
+function ancsBackToList(bucket){
+  hideModal('m-ancs-detail');
+  openAncsListModal(bucket);
+}
+
+// Mock only — clearing an item (or a whole stacked group) just removes it
+// from the queue (same visible effect a real ANCS PerformNotificationAction
+// would have, sent once per UID for a group — mirrors the loop in
+// modal_ancs_notification.cpp's on_read). Wiring this for real needs a new
+// Orion → Ori command that Ori relays to the iPhone over ANCS — no such
+// characteristic exists yet.
+function ancsClearUids(uids,bucket){
+  const drop=new Set(uids);
+  ANCS_MOCK[bucket]=(ANCS_MOCK[bucket]||[]).filter(x=>!drop.has(x.uid));
+  const n=uids.length;
+  if(bucket==='other') IPHONE_STATS.notifications=Math.max(0,IPHONE_STATS.notifications-n);
+  else if(bucket==='missed') IPHONE_STATS.missed=Math.max(0,IPHONE_STATS.missed-n);
+  else if(bucket==='unread') IPHONE_STATS.unread=Math.max(0,IPHONE_STATS.unread-n);
+}
+function ancsClearItem(uid,bucket){
+  ancsClearUids([uid],bucket);
+  ancsBackToList(bucket);
+}
+function ancsPositiveAction(uid,bucket){ ancsClearItem(uid,bucket); }
+function ancsNegativeAction(uid,bucket){ ancsClearItem(uid,bucket); }
+function ancsReadAllGroup(refUid,bucket){
+  const g=ancsFindGroup(bucket,refUid);
+  if(g) ancsClearUids(g.uids,bucket);
+  ancsBackToList(bucket);
+}
+// Row's own quick-dismiss X — clears the whole group (if stacked) without
+// leaving the list.
+function ancsRowQuickDismiss(uid,bucket){
+  const g=ancsFindGroup(bucket,uid);
+  if(g) ancsClearUids(g.uids,bucket);
+  openAncsListModal(bucket);
+}
+// Back from the list → iPhone Info (re-render so any change above shows).
+function ancsListBack(){
+  hideModal('m-ancs-list');
+  openIphoneInfoModal();
+}
+
+// ── Incoming call — auto-appears over whatever Orion is currently showing
+// the instant a call notification arrives, mirroring Ori's own
+// modal_incoming_call.cpp: a ringing banner with Answer/Decline, then (once
+// answered) an in-call view with a live mm:ss duration timer that keeps
+// running independent of the dialog's visibility — reopening it shows the
+// running time, not a reset one. Real wiring needs the same Orion → Ori
+// action-relay characteristic noted throughout this file (no such
+// characteristic exists yet); here it's fired from the dev nav (NAV_PAGES)
+// standing in for the BLE/ANCS event that would trigger it for real.
+const CallSession={running:false,uid:0,elapsedS:0,timerId:null,label:null};
+
+function callSessionStart(uid){
+  if(CallSession.running && CallSession.uid===uid) return; // already running — never reset an in-progress call
+  callSessionStop();
+  CallSession.running=true;
+  CallSession.uid=uid;
+  CallSession.elapsedS=0;
+  CallSession.timerId=setInterval(()=>{
+    CallSession.elapsedS++;
+    if(CallSession.label) CallSession.label.textContent=callFmtDuration(CallSession.elapsedS);
+  },1000);
+}
+function callSessionStop(){
+  if(CallSession.timerId) clearInterval(CallSession.timerId);
+  CallSession.running=false;CallSession.uid=0;CallSession.elapsedS=0;CallSession.timerId=null;CallSession.label=null;
+}
+function callFmtDuration(s){
+  const hh=Math.floor(s/3600),mm=Math.floor((s%3600)/60),ss=s%60;
+  const pad=n=>String(n).padStart(2,'0');
+  return hh>0?hh+':'+pad(mm)+':'+pad(ss):pad(mm)+':'+pad(ss);
+}
+// The mock ringing call lives in ANCS_MOCK.other alongside ordinary
+// notifications (same as on Ori — a call is just another ANCS category
+// until it's answered/declined), so look it up the same way.
+function ancsFindRingingItem(uid){
+  for(const bucket of ['missed','unread','other']){
+    const it=(ANCS_MOCK[bucket]||[]).find(x=>x.uid===uid);
+    if(it) return {it,bucket};
+  }
+  return null;
+}
+// Every other modal is hidden first so the call takes over the whole panel
+// cleanly, regardless of what was open when it arrived — matches Ori
+// creating its scrim on lv_screen_active(), which always ends up topmost
+// no matter what screen/modal was showing.
+function callTakeOverScreen(){
+  document.querySelectorAll('.modal-bg.show').forEach(m=>m.classList.remove('show'));
+}
+
+function showIncomingCall(uid){
+  const found=ancsFindRingingItem(uid);
+  if(!found) return;
+  const it=found.it;
+  callTakeOverScreen();
+  $('callCard').innerHTML=
+    '<div class="ancs-detail">'+
+      '<div class="ad-close-x" title="Dismiss — call keeps ringing" onclick="hideModal(\'m-incoming-call\')">'+ancsIconSvg('close')+'</div>'+
+      '<div class="ad-app-icon cat-ringing">'+ancsIconSvg('call')+'</div>'+
+      '<div class="ad-eyebrow">Incoming call</div>'+
+      '<div class="ad-title">'+it.title+'</div>'+
+      '<div class="ad-time" style="text-align:center;">'+it.app+'</div>'+
+      '<div class="ad-actions">'+
+        (it.pos_label?'<button class="btn btn-primary btn-full" onclick="callAnswer('+uid+')">'+it.pos_label+'</button>':'')+
+        (it.has_neg_action?'<button class="btn btn-dng btn-full" onclick="callDecline('+uid+')">'+(it.neg_label||'Decline')+'</button>':'')+
+      '</div>'+
+    '</div>';
+  showModal('m-incoming-call');
+}
+function callAnswer(uid){
+  callSessionStart(uid);
+  showActiveCall(uid);
+}
+// ANCS Negative on a ringing call = Decline — same clear path every other
+// dismiss uses, just reached from a different screen.
+function callDecline(uid){
+  const found=ancsFindRingingItem(uid);
+  hideModal('m-incoming-call');
+  if(found) ancsClearUids([uid],found.bucket);
+}
+function showActiveCall(uid){
+  const found=ancsFindRingingItem(uid);
+  if(!found) return;
+  const it=found.it;
+  callSessionStart(uid);
+  callTakeOverScreen();
+  $('callCard').innerHTML=
+    '<div class="ancs-detail">'+
+      '<div class="ad-close-x" title="Hide — call keeps going" onclick="hideModal(\'m-incoming-call\')">'+ancsIconSvg('close')+'</div>'+
+      '<div class="ad-app-icon cat-ringing">'+ancsIconSvg('call')+'</div>'+
+      '<div class="ad-eyebrow">On call</div>'+
+      '<div class="ad-title">'+it.title+'</div>'+
+      '<div class="ad-call-timer" id="callTimerLabel">'+callFmtDuration(CallSession.elapsedS)+'</div>'+
+      '<div class="ad-actions">'+
+        '<button class="btn btn-dng btn-full" onclick="callEnd('+uid+')">End call</button>'+
+      '</div>'+
+    '</div>';
+  CallSession.label=$('callTimerLabel');
+  showModal('m-incoming-call');
+}
+// Same ANCS Negative action as Decline (hanging up = declining, from ANCS's
+// point of view) — "End call" is a fixed literal for the same reason the
+// eyebrow text is: Ori's own on_end_call() hardcodes it too, independent of
+// neg_label, since by now the ringing-era "Decline" label no longer fits.
+function callEnd(uid){
+  const found=ancsFindRingingItem(uid);
+  callSessionStop();
+  hideModal('m-incoming-call');
+  if(found) ancsClearUids([uid],found.bucket);
+}
+
+// Ori device info / stats — tapping the header's device name + connection
+// state opens a read-only snapshot of everything Orion knows about this
+// specific Ori: identity (name, firmware, address), live link quality, and
+// its other bond (iPhone/ANCS). Demo-only constants below stand in for
+// values the real app would read once and cache (Firmware Revision String
+// char 0x2A26, the paired Peripheral's address) rather than re-fetch on
+// every open.
+const ORI_FW_VERSION='1.2.3';
+const ORI_BT_ADDRESS='58:96:1D:B1:14:2F';
+function openOriInfoModal(){
+  const t=I18N[appLang].oriInfoModal;
+  $('oriInfoTitle').textContent=$('hName').textContent;
+  $('oriInfoState').textContent=$('hState').textContent;
+  $('oriInfoDot').className='p-dot '+(connState==='on'?'available':connState==='off'?'offline':'away');
+
+  $('oriInfoFwLbl').textContent=t.fwLbl;$('oriInfoFw').textContent=ORI_FW_VERSION;
+  $('oriInfoAddrLbl').textContent=t.addrLbl;$('oriInfoAddr').textContent=ORI_BT_ADDRESS;
+  $('oriInfoSigLbl').textContent=t.sigLbl;
+  $('oriInfoPhoneLbl').textContent=t.phoneLbl;
+  $('oriInfoSyncLbl').textContent=t.syncLbl;
+
+  // Live-link-only fields — honest about what can't be verified while Ori
+  // isn't actually connected right now (same "don't show what you can't
+  // verify" policy the device itself uses for presence/weather).
+  const live=connState==='on'||connState==='rec';
+  renderSigBars('oriInfoSigBars',live?4:0);
+  $('oriInfoSync').textContent=connState==='on'?t.justNow:t.minAgo.replace('{n}',connState==='off'?12:5);
+  // Bond status only — no name (settings elsewhere already show the phone's
+  // own name via the Unpair modal, which is where that identity matters).
+  $('oriInfoPhone').textContent=lastPhoneBondStatus.b?t.bonded:t.notPaired;
+
+  $('oriInfoCloseBtn').textContent=I18N[appLang].pairfail.close;
+  showModal('m-ori-info');
 }
 
 let pfChanged=false,pfRemoved=false;
@@ -609,20 +1191,33 @@ function signMicrosoft(){
   },1400);
 }
 
+// Favorite is now three independently-configurable slots (Favorite 1/2/3)
+// instead of one generic token — each needs its own icon so the device can
+// visually distinguish which shortcut is which (no text label on Ori's
+// screen). PROPOSED-FEATURE PREVIEW: inline SVG data URIs standing in for
+// real numbered-star assets (matching favorite.png's outline-star style,
+// same CSS invert-filter treatment as .slot-ico-img) until this is approved
+// and real icon assets are produced for firmware/img/shortcut_icons/.
+const favStarIcon=n=>"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>"+
+  "<path d='m12 2.2 3.05 6.18 6.82 0.99-4.94 4.81 1.17 6.79L12 17.78 5.9 20.97l1.17-6.79L2.13 9.37l6.82-0.99z' fill='none' stroke='black' stroke-width='1.6' stroke-linejoin='round' stroke-linecap='round'/>"+
+  "<text x='12' y='16' text-anchor='middle' font-size='9' font-weight='800' font-family='Arial,sans-serif' fill='black'>"+n+"</text></svg>";
 const siImgMap={
   'vol-mute':'../firmware/img/shortcut_icons/vol-mute.png',
   'mic-mute':'../firmware/img/shortcut_icons/mic-mute.png',
   'screenshot':'../firmware/img/shortcut_icons/screenshot.png',
   'lock-screen':'../firmware/img/shortcut_icons/lock-screen.png',
-  'favorite':'../firmware/img/shortcut_icons/favorite.png',
+  'favorite-1':favStarIcon(1),
+  'favorite-2':favStarIcon(2),
+  'favorite-3':favStarIcon(3),
   'calculator':'../firmware/img/shortcut_icons/calculator.png'
 };
 function applySlot(n){
   const v=$('ss'+n).value;
   $('si'+n).src=siImgMap[v]||'';
   const favEl=$('fav'+n);
-  favEl.style.display=v==='favorite'?'block':'none';
-  if(v==='favorite') renderKbdCombo(n);
+  const isFav=v.startsWith('favorite');
+  favEl.style.display=isFav?'block':'none';
+  if(isFav) renderKbdCombo(n);
   _updateSlotSave();
 }
 // Simulates Orion reading Device Settings (incl. shortcut slots) from Ori on
@@ -746,7 +1341,7 @@ function _isSlotsDirty(){
   });
 }
 function _hasIncompleteFavorite(){
-  return [1,2,3].some(n=>$('ss'+n).value==='favorite'&&_kbdCombos[n-1].length===0);
+  return [1,2,3].some(n=>$('ss'+n).value.startsWith('favorite')&&_kbdCombos[n-1].length===0);
 }
 function _updateSlotSave(){
   const btn=$('slotsSaveBtn'); if(!btn) return;
@@ -945,12 +1540,16 @@ const I18N={
     connecting:{title:'Pairing with Ori…',sub:'Waiting for Ori to confirm…'},
     syncing:{title:'Setting up Ori…',progressLabel:'A busy day ahead…',doneLabel:'Ori is set up!'},
     pairfail:{title:'Couldn’t pair with Ori',body:'The passkey didn’t match, or the request timed out on Ori. Pick a device to try again.',close:'Close'},
+    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Address',sigLbl:'Signal',phoneLbl:'iPhone',syncLbl:'Synced',
+      bonded:'Bonded',notPaired:'Not paired',justNow:'Just now',minAgo:'{n} min ago'},
+    iphoneInfoModal:{missedLbl:'Missed calls',unreadLbl:'Unread messages',sigLbl:'Signal',notifLbl:'Notifications'},
     settings:{title:'Settings',general:'General',auto:'Run automatically',autoSub:'Launch at Windows startup',
       calendar:'Calendar Source',language:'Language',about:'About',app:'Version',reset:'Reset'},
-    main:{connected:'Connected',syncing:'Syncing…',disconnected:'Disconnected',timeOff:'Time Off',
+    main:{connected:'Connected',connecting:'Connecting…',syncing:'Syncing…',disconnected:'Disconnected',timeOff:'Time Off',
       noTimeOffPlanned:'No Time Off planned',tapToSet:'Tap to set',notifFilterRow:'Notification Filter',
       clockFaceRow:'Clock Face',timeFormatRow:'Time Format',quickActionsRow:'Quick Actions',presenceAvailable:'Available',
-      settingsIcoTitle:'Settings',minimizeIcoTitle:'Minimize',fwUpToDate:'Firmware up to date',fwAvailable:'Firmware update available'},
+      settingsIcoTitle:'Settings',minimizeIcoTitle:'Minimize',fwUpToDate:'Firmware up to date',fwAvailable:'Firmware update available',
+      phoneConnectedTitle:'{name} — Connected',phoneDisconnectedTitle:'iPhone disconnected',phoneUnknownName:'iPhone'},
     profileEditor:{title:'Profile'},
     timeOffEditor:{periodLbl:'Period',selectDates:'Select dates…',selectStartDate:'Select start date',
       selectEndDate:'Now select end date',destinationLbl:'Destination',destinationPh:'City, Country',
@@ -960,7 +1559,7 @@ const I18N={
       signInMicrosoft:'Sign in with Microsoft',signOutMicrosoft:'Sign out from Microsoft'},
     quickActions:{slotPrefix:'Slot',notSet:'Not set',clickToSet:'Click to set',clickToChange:'Click to change',
       pressShortcut:'Press shortcut…',escToCancel:'Esc to cancel',
-      actionLabels:{'vol-mute':'Volume Mute','mic-mute':'Mic Mute',screenshot:'Screenshot','lock-screen':'Lock Screen',favorite:'Favorite',calculator:'Calculator'}},
+      actionLabels:{'vol-mute':'Volume Mute','mic-mute':'Mic Mute',screenshot:'Screenshot','lock-screen':'Lock Screen','favorite-1':'Favorite 1','favorite-2':'Favorite 2','favorite-3':'Favorite 3',calculator:'Calculator'}},
     clockFace:{digitalLbl:'Digital',digitalSub:'Large digits',analogLbl:'Analog',analogSub:'Tick dial with hands'},
     timeFormat:{h24Lbl:'24-hour',h24Sub:'e.g. 14:30',h12Lbl:'12-hour',h12Sub:'e.g. 2:30 PM'},
     notifFilter:{disabledLbl:'Disabled',disabledSub:'No notifications shown on Ori',callOnlyLbl:'Call Only',
@@ -970,6 +1569,9 @@ const I18N={
     resetModal:{title:'Reset',
       body:'This will erase your profile, settings, and factory reset Ori.',
       reset:'Reset'},
+    unpairPhoneModal:{title:'Unpair iPhone',
+      body:'Ori will no longer show notifications from {name}.',
+      fallbackName:'The paired iPhone',unpair:'Unpair'},
     fwModal:{title:'Ori Update Available',update:'Update',
       updatingFirmware:'Updating Ori…',keepPluggedIn:'Keep Ori plugged in',verifying:'Verifying…',
       nowRunning:'Now running {v}',done:'Done',
@@ -999,12 +1601,16 @@ const I18N={
     connecting:{title:'Đang ghép nối với Ori…',sub:'Đang chờ Ori xác nhận…'},
     syncing:{title:'Đang thiết lập Ori…',progressLabel:'Một ngày bận rộn đang chờ…',doneLabel:'Ori đã thiết lập xong!'},
     pairfail:{title:'Không thể ghép nối với Ori',body:'Mã ghép nối không khớp, hoặc yêu cầu đã hết thời gian chờ trên Ori. Hãy chọn một thiết bị để thử lại.',close:'Đóng'},
+    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Địa chỉ',sigLbl:'Tín hiệu',phoneLbl:'iPhone',syncLbl:'Đồng bộ',
+      bonded:'Đã ghép nối',notPaired:'Chưa ghép nối',justNow:'Vừa xong',minAgo:'{n} phút trước'},
+    iphoneInfoModal:{missedLbl:'Cuộc gọi nhỡ',unreadLbl:'Tin chưa đọc',sigLbl:'Tín hiệu',notifLbl:'Thông báo'},
     settings:{title:'Cài đặt',general:'Chung',auto:'Tự động chạy',autoSub:'Khởi động cùng Windows',
       calendar:'Nguồn lịch',language:'Ngôn ngữ',about:'Giới thiệu',app:'Phiên bản',reset:'Đặt lại'},
-    main:{connected:'Đã kết nối',syncing:'Đang đồng bộ…',disconnected:'Đã ngắt kết nối',timeOff:'Nghỉ phép',
+    main:{connected:'Đã kết nối',connecting:'Đang kết nối…',syncing:'Đang đồng bộ…',disconnected:'Đã ngắt kết nối',timeOff:'Nghỉ phép',
       noTimeOffPlanned:'Chưa có lịch nghỉ phép',tapToSet:'Nhấn để đặt',notifFilterRow:'Bộ lọc thông báo',
       clockFaceRow:'Mặt đồng hồ',timeFormatRow:'Định dạng giờ',quickActionsRow:'Thao tác nhanh',presenceAvailable:'Đang hoạt động',
-      settingsIcoTitle:'Cài đặt',minimizeIcoTitle:'Thu nhỏ',fwUpToDate:'Firmware đã mới nhất',fwAvailable:'Có bản cập nhật firmware'},
+      settingsIcoTitle:'Cài đặt',minimizeIcoTitle:'Thu nhỏ',fwUpToDate:'Firmware đã mới nhất',fwAvailable:'Có bản cập nhật firmware',
+      phoneConnectedTitle:'{name} — Đã kết nối',phoneDisconnectedTitle:'iPhone đã ngắt kết nối',phoneUnknownName:'iPhone'},
     profileEditor:{title:'Hồ sơ'},
     timeOffEditor:{periodLbl:'Khoảng thời gian',selectDates:'Chọn ngày…',selectStartDate:'Chọn ngày bắt đầu',
       selectEndDate:'Bây giờ chọn ngày kết thúc',destinationLbl:'Điểm đến',destinationPh:'Thành phố, Quốc gia',
@@ -1014,7 +1620,7 @@ const I18N={
       signInMicrosoft:'Đăng nhập bằng Microsoft',signOutMicrosoft:'Đăng xuất khỏi Microsoft'},
     quickActions:{slotPrefix:'Khe',notSet:'Chưa đặt',clickToSet:'Nhấn để đặt',clickToChange:'Nhấn để đổi',
       pressShortcut:'Nhấn tổ hợp phím…',escToCancel:'Nhấn Esc để hủy',
-      actionLabels:{'vol-mute':'Tắt âm lượng','mic-mute':'Tắt mic',screenshot:'Chụp màn hình','lock-screen':'Khóa màn hình',favorite:'Yêu thích',calculator:'Máy tính'}},
+      actionLabels:{'vol-mute':'Tắt âm lượng','mic-mute':'Tắt mic',screenshot:'Chụp màn hình','lock-screen':'Khóa màn hình','favorite-1':'Yêu thích 1','favorite-2':'Yêu thích 2','favorite-3':'Yêu thích 3',calculator:'Máy tính'}},
     clockFace:{digitalLbl:'Số',digitalSub:'Chữ số lớn',analogLbl:'Kim',analogSub:'Mặt số kim chỉ giờ'},
     timeFormat:{h24Lbl:'24 giờ',h24Sub:'VD: 14:30',h12Lbl:'12 giờ',h12Sub:'VD: 2:30 CH'},
     notifFilter:{disabledLbl:'Tắt',disabledSub:'Không hiển thị thông báo trên Ori',callOnlyLbl:'Chỉ cuộc gọi',
@@ -1024,6 +1630,9 @@ const I18N={
     resetModal:{title:'Đặt lại',
       body:'Việc này sẽ xóa hồ sơ, cài đặt của bạn, và đặt lại Ori về mặc định gốc.',
       reset:'Đặt lại'},
+    unpairPhoneModal:{title:'Hủy ghép nối iPhone',
+      body:'Ori sẽ không còn hiển thị thông báo từ {name} nữa.',
+      fallbackName:'iPhone đã ghép nối',unpair:'Hủy ghép nối'},
     fwModal:{title:'Có bản cập nhật Ori',update:'Cập nhật',
       updatingFirmware:'Đang cập nhật Ori…',keepPluggedIn:'Giữ Ori được cắm điện',verifying:'Đang xác minh…',
       nowRunning:'Đang chạy {v}',done:'Hoàn tất',
@@ -1053,12 +1662,16 @@ const I18N={
     connecting:{title:'Emparejando con Ori…',sub:'Esperando confirmación de Ori…'},
     syncing:{title:'Configurando Ori…',progressLabel:'Un día ocupado por delante…',doneLabel:'¡Ori está listo!'},
     pairfail:{title:'No se pudo emparejar con Ori',body:'El código no coincidió, o la solicitud caducó en Ori. Elige un dispositivo para intentarlo de nuevo.',close:'Cerrar'},
+    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Dirección',sigLbl:'Señal',phoneLbl:'iPhone',syncLbl:'Sincronizado',
+      bonded:'Vinculado',notPaired:'No vinculado',justNow:'Ahora mismo',minAgo:'Hace {n} min'},
+    iphoneInfoModal:{missedLbl:'Llamadas perdidas',unreadLbl:'Mensajes sin leer',sigLbl:'Señal',notifLbl:'Notificaciones'},
     settings:{title:'Configuración',general:'General',auto:'Iniciar automáticamente',autoSub:'Abrir al iniciar Windows',
       calendar:'Fuente de calendario',language:'Idioma',about:'Acerca de',app:'Versión',reset:'Restablecer'},
-    main:{connected:'Conectado',syncing:'Sincronizando…',disconnected:'Desconectado',timeOff:'Tiempo libre',
+    main:{connected:'Conectado',connecting:'Conectando…',syncing:'Sincronizando…',disconnected:'Desconectado',timeOff:'Tiempo libre',
       noTimeOffPlanned:'Sin tiempo libre planeado',tapToSet:'Toca para configurar',notifFilterRow:'Filtro de notificaciones',
       clockFaceRow:'Esfera del reloj',timeFormatRow:'Formato de hora',quickActionsRow:'Acciones rápidas',presenceAvailable:'Disponible',
-      settingsIcoTitle:'Configuración',minimizeIcoTitle:'Minimizar',fwUpToDate:'Firmware actualizado',fwAvailable:'Actualización de firmware disponible'},
+      settingsIcoTitle:'Configuración',minimizeIcoTitle:'Minimizar',fwUpToDate:'Firmware actualizado',fwAvailable:'Actualización de firmware disponible',
+      phoneConnectedTitle:'{name} — Conectado',phoneDisconnectedTitle:'iPhone desconectado',phoneUnknownName:'iPhone'},
     profileEditor:{title:'Perfil'},
     timeOffEditor:{periodLbl:'Periodo',selectDates:'Selecciona fechas…',selectStartDate:'Selecciona la fecha de inicio',
       selectEndDate:'Ahora selecciona la fecha de fin',destinationLbl:'Destino',destinationPh:'Ciudad, país',
@@ -1068,7 +1681,7 @@ const I18N={
       signInMicrosoft:'Iniciar sesión con Microsoft',signOutMicrosoft:'Cerrar sesión de Microsoft'},
     quickActions:{slotPrefix:'Ranura',notSet:'Sin definir',clickToSet:'Haz clic para definir',clickToChange:'Haz clic para cambiar',
       pressShortcut:'Presiona el atajo…',escToCancel:'Esc para cancelar',
-      actionLabels:{'vol-mute':'Silenciar volumen','mic-mute':'Silenciar micrófono',screenshot:'Captura de pantalla','lock-screen':'Bloquear pantalla',favorite:'Favorito',calculator:'Calculadora'}},
+      actionLabels:{'vol-mute':'Silenciar volumen','mic-mute':'Silenciar micrófono',screenshot:'Captura de pantalla','lock-screen':'Bloquear pantalla','favorite-1':'Favorito 1','favorite-2':'Favorito 2','favorite-3':'Favorito 3',calculator:'Calculadora'}},
     clockFace:{digitalLbl:'Digital',digitalSub:'Dígitos grandes',analogLbl:'Analógico',analogSub:'Esfera con agujas'},
     timeFormat:{h24Lbl:'24 horas',h24Sub:'p. ej. 14:30',h12Lbl:'12 horas',h12Sub:'p. ej. 2:30 p.m.'},
     notifFilter:{disabledLbl:'Desactivado',disabledSub:'No se muestran notificaciones en Ori',callOnlyLbl:'Solo llamadas',
@@ -1078,6 +1691,9 @@ const I18N={
     resetModal:{title:'Restablecer',
       body:'Esto eliminará tu perfil, tus ajustes, y restablecerá Ori a los valores de fábrica.',
       reset:'Restablecer'},
+    unpairPhoneModal:{title:'Desvincular iPhone',
+      body:'Ori dejará de mostrar notificaciones de {name}.',
+      fallbackName:'El iPhone vinculado',unpair:'Desvincular'},
     fwModal:{title:'Actualización de Ori disponible',update:'Actualizar',
       updatingFirmware:'Actualizando Ori…',keepPluggedIn:'Mantén Ori conectado',verifying:'Verificando…',
       nowRunning:'Ahora ejecutando {v}',done:'Listo',
@@ -1107,12 +1723,16 @@ const I18N={
     connecting:{title:'Appairage avec Ori…',sub:"En attente de confirmation d'Ori…"},
     syncing:{title:"Configuration d'Ori…",progressLabel:'Une journée bien remplie vous attend…',doneLabel:'Ori est configuré !'},
     pairfail:{title:"Impossible d'appairer avec Ori",body:'Le code ne correspondait pas, ou la demande a expiré sur Ori. Choisissez un appareil pour réessayer.',close:'Fermer'},
+    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Adresse',sigLbl:'Signal',phoneLbl:'iPhone',syncLbl:'Synchronisé',
+      bonded:'Associé',notPaired:'Non associé',justNow:"À l'instant",minAgo:'Il y a {n} min'},
+    iphoneInfoModal:{missedLbl:'Appels manqués',unreadLbl:'Messages non lus',sigLbl:'Signal',notifLbl:'Notifications'},
     settings:{title:'Paramètres',general:'Général',auto:'Démarrage automatique',autoSub:'Lancer au démarrage de Windows',
       calendar:'Source de calendrier',language:'Langue',about:'À propos',app:'Version',reset:'Réinitialiser'},
-    main:{connected:'Connecté',syncing:'Synchronisation…',disconnected:'Déconnecté',timeOff:'Congé',
+    main:{connected:'Connecté',connecting:'Connexion…',syncing:'Synchronisation…',disconnected:'Déconnecté',timeOff:'Congé',
       noTimeOffPlanned:'Aucun congé prévu',tapToSet:'Toucher pour définir',notifFilterRow:'Filtre de notifications',
       clockFaceRow:"Cadran de l'horloge",timeFormatRow:"Format de l'heure",quickActionsRow:'Actions rapides',presenceAvailable:'Disponible',
-      settingsIcoTitle:'Paramètres',minimizeIcoTitle:'Réduire',fwUpToDate:'Firmware à jour',fwAvailable:'Mise à jour du firmware disponible'},
+      settingsIcoTitle:'Paramètres',minimizeIcoTitle:'Réduire',fwUpToDate:'Firmware à jour',fwAvailable:'Mise à jour du firmware disponible',
+      phoneConnectedTitle:'{name} — Connecté',phoneDisconnectedTitle:'iPhone déconnecté',phoneUnknownName:'iPhone'},
     profileEditor:{title:'Profil'},
     timeOffEditor:{periodLbl:'Période',selectDates:'Sélectionner les dates…',selectStartDate:'Sélectionner la date de début',
       selectEndDate:'Sélectionnez maintenant la date de fin',destinationLbl:'Destination',destinationPh:'Ville, pays',
@@ -1122,7 +1742,7 @@ const I18N={
       signInMicrosoft:'Se connecter avec Microsoft',signOutMicrosoft:'Se déconnecter de Microsoft'},
     quickActions:{slotPrefix:'Emplacement',notSet:'Non défini',clickToSet:'Cliquer pour définir',clickToChange:'Cliquer pour modifier',
       pressShortcut:'Appuyez sur le raccourci…',escToCancel:'Échap pour annuler',
-      actionLabels:{'vol-mute':'Muet volume','mic-mute':'Muet micro',screenshot:"Capture d'écran",'lock-screen':"Verrouiller l'écran",favorite:'Favori',calculator:'Calculatrice'}},
+      actionLabels:{'vol-mute':'Muet volume','mic-mute':'Muet micro',screenshot:"Capture d'écran",'lock-screen':"Verrouiller l'écran",'favorite-1':'Favori 1','favorite-2':'Favori 2','favorite-3':'Favori 3',calculator:'Calculatrice'}},
     clockFace:{digitalLbl:'Numérique',digitalSub:'Grands chiffres',analogLbl:'Analogique',analogSub:'Cadran à aiguilles'},
     timeFormat:{h24Lbl:'24 heures',h24Sub:'ex. 14:30',h12Lbl:'12 heures',h12Sub:'ex. 2:30 PM'},
     notifFilter:{disabledLbl:'Désactivé',disabledSub:'Aucune notification affichée sur Ori',callOnlyLbl:'Appels uniquement',
@@ -1132,6 +1752,9 @@ const I18N={
     resetModal:{title:"Réinitialiser",
       body:"Cela supprimera votre profil, vos réglages, et réinitialisera Ori aux paramètres d'usine.",
       reset:'Réinitialiser'},
+    unpairPhoneModal:{title:"Dissocier l'iPhone",
+      body:"Ori n'affichera plus les notifications de {name}.",
+      fallbackName:"L'iPhone associé",unpair:'Dissocier'},
     fwModal:{title:"Mise à jour d'Ori disponible",update:'Mettre à jour',
       updatingFirmware:"Mise à jour d'Ori…",keepPluggedIn:'Gardez Ori branché',verifying:'Vérification…',
       nowRunning:'Exécute maintenant {v}',done:'Terminé',
@@ -1299,6 +1922,14 @@ function applyI18n(){
   $('resetBody').textContent=t.resetModal.body;
   $('resetBtn').textContent=t.resetModal.reset;
   $('resetCancelBtn').textContent=t.common.cancel;
+  $('unpairPhoneTitle').textContent=t.unpairPhoneModal.title;
+  $('unpairPhoneBtn').textContent=t.unpairPhoneModal.unpair;
+  $('unpairPhoneCancelBtn').textContent=t.common.cancel;
+  // Re-derive rather than translate the last-set string in place: the icon's
+  // tooltip embeds the phone's name and connected/disconnected wording, so a
+  // language switch needs the same status→string logic setPhoneBondStatus
+  // already has, not a copy of it. No-op while nothing has ever been bonded.
+  if(lastPhoneBondStatus.b) setPhoneBondStatus(lastPhoneBondStatus);
   $('fwTitle').textContent=t.fwModal.title;
   $('fwChangelog').innerHTML=t.fwModal.changelog.map(item=>`<li>${item}</li>`).join('');
   $('fwCancelBtn').textContent=t.common.cancel;
@@ -1371,6 +2002,9 @@ function suShowStep(name){
 function suShowPairPhase(n){
   [1,2,3].forEach(i=>$('sp'+i).style.display=i===n?'':'none');
   showModal('m-pair');
+  // Phase 1 (Enter Passkey) — let the user start typing the code shown on
+  // Ori's screen immediately, without having to click into the first box.
+  if(n===1) $('suPk0').focus();
 }
 function suGoDiscover(){
   if($('suProfileNext').hasAttribute('disabled')) return;
@@ -1411,6 +2045,9 @@ function suPkInput(e,idx){
 }
 function suPkKeydown(e,idx){
   if(e.key==='Backspace'&&!e.target.value&&idx>0) $('suPk'+(idx-1)).focus();
+  // Enter submits from any digit box — suSubmitPasskey() already no-ops if
+  // fewer than 6 digits have been entered, so this is safe even mid-typing.
+  if(e.key==='Enter') suSubmitPasskey();
 }
 function suPkPaste(e){
   const text=e.clipboardData.getData('text').replace(/[^0-9]/g,'').slice(0,6);
@@ -1484,11 +2121,15 @@ function _navReset(){
   });
   if(_kbdRecSlot) stopKbdRecord();
   clearTimeout(_suScanTimer);clearTimeout(_suConnectTimer);clearInterval(_suSyncTimer);clearInterval(_fwInstallTimer);clearInterval(_ouInstallTimer);
+  callSessionStop(); // leaving the dev-nav page shouldn't leave a call timer ticking in the background
   $('panel').classList.remove('hide');$('tray').classList.add('open');
 }
 
 const NAV_PAGES={
   'main-connected':()=>{setConn('on');},
+  'main-connected-phone-off':()=>{setConn('on');setPhoneBondStatus({b:true,c:false,n:''});},
+  'main-connected-no-phone':()=>{setConn('on');setPhoneBondStatus({b:false,c:false,n:''});},
+  'main-connecting':()=>{setConn('connecting');},
   'main-syncing':()=>{setConn('rec');},
   'main-disconnected':()=>{setConn('off');},
   'setup-welcome':()=>{openSetupWizard();},
@@ -1508,6 +2149,10 @@ const NAV_PAGES={
   'clock-face':()=>{setConn('on');openClock();},
   'time-format':()=>{setConn('on');openTimeFormat();},
   'notification-filter':()=>{setConn('on');openAncs();},
+  'modal-ori-info':()=>{setConn('on');openOriInfoModal();},
+  'modal-iphone-info':()=>{setConn('on');setPhoneBondStatus({b:true,c:true,n:"Xander's iPhone"});openIphoneInfoModal();},
+  'modal-incoming-call':()=>{setConn('on');setPhoneBondStatus({b:true,c:true,n:"Xander's iPhone"});showIncomingCall(399);},
+  'modal-on-call':()=>{setConn('on');setPhoneBondStatus({b:true,c:true,n:"Xander's iPhone"});callSessionStart(399);CallSession.elapsedS=37;showActiveCall(399);},
   'modal-reset':()=>{setConn('on');show('s-settings');showModal('m-reset');},
   'modal-pairing-fail':()=>{openSetupWizard();suShowStep('discover');suSelectDevice('Ori-XT-9F');suShowPairPhase(2);suShowPairFail();},
   'modal-fw-available':()=>{setConn('on');simFwUpdate();showModal('m-fw');},

@@ -48,14 +48,18 @@ Three vertical sections, centred. No transport buttons; no persistent volume sli
 
 | Gesture | Action | Threshold | Feedback |
 |---|---|---|---|
-| **Tap** | `{op:"play_pause"}` | < 20 px in both axes | Play/pause icon flash (~550 ms, scales + fades) |
+| **Tap** | `{op:"play_pause"}` — but see the progress-bar note below: on a seek-eligible track, the FIRST tap only reveals the bar and does not toggle playback | < 20 px in both axes | Play/pause icon flash (~550 ms, scales + fades) |
 | **Swipe right** | `{op:"next"}` | > 50 px horizontal, \|dx\| > \|dy\| | Art shifts right ~40 px then snaps back |
 | **Swipe left** | `{op:"prev"}` | mirror of swipe right | Art shifts left ~40 px then snaps back |
 | **Vertical swipe** | `{op:"vol_set", arg:N}` on release | > 25 px vertical, \|dy\| > \|dx\| | Volume HUD (bar + %) fades in, tracks live, lingers ~800 ms |
 
 Volume sensitivity: ~400 px swipe = full 0..100 range (firmware `V_SENS_NUM`/`V_SENS_DEN` in `screen_media_mode.cpp`). Swipe up = louder. Orion applies volume via OS API and writes back `Host Volume State`; Ori ignores incoming pushes while a swipe is in progress (drag-wins override — see `ble-protocol.md` §12).
 
-**Paused:** art dims to ~55% with centred play-triangle overlay.
+**Playtime progress bar (seek):** a 46 px overlay at the bottom of the art — track, accent playhead fill, thumb dot, current/duration timestamps — shown only when Orion reports `can_seek:true` with a valid duration (`MediaMetadata`'s `"c"`/`"o"`/`"d"` fields). Drag anywhere on it to scrub live; release emits `{op:"seek", arg:seconds}`. **Hidden by default** even when eligible — touching the art (tap, swipe, or a press on the bar itself) reveals it, and it hides itself again after **5 s** of no further touch on the art (`TL_AUTO_HIDE_MS`, `screen_media_mode.cpp`). Dragging past 5 s keeps resetting the countdown so it can't vanish mid-scrub. Becoming ineligible (track changes to non-seekable, or nothing playing) drops any pending reveal — a later eligible track always starts hidden again, never inheriting a stale "shown" state from an unrelated one.
+
+**Tap is two-step once a track is seek-eligible:** the first tap on a hidden bar only reveals it (same as any other touch) — it does NOT also toggle play/pause. Only once the bar is already visible does a tap toggle playback (and, same as any touch, refresh the 5 s reveal countdown). This avoids the bar and a play/pause toggle both firing off the same single tap. Non-seekable tracks (bar never applies) are unaffected — tap toggles play/pause immediately, same as before this bar existed.
+
+**Paused:** art dims to ~55% with centred play-triangle overlay — applies to both the gradient placeholder and the real decoded album-art image once one has loaded (they're separate layered objects; both must dim together, see `apply_paused_visual()`).
 
 **Nothing playing:** slot shows a muted dark radial gradient with the **Ori wordmark** centred. Title = "Nothing playing"; artist = em-dash. Gestures still emit commands (Orion may interpret a tap to wake/resume).
 
@@ -74,16 +78,26 @@ Three icon-only square buttons, 72 px tall (was 82 px — shrunk to make room fo
 
 **Unrecognized token → hide the slot.** If a token doesn't match any compiled-in icon (e.g. Orion and firmware drift out of sync on the supported set), Ori hides that slot's button entirely rather than showing a placeholder — the remaining valid slot(s) stay centred in the row. The sync itself doesn't reject unknown tokens; only rendering treats them as absent.
 
-Supported icon tokens (6 total):
+Supported icon tokens (14 total):
 
 | Token | Action |
 |---|---|
 | `vol-mute` | Toggle OS master mute |
 | `mic-mute` | Toggle system microphone |
-| `screenshot` | Screenshot |
+| `screenshot` | Snip Tools (display label — wire token stays `screenshot`, renamed 2026-07-11) |
 | `lock-screen` | Lock screen |
-| `favorite` | User-configured custom action (set in Orion settings) |
+| `favorite-1` | User-configured custom action, slot 1 (set in Orion settings) |
+| `favorite-2` | User-configured custom action, slot 2 (set in Orion settings) |
+| `favorite-3` | User-configured custom action, slot 3 (set in Orion settings) |
 | `calculator` | Launch the OS calculator app |
+| `copy` | Ctrl+C |
+| `cut` | Ctrl+X |
+| `paste` | Ctrl+V |
+| `undo` | Ctrl+Z |
+| `redo` | Ctrl+Y (Windows convention — not Ctrl+Shift+Z) |
+| `save` | Ctrl+S |
+
+Favorite is three independently-configured tokens rather than one — each carries its own keyboard combo, so up to three distinct custom actions can be live across the three shortcut slots at once. Since the device shows no text label, the three favorite icons are visually distinguished by a number rendered inside the star glyph (compiled-in asset, same treatment as every other icon here — `firmware/img/shortcut_icons/convert_shortcut_icons.py`).
 
 Default mock config: slot 1 = `vol-mute`, slot 2 = `mic-mute`, slot 3 = `screenshot`.
 
