@@ -283,6 +283,15 @@ static bool conn_matches(NimBLEConnInfo& info, const uint8_t addr[6]) {
            memcmp(info.getAddress().getVal(),   addr, 6) == 0;
 }
 
+// Loads both bond-slot addresses at once — the common first step in every
+// function below that needs to classify a peer or decide advertising mode.
+// Purely mechanical: identical to calling load_bond_addr() twice inline, in
+// the same order, with the same arguments.
+static void load_both_bond_addrs(uint8_t orion_addr[6], uint8_t iphone_addr[6]) {
+    ble_manager::load_bond_addr(ble_manager::BOND_KEY_ORION,  orion_addr);
+    ble_manager::load_bond_addr(ble_manager::BOND_KEY_IPHONE, iphone_addr);
+}
+
 // Address to persist for a NEW bond: the resolved identity (stable across
 // reconnects), falling back to the OTA address only if no identity was exchanged.
 static const uint8_t* bond_addr_to_store(NimBLEConnInfo& info) {
@@ -358,8 +367,7 @@ public:
         // Determine which slot this connection belongs to by checking stored addresses.
         uint8_t orion_addr[6]  = {};
         uint8_t iphone_addr[6] = {};
-        ble_manager::load_bond_addr(ble_manager::BOND_KEY_ORION,  orion_addr);
-        ble_manager::load_bond_addr(ble_manager::BOND_KEY_IPHONE, iphone_addr);
+        load_both_bond_addrs(orion_addr, iphone_addr);
 
         if (conn_matches(info, orion_addr)) {
             // Known Orion reconnecting (matched by identity address).
@@ -499,8 +507,7 @@ public:
 
         uint8_t orion_addr[6]  = {};
         uint8_t iphone_addr[6] = {};
-        ble_manager::load_bond_addr(ble_manager::BOND_KEY_ORION,  orion_addr);
-        ble_manager::load_bond_addr(ble_manager::BOND_KEY_IPHONE, iphone_addr);
+        load_both_bond_addrs(orion_addr, iphone_addr);
 
         // RECONNECT of an already-bonded peer: its identity matches a filled slot
         // and the link just re-encrypted with the stored LTK. This fires on every
@@ -1267,8 +1274,7 @@ void restart_advertising() {
 
     uint8_t orion_addr[6]  = {};
     uint8_t iphone_addr[6] = {};
-    load_bond_addr(BOND_KEY_ORION,  orion_addr);
-    load_bond_addr(BOND_KEY_IPHONE, iphone_addr);
+    load_both_bond_addrs(orion_addr, iphone_addr);
 
     bool orion_bonded  = !is_bond_slot_empty(orion_addr);
     bool iphone_bonded = !is_bond_slot_empty(iphone_addr);

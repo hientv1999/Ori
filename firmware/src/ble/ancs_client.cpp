@@ -516,6 +516,28 @@ static void request_app_attributes(const char* bundle) {
     LOG("[ancs] GetAppAttributes bundle=%s\n", bundle);
 }
 
+// Writes `v` little-endian into dst[0..3] — the wire format ANCS uses for
+// NotificationUID in every Control Point command below.
+static inline void put_u32_le(uint8_t* dst, uint32_t v) {
+    dst[0] = (uint8_t)(v);
+    dst[1] = (uint8_t)(v >> 8);
+    dst[2] = (uint8_t)(v >> 16);
+    dst[3] = (uint8_t)(v >> 24);
+}
+
+// Sends ANCS PerformNotificationAction (CommandID 0x02) for `notif_uid` with
+// the given ActionID (0x00=Positive, 0x01=Negative) — the wire-identical
+// command dismiss_notification()/answer_notification() each built inline,
+// differing only in this one byte.
+static void perform_notification_action(uint32_t notif_uid, uint8_t action_id) {
+    if (!g_cp_char) return;
+    uint8_t cmd[6];
+    cmd[0] = 0x02; // PerformNotificationAction
+    put_u32_le(&cmd[1], notif_uid);
+    cmd[5] = action_id;
+    g_cp_char->writeValue(cmd, 6, true);
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // Queue helpers
 // ─────────────────────────────────────────────────────────────────────────
@@ -721,22 +743,25 @@ struct CallStateCache {
 };
 static CallStateCache g_call_state;
 
+// Copies `src` (or "" if null) into `dst[dst_sz]`, always NUL-terminated —
+// the same bounded-copy pattern relay_call_state() repeats for every
+// CallStateCache string field below.
+static void copy_bounded(char* dst, size_t dst_sz, const char* src) {
+    strncpy(dst, src ? src : "", dst_sz - 1);
+    dst[dst_sz - 1] = '\0';
+}
+
 static void relay_call_state(uint8_t st, uint32_t uid, uint32_t elapsed_s,
                               const char* app = nullptr, const char* title = nullptr,
                               const char* pos_label = nullptr, const char* neg_label = nullptr,
                               bool has_neg_action = false, const char* icon_token = nullptr) {
     g_call_state.st  = st;
     g_call_state.uid = uid;
-    strncpy(g_call_state.app, app ? app : "", sizeof(g_call_state.app) - 1);
-    g_call_state.app[sizeof(g_call_state.app) - 1] = '\0';
-    strncpy(g_call_state.title, title ? title : "", sizeof(g_call_state.title) - 1);
-    g_call_state.title[sizeof(g_call_state.title) - 1] = '\0';
-    strncpy(g_call_state.pos_label, pos_label ? pos_label : "", sizeof(g_call_state.pos_label) - 1);
-    g_call_state.pos_label[sizeof(g_call_state.pos_label) - 1] = '\0';
-    strncpy(g_call_state.neg_label, neg_label ? neg_label : "", sizeof(g_call_state.neg_label) - 1);
-    g_call_state.neg_label[sizeof(g_call_state.neg_label) - 1] = '\0';
-    strncpy(g_call_state.icon_token, icon_token ? icon_token : "", sizeof(g_call_state.icon_token) - 1);
-    g_call_state.icon_token[sizeof(g_call_state.icon_token) - 1] = '\0';
+    copy_bounded(g_call_state.app,        sizeof(g_call_state.app),        app);
+    copy_bounded(g_call_state.title,      sizeof(g_call_state.title),      title);
+    copy_bounded(g_call_state.pos_label,  sizeof(g_call_state.pos_label),  pos_label);
+    copy_bounded(g_call_state.neg_label,  sizeof(g_call_state.neg_label),  neg_label);
+    copy_bounded(g_call_state.icon_token, sizeof(g_call_state.icon_token), icon_token);
     g_call_state.has_neg_action = has_neg_action;
     gatt_server::notify_ancs_call_state(st, uid, elapsed_s, app, title, pos_label, neg_label,
                                         has_neg_action, icon_token);
@@ -1276,10 +1301,7 @@ void request_attributes(uint32_t notif_uid) {
     uint8_t cmd[30];
     size_t  n = 0;
     cmd[n++] = 0x00; // GetNotificationAttributes
-    cmd[n++] = (uint8_t)(notif_uid & 0xFF);
-    cmd[n++] = (uint8_t)((notif_uid >> 8) & 0xFF);
-    cmd[n++] = (uint8_t)((notif_uid >> 16) & 0xFF);
-    cmd[n++] = (uint8_t)((notif_uid >> 24) & 0xFF);
+    put_u32_le(&cmd[n], notif_uid); n += 4;
     cmd[n++] = 0x00;                        // AppIdentifier (no length)
     cmd[n++] = 0x01; cmd[n++] = 192; cmd[n++] = 0;  // Title
     cmd[n++] = 0x02; cmd[n++] = 128; cmd[n++] = 0;  // Subtitle
@@ -1294,16 +1316,7 @@ void request_attributes(uint32_t notif_uid) {
 
 void dismiss_notification(uint32_t notif_uid) {
     // Send PerformNotificationAction(Negative) to clear it on the phone.
-    if (g_cp_char) {
-        uint8_t cmd[6];
-        cmd[0] = 0x02; // PerformNotificationAction
-        cmd[1] = (uint8_t)(notif_uid & 0xFF);
-        cmd[2] = (uint8_t)((notif_uid >> 8) & 0xFF);
-        cmd[3] = (uint8_t)((notif_uid >> 16) & 0xFF);
-        cmd[4] = (uint8_t)((notif_uid >> 24) & 0xFF);
-        cmd[5] = 0x01; // ActionID Negative
-        g_cp_char->writeValue(cmd, 6, true);
-    }
+    perform_notification_action(notif_uid, 0x01); // ActionID Negative
     queue_remove(notif_uid);
 }
 
@@ -1317,16 +1330,7 @@ void answer_notification(uint32_t notif_uid) {
     // ANCS PerformNotificationAction · Positive = answer/accept the call. Unlike
     // dismiss, the notification is NOT removed — the call becomes active and the
     // entry remains in the queue until the call ends (ANCS Removed).
-    if (g_cp_char) {
-        uint8_t cmd[6];
-        cmd[0] = 0x02; // PerformNotificationAction
-        cmd[1] = (uint8_t)(notif_uid & 0xFF);
-        cmd[2] = (uint8_t)((notif_uid >> 8) & 0xFF);
-        cmd[3] = (uint8_t)((notif_uid >> 16) & 0xFF);
-        cmd[4] = (uint8_t)((notif_uid >> 24) & 0xFF);
-        cmd[5] = 0x00; // ActionID Positive
-        g_cp_char->writeValue(cmd, 6, true);
-    }
+    perform_notification_action(notif_uid, 0x00); // ActionID Positive
 }
 
 const char* phone_name() {

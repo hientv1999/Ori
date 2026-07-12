@@ -223,6 +223,20 @@ static size_t cbor_encode_manifest_notify(uint8_t* buf, size_t buf_sz,
     return cbor_encoder_get_buffer_size(&enc, buf);
 }
 
+// Opens `data`/`len` as a top-level CBOR map for key-by-key iteration — the
+// identical 3-call prologue (parse, verify it's a map, enter the container)
+// that begins every CBOR-map write handler below. Returns false (parse
+// error, or the top-level value isn't a map) without touching `map_val`;
+// each caller keeps its own existing behavior on failure — this only factors
+// out the mechanical setup, not any failure handling or key-loop logic.
+static bool cbor_open_map(const uint8_t* data, size_t len,
+                           CborParser& parser, CborValue& root, CborValue& map_val) {
+    if (cbor_parser_init(data, len, 0, &parser, &root) != CborNoError) return false;
+    if (!cbor_value_is_map(&root)) return false;
+    cbor_value_enter_container(&root, &map_val);
+    return true;
+}
+
 // -- SHA-256 of a CBOR blob (deterministic, for hash-manifest delta) --------
 
 static void sha256_of_buf(const uint8_t* buf, size_t len, uint8_t out[32]) {
@@ -319,6 +333,33 @@ static void stage_add_bytes(uint16_t n) {
         g_stage.last_pct_sent = (uint8_t)pct;
         ble_post_orioning_progress((uint8_t)pct);
     }
+}
+
+// Registers the on_complete/on_fragment callbacks a chunked staging
+// characteristic (Photo, Meetings, Time Off) needs, exactly once per
+// context (chunked_transfer::feed() only consults them, it never resets
+// them, so re-registering on every call would be harmless but pointless —
+// the original per-handler code already guarded on `!ctx.on_complete` the
+// same way). `have_flag`/`out_buf`/`out_len` are the SyncStage fields this
+// item stages into; `label` is only used in the NACK log line. Captured by
+// reference: g_stage is a single perpetual global, never reconstructed at a
+// new address (stage_reset()/stage_begin() assign *into* it), so references
+// into its fields stay valid for the life of the program.
+static void ensure_stage_chunk_callbacks(chunked_transfer::Context& ctx, const char* label,
+                                          bool& have_flag, uint8_t*& out_buf, size_t& out_len) {
+    if (ctx.on_complete) return;
+    ctx.on_complete = [label, &have_flag, &out_buf, &out_len](uint8_t* buf, size_t n, const char* nack) {
+        if (nack) {
+            LOG("[gatt] %s NACK: %s\n", label, nack);
+            return;
+        }
+        have_flag = true;
+        out_buf   = buf;   // ownership moves to SyncStage
+        out_len   = n;
+    };
+    ctx.on_fragment = [](uint16_t /*seq*/, uint16_t /*total*/, uint16_t plen) {
+        stage_add_bytes(plen);
+    };
 }
 
 // Apply every staged item to NVS / live state in one burst, then reset.
@@ -666,20 +707,8 @@ private:
     void handle_photo(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "ProfilePhoto")) return;
 
-        if (!g_photo_ctx.on_complete) {
-            g_photo_ctx.on_complete = [](uint8_t* buf, size_t n, const char* nack) {
-                if (nack) {
-                    LOG("[gatt] Photo NACK: %s\n", nack);
-                    return;
-                }
-                g_stage.have_photo = true;
-                g_stage.photo_jpeg = buf; // ownership moves to SyncStage
-                g_stage.photo_len  = n;
-            };
-            g_photo_ctx.on_fragment = [](uint16_t seq, uint16_t total, uint16_t plen) {
-                stage_add_bytes(plen);
-            };
-        }
+        ensure_stage_chunk_callbacks(g_photo_ctx, "Photo",
+                                      g_stage.have_photo, g_stage.photo_jpeg, g_stage.photo_len);
         chunked_transfer::feed(&g_photo_ctx, data, len);
     }
 
@@ -688,20 +717,8 @@ private:
     void handle_meetings(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "MeetingList")) return;
 
-        if (!g_meetings_ctx.on_complete) {
-            g_meetings_ctx.on_complete = [](uint8_t* buf, size_t n, const char* nack) {
-                if (nack) {
-                    LOG("[gatt] Meetings NACK: %s\n", nack);
-                    return;
-                }
-                g_stage.have_meetings  = true;
-                g_stage.meetings_cbor  = buf; // ownership moves to SyncStage
-                g_stage.meetings_len   = n;
-            };
-            g_meetings_ctx.on_fragment = [](uint16_t seq, uint16_t total, uint16_t plen) {
-                stage_add_bytes(plen);
-            };
-        }
+        ensure_stage_chunk_callbacks(g_meetings_ctx, "Meetings",
+                                      g_stage.have_meetings, g_stage.meetings_cbor, g_stage.meetings_len);
         chunked_transfer::feed(&g_meetings_ctx, data, len);
     }
 
@@ -710,20 +727,8 @@ private:
     void handle_time_off(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "TimeOffEntry")) return;
 
-        if (!g_time_off_ctx.on_complete) {
-            g_time_off_ctx.on_complete = [](uint8_t* buf, size_t n, const char* nack) {
-                if (nack) {
-                    LOG("[gatt] Time Off NACK: %s\n", nack);
-                    return;
-                }
-                g_stage.have_time_off = true;
-                g_stage.time_off_cbor = buf; // ownership moves to SyncStage
-                g_stage.time_off_len  = n;
-            };
-            g_time_off_ctx.on_fragment = [](uint16_t seq, uint16_t total, uint16_t plen) {
-                stage_add_bytes(plen);
-            };
-        }
+        ensure_stage_chunk_callbacks(g_time_off_ctx, "Time Off",
+                                      g_stage.have_time_off, g_stage.time_off_cbor, g_stage.time_off_len);
         chunked_transfer::feed(&g_time_off_ctx, data, len);
     }
 
@@ -733,14 +738,12 @@ private:
 
         CborParser parser;
         CborValue  root, map_val;
-        if (cbor_parser_init(data, len, 0, &parser, &root) != CborNoError) return;
-        if (!cbor_value_is_map(&root)) return;
+        if (!cbor_open_map(data, len, parser, root, map_val)) return;
 
         char     op[8]  = {};
         uint64_t seq    = 0;
         uint64_t total  = 0;
 
-        cbor_value_enter_container(&root, &map_val);
         while (!cbor_value_at_end(&map_val)) {
             char key[16] = {};
             size_t key_len = sizeof(key) - 1;
@@ -824,8 +827,7 @@ private:
 
         CborParser parser;
         CborValue  root, map_val;
-        if (cbor_parser_init(data, len, 0, &parser, &root) != CborNoError) return;
-        if (!cbor_value_is_map(&root)) return;
+        if (!cbor_open_map(data, len, parser, root, map_val)) return;
 
         // Received hashes from Orion. Device Settings (shortcuts + presence) has
         // no entry here — written outside BEGIN/END, never staged (§6.0/§6.4).
@@ -836,7 +838,6 @@ private:
         bool    got_profile  = false, got_photo    = false;
         bool    got_meetings = false, got_time_off = false;
 
-        cbor_value_enter_container(&root, &map_val);
         while (!cbor_value_at_end(&map_val)) {
             char key[20] = {};
             size_t key_len = sizeof(key) - 1;
@@ -907,13 +908,11 @@ private:
 
         CborParser parser;
         CborValue  root, map_val;
-        if (cbor_parser_init(data, len, 0, &parser, &root) != CborNoError) return;
-        if (!cbor_value_is_map(&root)) return;
+        if (!cbor_open_map(data, len, parser, root, map_val)) return;
 
         uint64_t level = g_volume_level;
         bool     mute  = g_muted;
 
-        cbor_value_enter_container(&root, &map_val);
         while (!cbor_value_at_end(&map_val)) {
             char key[16] = {};
             size_t key_len = sizeof(key) - 1;
@@ -982,8 +981,7 @@ private:
 
         CborParser parser;
         CborValue  root, map_val;
-        if (cbor_parser_init(data, len, 0, &parser, &root) != CborNoError) return;
-        if (!cbor_value_is_map(&root)) return;
+        if (!cbor_open_map(data, len, parser, root, map_val)) return;
 
         char     title[193]  = {};
         char     artist[97]  = {};
@@ -994,7 +992,6 @@ private:
         uint64_t duration_s  = 0;
         bool     has_seek    = false;
 
-        cbor_value_enter_container(&root, &map_val);
         while (!cbor_value_at_end(&map_val)) {
             char key[16] = {};
             size_t key_len = sizeof(key) - 1;
@@ -1103,8 +1100,7 @@ private:
         if (len == 0) return;
 
         CborParser parser; CborValue root, map_val;
-        if (cbor_parser_init(data, len, 0, &parser, &root) != CborNoError ||
-            !cbor_value_is_map(&root)) {
+        if (!cbor_open_map(data, len, parser, root, map_val)) {
             uint8_t buf[64];
             size_t n = cbor_encode_sync_ctrl(buf, sizeof(buf), "NACK", 0, "NACK_CBOR_DECODE");
             c_sync_ctrl->notify(buf, n);
@@ -1122,7 +1118,6 @@ private:
         bool    has_weather_unit = false; uint8_t weather_unit_val = 0;
         bool    parse_error  = false;
 
-        cbor_value_enter_container(&root, &map_val);
         while (!cbor_value_at_end(&map_val) && !parse_error) {
             char key[4] = {}; size_t key_len = sizeof(key) - 1;
             if (cbor_value_is_text_string(&map_val)) {
@@ -1247,9 +1242,7 @@ private:
         bool has_uid = false, has_action = false;
         uint64_t uid_v = 0, action_v = 0;
 
-        if (cbor_parser_init(data, len, 0, &parser, &root) == CborNoError &&
-            cbor_value_is_map(&root)) {
-            cbor_value_enter_container(&root, &map_val);
+        if (cbor_open_map(data, len, parser, root, map_val)) {
             while (!cbor_value_at_end(&map_val)) {
                 char key[4] = {}; size_t key_len = sizeof(key) - 1;
                 if (cbor_value_is_text_string(&map_val)) {
@@ -1316,8 +1309,7 @@ static void apply_time_sync(uint64_t epoch_utc, const char* tz) {
 static void apply_profile_cbor(const uint8_t* data, size_t len) {
     CborParser parser;
     CborValue  root, map_val;
-    if (cbor_parser_init(data, len, 0, &parser, &root) != CborNoError) return;
-    if (!cbor_value_is_map(&root)) return;
+    if (!cbor_open_map(data, len, parser, root, map_val)) return;
 
     // Field limits are 32/32/32/16 chars (Orion-enforced at input). Buffers
     // hold the worst-case UTF-8 byte length (3 bytes/char, e.g. Vietnamese);
@@ -1327,7 +1319,6 @@ static void apply_profile_cbor(const uint8_t* data, size_t len) {
     char email[129]= {};
     char phone[33] = {};
 
-    cbor_value_enter_container(&root, &map_val);
     while (!cbor_value_at_end(&map_val)) {
         char key[16] = {};
         size_t key_len = sizeof(key) - 1;
@@ -1412,10 +1403,7 @@ static void apply_time_off_cbor(uint8_t* buf, size_t n) {
     uint8_t*   img_buf   = nullptr;
     size_t     img_len   = 0;
 
-    if (cbor_parser_init(buf, n, 0, &parser, &root) == CborNoError &&
-        cbor_value_is_map(&root)) {
-
-        cbor_value_enter_container(&root, &map_val);
+    if (cbor_open_map(buf, n, parser, root, map_val)) {
         while (!cbor_value_at_end(&map_val)) {
             char key[16] = {};
             size_t ksz = sizeof(key) - 1;
