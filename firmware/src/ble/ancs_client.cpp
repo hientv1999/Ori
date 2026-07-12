@@ -21,6 +21,7 @@
 
 #include "ble/ancs_client.h"
 #include "ble/ble_manager.h"
+#include "ble/gatt_server.h"
 
 #include <Arduino.h>
 #include "ori_log.h"
@@ -34,8 +35,10 @@
 #include "state_machine.h"
 #include "ota_receiver.h"
 #include "assets/ancs_icons.h"
+#include "screens/modal_ancs_list.h"
 #include "screens/modal_ancs_notification.h"
 #include "screens/modal_incoming_call.h"
+#include "screens/modal_iphone_info.h"
 #include "ui_helpers.h"
 #include "widgets/widget_status_bar.h"
 
@@ -300,6 +303,57 @@ static void read_phone_name() {
 constexpr uint32_t CTS_SYNC_INTERVAL_MS = 10UL * 60 * 1000; // 10 minutes
 static uint32_t s_last_cts_ms = 0; // millis() of last successful CTS read
 
+// ── iPhone link signal (RSSI) ────────────────────────────────────────────
+// Polled periodically rather than on every tick — ble_gap_conn_rssi() is an
+// HCI round-trip, and the signal bar only needs to feel "live", not track
+// every single connection event.
+constexpr uint32_t RSSI_POLL_INTERVAL_MS = 5000; // 5 s
+static uint32_t s_last_rssi_poll_ms = 0;
+static uint8_t  g_signal_bars = 0;
+
+// ── Deferred ANCS UI refresh ─────────────────────────────────────────────
+// Set by queue_add()/queue_remove() (any live change to who's in the queue —
+// filter changes go through set_filter() and call modal_ancs_list::
+// refresh_active() / modal_iphone_info::refresh_active() directly instead,
+// see below), drained once per poll(). Drives BOTH the drill-down list and
+// the iPhone Info modal's bubble counts — see the drain site in poll().
+//
+// Deferred rather than calling modal_ancs_list::refresh_active() straight
+// from queue_add()/queue_remove(): those two functions are shared by every
+// caller that mutates the queue, including modal_ancs_list's OWN
+// swipe-to-delete gesture (on_row_swipe_committed -> commit_row_delete ->
+// dismiss_notification()/drop_notification() -> queue_remove(), all the way
+// from an LVGL animation-completed callback still running inside
+// lv_timer_handler()'s anim processing for THIS tick). Rebuilding the list
+// synchronously from there would lv_obj_clean() out the very `row` object
+// whose swipe just triggered it — and that row has a SECOND animation (the
+// translate-x drag-back/off-screen one) with no completed_cb of its own,
+// which LVGL may not have finished reaping yet in the same anim pass — a
+// use-after-free on the next frame. Every OTHER caller of queue_add/remove
+// (the iPhone's own NS/DS events, Orion's char-0012 actions relayed via
+// ble_manager) reaches them from a plain function call, not a live LVGL
+// callback, so an immediate refresh would be safe there — but the shared
+// functions can't tell which caller they're being invoked from, so every
+// path defers uniformly. main.cpp's loop() calls ble_manager::poll() (which
+// calls this module's poll(), below) BEFORE lv_timer_handler() each
+// iteration, so the earliest a flag set during iteration N's
+// lv_timer_handler() gets drained is iteration N+1's poll() call — by
+// definition after iteration N's anim processing has fully returned.
+static bool g_ancs_list_refresh_pending = false;
+
+// Buckets a live RSSI reading (dBm, more negative = weaker) into the same
+// 0-4 bar scale the iPhone Info overlay and Orion's UI render. Thresholds are
+// a standard-ish RSSI-to-bars ladder — BLE has no calibrated "signal
+// strength" concept like cellular, so this is a reasonable approximation,
+// not a spec'd value.
+static uint8_t rssi_to_bars(int rssi) {
+    if (rssi >= -60) return 4;
+    if (rssi >= -70) return 3;
+    if (rssi >= -80) return 2;
+    if (rssi >= -90) return 1;
+    return 0;
+}
+
 static void read_phone_time(bool force = false) {
     if (!g_client) return;
     // On connect (force=false) only seed if the clock isn't valid yet — Orion,
@@ -374,6 +428,17 @@ static bool passes_filter(uint8_t cat_id, uint8_t flags) {
                           ((flags & EvtFlag::IMPORTANT) != 0);
         default:   return true;                                    // ALL
     }
+}
+
+// Whether a STORED notification (already in app_state, so its Important flag
+// is known) currently passes the filter — the one place that turns a uid into
+// the (category, flags) pair passes_filter() above needs. Reused by both the
+// on-device status bar (publish_queue()) and the Orion relay (relay_ancs_add(),
+// ble-protocol.md §13's "SAME filter evaluation... not a second implementation")
+// so a filter change behaves identically on both surfaces.
+static bool passes_current_filter(uint32_t uid, uint8_t cat) {
+    bool important = app_state::ancs_is_important(uid);
+    return passes_filter(cat, important ? EvtFlag::IMPORTANT : 0);
 }
 
 // ── Pending NS-event metadata ──────────────────────────────────────────────
@@ -502,10 +567,9 @@ static void publish_queue() {
         uint32_t    uid        = g_queue[i].uid;
         bool        is_unknown = (strcmp(tok, "unknown") == 0);
         uint8_t     cat        = app_state::ancs_category(uid);
-        bool        important  = app_state::ancs_is_important(uid);
         // Display-time filter: entries are always stored but only shown when they
         // pass the current filter level, so a filter change takes effect instantly.
-        if (!passes_filter(cat, important ? EvtFlag::IMPORTANT : 0)) continue;
+        if (!passes_current_filter(uid, cat)) continue;
         time_t      epoch      = app_state::ancs_recv_epoch(uid);
         const char* title      = app_state::ancs_title(uid);
 
@@ -560,6 +624,125 @@ static void publish_queue() {
     widget_status_bar::refresh_active();
 }
 
+// Counts the live queue into the three mutually-exclusive stat buckets:
+// `missed` (CategoryID MissedCall), `unread` (Social), `other` (everything
+// else NOT already counted under missed/unread — otherwise a missed call
+// would be counted twice, once under its own badge and once under the bell).
+// The ONE counting rule for every surface that shows these numbers — Ori's
+// own iPhone Info tiles (phone_stats), Orion's relayed copy
+// (push_phone_stats → char 000F), and the drill-down lists behind both
+// (list_bucket_groups / Orion's char-0010 mirror). Two deliberate exclusions:
+//   • Filter-gated: only entries that pass passes_current_filter() count —
+//     same gate as relay_ancs_add()/publish_queue() (ble-protocol.md §13's
+//     "SAME filter evaluation, not a second implementation"), so a badge can
+//     never disagree with the list a tap on it opens. (Policy changed
+//     2026-07-11: the on-device counts/list previously bypassed the filter
+//     on purpose — connectivity.md's old "drill-down bypasses the ambient
+//     filter" rule — which left them disagreeing with Orion's filtered view.)
+//   • Ringing/active calls are skipped — they have their own live UI
+//     (modal_incoming_call / AncsCallState char 0011) and never appear as a
+//     list row, so counting them would inflate the bell badge over an empty
+//     list.
+static void count_filtered_stats(uint8_t& missed, uint8_t& unread, uint8_t& other) {
+    missed = unread = other = 0;
+    for (size_t i = 0; i < g_queue_count; ++i) {
+        uint32_t uid = g_queue[i].uid;
+        uint8_t  cat = app_state::ancs_category(uid);
+        if (cat == app_state::AncsCategory::INCOMING_CALL ||
+            cat == app_state::AncsCategory::ACTIVE_CALL) {
+            continue;
+        }
+        if (!passes_current_filter(uid, cat)) continue;
+        if (cat == app_state::AncsCategory::MISSED_CALL) ++missed;
+        else if (cat == app_state::AncsCategory::SOCIAL) ++unread;
+        else ++other;
+    }
+}
+
+// Relays the filtered stat counts to Orion via the Phone Bond Status
+// characteristic (char 000F). Called after every queue_add/queue_remove,
+// from the RSSI poll, and from set_filter() (so Orion's badge updates the
+// instant the filter changes).
+static void push_phone_stats() {
+    uint8_t missed, unread, other;
+    count_filtered_stats(missed, unread, other);
+    gatt_server::notify_phone_stats(missed, unread, other, g_signal_bars);
+}
+
+// ── ANCS relay to Orion (chars 0010/0011, ble-protocol.md §13) ────────────
+
+// Relay a single "add" to Orion (char 0010). Called unconditionally from
+// on_data_source() after every GetNotificationAttributes response — covers
+// both a genuinely-new notification and iOS sending a Modified event for one
+// already queued (Orion replaces its stored copy in place, keyed by uid) —
+// and again from set_filter()'s clear-and-repopulate when the filter changes.
+// Applies the SAME filter test as the on-device status bar (publish_queue,
+// below) — not a second filter implementation. Calls (IncomingCall/
+// ActiveCall) never ride this characteristic — they relay exclusively via
+// AncsCallState (char 0011) at their own call sites in on_data_source() /
+// on_notification_source() / on_iphone_disconnected().
+static void relay_ancs_add(uint32_t uid, const char* token) {
+    uint8_t cat = app_state::ancs_category(uid);
+    if (cat == app_state::AncsCategory::INCOMING_CALL ||
+        cat == app_state::AncsCategory::ACTIVE_CALL) {
+        return;
+    }
+    if (!passes_current_filter(uid, cat)) return;
+
+    const app_state::AncsNotification& n = app_state::ancs_notification_by_uid(uid);
+    gatt_server::notify_ancs_add(uid, token, cat, n.display_name, n.title, n.body,
+                                  (uint32_t)app_state::ancs_recv_epoch(uid),
+                                  n.pos_label, n.neg_label, n.has_neg_action, n.silent);
+}
+
+// Cache of the most recently relayed call state (char 0011) — every call
+// site that pushes AncsCallState to Orion goes through relay_call_state()
+// below instead of calling gatt_server::notify_ancs_call_state() directly,
+// so this stays current and ancs_client::resync_orion_call_state() can
+// replay it on a fresh Orion connect. Same structural gap as chars 0010
+// (relay_ancs_add()'s own doc comment / resync_orion_relay()): char 0011 is
+// notify-only with no read property and no replay-on-reconnect of its own.
+// Without this, a call already ringing or active BEFORE Orion connects (app
+// just launched, or the BLE link happened to be down when the call started)
+// would leave Orion showing "no call" until the call's NEXT transition —
+// which for an already-active call might be "it ends," too late to ever
+// show the in-call view for it at all.
+struct CallStateCache {
+    uint8_t  st = 0;   // 0=none/ended, 1=ringing, 2=active
+    uint32_t uid = 0;
+    char     app[65]        = "";
+    char     title[193]     = "";
+    char     pos_label[33]  = "";
+    char     neg_label[33]  = "";
+    bool     has_neg_action = false;
+    char     icon_token[25] = "";  // calling app's icon token (ancs_icons.h vocab,
+                                    // ble-protocol.md §13) — lets Orion show the
+                                    // real app icon (Viber/Phone/…) for the call,
+                                    // same as it does for ordinary notifications.
+};
+static CallStateCache g_call_state;
+
+static void relay_call_state(uint8_t st, uint32_t uid, uint32_t elapsed_s,
+                              const char* app = nullptr, const char* title = nullptr,
+                              const char* pos_label = nullptr, const char* neg_label = nullptr,
+                              bool has_neg_action = false, const char* icon_token = nullptr) {
+    g_call_state.st  = st;
+    g_call_state.uid = uid;
+    strncpy(g_call_state.app, app ? app : "", sizeof(g_call_state.app) - 1);
+    g_call_state.app[sizeof(g_call_state.app) - 1] = '\0';
+    strncpy(g_call_state.title, title ? title : "", sizeof(g_call_state.title) - 1);
+    g_call_state.title[sizeof(g_call_state.title) - 1] = '\0';
+    strncpy(g_call_state.pos_label, pos_label ? pos_label : "", sizeof(g_call_state.pos_label) - 1);
+    g_call_state.pos_label[sizeof(g_call_state.pos_label) - 1] = '\0';
+    strncpy(g_call_state.neg_label, neg_label ? neg_label : "", sizeof(g_call_state.neg_label) - 1);
+    g_call_state.neg_label[sizeof(g_call_state.neg_label) - 1] = '\0';
+    strncpy(g_call_state.icon_token, icon_token ? icon_token : "", sizeof(g_call_state.icon_token) - 1);
+    g_call_state.icon_token[sizeof(g_call_state.icon_token) - 1] = '\0';
+    g_call_state.has_neg_action = has_neg_action;
+    gatt_server::notify_ancs_call_state(st, uid, elapsed_s, app, title, pos_label, neg_label,
+                                        has_neg_action, icon_token);
+}
+
 static void queue_add(uint32_t uid, const char* token) {
     // Check for duplicate UID.
     for (size_t i = 0; i < g_queue_count; ++i) {
@@ -567,7 +750,17 @@ static void queue_add(uint32_t uid, const char* token) {
     }
 
     if (g_queue_count >= app_state::MAX_ANCS_NOTIFICATIONS) {
-        // Displace oldest (FIFO).
+        // Displace oldest (FIFO). Relay its removal to Orion first (char
+        // 0010, while it's still actually in g_queue/has stored detail) —
+        // ble-protocol.md §13 explicitly calls out FIFO eviction as a
+        // "leaves Ori's queue" trigger; this path doesn't go through
+        // queue_remove() below, so it needs its own relay call.
+        uint32_t evicted_uid = g_queue[0].uid;
+        uint8_t  evicted_cat = app_state::ancs_category(evicted_uid);
+        if (evicted_cat != app_state::AncsCategory::INCOMING_CALL &&
+            evicted_cat != app_state::AncsCategory::ACTIVE_CALL) {
+            gatt_server::notify_ancs_remove(evicted_uid);
+        }
         memmove(&g_queue[0], &g_queue[1],
                 (app_state::MAX_ANCS_NOTIFICATIONS - 1) * sizeof(ancs_client::QueueEntry));
         g_queue_count = app_state::MAX_ANCS_NOTIFICATIONS - 1;
@@ -582,6 +775,8 @@ static void queue_add(uint32_t uid, const char* token) {
 
     // Sync icon state to app_state so the status bar widget refreshes.
     publish_queue();
+    push_phone_stats();
+    g_ancs_list_refresh_pending = true;  // drained by poll() — see its doc comment
 
     state_machine::set_phone_connected(true);
     LOG("[ancs] queued uid=%u token=%s count=%u\n",
@@ -589,21 +784,50 @@ static void queue_add(uint32_t uid, const char* token) {
 }
 
 static void queue_remove(uint32_t uid) {
-    // Drop any stored detail for this notification regardless of whether it's
-    // still in the visible queue (it may be a hidden, beyond-the-5th entry).
-    app_state::remove_ancs_detail(uid);
-
     for (size_t i = 0; i < g_queue_count; ++i) {
         if (g_queue[i].uid == uid) {
+            // Relay this notification leaving the queue to Orion, while its
+            // detail (and thus category) is still present. This is the SINGLE
+            // choke-point for "left the queue → tell Orion", split by kind:
+            //   - non-call → AncsNotification{op:"remove"} (char 0010)
+            //   - call     → AncsCallState{st:0} (char 0011)
+            // Both are unconditional per ble-protocol.md §13 ("no need to
+            // check whether it was previously relayed"; a stray remove/end is
+            // a harmless no-op on Orion's side).
+            //
+            // The call-state st:0 MUST live here, not in on_notification_source's
+            // Removed handler, because a dismiss/decline/end initiated from
+            // Orion (or Ori's own screen) runs dismiss_notification() →
+            // queue_remove() FIRST, dropping the stored detail — so by the time
+            // the phone's own ANCS Removed event arrives, ancs_category(uid)
+            // there reads a defaulted OTHER and the call check misfires,
+            // leaving Orion's incoming/in-call modal open forever with no st:0
+            // to close it. Reading the category here (still live) and firing
+            // from whichever removal path hits first fixes that; the second
+            // path finds the uid already gone and no-ops (this loop won't match).
+            uint8_t cat = app_state::ancs_category(uid);
+            if (cat == app_state::AncsCategory::INCOMING_CALL ||
+                cat == app_state::AncsCategory::ACTIVE_CALL) {
+                relay_call_state(0, uid, 0);
+            } else {
+                gatt_server::notify_ancs_remove(uid);
+            }
+
+            app_state::remove_ancs_detail(uid);
             memmove(&g_queue[i], &g_queue[i + 1],
                     (g_queue_count - i - 1) * sizeof(ancs_client::QueueEntry));
             g_queue_count--;
             publish_queue();
+            push_phone_stats();
+            g_ancs_list_refresh_pending = true;  // drained by poll() — see its doc comment
             LOG("[ancs] removed uid=%u count=%u\n",
                            (unsigned)uid, (unsigned)g_queue_count);
             return;
         }
     }
+    // Not found (already removed, or never queued) — still drop any stored
+    // detail for a hidden (beyond-the-5th) entry, matching prior behavior.
+    app_state::remove_ancs_detail(uid);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -636,6 +860,26 @@ void poll(bool orion_connected) {
         }
     }
 
+    // Periodic RSSI poll — feeds the iPhone Info overlay's signal bars and
+    // Orion's relayed copy. getRssi() is a live HCI round-trip
+    // (ble_gap_conn_rssi on the actual connection, not a stale scan-time
+    // value), so this doesn't need to run every tick.
+    if (g_client) {
+        uint32_t now = millis();
+        if (s_last_rssi_poll_ms == 0 || (now - s_last_rssi_poll_ms) >= RSSI_POLL_INTERVAL_MS) {
+            s_last_rssi_poll_ms = now;
+            uint8_t bars = rssi_to_bars(g_client->getRssi());
+            if (bars != g_signal_bars) {
+                g_signal_bars = bars;
+                push_phone_stats();
+                // Recolour an already-open iPhone Info modal's bars too —
+                // previously only Orion heard about a bar change; this modal
+                // sat stale for up to its whole time on screen otherwise.
+                modal_iphone_info::set_signal_bars(g_signal_bars);
+            }
+        }
+    }
+
     // Drain NS/DS notifications captured by the host-task callbacks. Runs on the
     // main loop task, so on_notification_source()'s blocking CP write and the
     // queue_add/remove LVGL refresh are both safe here. Merge-drain the two
@@ -652,6 +896,24 @@ void poll(bool orion_connected) {
             on_data_source(ds.buf, ds.len);
             have_ds = ds_pop(ds);
         }
+    }
+
+    // Drain the deferred UI refresh — see g_ancs_list_refresh_pending's doc
+    // comment for why this can't be called straight from queue_add()/
+    // queue_remove(). Both calls are no-ops when their modal isn't open.
+    //
+    // modal_iphone_info::refresh_active() belongs here, not only in
+    // set_filter(): the iPhone Info modal's bubble counts (missed/messages/
+    // notifications) are derived from phone_stats(), which changes on every
+    // queue add/remove — so without this, a notification added or removed by
+    // ANY path (the iPhone's own ANCS events, Ori's swipe-to-delete, or an
+    // Orion-relayed dismiss over char 0012) left the tiles stale until the
+    // modal was closed and reopened. push_phone_stats() already keeps Orion's
+    // relayed copy live; this keeps Ori's own tiles equally live.
+    if (g_ancs_list_refresh_pending) {
+        g_ancs_list_refresh_pending = false;
+        modal_ancs_list::refresh_active();
+        modal_iphone_info::refresh_active();
     }
 }
 
@@ -727,8 +989,12 @@ void on_iphone_disconnected() {
     LOG("[ancs] iPhone disconnected\n");
 
     // A call can't survive the ANCS link dropping — close any open call
-    // banner/dialog and stop the duration timer before clearing state.
+    // banner/dialog and stop the duration timer before clearing state, and
+    // relay the same "ended" state to Orion (char 0011) — unconditionally,
+    // mirroring close_all()'s own "regardless of UID" style; a harmless
+    // no-op on Orion's side if no call view was actually open.
     modal_incoming_call::close_all();
+    relay_call_state(0, 0, 0);
 
     g_conn_handle   = 0xFFFF;
     g_client        = nullptr;
@@ -738,6 +1004,8 @@ void on_iphone_disconnected() {
     g_ds_char       = nullptr;
     g_phone_name[0] = '\0';
     s_last_cts_ms   = 0;
+    s_last_rssi_poll_ms = 0;
+    g_signal_bars   = 0;
 
     // Clear queue and update status bar.
     g_queue_count = 0;
@@ -746,6 +1014,15 @@ void on_iphone_disconnected() {
     cfg.count = 0;
     app_state::set_ancs_config(cfg);
     widget_status_bar::refresh_active();
+
+    // The queue was just zeroed directly above (not via queue_remove(), which
+    // is what normally sets g_ancs_list_refresh_pending) — an open drill-down
+    // list needs its own explicit nudge here or it would keep showing
+    // whatever rows it had right up until the modal is closed and reopened.
+    // Safe to call immediately (not deferred): this whole function is reached
+    // from ble_manager::poll()'s event drain, never from inside an LVGL
+    // callback — same reasoning as set_filter()'s immediate call.
+    modal_ancs_list::refresh_active();
 
     state_machine::set_phone_connected(false);
 }
@@ -775,7 +1052,14 @@ void on_notification_source(const uint8_t* data, uint16_t len) {
         ancs_client::request_attributes(uid);
     } else if (event_id == 2) {
         // Removed on the iPhone — close any open overlay / call banner showing
-        // it, then drop it from Ori's queue + detail + status bar.
+        // it, then drop it from Ori's queue + detail + status bar. The Orion
+        // relay for this removal (AncsNotification{op:"remove"} for a normal
+        // notification, or AncsCallState{st:0} for a call) is emitted by
+        // queue_remove() itself — the single choke-point that owns it, so a
+        // removal reaches Orion identically whether it originated here (phone-
+        // side removed), from a local dismiss, or from an Orion-relayed action.
+        // See queue_remove()'s doc comment for why the call st:0 has to live
+        // there and not here.
         modal_ancs_notification::close_if_showing(uid);
         modal_incoming_call::close_if_showing(uid);
         queue_remove(uid);
@@ -840,7 +1124,10 @@ void on_data_source(const uint8_t* data, uint16_t len) {
                                     (g_ds_buf[3] << 16) | (g_ds_buf[4] << 24));
 
     // Requested: AppIdentifier(0), Title(1), Subtitle(2), Message(3), Date(5),
-    //            PositiveActionLabel(6), NegativeActionLabel(7)
+    //            PositiveActionLabel(6), NegativeActionLabel(7) — in that exact
+    //            order (request_attributes() above), and ANCS returns attributes
+    //            in the order they were requested. NegativeActionLabel(7) is
+    //            therefore the LAST record in a genuinely complete response.
     char app_id[128]    = {};
     char title[193]     = {};
     char subtitle[129]  = {};
@@ -849,6 +1136,7 @@ void on_data_source(const uint8_t* data, uint16_t len) {
     char pos_label[33]  = {};
     char neg_label[33]  = {};
     bool got_app_id     = false;
+    bool got_last_attr  = false;
 
     size_t pos = 5;
     while (pos + 3 <= g_ds_len) {
@@ -865,7 +1153,7 @@ void on_data_source(const uint8_t* data, uint16_t len) {
         else if (attr_id == 0x03) { dst = body;      dst_sz = sizeof(body)      - 1; }
         else if (attr_id == 0x05) { dst = date;      dst_sz = sizeof(date)      - 1; }
         else if (attr_id == 0x06) { dst = pos_label; dst_sz = sizeof(pos_label) - 1; }
-        else if (attr_id == 0x07) { dst = neg_label; dst_sz = sizeof(neg_label) - 1; }
+        else if (attr_id == 0x07) { dst = neg_label; dst_sz = sizeof(neg_label) - 1; got_last_attr = true; }
 
         if (dst) {
             size_t copy = attr_len < dst_sz ? attr_len : dst_sz;
@@ -875,7 +1163,18 @@ void on_data_source(const uint8_t* data, uint16_t len) {
         pos += attr_len;
     }
 
-    if (!got_app_id) return;
+    // A fragment boundary can coincide with a complete-attribute boundary —
+    // the loop above then "runs out of buffer" the exact same way it would on
+    // a truly finished response, with no protocol-level way to tell those
+    // apart from buffer state alone. Only trust completion once we've actually
+    // parsed the LAST requested attribute; otherwise wait for the next DS
+    // fragment instead of finalizing (and resetting g_ds_len) on a partial
+    // response. If the phone omits the trailing attribute entirely (or drops
+    // the link mid-response) this notification's attributes are silently
+    // skipped — self-healing, since request_attributes() unconditionally
+    // resets g_ds_len for the next notification in the queue.
+    if (!got_last_attr) return;
+    if (!got_app_id) { g_ds_len = 0; return; }
 
     // Recover the NS-event metadata stashed for this UID (flags + category).
     uint8_t flags = 0, cat = app_state::AncsCategory::OTHER;
@@ -929,11 +1228,33 @@ void on_data_source(const uint8_t* data, uint16_t len) {
                     cat == app_state::AncsCategory::ACTIVE_CALL);
     if (is_call && !preexisting && !ota_receiver::is_active() && passes_filter(cat, flags)) {
         bool can_answer = (flags & EvtFlag::POSITIVE_ACTION) != 0;
-        if (can_answer) modal_incoming_call::show(resp_uid);          // ringing
-        else            modal_incoming_call::notify_active(resp_uid); // on call
+        if (can_answer) {
+            modal_incoming_call::show(resp_uid);          // ringing
+            relay_call_state(1, resp_uid, 0, display_name, ftitle, fpos, fneg, neg_action, token);
+        } else {
+            modal_incoming_call::notify_active(resp_uid); // on call
+            // Seed "e" from the just-(re)started session so Orion's timer
+            // reflects real elapsed time (relevant when this is a Modified
+            // event on an already-active call rather than a fresh answer).
+            uint32_t elapsed = 0;
+            modal_incoming_call::session_state(nullptr, &elapsed);
+            relay_call_state(2, resp_uid, elapsed, display_name, ftitle, fpos, fneg, neg_action, token);
+        }
+        // Refresh the status-bar tile ring (yellow ringing / red answered) for
+        // this uid now — queue_add() below is a no-op for a uid already
+        // queued (the ringing->active transition is usually a Modified event
+        // on the SAME uid, e.g. the call was answered on the phone itself
+        // rather than via Ori's own Answer button), so without this the ring
+        // would silently stay yellow for the rest of the call.
+        widget_status_bar::refresh_active();
     }
 
     queue_add(resp_uid, token);
+    // Relay to Orion (char 0010) — fires for both Added and Modified (this
+    // function runs once per GetNotificationAttributes response, whichever
+    // triggered it); relay_ancs_add() itself excludes calls (relayed above via
+    // AncsCallState instead) and applies the current ancs_filter.
+    relay_ancs_add(resp_uid, token);
 
     g_ds_len = 0;
     g_pending_uid = 0;
@@ -1013,6 +1334,206 @@ const char* phone_name() {
     return g_phone_name;
 }
 
+PhoneStats phone_stats() {
+    PhoneStats s = {};
+    if (!g_client) return s;  // disconnected — all-zero, nothing to verify
+    // Same filtered counting as Orion's relayed copy (count_filtered_stats)
+    // — the on-device tile badges always agree with Orion's, and both always
+    // match the drill-down list a tap on the tile opens.
+    count_filtered_stats(s.missed, s.unread, s.total);
+    s.signal_bars = g_signal_bars;
+    return s;
+}
+
+// Enumerate every live notification group in `bucket` for the on-device
+// drill-down list (connectivity.md §2 "Tap-to-drill-down"). Read-only — does
+// not touch g_queue, publish_queue(), or push_phone_stats(). Call only from
+// the main task, same as every other queue-reading function in this module.
+size_t list_bucket_groups(uint8_t bucket, ListGroup* out, size_t max) {
+    if (!out || max == 0) return 0;
+
+    struct Group {
+        uint32_t uid;          // representative (newest) uid in the group
+        uint8_t  count;
+        char     icon_token[32];
+        time_t   sort_epoch;   // representative's recv_epoch (0 = unknown)
+        int      sort_idx;     // g_queue index of the first-encountered member
+    };
+    Group  groups[app_state::MAX_ANCS_NOTIFICATIONS];
+    size_t group_count = 0;
+
+    bool visited[app_state::MAX_ANCS_NOTIFICATIONS] = {};
+    for (size_t i = 0; i < g_queue_count; ++i) {
+        if (visited[i]) continue;
+        visited[i] = true;
+
+        uint32_t uid = g_queue[i].uid;
+        uint8_t  cat = app_state::ancs_category(uid);
+
+        // Calls never appear in any drill-down bucket — they have their own
+        // live modal_incoming_call UI, not a static list row.
+        if (cat == app_state::AncsCategory::INCOMING_CALL ||
+            cat == app_state::AncsCategory::ACTIVE_CALL) {
+            continue;
+        }
+
+        // Resolve the full (token, title) group via the same primitive
+        // modal_ancs_notification's stacking already uses, and mark every
+        // member visited so it isn't processed again as the seed of its own
+        // group later in this scan. Only members that pass the current
+        // ancs_filter are counted and representable — the drill-down honors
+        // the same filter as the status bar, the tile badges
+        // (count_filtered_stats), and the Orion relay, so the row count
+        // behind a badge always matches it (policy changed 2026-07-11 from
+        // the earlier "drill-down bypasses the ambient filter" rule). A
+        // group whose members are all filtered out produces no row.
+        uint32_t tmp_uids[app_state::MAX_ANCS_NOTIFICATIONS];
+        size_t n = app_state::ancs_collect_same_title(uid, tmp_uids,
+                                                       app_state::MAX_ANCS_NOTIFICATIONS);
+        if (n == 0) { tmp_uids[0] = uid; n = 1; }
+
+        uint32_t    rep_uid   = 0;
+        const char* rep_token = g_queue[i].icon_token;  // fallback if rep has no queue entry
+        size_t      pass_n    = 0;
+        for (size_t k = 0; k < n; ++k) {
+            const char* tok_k = nullptr;
+            for (size_t qi = 0; qi < g_queue_count; ++qi) {
+                if (g_queue[qi].uid != tmp_uids[k]) continue;
+                visited[qi] = true;
+                tok_k = g_queue[qi].icon_token;
+                break;
+            }
+            uint8_t mcat = app_state::ancs_category(tmp_uids[k]);
+            if (mcat == app_state::AncsCategory::INCOMING_CALL ||
+                mcat == app_state::AncsCategory::ACTIVE_CALL) continue;
+            if (!passes_current_filter(tmp_uids[k], mcat)) continue;
+            if (pass_n == 0) {
+                // tmp_uids is newest-first, so the first passing member is
+                // the newest one the filter allows — it becomes the row's
+                // representative (title/preview/icon + detail-tap target).
+                rep_uid = tmp_uids[k];
+                if (tok_k) rep_token = tok_k;
+            }
+            ++pass_n;
+        }
+        if (pass_n == 0) continue;  // whole group filtered out — no row
+
+        // Bucket from the representative (the notification the row actually
+        // shows), not the scan seed — the seed itself may be filtered out.
+        uint8_t rep_cat = app_state::ancs_category(rep_uid);
+        uint8_t b = (rep_cat == app_state::AncsCategory::MISSED_CALL) ? ancs_client::ListBucket::MISSED
+                  : (rep_cat == app_state::AncsCategory::SOCIAL)      ? ancs_client::ListBucket::UNREAD
+                  :                                                     ancs_client::ListBucket::OTHER;
+
+        if (b != bucket) continue;  // belongs to a different tile's list
+        if (group_count >= app_state::MAX_ANCS_NOTIFICATIONS) continue;
+
+        Group& g = groups[group_count++];
+        g.uid   = rep_uid;
+        g.count = (uint8_t)pass_n;
+        strncpy(g.icon_token, rep_token, sizeof(g.icon_token) - 1);
+        g.icon_token[sizeof(g.icon_token) - 1] = '\0';
+        g.sort_epoch = app_state::ancs_recv_epoch(rep_uid);
+        g.sort_idx   = (int)i;
+    }
+
+    // Newest-group-first — mirrors publish_queue()'s own comparator
+    // (representative recv_epoch when both sides are known, else g_queue
+    // arrival-index as the fallback/tiebreak), sorted in the opposite
+    // direction: publish_queue builds oldest→newest (status bar renders
+    // rightmost = newest); this list wants newest first.
+    for (size_t a = 1; a < group_count; ++a) {
+        Group key = groups[a];
+        size_t b = a;
+        while (b > 0) {
+            const Group& prev = groups[b - 1];
+            bool prev_is_older = (prev.sort_epoch > 0 && key.sort_epoch > 0)
+                                     ? (prev.sort_epoch < key.sort_epoch)
+                                     : (prev.sort_idx < key.sort_idx);
+            if (!prev_is_older) break;
+            groups[b] = groups[b - 1];
+            --b;
+        }
+        groups[b] = key;
+    }
+
+    size_t out_n = group_count < max ? group_count : max;
+    for (size_t i = 0; i < out_n; ++i) {
+        out[i].uid   = groups[i].uid;
+        out[i].count = groups[i].count;
+        strncpy(out[i].icon_token, groups[i].icon_token, sizeof(out[i].icon_token) - 1);
+        out[i].icon_token[sizeof(out[i].icon_token) - 1] = '\0';
+    }
+    return out_n;
+}
+
+// Full clear-and-repopulate of Orion's ANCS mirror (chars 0010/0011) —
+// rather than a diff (ble-protocol.md §13), since firmware doesn't track
+// which uids it previously relayed to THIS particular Orion connection:
+// "clear" then re-send "add" for every currently-queued uid that passes the
+// current filter (relay_ancs_add()'s own filter check does the selection;
+// calls are excluded there too — chars 0010 vs 0011 are separate relays, see
+// resync_orion_call_state() just below for the call-state equivalent of this
+// same fix).
+//
+// Two callers, same reconciliation for two different reasons:
+//   - set_filter(): the SET of notifications passing the filter changed.
+//   - ble_manager's BleEventType::AncsResubscribed handler, fired by
+//     gatt_server.cpp's onSubscribe() the instant Orion's own CCCD write for
+//     char 0010 lands: this characteristic is NOTIFY-only with no read
+//     property and no reconnect-replay of its own (unlike PhoneBondStatus,
+//     char 000F, which Orion explicitly reads on connect — ble-protocol.md
+//     §3). A notification added to g_queue while Orion was disconnected has
+//     NO other path to ever reach Orion's local mirror: the original
+//     relay_ancs_add() call at add-time only reaches a peer that's both
+//     connected AND subscribed right then, and there's no buffering — a BLE
+//     notify to a not-currently-subscribed central is simply dropped, not
+//     queued. Symptom without this: PhoneBondStatus's aggregate count (read
+//     fresh on every connect) shows N, but Orion's own drill-down/detail
+//     modal has nothing to show for it — the count and the content silently
+//     drifted apart the moment Orion was offline for even one incoming
+//     notification.
+//     (This used to be wired to the earlier BleEventType::OrionConnected
+//     event instead — encryption complete, fired long before Orion has even
+//     started run_sync, let alone subscribed to char 0010. That resync
+//     compiled and looked correct but never actually landed: a notify sent
+//     before the central subscribes is silently dropped by the BLE stack.
+//     onSubscribe() is the first point in time this is guaranteed to work.)
+void resync_orion_relay() {
+    gatt_server::notify_ancs_clear();
+    for (size_t i = 0; i < g_queue_count; ++i) {
+        relay_ancs_add(g_queue[i].uid, g_queue[i].icon_token);
+    }
+}
+
+// Replays the current call state (char 0011) to Orion the moment its own
+// onSubscribe() fires for this characteristic — the AncsCallState
+// equivalent of resync_orion_relay() above, for exactly the same reason
+// (notify-only, no replay of its own) and triggered the same way (NOT
+// OrionConnected — see resync_orion_relay()'s doc comment for why that's
+// too early). Without this, a call already ringing or active BEFORE Orion
+// connects (app just launched, or the BLE link happened to be down when the
+// call started) left Orion showing "no call" until the call's NEXT
+// transition — which for an already-active call might be "it ends," too
+// late to ever raise the in-call view at all.
+// Always sends, even for st==0 (nothing to show) — Orion's own default
+// assumption is already "no call" so this is a harmless no-op then, and
+// unconditional is simpler/more robust than trying to skip a redundant send
+// (same philosophy as resync_orion_relay()'s unconditional "clear").
+// Elapsed is recomputed live for an active call (not replayed from whatever
+// stale value was cached when it went active) — same reasoning the original
+// call site already applied when seeding a Modified event's elapsed time.
+void resync_orion_call_state() {
+    uint32_t elapsed = 0;
+    if (g_call_state.st == 2) {
+        modal_incoming_call::session_state(nullptr, &elapsed);
+    }
+    gatt_server::notify_ancs_call_state(g_call_state.st, g_call_state.uid, elapsed,
+                                         g_call_state.app, g_call_state.title,
+                                         g_call_state.pos_label, g_call_state.neg_label,
+                                         g_call_state.has_neg_action, g_call_state.icon_token);
+}
+
 void set_filter(uint8_t level) {
     g_filter = level;
     LOG("[ancs] filter -> %u (%s)\n", (unsigned)level,
@@ -1021,10 +1542,39 @@ void set_filter(uint8_t level) {
     // Re-publish so the status bar immediately reflects the new filter level
     // without waiting for the next incoming notification.
     publish_queue();
+
+    resync_orion_relay();
+
+    // Orion's PhoneBondStatus badge counts (char 000F) are filtered the same
+    // way as the relay just above — push immediately so the badge updates the
+    // instant the filter changes, not just on the next queue_add/queue_remove
+    // or the next RSSI poll.
+    push_phone_stats();
+
+    // Ori's own iPhone Info/Stats overlay (modal_iphone_info) is otherwise a
+    // snapshot, but its badge counts are the one thing that must not go
+    // stale against a filter the user just changed — no-op if the modal
+    // isn't currently open (modal_iphone_info.h's "ONE exception").
+    modal_iphone_info::refresh_active();
+
+    // Same for an open drill-down list (modal_ancs_list) — a filter change
+    // can add or remove rows in whichever bucket is currently on screen.
+    // Called directly (not deferred like queue_add/queue_remove) — set_filter()
+    // is only ever reached from ble_manager::poll()'s event drain or
+    // state_machine's own init path, never from inside an LVGL callback, so
+    // there's no reentrancy hazard here.
+    modal_ancs_list::refresh_active();
 }
 
 uint8_t get_filter() {
     return g_filter;
+}
+
+bool is_queued(uint32_t uid) {
+    for (size_t i = 0; i < g_queue_count; ++i) {
+        if (g_queue[i].uid == uid) return true;
+    }
+    return false;
 }
 
 } // namespace ancs_client

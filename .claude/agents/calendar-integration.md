@@ -36,11 +36,11 @@ Always consult:
 ## Interfaces with other agents
 
 - **Orion Sync Agent** consumes your normalized data and pushes it to Ori. You do NOT touch BLE.
-- **WinUI Frontend Agent** (Windows) owns the UI for picking a calendar source and showing connection status. You expose a clean interface for it to call. macOS will have its own frontend agent once that codebase starts.
+- **Orion Frontend Agent** owns the UI for picking a calendar source and showing connection status (same UI on both Windows and macOS — `memory.md`). You expose a clean interface for it to call.
 - **Product/System Architect Agent** owns the normalized data model.
 
 ## What you do NOT do
 
 - Push data to Ori (Orion Sync's job).
-- Implement the UI for calendar source selection (WinUI Frontend's job).
+- Implement the UI for calendar source selection (Orion Frontend's job).
 - Make assumptions about which provider to use until the source decision is finalized.

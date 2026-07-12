@@ -98,24 +98,12 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
     const char* p_phone = widget_profile_card::get_profile_phone();
 
     widget_profile_card::Presence pres = widget_profile_card::get_default_presence();
-    uint32_t pres_color, pres_color_light, pres_color_dark;
+    uint32_t pres_color;
     switch (pres) {
-        case widget_profile_card::Presence::Available:
-            pres_color       = theme::COLOR_PRESENCE_AVAILABLE;
-            pres_color_light = theme::COLOR_PRESENCE_AVAILABLE_LIGHT;
-            pres_color_dark  = theme::COLOR_PRESENCE_AVAILABLE_DARK;  break;
-        case widget_profile_card::Presence::Busy:
-            pres_color       = theme::COLOR_PRESENCE_BUSY;
-            pres_color_light = theme::COLOR_PRESENCE_BUSY_LIGHT;
-            pres_color_dark  = theme::COLOR_PRESENCE_BUSY_DARK;       break;
-        case widget_profile_card::Presence::Away:
-            pres_color       = theme::COLOR_PRESENCE_AWAY;
-            pres_color_light = theme::COLOR_PRESENCE_AWAY_LIGHT;
-            pres_color_dark  = theme::COLOR_PRESENCE_AWAY_DARK;       break;
-        default:
-            pres_color       = theme::COLOR_PRESENCE_OFFLINE;
-            pres_color_light = theme::COLOR_PRESENCE_OFFLINE_LIGHT;
-            pres_color_dark  = theme::COLOR_PRESENCE_OFFLINE_DARK;    break;
+        case widget_profile_card::Presence::Available: pres_color = theme::COLOR_PRESENCE_AVAILABLE; break;
+        case widget_profile_card::Presence::Busy:       pres_color = theme::COLOR_PRESENCE_BUSY;      break;
+        case widget_profile_card::Presence::Away:       pres_color = theme::COLOR_PRESENCE_AWAY;      break;
+        default:                                        pres_color = theme::COLOR_PRESENCE_OFFLINE;   break;
     }
 
     // Independent screen — pure black background, no status bar.
@@ -284,9 +272,10 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
         widget_profile_card::PHOTO_SIZE + 12,
         widget_profile_card::PHOTO_SIZE + 12);
     lv_obj_set_style_radius(photo_ring, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(photo_ring, theme::color(pres_color_light), 0);
-    lv_obj_set_style_bg_grad_color(photo_ring, theme::color(pres_color_dark), 0);
-    lv_obj_set_style_bg_grad_dir(photo_ring, LV_GRAD_DIR_VER, 0);
+    // Solid flat fill (not a gradient) — see widget_profile_card.cpp's ring
+    // comment for why: a directional gradient here would make the glow below
+    // read as growing bottom-to-top instead of evenly outward from the photo.
+    lv_obj_set_style_bg_color(photo_ring, theme::color(pres_color), 0);
     lv_obj_set_style_bg_opa(photo_ring, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(photo_ring, 0, 0);
     lv_obj_set_style_pad_all(photo_ring, 0, 0);

@@ -1,4 +1,4 @@
-﻿// Ori GATT Server — 15 characteristics, ble-protocol.md v1.0.
+// Ori GATT Server — 15 characteristics, ble-protocol.md v1.0.
 //
 // Service UUID: 6F726900-0000-4F72-9F00-000000000000
 // Each char UUID replaces bytes 4-5 with the offset:
@@ -49,6 +49,8 @@ void ble_post_sync_commit_event();
 void ble_post_sync_end_event(bool unused);
 void ble_post_orioning_progress(uint8_t pct);
 void ble_post_time_off_photo_event(uint8_t* buf, size_t len);
+void ble_post_ancs_action_event(uint32_t uid, uint8_t action);
+void ble_post_ancs_resubscribed_event(bool call_state);
 
 #include <Arduino.h>
 #include "ori_log.h"
@@ -75,7 +77,7 @@ void ble_post_time_off_photo_event(uint8_t* buf, size_t len);
 #include "lcd_panel.h"
 #include "ui_helpers.h"
 
-// UUIDs ─────────────────────────────────────────────────────────────────────
+// UUIDs ---------------------------------------------------------------------
 
 #define SVC_UUID  "6F726900-0000-4F72-9F00-000000000000"
 
@@ -87,7 +89,7 @@ void ble_post_time_off_photo_event(uint8_t* buf, size_t len);
 // ANCS service UUID (for advertising / discovery)
 #define ANCS_UUID "7905F431-B5CE-4E99-A40F-4B1E122D00D0"
 
-// Device Status bytes ───────────────────────────────────────────────────────
+// Device Status bytes -------------------------------------------------------
 #define DS_SETUP_WAITING_PAIRING       0x00
 #define DS_SETUP_BONDED_AWAITING_SYNC  0x01
 #define DS_SETUP_SYNCING               0x02
@@ -104,13 +106,13 @@ void ble_post_time_off_photo_event(uint8_t* buf, size_t len);
 
 namespace {
 
-// ── OTA guard ────────────────────────────────────────────────────────────
+// -- OTA guard ------------------------------------------------------------
 volatile bool g_ota_active = false;
 
-// ── Device Status ─────────────────────────────────────────────────────────
+// -- Device Status ---------------------------------------------------------
 uint8_t g_device_status = DS_SETUP_WAITING_PAIRING;
 
-// ── Characteristic handles ────────────────────────────────────────────────
+// -- Characteristic handles ------------------------------------------------
 NimBLECharacteristic* c_dev_status  = nullptr; // 0001
 NimBLECharacteristic* c_time_sync   = nullptr; // 0002
 NimBLECharacteristic* c_profile     = nullptr; // 0003
@@ -126,6 +128,23 @@ NimBLECharacteristic* c_media_meta  = nullptr; // 000C
 NimBLECharacteristic* c_album_art   = nullptr; // 000D
 NimBLECharacteristic* c_dev_settings = nullptr; // 000E
 NimBLECharacteristic* c_phone_status = nullptr; // 000F
+NimBLECharacteristic* c_ancs_notif   = nullptr; // 0010
+NimBLECharacteristic* c_ancs_call    = nullptr; // 0011
+NimBLECharacteristic* c_ancs_action  = nullptr; // 0012
+
+// Last-encoded Phone Bond Status fields. The characteristic carries all
+// seven fields in one CBOR blob, but bond/connection-state changes
+// (notify_phone_bond_status) and ANCS-driven stats changes (notify_phone_stats)
+// arrive from different call sites at different times — each needs to
+// re-encode the fields it doesn't own from these cached values rather than
+// clobbering them with defaults.
+bool    g_phone_bonded        = false;
+bool    g_phone_connected     = false;
+char    g_phone_name_cache[64] = {};
+uint8_t g_phone_missed        = 0;
+uint8_t g_phone_unread        = 0;
+uint8_t g_phone_total         = 0;
+uint8_t g_phone_signal        = 0;
 
 // Meeting list is RAM-only (not persisted to NVS — see state_machine). Its
 // delta-sync hash therefore also lives in RAM only: a power cycle drops the
@@ -136,31 +155,36 @@ NimBLECharacteristic* c_phone_status = nullptr; // 000F
 uint8_t g_meetings_hash[32]  = {};
 bool    g_meetings_hash_valid = false;
 
-// ── Chunked transfer contexts ─────────────────────────────────────────────
+// -- Chunked transfer contexts ---------------------------------------------
 chunked_transfer::Context g_photo_ctx;
 chunked_transfer::Context g_meetings_ctx;
 chunked_transfer::Context g_time_off_ctx;
 chunked_transfer::Context g_art_ctx;
 
-// ── Sync sequence tracking ────────────────────────────────────────────────
+// -- Sync sequence tracking ------------------------------------------------
 uint32_t g_sync_seq = 0;
 bool     g_sync_in_progress = false;
 
-// ── Volume state ─────────────────────────────────────────────────────────
+// -- Volume state ---------------------------------------------------------
 uint8_t g_volume_level = 50;
 bool    g_muted = false;
 
-// ── Vertical-swipe override (drag-wins, ble-protocol.md §12) ─────────────
+// -- Vertical-swipe override (drag-wins, ble-protocol.md §12) -------------
 volatile bool g_vol_swipe_active  = false;
 uint32_t      g_vol_swipe_end_ms  = 0;
+// Value from the most recent vol_set WE emitted (screen_media_mode's swipe
+// release) — lets handle_host_volume() recognize Orion's direct confirmation
+// of that command and accept it even inside the post-release ignore window
+// below, instead of discarding it as if it were a stale/unrelated push.
+uint8_t       g_last_vol_set_value = 0;
 
-// ── Current screen pointer (for setup passkey modal) ─────────────────────
+// -- Current screen pointer (for setup passkey modal) ---------------------
 // Shared from the screen manager; we look it up via state_machine.
 // We don't cache it — screen_setup provides show/hide APIs.
 
-// ─────────────────────────────────────────────────────────────────────────
+// -------------------------------------------------------------------------
 // CBOR helpers
-// ─────────────────────────────────────────────────────────────────────────
+// -------------------------------------------------------------------------
 
 // Encode SyncControl { op, seq, reason (optional) }.
 static size_t cbor_encode_sync_ctrl(uint8_t* buf, size_t buf_sz,
@@ -198,7 +222,7 @@ static size_t cbor_encode_manifest_notify(uint8_t* buf, size_t buf_sz,
     return cbor_encoder_get_buffer_size(&enc, buf);
 }
 
-// ── SHA-256 of a CBOR blob (deterministic, for hash-manifest delta) ────────
+// -- SHA-256 of a CBOR blob (deterministic, for hash-manifest delta) --------
 
 static void sha256_of_buf(const uint8_t* buf, size_t len, uint8_t out[32]) {
     mbedtls_sha256_context ctx;
@@ -209,14 +233,14 @@ static void sha256_of_buf(const uint8_t* buf, size_t len, uint8_t out[32]) {
     mbedtls_sha256_free(&ctx);
 }
 
-// ─────────────────────────────────────────────────────────────────────────
+// -------------------------------------------------------------------------
 // Sync staging (PSRAM) — ble-protocol.md §6.0
 //
 // Everything written between SyncControl{BEGIN} and {END} is held here
 // (small fields inline, blob items in PSRAM) instead of touching NVS or
 // live UI state. stage_commit() applies it all in one burst at END,
 // mirroring the OTA stage-then-flash pattern.
-// ─────────────────────────────────────────────────────────────────────────
+// -------------------------------------------------------------------------
 
 struct SyncStage {
     bool     active         = false;
@@ -325,27 +349,160 @@ static void stage_commit() {
     stage_reset();
 }
 
-// Encode PhoneBondStatus CBOR: { "b": bonded, "c": connected, "n": name }
+// Encode PhoneBondStatus CBOR:
+//   { "b": bonded, "c": connected, "n": name,
+//     "m": missed_calls, "u": unread_messages, "t": total_notifications,
+//     "s": signal_bars (0-4) }
+// Stats/signal are always encoded as 0 when connected==false — a disconnected
+// iPhone leaves nothing left to verify (same "don't show a stale reading"
+// policy as presence/weather, ble-protocol.md §6.4).
 static size_t encode_phone_status(uint8_t* buf, size_t buf_sz,
-                                   bool bonded, bool connected, const char* name) {
+                                   bool bonded, bool connected, const char* name,
+                                   uint8_t missed, uint8_t unread, uint8_t total,
+                                   uint8_t signal_bars) {
     CborEncoder enc, map;
     cbor_encoder_init(&enc, buf, buf_sz, 0);
-    cbor_encoder_create_map(&enc, &map, 3);
+    cbor_encoder_create_map(&enc, &map, 7);
     cbor_encode_text_stringz(&map, "b");
     cbor_encode_boolean(&map, bonded);
     cbor_encode_text_stringz(&map, "c");
     cbor_encode_boolean(&map, connected);
     cbor_encode_text_stringz(&map, "n");
     cbor_encode_text_stringz(&map, name ? name : "");
+    cbor_encode_text_stringz(&map, "m");
+    cbor_encode_uint(&map, connected ? missed : 0);
+    cbor_encode_text_stringz(&map, "u");
+    cbor_encode_uint(&map, connected ? unread : 0);
+    cbor_encode_text_stringz(&map, "t");
+    cbor_encode_uint(&map, connected ? total : 0);
+    cbor_encode_text_stringz(&map, "s");
+    cbor_encode_uint(&map, connected ? signal_bars : 0);
     cbor_encoder_close_container(&enc, &map);
     return cbor_encoder_get_buffer_size(&enc, buf);
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Characteristic write callbacks (NimBLE calls these from its own task)
-// ─────────────────────────────────────────────────────────────────────────
+// -- ANCS relay encoders (chars 0010-0012, ble-protocol.md §13/§4) ---------
 
-// Guard: return false (NACK) if OTA is active or link is not encrypted.
+// Copy `src` into `dst` (dst_sz-capacity, NUL-terminated), truncating to at
+// most dst_sz-1 bytes without splitting a UTF-8 multi-byte sequence — same
+// boundary rule as state_machine.cpp's copy_text_truncated(), just operating
+// on an in-memory C string (app_state's already-sanitized ANCS text) instead
+// of a CborValue being parsed off the wire. Used to bring app_state's stored
+// ANCS strings (sized for the on-device overlay) down to the tighter §10
+// wire caps before encoding AncsNotification{op:"add"}.
+static void utf8_truncate_copy(const char* src, char* dst, size_t dst_sz) {
+    if (dst_sz == 0) return;
+    if (!src) { dst[0] = '\0'; return; }
+    size_t len = strlen(src);
+    size_t n = (len < dst_sz - 1) ? len : dst_sz - 1;
+    while (n > 0 && ((uint8_t)src[n] & 0xC0) == 0x80) --n;  // don't split a char
+    memcpy(dst, src, n);
+    dst[n] = '\0';
+}
+
+// Encode AncsNotification{op:"add", ...} (char 0010). Field caps (§10) are
+// sized so this always fits one unchunked 238-byte MTU-247 fragment (§13 "No
+// chunking") — verify buf_sz is generous enough that a mid-encode overflow
+// simply truncates the CBOR (tinycbor reports it via the buffer-size return,
+// callers here just size the stack buffer with headroom instead of checking).
+static size_t cbor_encode_ancs_add(uint8_t* buf, size_t buf_sz, uint32_t uid,
+                                    const char* icon_token, uint8_t category,
+                                    const char* app, const char* title, const char* body,
+                                    uint32_t recv_epoch, const char* pos_label,
+                                    const char* neg_label, bool has_neg_action, bool silent) {
+    char t_icon[25] = {}, t_app[25] = {}, t_title[33] = {}, t_body[49] = {};
+    char t_pos[13]  = {}, t_neg[13] = {};
+    utf8_truncate_copy(icon_token, t_icon,  sizeof(t_icon));
+    utf8_truncate_copy(app,        t_app,   sizeof(t_app));
+    utf8_truncate_copy(title,      t_title, sizeof(t_title));
+    utf8_truncate_copy(body,       t_body,  sizeof(t_body));
+    utf8_truncate_copy(pos_label,  t_pos,   sizeof(t_pos));
+    utf8_truncate_copy(neg_label,  t_neg,   sizeof(t_neg));
+
+    CborEncoder enc, map;
+    cbor_encoder_init(&enc, buf, buf_sz, 0);
+    cbor_encoder_create_map(&enc, &map, 12);
+    cbor_encode_text_stringz(&map, "o"); cbor_encode_text_stringz(&map, "add");
+    cbor_encode_text_stringz(&map, "u"); cbor_encode_uint(&map, uid);
+    cbor_encode_text_stringz(&map, "k"); cbor_encode_text_stringz(&map, t_icon);
+    cbor_encode_text_stringz(&map, "c"); cbor_encode_uint(&map, category);
+    cbor_encode_text_stringz(&map, "a"); cbor_encode_text_stringz(&map, t_app);
+    cbor_encode_text_stringz(&map, "t"); cbor_encode_text_stringz(&map, t_title);
+    cbor_encode_text_stringz(&map, "b"); cbor_encode_text_stringz(&map, t_body);
+    cbor_encode_text_stringz(&map, "e"); cbor_encode_uint(&map, recv_epoch);
+    cbor_encode_text_stringz(&map, "p"); cbor_encode_text_stringz(&map, t_pos);
+    cbor_encode_text_stringz(&map, "n"); cbor_encode_text_stringz(&map, t_neg);
+    cbor_encode_text_stringz(&map, "g"); cbor_encode_boolean(&map, has_neg_action);
+    cbor_encode_text_stringz(&map, "s"); cbor_encode_boolean(&map, silent);
+    cbor_encoder_close_container(&enc, &map);
+    return cbor_encoder_get_buffer_size(&enc, buf);
+}
+
+// Encode AncsNotification{op:"remove", u:uid} (char 0010).
+static size_t cbor_encode_ancs_remove(uint8_t* buf, size_t buf_sz, uint32_t uid) {
+    CborEncoder enc, map;
+    cbor_encoder_init(&enc, buf, buf_sz, 0);
+    cbor_encoder_create_map(&enc, &map, 2);
+    cbor_encode_text_stringz(&map, "o"); cbor_encode_text_stringz(&map, "remove");
+    cbor_encode_text_stringz(&map, "u"); cbor_encode_uint(&map, uid);
+    cbor_encoder_close_container(&enc, &map);
+    return cbor_encoder_get_buffer_size(&enc, buf);
+}
+
+// Encode AncsNotification{op:"clear"} (char 0010).
+static size_t cbor_encode_ancs_clear(uint8_t* buf, size_t buf_sz) {
+    CborEncoder enc, map;
+    cbor_encoder_init(&enc, buf, buf_sz, 0);
+    cbor_encoder_create_map(&enc, &map, 1);
+    cbor_encode_text_stringz(&map, "o"); cbor_encode_text_stringz(&map, "clear");
+    cbor_encoder_close_container(&enc, &map);
+    return cbor_encoder_get_buffer_size(&enc, buf);
+}
+
+// Encode AncsCallState{st, u:uid, e:elapsed_s, a,t,p,n,g} (char 0011).
+// app/title/pos_label/neg_label truncate to the same wire caps as
+// AncsNotification's "a"/"t"/"p"/"n" fields (§10) — a caller name is
+// functionally a notification title, same size budget.
+static size_t cbor_encode_ancs_call_state(uint8_t* buf, size_t buf_sz,
+                                           uint8_t st, uint32_t uid, uint32_t elapsed_s,
+                                           const char* app, const char* title,
+                                           const char* pos_label, const char* neg_label,
+                                           bool has_neg_action, const char* icon_token) {
+    char t_app[25] = {}, t_title[33] = {}, t_pos[13] = {}, t_neg[13] = {}, t_tok[25] = {};
+    utf8_truncate_copy(app,        t_app,   sizeof(t_app));
+    utf8_truncate_copy(title,      t_title, sizeof(t_title));
+    utf8_truncate_copy(pos_label,  t_pos,   sizeof(t_pos));
+    utf8_truncate_copy(neg_label,  t_neg,   sizeof(t_neg));
+    utf8_truncate_copy(icon_token, t_tok,   sizeof(t_tok));
+
+    CborEncoder enc, map;
+    cbor_encoder_init(&enc, buf, buf_sz, 0);
+    cbor_encoder_create_map(&enc, &map, 9);
+    cbor_encode_text_stringz(&map, "st"); cbor_encode_uint(&map, st);
+    cbor_encode_text_stringz(&map, "u");  cbor_encode_uint(&map, uid);
+    cbor_encode_text_stringz(&map, "e");  cbor_encode_uint(&map, elapsed_s);
+    cbor_encode_text_stringz(&map, "a");  cbor_encode_text_stringz(&map, t_app);
+    cbor_encode_text_stringz(&map, "t");  cbor_encode_text_stringz(&map, t_title);
+    cbor_encode_text_stringz(&map, "p");  cbor_encode_text_stringz(&map, t_pos);
+    cbor_encode_text_stringz(&map, "n");  cbor_encode_text_stringz(&map, t_neg);
+    cbor_encode_text_stringz(&map, "g");  cbor_encode_boolean(&map, has_neg_action);
+    // "k" — calling app's icon token, same vocabulary as AncsNotification's "k"
+    // (ble-protocol.md §13). Lets Orion render the real app icon for the call.
+    cbor_encode_text_stringz(&map, "k");  cbor_encode_text_stringz(&map, t_tok);
+    cbor_encoder_close_container(&enc, &map);
+    return cbor_encoder_get_buffer_size(&enc, buf);
+}
+
+// -------------------------------------------------------------------------
+// Characteristic write callbacks (NimBLE calls these from its own task)
+// -------------------------------------------------------------------------
+
+// Guard: return false (NACK) if OTA is active, the link is not encrypted, or
+// the writer isn't the bonded Orion peer. Every characteristic in this
+// service is Orion-only (ble-protocol.md §3) — the iPhone bond exists solely
+// so Ori can read the iPhone's ANCS service as a *client*; it must never be
+// able to write here. Without this check, any bonded peer (i.e. the iPhone)
+// could reach e.g. Device Command and trigger a factory reset.
 static bool check_write_allowed(NimBLEConnInfo& info, const char* char_name) {
     if (g_ota_active) {
         LOG("[gatt] NACK %s: OTA active\n", char_name);
@@ -355,10 +512,14 @@ static bool check_write_allowed(NimBLEConnInfo& info, const char* char_name) {
         LOG("[gatt] NACK %s: not encrypted\n", char_name);
         return false;
     }
+    if (info.getConnHandle() != ble_manager::orion_conn_handle()) {
+        LOG("[gatt] NACK %s: writer is not the bonded Orion peer\n", char_name);
+        return false;
+    }
     return true;
 }
 
-// ── Characteristic callbacks (one class per char, or a shared dispatcher) ─
+// -- Characteristic callbacks (one class per char, or a shared dispatcher) -
 
 class OriCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
 public:
@@ -391,6 +552,8 @@ public:
             handle_album_art(data, len, info);
         } else if (c == c_dev_settings) {
             handle_device_settings(data, len, info);
+        } else if (c == c_ancs_action) {
+            handle_ancs_action(data, len, info);
         }
     }
 
@@ -406,9 +569,35 @@ public:
         }
     }
 
+    // Fires whenever a central writes either char's CCCD to enable/disable
+    // notifications — including on every ordinary reconnect: Orion's own
+    // watcher tasks (orion-sync's ancs_notification_watcher/
+    // ancs_call_state_watcher) are freshly spawned per-connection and always
+    // call subscribe() on startup, so this fires again each time regardless
+    // of whether NimBLE's own bonded-CCCD persistence would otherwise have
+    // let it skip the write. This is the ONLY correctly-timed signal for
+    // "Orion can now actually receive a notify on this characteristic" —
+    // unlike the OrionConnected event (encryption complete), which fires
+    // long before Orion has even started run_sync, let alone spawned these
+    // watcher tasks; a resync notify sent that early is silently dropped by
+    // the BLE stack (not subscribed yet) and never arrives. subValue==0 is
+    // an unsubscribe (link tearing down) — nothing to resync there.
+    // Deferred to the main task (ble_post_ancs_resubscribed_event) for the
+    // same reason as handle_ancs_action(): the resync functions read
+    // ancs_client's queue/call-state, which is only safe to touch from the
+    // main task that owns it, not this NimBLE host-task callback.
+    void onSubscribe(NimBLECharacteristic* c, NimBLEConnInfo& info, uint16_t subValue) override {
+        if (subValue == 0) return;
+        if (c == c_ancs_notif) {
+            ble_post_ancs_resubscribed_event(/*call_state=*/false);
+        } else if (c == c_ancs_call) {
+            ble_post_ancs_resubscribed_event(/*call_state=*/true);
+        }
+    }
+
 private:
 
-    // ── Time Sync (char 0002) ───────────────────────────────────────────────
+    // -- Time Sync (char 0002) -----------------------------------------------
     // Staged — applied at SyncControl{END} via apply_time_sync() (§6.0).
     void handle_time_sync(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "TimeSync")) return;
@@ -451,7 +640,7 @@ private:
         }
     }
 
-    // ── Profile Info (char 0003) ────────────────────────────────────────────
+    // -- Profile Info (char 0003) --------------------------------------------
     // Staged — parsed and applied at SyncControl{END} via apply_profile_cbor() (§6.0).
     void handle_profile(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "ProfileInfo")) return;
@@ -471,7 +660,7 @@ private:
         stage_add_bytes(len);
     }
 
-    // ── Profile Photo (char 0004) — chunked ────────────────────────────────
+    // -- Profile Photo (char 0004) — chunked --------------------------------
     // Staged — hashed and posted at SyncControl{END} via apply_photo_jpeg() (§6.0).
     void handle_photo(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "ProfilePhoto")) return;
@@ -493,7 +682,7 @@ private:
         chunked_transfer::feed(&g_photo_ctx, data, len);
     }
 
-    // ── Meeting List (char 0005) — chunked ─────────────────────────────────
+    // -- Meeting List (char 0005) — chunked ---------------------------------
     // Staged — hashed and applied at SyncControl{END} via apply_meetings_cbor() (§6.0).
     void handle_meetings(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "MeetingList")) return;
@@ -515,7 +704,7 @@ private:
         chunked_transfer::feed(&g_meetings_ctx, data, len);
     }
 
-    // ── Time Off Entry (char 0006) — chunked ───────────────────────────────
+    // -- Time Off Entry (char 0006) — chunked -------------------------------
     // Staged — hashed, parsed, and applied at SyncControl{END} via apply_time_off_cbor() (§6.0).
     void handle_time_off(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "TimeOffEntry")) return;
@@ -537,7 +726,7 @@ private:
         chunked_transfer::feed(&g_time_off_ctx, data, len);
     }
 
-    // ── Sync Control (char 0007) ────────────────────────────────────────────
+    // -- Sync Control (char 0007) --------------------------------------------
     void handle_sync_ctrl(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "SyncControl")) return;
 
@@ -601,8 +790,8 @@ private:
         }
     }
 
-    // ── Device Command (char 0008) — magic-routed ──────────────────────────
-    // Accepts two 4-byte magic payloads; all others → NACK_BAD_MAGIC.
+    // -- Device Command (char 0008) — magic-routed --------------------------
+    // Accepts two 4-byte magic payloads; all others ? NACK_BAD_MAGIC.
     //   0xFA 0xC7 0x5E 0x5E  Factory Reset
     //   0x55 0x4E 0x50 0x52  Unpair Phone ("UNPR")
     // IMPORTANT: do not touch NVS or LVGL from this NimBLE host-task callback.
@@ -624,11 +813,11 @@ private:
             uint8_t buf[64];
             size_t  n = cbor_encode_sync_ctrl(buf, sizeof(buf),
                                                "NACK", g_sync_seq, "NACK_BAD_MAGIC");
-            if (c_sync_ctrl) c_sync_ctrl->notify(buf, n);
+            c_sync_ctrl->notify(buf, n);
         }
     }
 
-    // ── Sync Manifest Write (char 0009) — central→peripheral ───────────────
+    // -- Sync Manifest Write (char 0009) — central?peripheral ---------------
     void handle_manifest_write(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "SyncManifest")) return;
 
@@ -691,7 +880,7 @@ private:
         }
         if (got_meetings) {
             // Meetings are RAM-only: compare against the RAM hash, not NVS. After
-            // a power cycle g_meetings_hash_valid is false → always "needed".
+            // a power cycle g_meetings_hash_valid is false ? always "needed".
             bool match = g_meetings_hash_valid
                          && memcmp(g_meetings_hash, recv_meetings, 32) == 0;
             if (!match) needed[needed_count++] = "meetings";
@@ -706,21 +895,14 @@ private:
         uint8_t buf[256];
         size_t  n = cbor_encode_manifest_notify(buf, sizeof(buf),
                                                   needed, needed_count);
-        if (c_manifest) c_manifest->notify(buf, n);
+        c_manifest->notify(buf, n);
 
         LOG("[gatt] Manifest: need %u items\n", (unsigned)needed_count);
     }
 
-    // ── Host Volume State (char 000B) ───────────────────────────────────────
+    // -- Host Volume State (char 000B) ---------------------------------------
     void handle_host_volume(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "HostVolume")) return;
-
-        // Drag-wins override: ignore incoming push during/after swipe.
-        uint32_t now = (uint32_t)millis();
-        if (g_vol_swipe_active || (now - g_vol_swipe_end_ms < 800)) {
-            LOG("[gatt] HostVolume: ignoring during swipe override\n");
-            return;
-        }
 
         CborParser parser;
         CborValue  root, map_val;
@@ -746,8 +928,30 @@ private:
             }
             if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
         }
+        uint8_t new_level = (uint8_t)(level > 100 ? 100 : level);
 
-        g_volume_level = (uint8_t)(level > 100 ? 100 : level);
+        // Drag-wins override: ignore incoming pushes during/shortly after a
+        // swipe — UNLESS this push's level exactly matches the value we
+        // ourselves just told Orion to set (g_last_vol_set_value). Without
+        // that exception, Orion's own confirmation write-back — sent in
+        // direct, near-instant response to the vol_set we just emitted at
+        // release — lands inside this very window almost every time (a BLE
+        // round trip is far faster than 800 ms) and gets discarded here, so
+        // g_volume_level (what Orion reads back on reconnect) never reflects
+        // a swipe-driven change. A push whose value DOESN'T match this is
+        // still rejected as before — it's either stale or an unrelated
+        // overlapping change, and the locally-computed swipe value (already
+        // applied via set_volume_visual) stays authoritative for the HUD
+        // until the window clears.
+        uint32_t now = (uint32_t)millis();
+        bool in_override_window = g_vol_swipe_active || (now - g_vol_swipe_end_ms < 800);
+        bool is_own_echo = (new_level == g_last_vol_set_value);
+        if (in_override_window && !is_own_echo) {
+            LOG("[gatt] HostVolume: ignoring during swipe override\n");
+            return;
+        }
+
+        g_volume_level = new_level;
         g_muted        = mute;
 
         // Update app_state so the media mode screen reflects it.
@@ -771,7 +975,7 @@ private:
         c->setValue(buf, n);
     }
 
-    // ── Media Metadata (char 000C) ──────────────────────────────────────────
+    // -- Media Metadata (char 000C) ------------------------------------------
     void handle_media_metadata(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "MediaMetadata")) return;
 
@@ -840,7 +1044,7 @@ private:
         ble_post_media_meta_event();
     }
 
-    // ── Media Album Art (char 000D) — chunked raw JPEG ─────────────────────
+    // -- Media Album Art (char 000D) — chunked raw JPEG ---------------------
     void handle_album_art(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "AlbumArt")) return;
 
@@ -859,7 +1063,7 @@ private:
         chunked_transfer::feed(&g_art_ctx, data, len);
     }
 
-    // ── Device Settings read ────────────────────────────────────────────────────
+    // -- Device Settings read ----------------------------------------------------
     // Returns all NVS-persisted fields: "c" (clock_face), "h" (time_format),
     // "f" (ancs_filter), and "1"/"2"/"3" (shortcut slot tokens). Presence and
     // weather are not returned — ephemeral, Orion is the source of truth.
@@ -886,7 +1090,7 @@ private:
         c->setValue(buf, n);
     }
 
-    // ── Device Settings (char 000E) — CBOR map, partial-update ───────────────
+    // -- Device Settings (char 000E) — CBOR map, partial-update ---------------
     // Merges Presence Status, Shortcut Config, Clock Face, Time Format, ANCS
     // Filter, and Weather into one characteristic. All fields are optional; absent
     // keys leave state unchanged. All present fields are validated before any are
@@ -902,7 +1106,7 @@ private:
             !cbor_value_is_map(&root)) {
             uint8_t buf[64];
             size_t n = cbor_encode_sync_ctrl(buf, sizeof(buf), "NACK", 0, "NACK_CBOR_DECODE");
-            if (c_sync_ctrl) c_sync_ctrl->notify(buf, n);
+            c_sync_ctrl->notify(buf, n);
             return;
         }
 
@@ -972,7 +1176,7 @@ private:
         if (parse_error) {
             uint8_t buf[64];
             size_t n = cbor_encode_sync_ctrl(buf, sizeof(buf), "NACK", 0, "NACK_CBOR_DECODE");
-            if (c_sync_ctrl) c_sync_ctrl->notify(buf, n);
+            c_sync_ctrl->notify(buf, n);
             return;
         }
 
@@ -1024,14 +1228,66 @@ private:
         }
     }
 
+    // -- ANCS Notification Action (char 0012) — remote Answer/Decline/End
+    // call/Dismiss/Read-all from Orion (ble-protocol.md §13) ---------------
+    // { u: uid, a: 0=Positive, 1=Negative }. IMPORTANT: do not call
+    // ancs_client::answer_notification()/dismiss_notification() from this
+    // NimBLE host-task callback — both issue a blocking ANCS Control Point
+    // write-WITH-RESPONSE, which would deadlock here for the exact reason
+    // ancs_client.cpp's NS/DS deferral comment explains (the host task that
+    // must process the write's ATT response is the one stuck in this
+    // callback). Parse-only here; the actual dispatch (and the "is uid still
+    // live" check, which touches ancs_client's queue) is deferred to the
+    // main task via ble_post_ancs_action_event().
+    void handle_ancs_action(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
+        if (!check_write_allowed(info, "AncsNotificationAction")) return;
+
+        CborParser parser; CborValue root, map_val;
+        bool has_uid = false, has_action = false;
+        uint64_t uid_v = 0, action_v = 0;
+
+        if (cbor_parser_init(data, len, 0, &parser, &root) == CborNoError &&
+            cbor_value_is_map(&root)) {
+            cbor_value_enter_container(&root, &map_val);
+            while (!cbor_value_at_end(&map_val)) {
+                char key[4] = {}; size_t key_len = sizeof(key) - 1;
+                if (cbor_value_is_text_string(&map_val)) {
+                    cbor_value_copy_text_string(&map_val, key, &key_len, &map_val);
+                } else { cbor_value_advance(&map_val); continue; }
+                if (cbor_value_at_end(&map_val)) break;
+
+                if (strcmp(key, "u") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
+                    cbor_value_get_uint64(&map_val, &uid_v);
+                    has_uid = true;
+                } else if (strcmp(key, "a") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
+                    cbor_value_get_uint64(&map_val, &action_v);
+                    has_action = true;
+                }
+                if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
+            }
+        }
+
+        if (!has_uid || !has_action || action_v > 1) {
+            LOG("[gatt] AncsNotificationAction: malformed write\n");
+            uint8_t buf[64];
+            size_t n = cbor_encode_sync_ctrl(buf, sizeof(buf), "NACK", g_sync_seq, "NACK_CBOR_DECODE");
+            c_sync_ctrl->notify(buf, n);
+            return;
+        }
+
+        LOG("[gatt] AncsNotificationAction: uid=%u action=%u\n",
+            (unsigned)uid_v, (unsigned)action_v);
+        ble_post_ancs_action_event((uint32_t)uid_v, (uint8_t)action_v);
+    }
+
 };
 
 static OriCharacteristicCallbacks s_char_cb;
 
-// ─────────────────────────────────────────────────────────────────────────
+// -------------------------------------------------------------------------
 // Sync stage commit helpers — apply one staged item to NVS / live state.
 // Called only from stage_commit() at SyncControl{END} (§6.0).
-// ─────────────────────────────────────────────────────────────────────────
+// -------------------------------------------------------------------------
 
 static void apply_time_sync(uint64_t epoch_utc, const char* tz) {
     if (epoch_utc == 0) return;
@@ -1146,7 +1402,7 @@ static void apply_time_off_cbor(uint8_t* buf, size_t n) {
     sha256_of_buf(buf, n, hash);
     nvs_sync::save_hash(nvs_sync::HASH_KEY_TIME_OFF, hash);
 
-    // ── Parse TimeOffEntry CBOR ────────────────────────────────
+    // -- Parse TimeOffEntry CBOR --------------------------------
     // Schema: { s:start, e:end, d:destination, m:image }
     CborParser parser;
     CborValue  root, map_val;
@@ -1202,7 +1458,7 @@ static void apply_time_off_cbor(uint8_t* buf, size_t n) {
                             &map_val, img_buf, &img_len, nullptr);
                     }
                 }
-                // raw_len == 0 → no image set; img_buf stays nullptr
+                // raw_len == 0 ? no image set; img_buf stays nullptr
             }
 
             if (!cbor_value_at_end(&map_val))
@@ -1222,7 +1478,7 @@ static void apply_time_off_cbor(uint8_t* buf, size_t n) {
                    (unsigned)time_off_start, (unsigned)time_off_end,
                    fdest, (unsigned)img_len);
 
-    // Post photo event (img_buf=nullptr, img_len=0 → clear cache).
+    // Post photo event (img_buf=nullptr, img_len=0 ? clear cache).
     ble_post_time_off_photo_event(img_buf, img_len);
 }
 
@@ -1254,126 +1510,168 @@ void init() {
     c_dev_status->setCallbacks(&s_char_cb);
     c_dev_status->setValue(&g_device_status, 1);
 
-    // SECURITY NOTE: All characteristics below use WRITE_ENC / READ_ENC (any
-    // encrypted link) instead of WRITE_AUTHEN / READ_AUTHEN (MITM-protected).
-    // This allows Just Works bonding so the Python mock tool can test M5 without
-    // implementing passkey entry. After M5 testing is complete, every _ENC flag
-    // below MUST be changed to _AUTHEN to close the Just Works bypass vulnerability.
-    // See: https://github.com/anthropics/... (tracked in M5 sign-off checklist)
+    // BISECTION CONCLUDED (2026-07-11): the Orion-drop-on-iPhone-pair
+    // regression reproduced with the pool-size flags removed and _AUTHEN
+    // restored, and was root-caused to neither — the real bug was NimBLE's
+    // persisted-CCCD store overflowing when the iPhone's bond persisted a
+    // 9th subscription record (global default cap 8; Orion's 8 notify
+    // subscriptions filled it), whose overflow handler unpairs the OLDEST
+    // bonded peer: Orion's LTK deleted + live link terminated. Fixed via
+    // CONFIG_BT_NIMBLE_MAX_CCCDS in platformio.ini (full write-up there).
+    // _AUTHEN vs _ENC was never the cause, so chars 0002-000F stay at
+    // WRITE_AUTHEN/READ_AUTHEN — the stronger, MITM-gated setting matching
+    // ble-protocol.md's encrypted-characteristic contract. (The separate
+    // "AUTHEN checks intermittently flaky on bonded reconnect" concern noted
+    // in ble_manager.cpp's onAuthenticationComplete comment remains open,
+    // but is a reliability question independent of this bug.)
 
-    // 0002 Time Sync — Write with response, encrypted
+    // 0002 Time Sync — Write with response, MITM-authenticated
     c_time_sync = svc->createCharacteristic(
         "6F726900-0002-4F72-9F00-000000000000",
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_AUTHEN);
     c_time_sync->setCallbacks(&s_char_cb);
 
-    // 0003 Profile Info — Write with response, encrypted
+    // 0003 Profile Info — Write with response, MITM-authenticated
     c_profile = svc->createCharacteristic(
         "6F726900-0003-4F72-9F00-000000000000",
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_AUTHEN);
     c_profile->setCallbacks(&s_char_cb);
 
-    // 0004 Profile Photo — Write + Write-No-Response, encrypted (chunked).
-    // WRITE_NR is the fast bulk path (central streams fragments without per-write
-    // ATT acks); WRITE is kept for the periodic WR checkpoint that bounds the
-    // sender's in-flight window (see ble-protocol.md §5 flow control).
+    // 0004 Profile Photo — Write + Write-No-Response, MITM-authenticated (chunked).
     c_photo = svc->createCharacteristic(
         "6F726900-0004-4F72-9F00-000000000000",
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC);
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_AUTHEN);
     c_photo->setCallbacks(&s_char_cb);
 
-    // 0005 Meeting List — Write + Write-No-Response, encrypted (chunked)
+    // 0005 Meeting List — Write + Write-No-Response, MITM-authenticated (chunked)
     c_meetings = svc->createCharacteristic(
         "6F726900-0005-4F72-9F00-000000000000",
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC);
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_AUTHEN);
     c_meetings->setCallbacks(&s_char_cb);
 
-    // 0006 Time Off Entry — Write + Write-No-Response, encrypted (chunked)
+    // 0006 Time Off Entry — Write + Write-No-Response, MITM-authenticated (chunked)
     c_time_off = svc->createCharacteristic(
         "6F726900-0006-4F72-9F00-000000000000",
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC);
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_AUTHEN);
     c_time_off->setCallbacks(&s_char_cb);
 
-    // 0007 Sync Control — Write + Notify, encrypted
+    // 0007 Sync Control — Write + Notify, MITM-authenticated
     c_sync_ctrl = svc->createCharacteristic(
         "6F726900-0007-4F72-9F00-000000000000",
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC |
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_AUTHEN |
         NIMBLE_PROPERTY::NOTIFY);
     c_sync_ctrl->setCallbacks(&s_char_cb);
 
-    // 0008 Device Command — Write with response, encrypted.
-    // Magic-routed: 0xFA C7 5E 5E = factory reset; 0x55 4E 50 52 = unpair phone.
+    // 0008 Device Command — Write with response, MITM-authenticated.
     c_dev_cmd = svc->createCharacteristic(
         "6F726900-0008-4F72-9F00-000000000000",
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_AUTHEN);
     c_dev_cmd->setCallbacks(&s_char_cb);
 
-    // 0009 Sync Manifest — Write + Notify, encrypted
+    // 0009 Sync Manifest — Write + Notify, MITM-authenticated
     c_manifest = svc->createCharacteristic(
         "6F726900-0009-4F72-9F00-000000000000",
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC |
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_AUTHEN |
         NIMBLE_PROPERTY::NOTIFY);
     c_manifest->setCallbacks(&s_char_cb);
 
-    // 000A Keyboard Command — Notify (encrypted via READ_ENC; no write needed)
-    // NimBLE 2.5 does not have NOTIFY_ENC; encryption enforced via READ_ENC.
+    // 000A Keyboard Command — Read + Notify, MITM-authenticated.
+    // READ is REQUIRED, not optional: Windows' WinRT GATT stack does not
+    // raise ValueChanged (deliver notifications) for a characteristic that
+    // lacks the base READ property — even though subscribe() succeeds and
+    // the CCCD write returns Success. Confirmed empirically 2026-07-11:
+    // char 000F (READ|READ_AUTHEN|NOTIFY) delivered fine while chars
+    // 000A/0010/0011 (NOTIFY|READ_AUTHEN, no base READ) never fired a single
+    // ValueChanged on Orion — the notifies left Ori (rc=0) but WinRT dropped
+    // them. Matching 000F's property set fixes delivery. READ_AUTHEN still
+    // gates the read behind MITM bonding; the readable value is just the
+    // last-notified payload (harmless — Orion only ever subscribes).
     c_kbd_cmd = svc->createCharacteristic(
         "6F726900-000A-4F72-9F00-000000000000",
-        NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ_ENC);
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_AUTHEN | NIMBLE_PROPERTY::NOTIFY);
     c_kbd_cmd->setCallbacks(&s_char_cb);
 
-    // 000B Host Volume State — Read + Write, encrypted
+    // 000B Host Volume State — Read + Write, MITM-authenticated
     c_host_vol = svc->createCharacteristic(
         "6F726900-000B-4F72-9F00-000000000000",
-        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_ENC |
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_AUTHEN |
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_AUTHEN);
     c_host_vol->setCallbacks(&s_char_cb);
 
-    // 000C Media Metadata — Write + Notify, encrypted
+    // 000C Media Metadata — Write + Notify, MITM-authenticated
     c_media_meta = svc->createCharacteristic(
         "6F726900-000C-4F72-9F00-000000000000",
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC |
-        NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ_ENC);
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_AUTHEN |
+        NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ_AUTHEN);
     c_media_meta->setCallbacks(&s_char_cb);
 
-    // 000D Media Album Art — Write no response, encrypted (chunked JPEG)
+    // 000D Media Album Art — Write no response, MITM-authenticated (chunked JPEG)
     c_album_art = svc->createCharacteristic(
         "6F726900-000D-4F72-9F00-000000000000",
-        NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_ENC);
+        NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_AUTHEN);
     c_album_art->setCallbacks(&s_char_cb);
 
-    // 000E Device Settings — Read + Write, encrypted. CBOR map with optional
-    // write fields: "p"=presence (0-3), "1"/"2"/"3"=shortcut tokens,
-    // "c"=clock face (0-1), "f"=ANCS filter (0-3). Absent keys leave current
-    // state unchanged. Read returns {"c", "f", "1", "2", "3"} — all
-    // NVS-persisted fields Orion reads on (re)connect to sync its UI state.
+    // 000E Device Settings — Read + Write, MITM-authenticated.
     c_dev_settings = svc->createCharacteristic(
         "6F726900-000E-4F72-9F00-000000000000",
-        NIMBLE_PROPERTY::READ  | NIMBLE_PROPERTY::READ_ENC |
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
+        NIMBLE_PROPERTY::READ  | NIMBLE_PROPERTY::READ_AUTHEN |
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_AUTHEN);
     c_dev_settings->setCallbacks(&s_char_cb);
 
-    // 000F Phone Bond Status — Read + Notify, encrypted.
-    // Ori notifies Orion whenever the iPhone bond/connection state changes.
-    // CBOR: { "b": bool (bonded), "c": bool (connected), "n": text (phone name) }
-    // Orion reads on (re)connect for initial state; Ori notifies on every change.
-    // NimBLE 2.5 has no NOTIFY_ENC; READ_ENC enforces encryption on subscriptions.
+    // 000F Phone Bond Status — Read + Notify, MITM-authenticated.
     c_phone_status = svc->createCharacteristic(
         "6F726900-000F-4F72-9F00-000000000000",
-        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_ENC |
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_AUTHEN |
         NIMBLE_PROPERTY::NOTIFY);
     c_phone_status->setCallbacks(&s_char_cb);
     {
         // Seed with "not bonded, not connected" — updated by notify_phone_bond_status().
         uint8_t buf[64];
-        size_t  n = encode_phone_status(buf, sizeof(buf), false, false, "");
+        size_t  n = encode_phone_status(buf, sizeof(buf), false, false, "", 0, 0, 0, 0);
         c_phone_status->setValue(buf, n);
     }
+
+    // 0010 ANCS Notification — Read + Notify, MITM-authenticated. Individual
+    // ANCS notification content relay to Orion's drill-down UI
+    // (ble-protocol.md §13); driven by ancs_client via notify_ancs_add()/
+    // notify_ancs_remove()/notify_ancs_clear() below.
+    //
+    // READ is REQUIRED for notification DELIVERY on Windows, not just for
+    // reads — see char 000A's comment above for the full write-up. Short
+    // version: WinRT GATT silently drops ValueChanged for a characteristic
+    // with no base READ property, so char 0010 (previously NOTIFY|READ_AUTHEN)
+    // never delivered a single notification to Orion even though Ori sent
+    // them and Orion's subscribe succeeded — the exact "count is right but the
+    // list is empty" symptom. Matching char 000F's READ|READ_AUTHEN|NOTIFY
+    // set fixes it. (Earlier this was reverted _ENC→_AUTHEN during the CCCD-
+    // overflow bisection; _AUTHEN is correct and kept — the missing bit was
+    // always READ, not the auth level.)
+    c_ancs_notif = svc->createCharacteristic(
+        "6F726900-0010-4F72-9F00-000000000000",
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_AUTHEN | NIMBLE_PROPERTY::NOTIFY);
+    c_ancs_notif->setCallbacks(&s_char_cb);
+
+    // 0011 ANCS Call State — Read + Notify, MITM-authenticated. Live
+    // incoming/active call state, driven by ancs_client via
+    // notify_ancs_call_state() below. READ required for WinRT notification
+    // delivery, same as 000A/0010 above.
+    c_ancs_call = svc->createCharacteristic(
+        "6F726900-0011-4F72-9F00-000000000000",
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_AUTHEN | NIMBLE_PROPERTY::NOTIFY);
+    c_ancs_call->setCallbacks(&s_char_cb);
+
+    // 0012 ANCS Notification Action — Write with response, MITM-authenticated.
+    // { u: uid, a: 0=Positive/1=Negative } — Orion's remote Answer/Decline/
+    // End call/Dismiss/Read-all. See handle_ancs_action() above.
+    c_ancs_action = svc->createCharacteristic(
+        "6F726900-0012-4F72-9F00-000000000000",
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_AUTHEN);
+    c_ancs_action->setCallbacks(&s_char_cb);
 
     // In NimBLE 2.5, services are started when NimBLEServer::start() is called.
     // svc->start() is deprecated and a no-op; omit it.
     // The server is started in ble_manager::init() after all characteristics are set up.
-    LOG("[gatt] Service registered: 15 characteristics + DIS Firmware Revision\n");
+    LOG("[gatt] Service registered: 18 characteristics + DIS Firmware Revision\n");
 }
 
 bool is_ota_active() { return g_ota_active; }
@@ -1396,6 +1694,11 @@ uint8_t get_device_status() { return g_device_status; }
 
 void notify_keyboard_command(const char* op, uint32_t arg) {
     if (!c_kbd_cmd) return;
+    // Remember our own vol_set value so handle_host_volume() can recognize
+    // Orion's direct confirmation of it (see g_last_vol_set_value's comment).
+    if (strcmp(op, "vol_set") == 0) {
+        g_last_vol_set_value = (uint8_t)(arg > 100 ? 100 : arg);
+    }
     // Encode KeyboardCommand { op, arg }
     CborEncoder enc, map;
     uint8_t buf[64];
@@ -1413,12 +1716,105 @@ void notify_keyboard_command(const char* op, uint32_t arg) {
 
 void notify_phone_bond_status(bool bonded, bool connected, const char* name) {
     if (!c_phone_status) return;
-    uint8_t buf[128];
-    size_t  n = encode_phone_status(buf, sizeof(buf), bonded, connected, name ? name : "");
+    g_phone_bonded    = bonded;
+    g_phone_connected = connected;
+    strncpy(g_phone_name_cache, name ? name : "", sizeof(g_phone_name_cache) - 1);
+    g_phone_name_cache[sizeof(g_phone_name_cache) - 1] = '\0';
+    if (!connected) {
+        // Nothing left to verify once the link drops — zero the stats/signal
+        // cache too so a stale reading never lingers into the next connect
+        // (ancs_client re-populates real values once ANCS resubscribes).
+        g_phone_missed = g_phone_unread = g_phone_total = g_phone_signal = 0;
+    }
+    uint8_t buf[160];
+    size_t  n = encode_phone_status(buf, sizeof(buf), bonded, connected, name,
+                                     g_phone_missed, g_phone_unread, g_phone_total, g_phone_signal);
     c_phone_status->setValue(buf, n);
-    c_phone_status->notify();
+    c_phone_status->notify(buf, n);
     LOG("[gatt] PhoneBondStatus: bonded=%d connected=%d name='%s'\n",
         (int)bonded, (int)connected, name ? name : "");
+}
+
+void notify_phone_stats(uint8_t missed, uint8_t unread, uint8_t total, uint8_t signal_bars) {
+    // Nothing to relay while disconnected — notify_phone_bond_status() already
+    // zeroed and pushed the cache when the link dropped.
+    if (!c_phone_status || !g_phone_connected) return;
+    if (missed == g_phone_missed && unread == g_phone_unread &&
+        total == g_phone_total && signal_bars == g_phone_signal) {
+        return;  // no real change — avoid spamming a notify per ANCS event
+    }
+    g_phone_missed = missed;
+    g_phone_unread = unread;
+    g_phone_total  = total;
+    g_phone_signal = signal_bars;
+    uint8_t buf[160];
+    size_t  n = encode_phone_status(buf, sizeof(buf), g_phone_bonded, g_phone_connected, g_phone_name_cache,
+                                     g_phone_missed, g_phone_unread, g_phone_total, g_phone_signal);
+    c_phone_status->setValue(buf, n);
+    c_phone_status->notify(buf, n);
+    LOG("[gatt] PhoneBondStatus stats: missed=%u unread=%u total=%u signal=%u\n",
+        (unsigned)missed, (unsigned)unread, (unsigned)total, (unsigned)signal_bars);
+}
+
+// -- ANCS relay to Orion (chars 0010-0012, ble-protocol.md §13) ------------
+// All four notify_ancs_* functions are called from ancs_client.cpp, which
+// owns the filter gate and the call/non-call routing decision (§13's "Filter
+// gates the relay, not just the display" / the scoping note that calls never
+// touch char 0010) — these just encode + notify exactly what they're given.
+
+void notify_ancs_add(uint32_t uid, const char* icon_token, uint8_t category,
+                      const char* app, const char* title, const char* body,
+                      uint32_t recv_epoch, const char* pos_label,
+                      const char* neg_label, bool has_neg_action, bool silent) {
+    if (!c_ancs_notif) return;
+    uint8_t buf[256];
+    size_t  n = cbor_encode_ancs_add(buf, sizeof(buf), uid, icon_token, category,
+                                      app, title, body, recv_epoch, pos_label,
+                                      neg_label, has_neg_action, silent);
+    c_ancs_notif->notify(buf, n);
+    LOG("[gatt] AncsNotification add: uid=%u app=%s cat=%u\n",
+        (unsigned)uid, app ? app : "", (unsigned)category);
+}
+
+void notify_ancs_remove(uint32_t uid) {
+    if (!c_ancs_notif) return;
+    uint8_t buf[32];
+    size_t  n = cbor_encode_ancs_remove(buf, sizeof(buf), uid);
+    c_ancs_notif->notify(buf, n);
+    LOG("[gatt] AncsNotification remove: uid=%u\n", (unsigned)uid);
+}
+
+void notify_ancs_clear() {
+    if (!c_ancs_notif) return;
+    uint8_t buf[16];
+    size_t  n = cbor_encode_ancs_clear(buf, sizeof(buf));
+    c_ancs_notif->notify(buf, n);
+    LOG("[gatt] AncsNotification clear\n");
+}
+
+void notify_ancs_call_state(uint8_t st, uint32_t uid, uint32_t elapsed_s,
+                             const char* app, const char* title,
+                             const char* pos_label, const char* neg_label,
+                             bool has_neg_action, const char* icon_token) {
+    if (!c_ancs_call) return;
+    // Buffer sized like AncsNotification's (256) since this now carries the
+    // same class of text fields (app/title/pos/neg labels + icon token), just
+    // fewer of them.
+    uint8_t buf[192];
+    size_t  n = cbor_encode_ancs_call_state(buf, sizeof(buf), st, uid, elapsed_s,
+                                             app, title, pos_label, neg_label,
+                                             has_neg_action, icon_token);
+    c_ancs_call->notify(buf, n);
+    LOG("[gatt] AncsCallState: st=%u uid=%u elapsed=%u title=%s\n",
+        (unsigned)st, (unsigned)uid, (unsigned)elapsed_s, title ? title : "");
+}
+
+void nack_sync_control(const char* reason) {
+    if (!c_sync_ctrl) return;
+    uint8_t buf[64];
+    size_t  n = cbor_encode_sync_ctrl(buf, sizeof(buf), "NACK", g_sync_seq, reason);
+    c_sync_ctrl->notify(buf, n);
+    LOG("[gatt] SyncControl NACK: %s\n", reason ? reason : "");
 }
 
 void abort_sync_stage() {
@@ -1484,7 +1880,7 @@ void run_staged_commit() {
 
 } // namespace gatt_server
 
-// ── Volume swipe state setters (called from screen_media_mode BLE hooks) ───
+// -- Volume swipe state setters (called from screen_media_mode BLE hooks) ---
 
 extern "C" {
 void gatt_server_set_vol_swipe_active(bool active) {

@@ -270,7 +270,16 @@ static void check_ring_anim_cb(void* obj, int32_t val) {
     lv_arc_set_value((lv_obj_t*)obj, val);
 }
 static void check_reveal_tick_cb(lv_timer_t* t) {
-    lv_obj_clear_flag((lv_obj_t*)lv_timer_get_user_data(t), LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t* tick = (lv_obj_t*)lv_timer_get_user_data(t);
+    lv_obj_clear_flag(tick, LV_OBJ_FLAG_HIDDEN);
+    // This timer has repeat_count=1, so LVGL auto-deletes it right after this
+    // callback returns (lv_timer.c) — `t` is dangling the instant we return.
+    // `tick`'s own DELETE handler below still holds that now-stale pointer in
+    // its user_data and would call lv_timer_delete() on it a second time when
+    // the screen is torn down later, corrupting LVGL's timer list. Null it out
+    // here so that handler becomes a no-op — mirrors screen_setup.cpp's
+    // reveal_tick_cb(), which this was copied from but was missing this line.
+    lv_obj_set_user_data(tick, nullptr);
 }
 static lv_obj_t* make_ok_check(lv_obj_t* parent) {
     lv_obj_t* root = lv_obj_create(parent);

@@ -101,6 +101,20 @@ bool is_awaiting_sync() {
     return g_awaiting_sync;
 }
 
+void clear_orion_bonded() {
+    // Mirrors mark_orion_bonded(), but reverting rather than setting — only
+    // touches the sync-step bookmark. Leaves k_provisioned/g_is_first_boot
+    // alone (still mid first-boot setup) and k_phone_step/g_awaiting_phone
+    // alone (already false here — mark_orion_synced() is the only thing that
+    // sets it, and by construction this path only runs when that never ran).
+    g_awaiting_sync = false;
+    if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
+        prefs.putBool(k_sync_step, false);
+        prefs.end();
+    }
+    LOG("[nvs] orion bond reverted — sync step bookmark cleared\n");
+}
+
 bool is_awaiting_phone_pairing() {
     return g_awaiting_phone;
 }

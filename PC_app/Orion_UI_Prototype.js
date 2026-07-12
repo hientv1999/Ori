@@ -81,9 +81,9 @@ function showModal(id){$(id).classList.add('show');}
 function hideModal(id){$(id).classList.remove('show');}
 
 let fwAvail=false;
-let orionAppVersion='v1.0.0';
+let orionAppVersion='1.0.0';
 let orionUpdateAvail=false;
-let orionUpdateVersion='v1.1.0';
+let orionUpdateVersion='1.1.0';
 function updateOrionUpdateRow(){
   const t=I18N[appLang].orionUpdate;
   $('settingsAppVer').textContent=orionAppVersion;
@@ -807,14 +807,12 @@ function discardShortcuts(){
   back();
 }
 
-// Device-only reset: Ori wipes its own NVS + bonds and reboots into setup,
-// but Orion's local profile cache is untouched (ble-protocol.md §7.2) — so
-// only the connection state drops, the cached profile stays on screen.
-function doFactoryReset(){hideModal('m-reset');setConn('off');}
-// Clear All: also wipes Orion's local cache (profile, calendar sign-in,
-// shortcuts), then walks back through first-run setup since there's now
-// neither a local profile nor a paired device.
-function doClearAll(){
+// Reset: wipes Ori's own NVS + bonds (factory reset, ble-protocol.md §7.2)
+// AND Orion's local cache (profile, calendar sign-in, shortcuts) — there's
+// no longer a lesser "device-only" reset option, so this always walks back
+// through first-run setup since there's now neither a local profile nor a
+// paired device.
+function doReset(){
   hideModal('m-reset');
   calSrc='ms';calPending='ms';_renderCalOpts('ms');
   $('mainCalSub').textContent=calInfo.ms.name+_calStatusSuffix(calInfo.ms);
@@ -823,7 +821,32 @@ function doClearAll(){
   $('pfDzThumb').style.backgroundImage='';$('pfDzEmpty').style.display='';$('pfDzImg').style.display='none';
   $('mainProfPhoto').style.backgroundImage='';
   $('mainProfInitials').style.display='';$('mainProfInitials').textContent='?';
-  $('mainName').textContent='Your Name';setConn('off');
+  $('mainName').textContent='Your Name';
+
+  // Time Off — was previously left committed, so it reappeared on the next
+  // setup pass even though the rest of the profile was wiped.
+  timeOffDirty=false;timeOffActive=false;timeOffCustomPhoto=false;timeOffPhotoRemoved=false;
+  toCommittedStart=null;toCommittedEnd=null;toCommittedDest='';toCommittedPhotoUrl=null;
+  timeOffOrigUrl=null;timeOffPendingUrl=null;
+  $('mainTimeOffBanner').style.backgroundImage='';
+  $('timeOffToggle').classList.remove('on');setTimeOffState(false);
+
+  // Quick Actions shortcuts — back to the factory default tokens/combos.
+  const defaultSlots=['vol-mute','mic-mute','screenshot'];
+  [1,2,3].forEach(n=>{
+    slotCommitted[n-1]=defaultSlots[n-1];kbdCommitted[n-1]=[];
+    $('ss'+n).value=defaultSlots[n-1];applySlot(n);
+    $('ms'+n).src=siImgMap[defaultSlots[n-1]]||'';
+  });
+
+  // Clock face / time format / notification filter — back to Ori's defaults.
+  clockFace='digital';clockPending='digital';
+  $('mcDig').style.display='flex';$('mcAna').style.display='none';
+  timeFormat='24';timeFormatPending='24';_renderMainTimeFormatPreview();
+  ancsLevel=3;ancsPending=3;
+  [0,1,2,3].forEach(i=>$('an-ico-'+i).style.display=i===3?'block':'none');
+
+  setConn('off');
   openSetupWizard();
 }
 
@@ -849,7 +872,7 @@ function startFwInstall(){
     else if(p<80){lbl.textContent=t.verifying;title.textContent=t.verifying;}
     else if(p<100){lbl.textContent=t.updatingFirmware;title.textContent=t.updatingFirmware;}
     else{
-      clearInterval(_fwInstallTimer);pct.textContent='✓';lbl.textContent=t.nowRunning.replace('{v}','v1.1.0');title.textContent=t.done;
+      clearInterval(_fwInstallTimer);pct.textContent='✓';lbl.textContent=t.nowRunning.replace('{v}','1.1.0');title.textContent=t.done;
       setTimeout(()=>{
         hideModal('m-fw');fwAvail=false;
         const d=$('fwIco');d.classList.remove('fw-on');d.title=I18N[appLang].main.fwUpToDate;d.style.display='none';
@@ -944,9 +967,9 @@ const I18N={
       callOnlySub:'Incoming calls only',importantLbl:'Important',importantSub:'Calls and high-priority alerts',
       allLbl:'All',allSub:'Every notification (default)'},
     discardModal:{title:'Discard changes?',body:'Unsaved changes will be lost.',keepEditing:'Keep editing',discard:'Discard'},
-    resetModal:{title:'Reset Ori',
-      body:'All data and paired devices will be removed from Ori. Clear All also erases your profile, calendar sign-in, and shortcuts on this PC.',
-      factoryReset:'Reset',clearAll:'Clear All'},
+    resetModal:{title:'Reset',
+      body:'This will erase your profile, settings, and factory reset Ori.',
+      reset:'Reset'},
     fwModal:{title:'Ori Update Available',update:'Update',
       updatingFirmware:'Updating Ori…',keepPluggedIn:'Keep Ori plugged in',verifying:'Verifying…',
       nowRunning:'Now running {v}',done:'Done',
@@ -998,9 +1021,9 @@ const I18N={
       callOnlySub:'Chỉ cuộc gọi đến',importantLbl:'Quan trọng',importantSub:'Cuộc gọi và thông báo quan trọng',
       allLbl:'Tất cả',allSub:'Mọi thông báo (mặc định)'},
     discardModal:{title:'Hủy các thay đổi?',body:'Các thay đổi chưa lưu sẽ bị mất.',keepEditing:'Tiếp tục chỉnh sửa',discard:'Hủy bỏ'},
-    resetModal:{title:'Đặt lại Ori',
-      body:'Toàn bộ dữ liệu và thiết bị đã ghép nối sẽ bị xóa khỏi Ori. Xóa tất cả cũng xóa hồ sơ, đăng nhập lịch và các phím tắt trên PC này.',
-      factoryReset:'Đặt lại',clearAll:'Xóa tất cả'},
+    resetModal:{title:'Đặt lại',
+      body:'Việc này sẽ xóa hồ sơ, cài đặt của bạn, và đặt lại Ori về mặc định gốc.',
+      reset:'Đặt lại'},
     fwModal:{title:'Có bản cập nhật Ori',update:'Cập nhật',
       updatingFirmware:'Đang cập nhật Ori…',keepPluggedIn:'Giữ Ori được cắm điện',verifying:'Đang xác minh…',
       nowRunning:'Đang chạy {v}',done:'Hoàn tất',
@@ -1052,9 +1075,9 @@ const I18N={
       callOnlySub:'Solo llamadas entrantes',importantLbl:'Importante',importantSub:'Llamadas y alertas de alta prioridad',
       allLbl:'Todas',allSub:'Todas las notificaciones (predeterminado)'},
     discardModal:{title:'¿Descartar los cambios?',body:'Los cambios no guardados se perderán.',keepEditing:'Seguir editando',discard:'Descartar'},
-    resetModal:{title:'Restablecer Ori',
-      body:'Todos los datos y dispositivos vinculados se eliminarán de Ori. Borrar todo también elimina tu perfil, el inicio de sesión del calendario y los accesos directos en este PC.',
-      factoryReset:'Restablecer',clearAll:'Borrar todo'},
+    resetModal:{title:'Restablecer',
+      body:'Esto eliminará tu perfil, tus ajustes, y restablecerá Ori a los valores de fábrica.',
+      reset:'Restablecer'},
     fwModal:{title:'Actualización de Ori disponible',update:'Actualizar',
       updatingFirmware:'Actualizando Ori…',keepPluggedIn:'Mantén Ori conectado',verifying:'Verificando…',
       nowRunning:'Ahora ejecutando {v}',done:'Listo',
@@ -1106,9 +1129,9 @@ const I18N={
       callOnlySub:'Appels entrants uniquement',importantLbl:'Important',importantSub:'Appels et alertes prioritaires',
       allLbl:'Toutes',allSub:'Toutes les notifications (par défaut)'},
     discardModal:{title:'Abandonner les modifications ?',body:'Les modifications non enregistrées seront perdues.',keepEditing:'Continuer la modification',discard:'Abandonner'},
-    resetModal:{title:"Réinitialiser Ori",
-      body:"Toutes les données et appareils associés seront supprimés d'Ori. Tout effacer supprime également votre profil, votre connexion au calendrier et les raccourcis sur ce PC.",
-      factoryReset:'Réinitialiser',clearAll:'Tout effacer'},
+    resetModal:{title:"Réinitialiser",
+      body:"Cela supprimera votre profil, vos réglages, et réinitialisera Ori aux paramètres d'usine.",
+      reset:'Réinitialiser'},
     fwModal:{title:"Mise à jour d'Ori disponible",update:'Mettre à jour',
       updatingFirmware:"Mise à jour d'Ori…",keepPluggedIn:'Gardez Ori branché',verifying:'Vérification…',
       nowRunning:'Exécute maintenant {v}',done:'Terminé',
@@ -1187,7 +1210,7 @@ function applyI18n(){
   $('mainQaLabel').textContent=t.main.quickActionsRow;
   $('mainPText').textContent=t.main.presenceAvailable;
   $('gearIco').title=t.main.settingsIcoTitle;
-  $('minimizeIco').title=t.main.minimizeIcoTitle;
+  $('appMinimizeIco').title=t.main.minimizeIcoTitle;
   $('fwIco').title=fwAvail?t.main.fwAvailable:t.main.fwUpToDate;
   $('hState').textContent={on:t.main.connected,rec:t.main.syncing,off:t.main.disconnected}[connState];
   // profile editor
@@ -1274,8 +1297,7 @@ function applyI18n(){
   $('discardBtn').textContent=t.discardModal.discard;
   $('resetTitle').textContent=t.resetModal.title;
   $('resetBody').textContent=t.resetModal.body;
-  $('resetFactoryBtn').textContent=t.resetModal.factoryReset;
-  $('resetClearBtn').textContent=t.resetModal.clearAll;
+  $('resetBtn').textContent=t.resetModal.reset;
   $('resetCancelBtn').textContent=t.common.cancel;
   $('fwTitle').textContent=t.fwModal.title;
   $('fwChangelog').innerHTML=t.fwModal.changelog.map(item=>`<li>${item}</li>`).join('');

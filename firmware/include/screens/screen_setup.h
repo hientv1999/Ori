@@ -35,6 +35,12 @@ enum class Step {
 lv_obj_t* create(Step initial, lv_obj_t* prev_screen = nullptr);
 void      set_step(lv_obj_t* screen, Step s);
 
+// True only while the currently-displayed setup screen is on the Pairing
+// (Step 2 / "Link Orion") sub-state. Used by ble_manager::is_orion_pairing_allowed()
+// to scope the Orion bond slot to Step 2 specifically, per ble-protocol.md §2 —
+// AppState::SETUP alone covers the whole first-boot flow, not just this step.
+bool      is_pairing_step_active();
+
 // Leave the iPhone phone-pairing screen once pairing is done (bonded) or
 // dismissed (Skip/Close): hides the passkey modal, then — for a runtime re-pair
 // — returns to the launching screen, or — during first-time setup — advances to

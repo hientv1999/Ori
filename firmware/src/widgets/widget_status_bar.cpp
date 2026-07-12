@@ -5,10 +5,12 @@
 #include <functional>
 #include <time.h>
 
+#include "assets/ancs_badge_icons.h"
 #include "assets/ancs_icons.h"
 #include "app_state.h"
 #include "screens/modal_ancs_notification.h"
 #include "screens/modal_incoming_call.h"
+#include "screens/modal_iphone_info.h"
 #include "screens/modal_unpair_phone.h"
 #include "state_machine.h"
 #include "screens/screen_setup.h" // for screen_setup::create
@@ -21,8 +23,11 @@
 //   - 22 px horizontal padding
 //   - Time (30 px), separator dot, date (22 px) on the left
 //   - ANCS icons (48 x 48, gap 14 px) on the right
-//   - Phone icon (64 x 64) always visible — neutral when iPhone connected,
-//     danger red when disconnected; tap → unpair / re-pair
+//   - Phone icon (64 x 64) always visible — always neutral (secondary text)
+//     colour; a diagonal slash is drawn across the glyph when disconnected.
+//     Colour alone no longer encodes state (committed design pivot — the
+//     slash is legible regardless of red/grey colour perception); tap →
+//     unpair / re-pair
 //   - 3 px bottom border in COLOR_DIVIDER
 //
 // ANCS icons are colored placeholders — the prototype's brand-tile look.
@@ -222,12 +227,24 @@ lv_obj_t* make_ancs_tile(lv_obj_t* parent, const char* token, uint32_t uid, uint
         lv_obj_set_style_radius(tile, LV_RADIUS_CIRCLE, LV_PART_MAIN);
     }
 
-    // Category / importance accent ring: incoming call = danger red, otherwise
-    // an Important notification = accent. Overrides the default 0-width border.
+    // Category / importance accent ring: a call = solid yellow while still
+    // RINGING, solid red once ANSWERED/active (modal_incoming_call's session
+    // is the authoritative "has this call been answered" state — it's what
+    // starts running the instant ancs_client sees the ANCS positive action
+    // disappear, same signal the in-call dialog itself swaps on); otherwise
+    // an Important notification = accent. Overrides the default 0-width
+    // border. Solid (LV_OPA_COVER, no animation) by design — Orion mirrors
+    // this exact yellow/red pair on its own call chip (pc-app.md).
     uint8_t cat = app_state::ancs_category(uid);
-    if (cat == app_state::AncsCategory::INCOMING_CALL) {
+    bool is_call = (cat == app_state::AncsCategory::INCOMING_CALL ||
+                    cat == app_state::AncsCategory::ACTIVE_CALL);
+    if (is_call) {
+        uint32_t active_uid = 0;
+        bool     answered   = modal_incoming_call::session_state(&active_uid, nullptr) &&
+                              active_uid == uid;
         lv_obj_set_style_border_width(tile, 3, LV_PART_MAIN);
-        lv_obj_set_style_border_color(tile, theme::color(theme::COLOR_DANGER), LV_PART_MAIN);
+        lv_obj_set_style_border_color(tile, theme::color(
+            answered ? theme::COLOR_DANGER : theme::COLOR_CALL_RINGING), LV_PART_MAIN);
         lv_obj_set_style_border_opa(tile, LV_OPA_COVER, LV_PART_MAIN);
     } else if (app_state::ancs_is_important(uid)) {
         lv_obj_set_style_border_width(tile, 3, LV_PART_MAIN);
@@ -236,18 +253,14 @@ lv_obj_t* make_ancs_tile(lv_obj_t* parent, const char* token, uint32_t uid, uint
     }
 
     // Tap → call notifications reopen the in-call dialog (caller + live timer +
-    // End call); everything else opens the generic ANCS detail overlay.
+    // End call); everything else opens the generic ANCS detail overlay. Shared
+    // dispatcher (modal_ancs_notification::open_for_uid) also used by the
+    // iPhone Info modal's drill-down lists.
     lv_obj_set_user_data(tile, reinterpret_cast<void*>((uintptr_t)uid));
     lv_obj_add_event_cb(tile, [](lv_event_t* e) {
         lv_obj_t* t = (lv_obj_t*)lv_event_get_current_target(e);
         uint32_t uid = (uint32_t)(uintptr_t)lv_obj_get_user_data(t);
-        uint8_t cat = app_state::ancs_category(uid);
-        if (cat == app_state::AncsCategory::INCOMING_CALL ||
-            cat == app_state::AncsCategory::ACTIVE_CALL) {
-            modal_incoming_call::show_active(uid);
-        } else {
-            modal_ancs_notification::create(lv_screen_active(), uid);
-        }
+        modal_ancs_notification::open_for_uid(lv_screen_active(), uid);
     }, LV_EVENT_CLICKED, nullptr);
 
     // Genuinely-new notification (flagged via note_new_notification) pops in.
@@ -288,24 +301,59 @@ lv_obj_t* make_ancs_tile(lv_obj_t* parent, const char* token, uint32_t uid, uint
         lv_obj_center(lbl);
 
         lv_obj_align(badge, LV_ALIGN_TOP_RIGHT, 0, 0);
+    } else if (app_state::ancs_notification_by_uid(uid).silent) {
+        // Silent indicator — small icon-only badge (bell-off glyph), top-left
+        // corner. Same 26px circle + card-coloured cutout border and the same
+        // "count wins over silent" precedence as modal_ancs_list.cpp's row
+        // badge (a stacked tile's count badge already occupies the opposite
+        // corner, but showing silent here too would misrepresent an entire
+        // stack as silent when only its representative notification is) —
+        // top-left placement matches that list and modal_ancs_notification's
+        // detail overlay, so the glyph means the same thing everywhere.
+        constexpr int BADGE_SIZE = 26;
+        lv_obj_t* badge = lv_obj_create(tile);
+        lv_obj_set_size(badge, BADGE_SIZE, BADGE_SIZE);
+        lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(badge, lv_color_hex(0x2A2A2A), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, LV_PART_MAIN);
+        // Same black 2px border as the count badge above (this tile sits
+        // directly on the pure-black screen background, so a plain black
+        // border reads the same as the card-coloured "cutout" trick the
+        // modal badges use on their dark-grey card background).
+        lv_obj_set_style_border_width(badge, 2, LV_PART_MAIN);
+        lv_obj_set_style_border_color(badge, lv_color_black(), LV_PART_MAIN);
+        lv_obj_set_style_border_opa(badge, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_shadow_width(badge, 0, LV_PART_MAIN);
+        lv_obj_set_style_pad_all(badge, 0, LV_PART_MAIN);
+        lv_obj_clear_flag(badge, static_cast<lv_obj_flag_t>(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+
+        lv_obj_t* icon = lv_image_create(badge);
+        lv_image_set_src(icon, ancs_badge_icons::silent());
+        lv_obj_clear_flag(icon, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_center(icon);
+        lv_obj_set_style_image_recolor(icon, theme::color(theme::COLOR_TEXT_TERTIARY), 0);
+        lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
+
+        lv_obj_align(badge, LV_ALIGN_TOP_LEFT, 0, 0);
     }
 
     return tile;
 }
 
 // Phone glyph — drawn from primitives. Includes the top mic strip and
-// the bottom home-button dot. Colour encodes the connection state:
-// neutral (secondary text colour) when the iPhone is connected, danger
-// red when disconnected. No diagonal slash — the icon is now a permanent
-// status-bar button (tap → unpair when connected / re-pair when not).
+// the bottom home-button dot. Always the neutral (secondary text) colour
+// in both states — connection state is conveyed by a diagonal slash cut
+// across the glyph when disconnected, not by a colour swap, so the icon
+// reads the same whether or not the viewer can distinguish red from grey.
+// The icon is a permanent status-bar button either way (tap → unpair when
+// connected / re-pair when not).
 //
 // Layout inside the 64 px square:
 //
 //          mic strip  (a short horizontal line near the top of the body)
 //         ┌──────────┐
-//         │          │
-//         │          │
-//         │          │
+//        ╲│          │
+//         │          │╲   diagonal slash (disconnected only)
 //         │          │
 //         │    ·     │   home-button dot
 //         └──────────┘
@@ -315,8 +363,7 @@ lv_obj_t* make_ancs_tile(lv_obj_t* parent, const char* token, uint32_t uid, uint
 void build_phone_glyph(lv_obj_t* root, bool connected) {
     lv_obj_clean(root);
 
-    const lv_color_t color = theme::color(
-        connected ? theme::COLOR_TEXT_SECONDARY : theme::COLOR_DANGER);
+    const lv_color_t color = theme::color(theme::COLOR_TEXT_SECONDARY);
 
     // Phone body outline. ~28×46 px centred in the 64 px box.
     lv_obj_t* body = lv_obj_create(root);
@@ -355,6 +402,21 @@ void build_phone_glyph(lv_obj_t* root, bool connected) {
     lv_obj_set_style_pad_all(home, 0, LV_PART_MAIN);
     lv_obj_clear_flag(home, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(home, LV_OBJ_FLAG_CLICKABLE);
+
+    if (!connected) {
+        // Diagonal slash cut across the whole 64 px icon box — the sole
+        // signal for "disconnected" now that colour no longer changes.
+        // Drawn on `root` (not `body`) so it crosses the full glyph, same
+        // corner-to-corner ratio as the web prototype's mask-cut version
+        // (Ori_UI_Prototype.html's #i-phone-broken).
+        static const lv_point_precise_t slash_pts[] = {{8, 56}, {56, 8}};
+        lv_obj_t* slash = lv_line_create(root);
+        lv_line_set_points(slash, slash_pts, 2);
+        lv_obj_set_style_line_width(slash, 4, 0);
+        lv_obj_set_style_line_color(slash, color, 0);
+        lv_obj_set_style_line_rounded(slash, true, 0);
+        lv_obj_clear_flag(slash, LV_OBJ_FLAG_CLICKABLE);
+    }
 }
 
 lv_obj_t* make_phone_icon(lv_obj_t* parent) {
@@ -526,16 +588,19 @@ void on_phone_icon_tap(lv_event_t* e) {
     auto* st = static_cast<StatusBarState*>(lv_event_get_user_data(e));
     if (!st) return;
     // Routing is by BOND state, not connection state:
-    //   bonded (connected or not) → unpair modal. We already know this iPhone,
-    //                               so offer to unpair it; the modal's Unpair
-    //                               button wipes the bond via on_unpair_phone()
-    //                               (which opens the slot + re-advertises ANCS).
+    //   bonded (connected or not) → iPhone Info/Stats overlay. We already know
+    //                               this iPhone, so show name/status/signal/
+    //                               notification stats; its own Unpair button
+    //                               hands off to modal_unpair_phone, which
+    //                               wipes the bond via on_unpair_phone() (opens
+    //                               the slot + re-advertises ANCS).
     //   not bonded                → re-pair screen so a fresh iPhone can bond.
-    bool bonded = st->phone_bonded;
+    bool bonded    = st->phone_bonded;
+    bool connected = st->phone_connected;
     lv_obj_t* screen = lv_screen_active();
-    s_deferred_phone_cb = [bonded, screen]() {
+    s_deferred_phone_cb = [bonded, connected, screen]() {
         if (bonded) {
-            modal_unpair_phone::create(screen);
+            modal_iphone_info::create(screen, connected);
         } else {
             lv_obj_t* pairing = screen_setup::create(screen_setup::Step::PhonePairing, screen);
             lv_scr_load_anim(pairing, LV_SCR_LOAD_ANIM_NONE, 0, 0, /*auto_del=*/false);
@@ -891,7 +956,8 @@ void set_phone_connected(lv_obj_t* bar, bool connected) {
     s->phone_connected = connected;
 
     // ANCS icons only make sense while the phone link is up; the phone icon
-    // itself stays visible in both states and just changes colour.
+    // itself stays visible in both states and just gains/loses its
+    // diagonal slash.
     if (connected) lv_obj_clear_flag(s->ancs_row, LV_OBJ_FLAG_HIDDEN);
     else           lv_obj_add_flag(s->ancs_row, LV_OBJ_FLAG_HIDDEN);
 

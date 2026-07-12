@@ -39,6 +39,16 @@ bool    is_awaiting_sync();
 void    mark_orion_synced();
 bool    is_awaiting_phone_pairing();
 
+// Reverts mark_orion_bonded() — called when the link drops after a bond was
+// confirmed (SyncControl{BEGIN} received) but before the first sync ever
+// reached SyncEnd. Without this, a connection dropped in that exact window
+// (e.g. the PC's Bluetooth toggled off, or the Orion app killed, mid-sync)
+// leaves the "awaiting first sync" bookmark set forever with no automatic
+// way to clear it — see ble_manager.cpp's OrionDisconnected handler, which
+// pairs this with un-persisting the bond address itself so Ori resumes
+// SETUP advertising instead of staying stuck as RUNTIME/bonded.
+void    clear_orion_bonded();
+
 // Mode toggle persistence (0 = Calendar, 1 = Media).
 uint8_t get_mode();
 void    set_mode(uint8_t mode);

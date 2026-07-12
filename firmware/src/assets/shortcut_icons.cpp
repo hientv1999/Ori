@@ -10,8 +10,16 @@ extern "C" {
     extern const lv_image_dsc_t mic_mute;
     extern const lv_image_dsc_t screenshot;
     extern const lv_image_dsc_t lock_screen;
-    extern const lv_image_dsc_t favorite;
+    extern const lv_image_dsc_t favorite_1;
+    extern const lv_image_dsc_t favorite_2;
+    extern const lv_image_dsc_t favorite_3;
     extern const lv_image_dsc_t calculator;
+    extern const lv_image_dsc_t copy;
+    extern const lv_image_dsc_t cut;
+    extern const lv_image_dsc_t paste;
+    extern const lv_image_dsc_t redo;
+    extern const lv_image_dsc_t save;
+    extern const lv_image_dsc_t undo;
 }
 
 namespace shortcut_icons {
@@ -23,8 +31,16 @@ static const Entry k_images[] = {
     { "mic-mute",   &mic_mute   },
     { "screenshot", &screenshot },
     { "lock-screen",&lock_screen},
-    { "favorite",    &favorite    },
+    { "favorite-1",  &favorite_1  },
+    { "favorite-2",  &favorite_2  },
+    { "favorite-3",  &favorite_3  },
     { "calculator",  &calculator  },
+    { "copy",        &copy        },
+    { "cut",         &cut         },
+    { "paste",       &paste       },
+    { "redo",        &redo        },
+    { "save",        &save        },
+    { "undo",        &undo        },
 };
 } // namespace
 

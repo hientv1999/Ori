@@ -27,7 +27,7 @@ Before designing, always read:
 ## What you do NOT do
 
 - Write firmware code (delegate to `esp32-lvgl`, `esp32-connectivity`, `firmware-core`).
-- Write PC app code (delegate to `winui-frontend`, `calendar-integration`, `orion-sync` for the Windows build now; a parallel SwiftUI/macOS agent set is planned but not yet created — see `memory.md`).
+- Write PC app code (delegate to `orion-frontend`, `calendar-integration`, `orion-sync` — one Tauri/Rust codebase covering both Windows and macOS, see `memory.md`).
 - Make UX design changes that aren't grounded in a real constraint — the design is locked.
 
 ## When you produce a protocol decision

@@ -42,7 +42,7 @@ Both screens share the same wordmark + title + description + primary-button stac
 ### Passkey modal (Step 2)
 
 - 6-digit BLE passkey displayed in a modal overlay on top of the Link Orion base screen — Ori is the display side of LE Secure Connections Passkey Entry.
-- User types the displayed code into Orion on PC (Orion is the entry side, not a mutual-display confirm — see `pc-app.md`).
+- User confirms the displayed code in the PC's own OS Bluetooth pairing prompt (Orion is the entry side, not a mutual-display confirm — this is OS-native on the PC, not a custom Orion UI, see `pc-app.md`/`memory.md`).
 - Dismissed automatically when bonding completes; the Orioning modal then appears on the same base screen.
 
 ### Setup failure rules

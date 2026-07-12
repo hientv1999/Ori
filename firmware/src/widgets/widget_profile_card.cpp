@@ -81,32 +81,21 @@ static const char* display_title() { return g_title[0] ? g_title : "No position"
 
 // Presence enum values are 0..3 (widget_profile_card.h), matching the BLE
 // wire byte (ble-protocol.md §4 DeviceSettings "p") — a table indexed by the
-// raw value replaces three parallel switches that only ever differed in
-// which theme constant they returned per case.
-struct PresenceColors { uint32_t main, light, dark; };
-
-constexpr PresenceColors PRESENCE_COLOR_TABLE[4] = {
-    { theme::COLOR_PRESENCE_AVAILABLE, theme::COLOR_PRESENCE_AVAILABLE_LIGHT, theme::COLOR_PRESENCE_AVAILABLE_DARK },
-    { theme::COLOR_PRESENCE_BUSY,      theme::COLOR_PRESENCE_BUSY_LIGHT,      theme::COLOR_PRESENCE_BUSY_DARK },
-    { theme::COLOR_PRESENCE_AWAY,      theme::COLOR_PRESENCE_AWAY_LIGHT,      theme::COLOR_PRESENCE_AWAY_DARK },
-    { theme::COLOR_PRESENCE_OFFLINE,   theme::COLOR_PRESENCE_OFFLINE_LIGHT,   theme::COLOR_PRESENCE_OFFLINE_DARK },
+// raw value replaces a switch statement.
+constexpr uint32_t PRESENCE_COLOR_TABLE[4] = {
+    theme::COLOR_PRESENCE_AVAILABLE,
+    theme::COLOR_PRESENCE_BUSY,
+    theme::COLOR_PRESENCE_AWAY,
+    theme::COLOR_PRESENCE_OFFLINE,
 };
 
 // Out-of-range values (shouldn't happen — Presence is an enum class with only
-// these 4 values) fall back to Offline, matching the switch statements' old
+// these 4 values) fall back to Offline, matching the switch statement's old
 // `default:` case.
-const PresenceColors& presence_colors(widget_profile_card::Presence p) {
+uint32_t color_for_presence(widget_profile_card::Presence p) {
     uint8_t idx = static_cast<uint8_t>(p);
     return PRESENCE_COLOR_TABLE[idx < 4 ? idx : 3];
 }
-
-uint32_t color_for_presence(widget_profile_card::Presence p)       { return presence_colors(p).main;  }
-
-// Top gradient stop — near-white pastel tint of the presence colour.
-uint32_t color_for_presence_light(widget_profile_card::Presence p) { return presence_colors(p).light; }
-
-// Bottom gradient stop — deep dark shade of the presence colour.
-uint32_t color_for_presence_dark(widget_profile_card::Presence p)  { return presence_colors(p).dark;  }
 
 // Offline gets no glow — it's the "nothing to report" / fallback state, and a
 // grey glow reads as a render glitch rather than a deliberate status signal.
@@ -415,20 +404,19 @@ lv_obj_t* create(lv_obj_t* parent) {
     // Track the live card so set_photo() can update it without a screen rebuild.
     g_active_card = card;
 
-    // ── Gradient presence ring ────────────────────────────────────────────────
+    // ── Presence ring ────────────────────────────────────────────────────────
     // A circle 12 px larger than the photo (PHOTO_SIZE + 12 = 6 px each side).
-    // Its gradient background IS the "border" — top = presence colour,
-    // bottom = darker shade. Replaces the old solid border_color approach so
-    // the ring can be updated with a single bg_color / bg_grad_color call.
+    // Its solid background IS the "border" — a single flat presence colour.
+    // (Previously a top-light/bottom-dark vertical gradient, which made the
+    // ring — and the glow together with it — read as growing bottom-to-top
+    // instead of radiating evenly outward from the photo; a flat fill lets
+    // the shadow below be the sole "glow" cue, symmetric in every direction.)
     // Tap / long-press events are on the inner photo; the ring is non-clickable.
     s->photo_ring = lv_obj_create(card);
     lv_obj_set_size(s->photo_ring, PHOTO_SIZE + 12, PHOTO_SIZE + 12);
     lv_obj_set_style_radius(s->photo_ring, LV_RADIUS_CIRCLE, LV_PART_MAIN);
     lv_obj_set_style_bg_color(s->photo_ring,
-        theme::color(color_for_presence_light(g_default_presence)), LV_PART_MAIN);
-    lv_obj_set_style_bg_grad_color(s->photo_ring,
-        theme::color(color_for_presence_dark(g_default_presence)), LV_PART_MAIN);
-    lv_obj_set_style_bg_grad_dir(s->photo_ring, LV_GRAD_DIR_VER, LV_PART_MAIN);
+        theme::color(color_for_presence(g_default_presence)), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(s->photo_ring, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_border_width(s->photo_ring, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(s->photo_ring, 0, LV_PART_MAIN);
@@ -436,8 +424,10 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_clear_flag(s->photo_ring, LV_OBJ_FLAG_CLICKABLE);
 
     // Static presence glow — a fixed (non-animated) soft shadow in the
-    // presence colour, sitting outside the ring. No breathing/pulse anim,
-    // unlike the setup-screen button glow in ui_helpers.cpp.
+    // presence colour, sitting outside the ring. Offset (0,0) + spread makes
+    // it radiate evenly outward from the ring's edge in every direction — the
+    // "grows from inside the circle to outward" effect. No breathing/pulse
+    // anim, unlike the setup-screen button glow in ui_helpers.cpp.
     lv_obj_set_style_shadow_color(s->photo_ring,
         theme::color(color_for_presence(g_default_presence)), LV_PART_MAIN);
     lv_obj_set_style_shadow_width(s->photo_ring, 40, LV_PART_MAIN);
@@ -584,9 +574,7 @@ void set_presence(lv_obj_t* card, Presence p) {
     auto* s = static_cast<CardState*>(lv_obj_get_user_data(card));
     if (!s || !s->photo_ring) return;
     lv_obj_set_style_bg_color(s->photo_ring,
-        theme::color(color_for_presence_light(p)), LV_PART_MAIN);
-    lv_obj_set_style_bg_grad_color(s->photo_ring,
-        theme::color(color_for_presence_dark(p)), LV_PART_MAIN);
+        theme::color(color_for_presence(p)), LV_PART_MAIN);
     lv_obj_set_style_shadow_color(s->photo_ring,
         theme::color(color_for_presence(p)), LV_PART_MAIN);
     lv_obj_set_style_shadow_opa(s->photo_ring, shadow_opa_for_presence(p), LV_PART_MAIN);
@@ -597,9 +585,7 @@ void set_default_presence(Presence p) {
     if (g_active_card) set_presence(g_active_card, p);
     if (g_modal_photo) {
         lv_obj_set_style_bg_color(g_modal_photo,
-            theme::color(color_for_presence_light(p)), LV_PART_MAIN);
-        lv_obj_set_style_bg_grad_color(g_modal_photo,
-            theme::color(color_for_presence_dark(p)), LV_PART_MAIN);
+            theme::color(color_for_presence(p)), LV_PART_MAIN);
         lv_obj_set_style_shadow_color(g_modal_photo,
             theme::color(color_for_presence(p)), LV_PART_MAIN);
         lv_obj_set_style_shadow_opa(g_modal_photo, shadow_opa_for_presence(p), LV_PART_MAIN);

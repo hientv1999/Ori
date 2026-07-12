@@ -14,9 +14,9 @@ This document defines the single BLE GATT contract between Ori and the Orion PC 
 | Side | Role |
 |---|---|
 | **Ori (Arduino on ESP32-S3)** | GATT server + Advertiser. Hosts every characteristic below. |
-| **Orion** — two native codebases, one contract: **WinUI 3 / Windows App SDK, C# (Windows, building now)**; **SwiftUI, Swift, Core Bluetooth (macOS, planned next)** | GATT client. The only side that can issue Read/Write requests. |
+| **Orion** — one Tauri v2 (Rust) codebase, both Windows and macOS (`memory.md`) | GATT client via `btleplug`. The only side that can issue Read/Write requests. |
 
-LE Secure Connections with Passkey Entry (6-digit numeric, MITM-protected) is mandatory. After first pairing the device is bonded; subsequent reconnects are silent.
+LE Secure Connections with Passkey Entry (6-digit numeric, MITM-protected) is mandatory. After first pairing the device is bonded; subsequent reconnects are silent. Passkey confirmation itself is handled by the OS's own Bluetooth pairing UI on both platforms, not a custom Orion screen — see §6.1 and `memory.md`'s pairing-UX decision.
 
 ---
 
@@ -130,7 +130,7 @@ Value is a plain UTF-8 semver string (e.g. `"1.0.0"`) — not CBOR, static for t
 
 ## 4. Payload encoding — CBOR
 
-All structured payloads use CBOR (RFC 8949). Libraries: Arduino — `ArduinoCBOR`; Dart — `cbor` pub package. Unknown keys are silently ignored (forward-compatible).
+All structured payloads use CBOR (RFC 8949). Libraries: Arduino — `ArduinoCBOR`; Rust (Orion) — `ciborium` or `serde_cbor`. Unknown keys are silently ignored (forward-compatible).
 
 **Keys are single characters** — these are tiny, frequent payloads with no human ever reading raw CBOR off the wire (firmware/mock-tool logs print the *decoded* fields with full names), so there's no readability cost, and on the one chunked/repeated payload (Meeting List) it measurably cuts fragment count. Each schema below is commented with the full field name on every line.
 
@@ -578,7 +578,7 @@ Pre-release: no need to bump a version header per change — just keep this file
 
 Ori uses chars 10–13 instead of HOGP. Orion bridges each `KeyboardCommand` notify to OS APIs and mirrors OS state changes back to Ori.
 
-Orion is two native codebases sharing this contract: **WinUI 3 / C# on Windows** (building now) and **SwiftUI / Swift on macOS** (planned next, not yet started) — see `memory.md`. The table below lists both; the macOS column is forward documentation to build against once that work starts, not yet implemented or verified.
+Orion is one Tauri v2 (Rust) codebase covering this contract on both platforms — see `memory.md`. The table below lists both OS columns since the underlying native APIs still differ per platform (called via Rust, behind `#[cfg(target_os = ...)]`); the macOS column is forward documentation to build against once that work starts, not yet implemented or verified.
 
 ### Command flow — Ori → Orion → OS
 

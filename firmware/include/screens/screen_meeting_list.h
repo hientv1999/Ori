@@ -22,4 +22,11 @@ namespace screen_meeting_list {
 // tick call required.
 lv_obj_t* create(app_state::MeetingList list, bool cached);
 
+// Builds JUST the left panel (the scrollable meeting list + optional synced
+// pill) as a child of `body`, returning it. Split out from create() so the
+// state machine can rebuild only the left panel in place on a reconnect sync,
+// without tearing down the shared status bar + profile card (state_machine.cpp
+// refresh_runtime_left). create() itself calls this.
+lv_obj_t* build_left(lv_obj_t* body, app_state::MeetingList list, bool cached);
+
 } // namespace screen_meeting_list

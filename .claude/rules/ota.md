@@ -22,7 +22,7 @@ Firmware updates run over **USB CDC** on the existing USB-C power cable. No BLE 
 ## Transport
 
 - ESP32-S3 native USB peripheral; no USB-to-serial chip. Already enabled: `-D ARDUINO_USB_CDC_ON_BOOT=1` in `platformio.ini`.
-- Orion (Windows, building now) uses .NET's `System.IO.Ports.SerialPort` (or the Windows App SDK serial APIs). Orion (macOS, planned) would use `ORSSerialPort` or a direct IOKit/termios-based implementation. Driverless on Win 10+ and macOS.
+- Orion (one Rust codebase, both platforms — `memory.md`) uses the `serialport` crate, which wraps the same native APIs a platform-specific implementation would (Windows serial APIs / macOS IOKit). Driverless on Win 10+ and macOS.
 - The same CDC port carries firmware boot logs (`Serial.printf`). The framing protocol below separates log bytes from OTA frames.
 
 ## Wire flow

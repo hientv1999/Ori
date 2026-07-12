@@ -70,6 +70,13 @@ enum class BleEventType : uint8_t {
     AncsFilterUpdate,  // Orion wrote ANCS Notification Filter via Device Settings (char 000E)
     ShortcutUpdate,    // Orion wrote shortcut slots via Device Settings (char 000E) — repaint shortcuts row
     WeatherUpdate,     // Orion wrote weather condition + temp via Device Settings (char 000E)
+    AncsAction,        // Orion wrote ANCS Notification Action (char 0012, ble-protocol.md §13) —
+                       // deferred so the blocking ANCS CP write can run safely on the main task
+    AncsResubscribed,  // Orion (re)subscribed to char 0010 or 0011's CCCD — the correctly-timed
+                       // signal to resync that characteristic's mirror; see gatt_server.cpp's
+                       // onSubscribe() and ancs_client.h's resync_orion_relay()/
+                       // resync_orion_call_state() doc comments for why OrionConnected fires
+                       // too early for this.
 };
 
 struct BleEvent {
@@ -85,6 +92,8 @@ struct BleEvent {
         uint8_t  pct;            // OrioningProgress
         uint32_t total_bytes;    // SyncBegin — declared total from SyncControl{BEGIN}
         struct { uint8_t condition; int16_t temp_f; uint8_t unit; } weather; // WeatherUpdate
+        struct { uint32_t uid; uint8_t action; } ancs_action; // AncsAction — 0=Positive, 1=Negative
+        bool     ancs_resubscribed_call_state; // AncsResubscribed — true=char 0011, false=char 0010
     } data;
     uint8_t peer_addr[6]; // populated for bonded events
 };
@@ -177,6 +186,35 @@ uint8_t       g_provisional_orion_addr[6] = {};
 uint16_t      g_provisional_orion_conn    = 0xFFFF; // BLE_HS_CONN_HANDLE_NONE
 uint32_t      g_orion_handshake_deadline  = 0;
 
+// Unknown-peer connect timeout. BLE auto-stops advertising the instant ANY
+// connection forms (see onConnect()'s "BLE auto-stops advertising" comment),
+// and onConnect() deliberately does NOT re-advertise for an unknown/unbonded
+// peer (a fresh pairing might be in progress) — so a connection that never
+// even starts the passkey exchange (onPassKeyDisplay never fires) leaves Ori
+// silently undiscoverable for as long as that peer just sits there. Observed
+// in practice: Windows' own BLE stack silently reconnecting to a previously-
+// seen address after a factory reset, independent of any app (confirmed by
+// direct log evidence that PC_app/orion's own reconnect-supervisor never
+// attempted anything) — never proceeds to pairing, so it would otherwise
+// block rediscovery indefinitely. Disconnect any unknown peer that hasn't
+// started bonding within UNKNOWN_PEER_BOND_TIMEOUT_MS; onDisconnect()
+// already unconditionally restarts advertising, so this self-heals cleanly.
+// 2s is tight on purpose — a genuine Orion pairing attempt reaches
+// onPassKeyDisplay() almost immediately after connecting (start_pairing()
+// kicks off WinRT's PairAsync() ceremony right after connect, nothing
+// blocks in front of it) — if real pairing attempts ever get caught by
+// this, raise the constant.
+//
+// Scoped to Orion's own bonding window only (armed in onConnect() only
+// while orion_addr is still empty) — NOT the iPhone pairing window (Setup
+// Step 3/4, or a runtime re-pair) that opens once Orion is already bonded.
+// A real iPhone can legitimately take longer than 2s to work through iOS's
+// own Bluetooth pairing flow, so this tight a deadline must never apply there.
+constexpr uint32_t UNKNOWN_PEER_BOND_TIMEOUT_MS = 2000;
+volatile bool g_unknown_peer_pending  = false;
+uint16_t      g_unknown_peer_conn     = 0xFFFF; // BLE_HS_CONN_HANDLE_NONE
+uint32_t      g_unknown_peer_deadline = 0;
+
 // "Connect on Orion" minimum-linger (setup only). When the passkey modal closes
 // on bonding, the "Connect on Orion" base screen (spinner) is revealed. Orion
 // can send SyncControl{BEGIN} almost immediately after, and poll() drains all
@@ -206,10 +244,14 @@ uint8_t g_iphone_addr_cache[6] = {};
 // Current setup sub-state for bond slot gating.
 // Returns true when Orion bonding is allowed.
 bool is_orion_pairing_allowed() {
-    // Allowed only during Setup Step 2 (pairing sub-state).
-    // We check if the firmware is currently on the SETUP screen, not yet provisioned.
+    // Allowed only during Setup Step 2 (pairing sub-state) — ble-protocol.md §2.
+    // AppState::SETUP alone covers the ENTIRE first-boot flow (Welcome, Install,
+    // Pairing, PhonePairing, Complete are all one flat AppState — state_machine.h),
+    // so it can't distinguish Step 2 on its own; screen_setup tracks which visual
+    // sub-state is actually on screen and is_pairing_step_active() exposes that.
     return nvs::is_first_boot() &&
-           (state_machine::current_state() == AppState::SETUP);
+           (state_machine::current_state() == AppState::SETUP) &&
+           screen_setup::is_pairing_step_active();
 }
 
 // Returns true when a NEW iPhone bond may be accepted.
@@ -253,6 +295,18 @@ static const uint8_t* bond_addr_to_store(NimBLEConnInfo& info) {
     return buf;
 }
 
+// Forward declaration — the real definition is the pre-existing
+// ble_manager::delete_bond_matching_addr() further down (near the other
+// bond-management helpers). Must be declared inside the SAME namespace as
+// that definition, or this creates an unrelated, never-defined global-scope
+// function of the same name — a silent redeclaration that compiles but fails
+// to link. Needed here because OriServerCallbacks (just below) rejects
+// unauthenticated/slot-full bonds and must delete the just-formed NimBLE
+// bond record when it does, or the rejection leaks a bond-store slot.
+namespace ble_manager {
+static bool delete_bond_matching_addr(const uint8_t addr[6]);
+}
+
 // ── NimBLE Server callbacks ────────────────────────────────────────────────
 
 class OriServerCallbacks : public NimBLEServerCallbacks {
@@ -269,12 +323,29 @@ public:
         // Throughput tuning for bulk sync (photo, meetings, Time Off, album art):
         //   • Data Length Extension — 251-octet LL PDUs so a full 247-byte ATT
         //     write rides in a single radio packet (less per-packet overhead).
-        //   • Faster connection-interval range (15–30 ms vs the conservative
-        //     default) → more connection events per second. These are requests
-        //     the central refines: Orion settles near 15 ms for fast transfer,
-        //     while an iPhone keeps its preferred ~30 ms within the same range.
-        //     latency 0 (responsive), 6 s supervision timeout.
         server->setDataLen(handle, 251);
+
+        // Faster connection-interval range (15-30 ms vs the conservative
+        // default) → more connection events per second. These are requests
+        // the central refines: Orion settles near 15 ms for fast transfer,
+        // while an iPhone keeps its preferred ~30 ms within the same range.
+        // Latency 0 (responsive), 6 s supervision timeout.
+        //
+        // NOTE: an earlier version of this code tried to detect a second
+        // simultaneous connection and request a more conservative interval
+        // on both links, theorizing that two connections both pushing for a
+        // fast interval was starving the shared radio schedule. That was
+        // wrong and made things worse — the real bug (see platformio.ini's
+        // MYNEWT_VAL_BLE_GAP_MAX_PENDING_CONN_PARAM_UPDATE comment) is that
+        // NimBLE's conn-param-update pool only had room for 1 pending
+        // request globally, so the second of any two concurrent
+        // updateConnParams() calls always failed (BLE_HS_ENOMEM or
+        // BLE_HS_EALREADY) and silently never applied — confirmed against
+        // the vendored NimBLE source, not inferred. The old dual-handle
+        // version doubled the number of concurrent requests per connect
+        // event, making the pool exhaustion reliably worse. Fixed at the
+        // actual resource constraint instead; this call is back to the
+        // simple single-handle form that was here before that detour.
         server->updateConnParams(handle, 12, 24, 0, 600);
 
         // NOTE: do NOT call NimBLEDevice::startSecurity() here. Forcing a
@@ -316,6 +387,24 @@ public:
             // Passkey modal is shown via onPassKeyDisplay() when NimBLE begins
             // the passkey exchange — not here on connect.
             LOG("[ble] unknown peer — awaiting bond\n");
+
+            // Arm the "never even started pairing" watchdog — see
+            // UNKNOWN_PEER_BOND_TIMEOUT_MS's doc comment. Cleared by
+            // onPassKeyDisplay() (bonding actually started) or onDisconnect()
+            // (peer went away on its own); enforced in poll().
+            //
+            // Scoped to Orion's own pairing window only — while orion_addr is
+            // still empty, i.e. before Orion has ever bonded. Once Orion is
+            // bonded, an unknown peer connecting is the iPhone pairing window
+            // (Setup Step 3/4 or a runtime re-pair) instead, and a real
+            // iPhone can legitimately take longer than 2s to work through
+            // iOS's own Bluetooth pairing flow — this watchdog must not
+            // apply there, only to Orion's own bonding window.
+            if (ble_manager::is_bond_slot_empty(orion_addr)) {
+                g_unknown_peer_pending  = true;
+                g_unknown_peer_conn     = handle;
+                g_unknown_peer_deadline = millis() + UNKNOWN_PEER_BOND_TIMEOUT_MS;
+            }
 
             // During the iPhone-pairing window (Setup Step 4 / runtime re-pair),
             // request security immediately so the passkey prompt appears right
@@ -362,6 +451,14 @@ public:
         // post events; the device reboots in a moment.
         if (g_quiescing) return;
 
+        // The unknown-peer watchdog's target went away on its own (or we just
+        // disconnected it ourselves from poll()) — clear it either way so a
+        // later, unrelated connection doesn't inherit a stale pending flag.
+        if (handle == g_unknown_peer_conn) {
+            g_unknown_peer_pending = false;
+            g_unknown_peer_conn    = 0xFFFF;
+        }
+
         if (handle == g_orion_conn) {
             g_orion_connected = false;
             g_orion_conn      = BLE_HS_CONN_HANDLE_NONE;
@@ -375,6 +472,7 @@ public:
             ev.type = BleEventType::IphoneDisconnected;
             eq_push(ev);
         }
+
 
         // While an iPhone-bond wipe is pending, leave advertising OFF so the
         // still-bonded iPhone can't reconnect and race the wipe — the wipe
@@ -409,6 +507,23 @@ public:
         // and the link just re-encrypted with the stored LTK. This fires on every
         // bonded reconnect (encryption restart), so it must NOT be treated as a
         // new bond — previously it hit the reject branch and disconnected Orion.
+        //
+        // Checked BEFORE the Just-Works/MITM gate below, on purpose: MITM
+        // protection was already established when this bond was first formed
+        // via Passkey Entry, so a reconnect doesn't need to re-derive it from
+        // info.isAuthenticated() — which NimBLE does not reliably keep
+        // reporting true on a bonded reconnect (re-encryption via the stored
+        // LTK) under dual-connection SM contention. That's the same
+        // underlying flakiness already confirmed to intermittently trip
+        // chars 0002-000F's WRITE_AUTHEN/READ_AUTHEN checks on Orion's own
+        // reconnect (ble-protocol.md's char security notes). Gating
+        // reconnects on this flag meant a single flaky read didn't just fail
+        // one read — it deleted the peer's bond outright via
+        // delete_bond_matching_addr() below, an unrecoverable failure
+        // (no self-heal; needs a fresh pairing window) for whichever peer's
+        // reconnect lost the SM race in a given moment. Only a genuinely NEW
+        // bond attempt (below, once neither conn_matches() branch fires)
+        // still needs the Just-Works rejection.
         if (conn_matches(info, orion_addr)) {
             LOG("[ble] Orion bonded peer reconnected — encryption restored\n");
             if (g_orion_conn != handle) {  // onConnect couldn't resolve identity yet
@@ -438,6 +553,27 @@ public:
             return;
         }
 
+        // MITM enforcement (NEW bonds only — reconnects of an already-bonded
+        // peer return above before ever reaching this check): setSecurityAuth()
+        // REQUESTS MITM protection, but per the BLE SM spec a peer that
+        // declares NoInputNoOutput IO capability still falls back to
+        // unauthenticated Just Works — silently, with no passkey ever shown.
+        // isBonded() alone doesn't distinguish that from a real Passkey Entry
+        // bond, so check isAuthenticated() explicitly and drop anything that
+        // snuck in via Just Works.
+        if (!info.isAuthenticated()) {
+            LOG("[ble] auth complete but NOT authenticated (Just Works?) — rejecting\n");
+            // The SMP procedure already committed an LTK to NimBLE's bond store
+            // by this point (isBonded() was true above) — delete it too, or an
+            // unauthenticated bond silently squats on a bond-store slot forever.
+            ble_manager::delete_bond_matching_addr(bond_addr_to_store(info));
+            NimBLEDevice::getServer()->disconnect(handle);
+            BleEvent ev = {};
+            ev.type = BleEventType::AuthFailed;
+            eq_push(ev);
+            return;
+        }
+
         // NEW bond — assign to an open slot if the current state permits pairing.
         // Store the resolved IDENTITY address so future reconnects match.
         bool orion_empty  = ble_manager::is_bond_slot_empty(orion_addr);
@@ -450,13 +586,25 @@ public:
             // New iPhone bond — Step 4 / re-pair.
             ble_manager::on_iphone_bonded(handle, bond_addr_to_store(info));
         } else {
-            // Bond slots full or state doesn't allow bonding.
+            // Bond slots full or state doesn't allow bonding. The SMP procedure
+            // already committed an LTK to NimBLE's bond store (isBonded() was
+            // true above) before we ever get to look at slot/state — disconnect
+            // alone leaves that bond orphaned in the store, so every rejected
+            // attempt permanently eats one of NimBLE's finite bond-store slots.
+            // Delete it too.
             LOG("[ble] bond rejected: slots full or wrong state\n");
+            ble_manager::delete_bond_matching_addr(bond_addr_to_store(info));
             NimBLEDevice::getServer()->disconnect(handle);
         }
     }
 
     uint32_t onPassKeyDisplay() override {
+        // Bonding has genuinely started for the connected unknown peer —
+        // disarm the connect-timeout watchdog (UNKNOWN_PEER_BOND_TIMEOUT_MS)
+        // regardless of whether the modal ends up suppressed below; either
+        // way this connection is no longer just an idle, non-pairing peer.
+        g_unknown_peer_pending = false;
+
         // Regenerate passkey on every bonding attempt — fresh code each time.
         uint32_t r = esp_random();
         g_passkey = r % 1000000;
@@ -501,6 +649,34 @@ namespace ble_manager {
 // Defined below — completes a deferred iPhone bond wipe once the link is down.
 // Called from the IphoneDisconnected drain in poll().
 void finish_pending_iphone_wipe();
+
+// Defined below — reverts a confirmed-but-never-synced Orion bond. Called
+// from the OrionDisconnected handler in poll().
+static void revert_unconfirmed_orion_bond();
+
+// Finds and deletes a NimBLE bond by its raw 6-byte address, regardless of
+// address type. Ori's own NVS bond slots only ever store the 6 raw bytes, but
+// iPhones (and some PCs) resolve to a Random identity address, not Public —
+// reconstructing a NimBLEAddress with a hardcoded BLE_ADDR_PUBLIC type doesn't
+// match NimBLE's own bond-store key (address+type together), so deleteBond()
+// on that reconstructed address silently no-ops: ble_gap_unpair() fails its
+// internal ble_store_read() lookup and returns an error nobody checked. The
+// app-level NVS slot still clears, but the real LTK/IRK stays in NimBLE's own
+// bond store, so the next connection from the same peer silently resumes the
+// OLD bond via startSecurity() (re-encrypt with the still-valid stored key)
+// instead of negotiating a fresh pairing — no passkey, no onConfirmPassKey.
+// Looking the address up in NimBLE's own bond list first gets the type NimBLE
+// actually stored it under, so deleteBond() always matches.
+static bool delete_bond_matching_addr(const uint8_t addr[6]) {
+    int n = NimBLEDevice::getNumBonds();
+    for (int i = 0; i < n; ++i) {
+        NimBLEAddress bonded = NimBLEDevice::getBondedAddress(i);
+        if (memcmp(bonded.getVal(), addr, 6) == 0) {
+            return NimBLEDevice::deleteBond(bonded);
+        }
+    }
+    return false;
+}
 
 void init() {
     LOG("[ble] init\n");
@@ -661,6 +837,16 @@ void poll() {
                 // Orion will push it; until then show Offline.
                 widget_profile_card::set_default_presence(
                     widget_profile_card::Presence::Offline);
+                // The ANCS relay resync (chars 0010/0011) does NOT happen
+                // here — this event fires on encryption complete, well before
+                // Orion has even started run_sync, let alone spawned the
+                // watcher tasks that subscribe to those two characteristics.
+                // A notify sent this early is silently dropped (not
+                // subscribed yet) and never arrives — confirmed as the actual
+                // cause of a resync that looked correct in code but never
+                // worked in practice. See BleEventType::AncsResubscribed /
+                // gatt_server.cpp's onSubscribe() for the fix: resync exactly
+                // when Orion's own CCCD write for that characteristic lands.
                 break;
 
             case BleEventType::IphoneConnected:
@@ -789,32 +975,37 @@ void poll() {
                 // backlog (the "PreExisting" replay) on the SAME connection
                 // where the bond was just created — only on connections after
                 // that (a power-cycle reconnect proves the firmware-side
-                // backlog handling above already works correctly). Force that
-                // "after the first" condition: drop this fresh bond after NS/DS
-                // subscribe, then let the existing bonded-disconnect →
-                // restart_advertising() → iOS auto-reconnect path bring it
-                // straight back.
-                //
-                // Deferred to AFTER the Setup Complete screen hands off to
-                // runtime (state_machine::poll()'s g_setup_complete_pending
-                // drain calls run_pending_ancs_backlog_reconnect()) rather than
-                // fired here on a short fixed timer. ANCS backlog processing —
-                // per-notification parsing plus icon-registry lookups across up
-                // to 48 apps — is comparatively heavy, and running it while
-                // Setup Complete's checkmark-ring/countdown-bar animations are
-                // live competes with LVGL for the same core. The runtime screen
-                // it hands off to has no comparable animation to protect.
-                // Trade-off: the phone icon may briefly show
-                // disconnected/reconnecting on the runtime status bar (Setup's
-                // status bar is hidden, so this used to be invisible).
-                //
-                // Only on initial setup (Step 4) — NOT a runtime re-pair.
-                // The backlog-on-first-bond quirk is specifically a first-boot
-                // condition; a runtime re-pair hasn't been confirmed to need
-                // (or want) a surprise reconnect blip on an otherwise-live device.
+                // backlog handling above already works correctly). This is
+                // iOS-side, not a first-boot-specific condition — ANY fresh
+                // bond (first-boot setup Step 4 OR a later runtime re-pair)
+                // leaves ANCS icons empty until the device reconnects at least
+                // once (confirmed on hardware: a runtime re-pair without this
+                // fix never loads ANCS icons). Force that "after the first"
+                // condition: drop this fresh bond after NS/DS subscribe, then
+                // let the existing bonded-disconnect → restart_advertising() →
+                // iOS auto-reconnect path bring it straight back.
+                g_ancs_backlog_reconnect_pending = true;
+                g_ancs_backlog_reconnect_conn    = ev.data.conn_handle;
+
                 if (was_first_boot) {
-                    g_ancs_backlog_reconnect_pending = true;
-                    g_ancs_backlog_reconnect_conn    = ev.data.conn_handle;
+                    // Deferred to AFTER the Setup Complete screen hands off to
+                    // runtime (state_machine::poll()'s g_setup_complete_pending
+                    // drain calls run_pending_ancs_backlog_reconnect()) rather
+                    // than fired here on a short fixed timer. ANCS backlog
+                    // processing — per-notification parsing plus icon-registry
+                    // lookups across up to 48 apps — is comparatively heavy, and
+                    // running it while Setup Complete's checkmark-ring/countdown-
+                    // bar animations are live competes with LVGL for the same
+                    // core. Trade-off: the phone icon may briefly show
+                    // disconnected/reconnecting on the runtime status bar
+                    // (Setup's status bar is hidden, so this used to be invisible).
+                } else {
+                    // Runtime re-pair: dismiss_phone_pairing() above already
+                    // returned straight to the screen that launched the re-pair —
+                    // no animation-heavy hand-off screen to wait for — so fire
+                    // immediately instead of deferring to state_machine::poll()'s
+                    // first-boot-only drain point.
+                    run_pending_ancs_backlog_reconnect();
                 }
                 break;
             }
@@ -827,6 +1018,20 @@ void poll() {
                 // stale handle. Nothing was persisted, so there's nothing to undo.
                 g_orion_provisional = false;
                 g_orioning_pending  = false;  // cancel any pending Orioning modal
+                // A CONFIRMED bond (BEGIN was received, orion_addr persisted at
+                // OrionConfirmed) that drops before its first sync ever reaches
+                // SyncEnd is a different, worse case than the provisional one
+                // above: the bond IS persisted, and nothing else in this file
+                // ever reverts it — left alone, Ori is stuck advertising
+                // RUNTIME forever with no way back short of a factory reset
+                // (see nvs::clear_orion_bonded()'s doc comment). Scoped to
+                // first-boot's still-outstanding first sync only
+                // (is_awaiting_sync() only ever holds there), so an
+                // established bond's routine periodic reconnects/re-syncs at
+                // runtime are never affected by this.
+                if (nvs::is_first_boot() && nvs::is_awaiting_sync()) {
+                    revert_unconfirmed_orion_bond();
+                }
                 // Force presence to Offline immediately (never show stale presence).
                 widget_profile_card::set_default_presence(
                     widget_profile_card::Presence::Offline);
@@ -875,6 +1080,61 @@ void poll() {
                 break;
             }
 
+            case BleEventType::AncsAction: {
+                uint32_t uid    = ev.data.ancs_action.uid;
+                uint8_t  action = ev.data.ancs_action.action;
+                // "Is it still live" is checked here (main task) rather than in
+                // the NimBLE host-task write handler — ancs_client's queue is
+                // only ever touched from the main task (ancs_client::poll()),
+                // so this is the one safe place to read it.
+                if (!ancs_client::is_queued(uid)) {
+                    LOG("[ble:poll] AncsNotificationAction: uid=%u not live -> NACK\n",
+                        (unsigned)uid);
+                    gatt_server::nack_sync_control("NACK_CBOR_DECODE");
+                } else if (action == 0) {
+                    LOG("[ble:poll] AncsNotificationAction: answer uid=%u\n", (unsigned)uid);
+                    ancs_client::answer_notification(uid);
+                } else {
+                    // Negative action. Mirror Ori's own on-device swipe
+                    // (modal_ancs_list.cpp's commit_row_delete): only send the
+                    // ANCS Negative when the notification actually HAS one;
+                    // otherwise just drop it from Ori's queue locally.
+                    // Sending PerformNotificationAction(Negative) for a
+                    // notification with no negative action is a no-op the
+                    // phone can (and on some iOS versions does) answer by
+                    // re-asserting the notification via a Modified/Added
+                    // event — which re-queues it on Ori and bounces the
+                    // PhoneBondStatus count right back up, so an Orion swipe
+                    // looks like it "didn't reduce the count." drop_notification
+                    // never touches the phone, so nothing re-asserts it.
+                    bool has_neg = app_state::ancs_notification_by_uid(uid).has_neg_action;
+                    if (has_neg) {
+                        LOG("[ble:poll] AncsNotificationAction: dismiss uid=%u\n", (unsigned)uid);
+                        ancs_client::dismiss_notification(uid);
+                    } else {
+                        LOG("[ble:poll] AncsNotificationAction: drop (no neg action) uid=%u\n",
+                            (unsigned)uid);
+                        ancs_client::drop_notification(uid);
+                    }
+                }
+                break;
+            }
+
+            case BleEventType::AncsResubscribed:
+                // Orion just (re)subscribed to char 0010 or 0011 — the first
+                // moment a notify is guaranteed to actually reach it, unlike
+                // OrionConnected (fires before run_sync even starts). See
+                // gatt_server.cpp's onSubscribe() and ancs_client.h's
+                // resync_orion_relay()/resync_orion_call_state() doc comments.
+                if (ev.data.ancs_resubscribed_call_state) {
+                    LOG("[ble:poll] Orion subscribed to char 0011 — resyncing call state\n");
+                    ancs_client::resync_orion_call_state();
+                } else {
+                    LOG("[ble:poll] Orion subscribed to char 0010 — resyncing ANCS mirror\n");
+                    ancs_client::resync_orion_relay();
+                }
+                break;
+
             default:
                 break;
         }
@@ -902,20 +1162,47 @@ void poll() {
         if (server && g_provisional_orion_conn != BLE_HS_CONN_HANDLE_NONE) {
             server->disconnect(g_provisional_orion_conn);
         }
-        NimBLEAddress addr(g_provisional_orion_addr, BLE_ADDR_PUBLIC);
-        NimBLEDevice::deleteBond(addr);
+        delete_bond_matching_addr(g_provisional_orion_addr);
         // onDisconnect() (fired by the disconnect above) resets connection state
         // and restarts advertising for the real Orion.
     }
 
+    // Unknown-peer connect timeout: a peer connected but never even started
+    // pairing (onPassKeyDisplay never fired) — see UNKNOWN_PEER_BOND_TIMEOUT_MS's
+    // doc comment. Disconnect it; onDisconnect() already unconditionally
+    // restarts advertising, which is the actual point — this is what makes
+    // Ori rediscoverable again instead of silently blocked by a connection
+    // that was never going to pair in the first place.
+    if (g_unknown_peer_pending &&
+        (int32_t)(millis() - g_unknown_peer_deadline) >= 0) {
+        LOG("[ble] unknown-peer bond timeout — disconnecting non-pairing peer\n");
+        g_unknown_peer_pending = false;
+        NimBLEServer* server = NimBLEDevice::getServer();
+        if (server && g_unknown_peer_conn != BLE_HS_CONN_HANDLE_NONE) {
+            server->disconnect(g_unknown_peer_conn);
+        }
+    }
+
     // Factory-reset deferred restart (from remote BLE factory-reset command
     // or from the local long-press path if it posted to the event queue).
+    //
+    // BUG FIX: this used to reimplement the wipe inline as just
+    // `nvs::factory_reset(); delay(200); ESP.restart();` — wiping the "ori"
+    // NVS namespace (profile/settings/first-boot flag) but never the BLE
+    // bonds or cached photos, directly contradicting factory_reset.h's own
+    // documented contract ("both paths converge here so the exact same
+    // NVS-wipe + bond-wipe + restart sequence runs regardless of trigger
+    // source"). Concretely: every remote (Orion-triggered) factory reset
+    // correctly showed the setup wizard again (first_boot flag cleared) but
+    // silently left `orion_addr` bonded — Ori kept advertising RUNTIME
+    // forever and was never selectable in Orion's scan again, no matter how
+    // many times it was "reset." Routing through the shared
+    // factory_reset::execute() (already used by the local long-press path)
+    // fixes this and keeps both paths from ever drifting apart again.
     if (g_restart_pending) {
         g_restart_pending = false;
         LOG("[ble] executing deferred factory reset\n");
-        nvs::factory_reset();
-        delay(200);
-        ESP.restart();
+        factory_reset::execute();
     }
 
     // Drain ANCS notifications captured by the host-task notify callbacks. Done
@@ -1035,7 +1322,34 @@ void restart_advertising() {
     bool advertise_ancs = !iphone_bonded && g_iphone_pairing_window;
     uint8_t mfr_flag = (orion_bonded) ? ADV_FLAG_RUNTIME : ADV_FLAG_SETUP;
 
-    adv->reset();
+    // clearData() — NOT reset(). NimBLEAdvertising::reset() is
+    // `if (!stop()) return false; *this = NimBLEAdvertising();` — its OWN
+    // payload-clearing step is conditional on its internal stop() call
+    // actually succeeding. But we always call adv->stop() ourselves a few
+    // lines above (and again in the early-return branches above this point),
+    // so by the time we get here advertising is already stopped — reset()'s
+    // internal stop() then finds nothing to stop, fails, and reset() returns
+    // early WITHOUT clearing m_advData. Silent, because this call's return
+    // value was never checked.
+    //
+    // The fallout: the "else" branch below calls adv->addServiceUUID()
+    // directly on the (never-actually-cleared) persistent advertising
+    // object, and NimBLEAdvertisementData::addServiceUUID() has NO dedup —
+    // if a 128-bit-UUID AD field is already present it just appends another
+    // 16 bytes onto it (NimBLEAdvertisementData.cpp). So every subsequent
+    // restart_advertising() call (each connect/disconnect of EITHER bonded
+    // peer triggers one) grew the Ori Sync UUID field by another 16 bytes,
+    // until it blew past the 31-byte legacy adv PDU cap: "Cannot add UUID,
+    // data length exceeded!" — which then failed ble_gap_adv_rsp_set_data
+    // too and left the NimBLE host desynced ("Host not synced!"), destabilizing
+    // the whole stack enough to also break the encryption/auth handshake for
+    // both Orion and the iPhone (2026-07 hardware log: repeated "auth failed —
+    // disconnecting" for both peers, traced back to this).
+    //
+    // clearData() has no stop() dependency and no failure path — it
+    // unconditionally wipes m_advData/m_scanData every call, so the UUID/
+    // manufacturer-data fields set below always start from an empty payload.
+    adv->clearData();
     adv->setConnectableMode(BLE_GAP_CONN_MODE_UND);
 
     if (advertise_ancs) {
@@ -1160,8 +1474,7 @@ void wipe_all_bonds() {
 // corrupts NVS (the next Preferences open crashes in the namespace walk).
 static void finish_iphone_bond_wipe(const uint8_t iphone_addr[6]) {
     if (!is_bond_slot_empty(iphone_addr)) {
-        NimBLEAddress addr(iphone_addr, BLE_ADDR_PUBLIC);
-        NimBLEDevice::deleteBond(addr);
+        delete_bond_matching_addr(iphone_addr);
     }
     const uint8_t zero[6] = {};
     save_bond_addr(BOND_KEY_IPHONE, zero);
@@ -1212,6 +1525,37 @@ void wipe_iphone_bond() {
     restart_advertising();
     // No IphoneDisconnected event fires for this path, so notify Orion here.
     gatt_server::notify_phone_bond_status(false, false, "");
+}
+
+// Reverts an Orion bond that was confirmed (SyncControl{BEGIN} received,
+// orion_addr persisted — OrionConfirmed) but whose first sync never reached
+// SyncEnd before the link dropped — see nvs::clear_orion_bonded()'s doc
+// comment for the exact failure window this closes. Called only from
+// OrionDisconnected, by which point the link is already down — unlike
+// wipe_iphone_bond() there's no live-link race to defer around, since the
+// disconnect that triggers this has already happened.
+static void revert_unconfirmed_orion_bond() {
+    uint8_t orion_addr[6] = {};
+    load_bond_addr(BOND_KEY_ORION, orion_addr);
+    if (!is_bond_slot_empty(orion_addr)) {
+        delete_bond_matching_addr(orion_addr);
+    }
+    const uint8_t zero[6] = {};
+    save_bond_addr(BOND_KEY_ORION, zero);
+    nvs::clear_orion_bonded();
+    LOG("[ble] Orion bond reverted (disconnected before first sync completed)\n");
+
+    // Reset the setup screen back to its pre-bond base state. We're still on
+    // the Pairing step here (is_awaiting_sync() only ever holds there),
+    // just possibly with the passkey or Orioning modal stuck on top from
+    // the interrupted attempt — both hide_* calls are no-ops if their modal
+    // isn't the one currently showing.
+    lv_obj_t* screen = lv_scr_act();
+    screen_setup::hide_passkey_modal(screen);
+    screen_setup::hide_orioning_modal(screen);
+    screen_setup::set_step(screen, screen_setup::Step::Pairing);
+
+    restart_advertising();
 }
 
 bool is_orion_connected()  { return g_orion_connected;  }
@@ -1273,11 +1617,12 @@ void on_iphone_bonded(uint16_t conn_handle, const uint8_t peer_addr[6]) {
     eq_push(ev);
 }
 
-// Fires the first-boot ANCS backlog-flush reconnect deferred by the
-// IphoneBonded handler in poll() — called from state_machine::poll() once the
-// Setup Complete screen's own timer has handed off to runtime. No-op if
-// nothing is pending, or if the iPhone already disconnected on its own in the
-// meantime (IphoneDisconnected clears the pending flag).
+// Fires the ANCS backlog-flush reconnect deferred by the IphoneBonded handler
+// in poll(). Two callers: the IphoneBonded handler itself, immediately, for a
+// runtime re-pair; state_machine::poll() once the Setup Complete screen's own
+// timer has handed off to runtime, for first-boot setup. No-op if nothing is
+// pending, or if the iPhone already disconnected on its own in the meantime
+// (IphoneDisconnected clears the pending flag).
 void run_pending_ancs_backlog_reconnect() {
     if (!g_ancs_backlog_reconnect_pending) return;
     g_ancs_backlog_reconnect_pending = false;
@@ -1346,6 +1691,30 @@ void ble_post_ancs_filter_event(uint8_t level) {
     BleEvent ev = {};
     ev.type = BleEventType::AncsFilterUpdate;
     ev.data.ancs_filter = level;
+    eq_push(ev);
+}
+
+// Deferred ANCS Notification Action (from char 0012 write handler,
+// ble-protocol.md §13) — the actual answer_notification()/dismiss_notification()
+// dispatch (and the is-uid-still-live check) happens in poll() on the main
+// task; see gatt_server.cpp's handle_ancs_action() for why this can't run
+// directly on the NimBLE host task.
+void ble_post_ancs_action_event(uint32_t uid, uint8_t action) {
+    BleEvent ev = {};
+    ev.type = BleEventType::AncsAction;
+    ev.data.ancs_action.uid    = uid;
+    ev.data.ancs_action.action = action;
+    eq_push(ev);
+}
+
+// Deferred ANCS relay resync (from gatt_server.cpp's onSubscribe(), fired
+// when Orion writes char 0010 or 0011's CCCD) — resync_orion_relay()/
+// resync_orion_call_state() read ancs_client's queue/call-state, which is
+// only safe to touch from the main task, not this NimBLE host-task callback.
+void ble_post_ancs_resubscribed_event(bool call_state) {
+    BleEvent ev = {};
+    ev.type = BleEventType::AncsResubscribed;
+    ev.data.ancs_resubscribed_call_state = call_state;
     eq_push(ev);
 }
 

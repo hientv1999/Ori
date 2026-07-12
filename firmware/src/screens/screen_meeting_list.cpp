@@ -326,16 +326,7 @@ lv_obj_t* make_synced_pill(lv_obj_t* parent) {
 
 namespace screen_meeting_list {
 
-lv_obj_t* create(app_state::MeetingList list, bool cached) {
-    lv_obj_t* screen = lv_obj_create(nullptr);
-    theme::apply_to_screen(screen);
-
-    // Status bar across the top.
-    lv_obj_t* bar = widget_status_bar::create(screen);
-    lv_obj_set_pos(bar, 0, 0);
-
-    lv_obj_t* body = ui::make_screen_body(screen);
-
+lv_obj_t* build_left(lv_obj_t* body, app_state::MeetingList list, bool cached) {
     // Left panel.
     lv_obj_t* left = lv_obj_create(body);
     lv_obj_set_size(left, LEFT_PANEL_WIDTH, lv_pct(100));
@@ -382,10 +373,29 @@ lv_obj_t* create(app_state::MeetingList list, bool cached) {
         lv_obj_move_foreground(pill);
     }
 
+    return left;
+}
+
+lv_obj_t* create(app_state::MeetingList list, bool cached) {
+    lv_obj_t* screen = lv_obj_create(nullptr);
+    theme::apply_to_screen(screen);
+
+    // Status bar across the top.
+    lv_obj_t* bar = widget_status_bar::create(screen);
+    lv_obj_set_pos(bar, 0, 0);
+
+    lv_obj_t* body = ui::make_screen_body(screen);
+
+    lv_obj_t* left = build_left(body, list, cached);
+
     ui::make_panel_divider(body);
 
     // Right profile card.
     widget_profile_card::create(body);
+
+    // Register with the state machine so a reconnect sync can refresh only
+    // this left panel in place instead of rebuilding the whole screen.
+    state_machine::register_runtime_calendar(screen, body, left);
 
     return screen;
 }

@@ -44,4 +44,12 @@ void close_if_showing(uint32_t uid);
 // continue without it, so a stale dialog/timer would lie about reality.
 void close_all();
 
+// Current call-duration session state, for gatt_server's AncsCallState relay
+// to Orion (char 0011, ble-protocol.md §13) — lets ancs_client seed the "e"
+// (elapsed_s) field with the real running duration when a call goes active,
+// so Orion's timer reflects reality instead of always starting at 00:00.
+// Returns false (uid_out/elapsed_s_out left untouched) if no call session is
+// currently running (e.g. the call is only ringing, not yet answered).
+bool session_state(uint32_t* uid_out, uint32_t* elapsed_s_out);
+
 } // namespace modal_incoming_call

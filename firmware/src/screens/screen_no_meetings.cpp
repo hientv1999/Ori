@@ -154,14 +154,7 @@ lv_obj_t* make_cal_glyph(lv_obj_t* parent) {
 
 namespace screen_no_meetings {
 
-lv_obj_t* create() {
-    lv_obj_t* screen = lv_obj_create(nullptr);
-    theme::apply_to_screen(screen);
-
-    widget_status_bar::create(screen);
-
-    lv_obj_t* body = ui::make_screen_body(screen);
-
+lv_obj_t* build_left(lv_obj_t* body) {
     // Left panel — centered glyph + headline + subtitle.
     lv_obj_t* left = lv_obj_create(body);
     lv_obj_set_size(left, 528, lv_pct(100));
@@ -191,8 +184,26 @@ lv_obj_t* create() {
     lv_obj_set_style_text_color(sub, theme::color(theme::COLOR_TEXT_TERTIARY), 0);
     lv_obj_set_style_text_font(sub, theme::font_title(), 0);  // 26px (font_meta 24 + 2)
 
+    return left;
+}
+
+lv_obj_t* create() {
+    lv_obj_t* screen = lv_obj_create(nullptr);
+    theme::apply_to_screen(screen);
+
+    widget_status_bar::create(screen);
+
+    lv_obj_t* body = ui::make_screen_body(screen);
+
+    lv_obj_t* left = build_left(body);
+
     ui::make_panel_divider(body);
     widget_profile_card::create(body);
+
+    // Register with the state machine so a reconnect sync can refresh only
+    // this left panel in place instead of rebuilding the whole screen.
+    state_machine::register_runtime_calendar(screen, body, left);
+
     return screen;
 }
 

@@ -49,6 +49,14 @@ struct SetupState {
 // down and replaced in place, e.g. by a spurious top-level rebuild).
 uint32_t g_next_setup_id = 0;
 
+// Mirrors the step of the currently-displayed setup screen (updated wherever
+// rebuild_for() runs — the single funnel for both create() and set_step()).
+// Lets ble_manager::is_orion_pairing_allowed() gate the Orion bond slot to
+// Setup Step 2 specifically (ble-protocol.md §2), instead of the whole
+// first-boot flow — AppState::SETUP alone can't distinguish Welcome/Install/
+// Pairing/PhonePairing/Complete since they're all one flat AppState.
+screen_setup::Step g_current_step = screen_setup::Step::Welcome;
+
 void clear_dots(SetupState* s) {
     for (int i = 0; i < 3; ++i) {
         lv_obj_set_style_bg_color(s->dot_objs[i],
@@ -474,6 +482,8 @@ void build_complete(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
 }
 
 void rebuild_for(lv_obj_t* screen, SetupState* s) {
+    g_current_step = s->step;
+
     // Cancel any pending auto-advance timer from a previous Complete render.
     if (s->complete_timer) {
         lv_timer_delete(s->complete_timer);
@@ -559,6 +569,10 @@ void on_skip_phone_clicked(lv_event_t* e) {
 } // namespace
 
 namespace screen_setup {
+
+bool is_pairing_step_active() {
+    return g_current_step == Step::Pairing;
+}
 
 lv_obj_t* create(Step initial, lv_obj_t* prev_screen) {
     lv_obj_t* screen = lv_obj_create(nullptr);

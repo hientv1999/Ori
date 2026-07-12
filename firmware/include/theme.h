@@ -41,6 +41,12 @@ constexpr uint32_t COLOR_ACCENT_LINE      = 0x7B653A;   // accent at 55% over bl
 constexpr uint32_t COLOR_DANGER           = 0xD86A6A;
 constexpr uint32_t COLOR_DANGER_SOFT      = 0x1E0F0F;   // danger at 14% over black
 constexpr uint32_t COLOR_OK               = 0x7FB48A;
+// Solid yellow — the status-bar ANCS tile ring for a call still RINGING (not
+// yet answered); COLOR_DANGER is reused for the same ring once the call goes
+// ACTIVE (answered). Orion mirrors this exact pair (styles.css's --call-ring-*
+// custom properties) so the ringing/ongoing call chip reads identically on
+// both screens (pc-app.md).
+constexpr uint32_t COLOR_CALL_RINGING     = 0xF2C94C;
 constexpr uint32_t COLOR_SCRIM            = 0x000000;   // modal scrim base (pure black)
 constexpr lv_opa_t  SCRIM_OPA             = LV_OPA_90;  // opacity for every overlay scrim
 
@@ -56,17 +62,11 @@ constexpr uint32_t COLOR_PRESENCE_AVAILABLE      = 0x92C353;  // Teams green
 constexpr uint32_t COLOR_PRESENCE_BUSY           = 0xC4314B;  // Teams red
 constexpr uint32_t COLOR_PRESENCE_AWAY           = 0xFFAA44;  // Teams amber
 constexpr uint32_t COLOR_PRESENCE_OFFLINE        = 0x8A8884;  // Teams grey
-// Presence ring gradient: very light (top) → deep dark (bottom).
-// This maximises visible contrast across the full ring height.
-// Standard COLOR_PRESENCE_* are kept for UI text / status labels only.
-constexpr uint32_t COLOR_PRESENCE_AVAILABLE_LIGHT = 0xD4FFAA;  // near-white lime
-constexpr uint32_t COLOR_PRESENCE_BUSY_LIGHT      = 0xFFBBC8;  // near-white rose
-constexpr uint32_t COLOR_PRESENCE_AWAY_LIGHT      = 0xFFF2AA;  // near-white amber
-constexpr uint32_t COLOR_PRESENCE_OFFLINE_LIGHT   = 0xE8E8E8;  // near-white silver
-constexpr uint32_t COLOR_PRESENCE_AVAILABLE_DARK  = 0x2A5C08;  // deep forest green
-constexpr uint32_t COLOR_PRESENCE_BUSY_DARK       = 0x6E0E20;  // deep crimson
-constexpr uint32_t COLOR_PRESENCE_AWAY_DARK       = 0x8C4400;  // deep burnt amber
-constexpr uint32_t COLOR_PRESENCE_OFFLINE_DARK    = 0x282826;  // near-black charcoal
+// (No separate LIGHT/DARK gradient stops — the presence ring is a flat fill
+// of the colours above; the outward glow is a symmetric shadow, not a
+// gradient. A top-light/bottom-dark vertical gradient was tried and reverted
+// — it made the glow read as growing bottom-to-top instead of evenly
+// outward from the photo.)
 
 // Weather icon + temperature text palette (profile-photo overlay,
 // `screen-layout.md` "Weather icon + temperature text"). Values are

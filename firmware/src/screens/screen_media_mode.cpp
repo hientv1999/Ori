@@ -57,6 +57,11 @@ constexpr int16_t TL_BAR_PAD   = 12;
 constexpr int16_t TL_OVERLAY_H = 46;
 constexpr int16_t TL_THUMB_SZ  = 8;
 
+// Timeline auto-hide: hidden by default, revealed by touching the art,
+// hidden again after this many ms of no further touch — see ArtState's
+// tl_user_visible/tl_hide_timer doc comment.
+constexpr uint32_t TL_AUTO_HIDE_MS = 5000;
+
 struct ArtState {
     lv_obj_t* wrap;          // gesture surface / animation target for the whole art block
     lv_obj_t* art;           // gradient fallback — always visible behind art_img
@@ -74,6 +79,21 @@ struct ArtState {
     lv_obj_t* tl_thumb;        // playhead dot — x tracks playhead
     lv_obj_t* tl_cur_label;    // current-time text — updated live during seek
     uint32_t  tl_dur_s;        // cached track duration for seek position math
+    // Timeline visibility — hidden by default, revealed by touching the art
+    // (tap/swipe/seek-drag), auto-hidden again after TL_AUTO_HIDE_MS idle.
+    // Actual shown-ness is tl_seek_eligible && tl_user_visible (see
+    // apply_timeline_visibility()) — either one alone isn't enough: no point
+    // revealing a bar for a non-seekable/no-media track, and eligibility
+    // alone shouldn't force it on-screen without the user asking to see it.
+    bool        tl_seek_eligible;  // duration_s > 0 && can_seek (update_seek())
+    bool        tl_user_visible;   // user tapped to reveal; clears after idle timeout
+    lv_timer_t* tl_hide_timer;     // one-shot-per-reveal 5 s countdown; paused when idle
+    // Captured at the start of each press (before reveal_timeline() runs) —
+    // whether the bar was ALREADY showing coming into this touch. A tap only
+    // toggles play/pause when this is true; the first tap on a hidden bar
+    // (when eligible) is consumed entirely by revealing it instead. See
+    // on_art_gesture's RELEASED tap-case.
+    bool        tl_was_visible_before_press;
     // Drag tracking
     int       start_x;
     int       start_y;
@@ -136,11 +156,17 @@ lv_obj_t* make_play_triangle(lv_obj_t* parent) {
 
 void apply_paused_visual(ArtState* s, bool paused) {
     if (!s || !s->art) return;
-    // Dim the entire art object (and its children) when paused.
-    // lv_obj_set_style_opa works on any lv_obj; img_recolor only works on lv_img.
-    // When M5 replaces s->art with an lv_img, img_recolor can be added back for
-    // the colour-desaturation effect; the opa dim still applies on top of that.
-    lv_obj_set_style_opa(s->art, paused ? LV_OPA_50 : LV_OPA_COVER, LV_PART_MAIN);
+    // Dim when paused. Two separate objects need the same opacity: s->art is
+    // the gradient fallback (always present, shown before real art arrives or
+    // when there's none), and s->art_img is the decoded-JPEG overlay that
+    // sits on top of it once real album art loads (photo_cache::
+    // decode_to_psram / set_album_art()) — s->art_img is drawn at
+    // LV_OPA_COVER over s->art, so dimming only s->art had no visible effect
+    // once a real photo was showing (the fade only ever worked pre-art, on
+    // the gradient placeholder). Both must move together.
+    const lv_opa_t opa = paused ? LV_OPA_50 : LV_OPA_COVER;
+    lv_obj_set_style_opa(s->art, opa, LV_PART_MAIN);
+    if (s->art_img) lv_obj_set_style_opa(s->art_img, opa, LV_PART_MAIN);
     // Show / hide the centred play-triangle overlay.
     // paused_overlay is a child of wrap (not s->art) so it is unaffected by the opa change.
     if (paused) lv_obj_clear_flag(s->paused_overlay, LV_OBJ_FLAG_HIDDEN);
@@ -165,6 +191,33 @@ void show_hud(ArtState* s, bool show) {
     if (!s || !s->hud) return;
     if (show) lv_obj_clear_flag(s->hud, LV_OBJ_FLAG_HIDDEN);
     else      lv_obj_add_flag(s->hud,   LV_OBJ_FLAG_HIDDEN);
+}
+
+// Single source of truth for tl_overlay's actual shown/hidden state — always
+// call this instead of touching the HIDDEN flag directly, so the two inputs
+// (is it even seekable right now, has the user asked to see it) can never
+// drift out of sync with what's on screen.
+void apply_timeline_visibility(ArtState* s) {
+    if (!s || !s->tl_overlay) return;
+    const bool visible = s->tl_seek_eligible && s->tl_user_visible;
+    if (visible) lv_obj_clear_flag(s->tl_overlay, LV_OBJ_FLAG_HIDDEN);
+    else         lv_obj_add_flag(s->tl_overlay,   LV_OBJ_FLAG_HIDDEN);
+}
+
+// Called on any touch of the art surface (tap, swipe, or a press on the
+// timeline overlay itself) — reveals the bar and (re)starts the 5 s idle
+// countdown. A no-op when nothing is currently seekable: there's nothing to
+// reveal, and leaving tl_user_visible false in that case means a later
+// track that DOES become seekable doesn't spuriously start out shown from a
+// stale flag.
+void reveal_timeline(ArtState* s) {
+    if (!s || !s->tl_seek_eligible) return;
+    s->tl_user_visible = true;
+    apply_timeline_visibility(s);
+    if (s->tl_hide_timer) {
+        lv_timer_reset(s->tl_hide_timer);
+        lv_timer_resume(s->tl_hide_timer);
+    }
 }
 
 // Seek gesture — bound to the timeline overlay so touches in the bottom 46 px
@@ -193,6 +246,11 @@ void on_seek_gesture(lv_event_t* e) {
     const uint32_t new_pos = (uint32_t)((int32_t)rel_x * (int32_t)dur / (int32_t)bar_w);
 
     if (code == LV_EVENT_PRESSED || code == LV_EVENT_PRESSING) {
+        // Touching the bar itself counts as interacting with it — reveal (a
+        // no-op if already visible) and keep resetting the idle countdown on
+        // every PRESSING tick so a drag longer than TL_AUTO_HIDE_MS can't get
+        // hidden out from under the user's finger.
+        reveal_timeline(s);
         lv_obj_set_width(s->tl_fill, rel_x);
         lv_obj_set_pos(s->tl_thumb,
             TL_BAR_PAD + rel_x - TL_THUMB_SZ / 2,
@@ -251,6 +309,15 @@ void on_art_gesture(lv_event_t* e) {
     lv_indev_get_point(indev, &p);
 
     if (code == LV_EVENT_PRESSED) {
+        // Capture BEFORE reveal_timeline() below changes it — see
+        // tl_was_visible_before_press's doc comment. Not eligible at all
+        // (nothing to reveal) counts as "already visible" so a tap on a
+        // non-seekable track still toggles play/pause normally, same as
+        // before this bar existed.
+        s->tl_was_visible_before_press = !s->tl_seek_eligible || s->tl_user_visible;
+        // Any touch on the art — tap, swipe, or the start of a volume drag —
+        // reveals the timeline bar and (re)starts its 5 s idle countdown.
+        reveal_timeline(s);
         s->start_x = p.x;
         s->start_y = p.y;
         s->start_volume = app_state::media().volume;
@@ -294,11 +361,19 @@ void on_art_gesture(lv_event_t* e) {
             return;
         }
         if (abs_dx < TAP_MAX && abs_dy < TAP_MAX) {
-            // Tap = play/pause toggle.
-            bool playing = !app_state::media_playing();
-            app_state::set_media_playing(playing);
-            apply_paused_visual(s, !playing);
-            gatt_server::notify_keyboard_command("play_pause", 0);
+            // Tap = play/pause toggle, but ONLY once the timeline bar is
+            // already visible. The first tap on a hidden-and-eligible bar is
+            // consumed entirely by revealing it (already done on PRESSED,
+            // above) — the user taps again, now that they can see the bar,
+            // to actually toggle playback. Tracks that aren't seek-eligible
+            // at all skip this gate (tl_was_visible_before_press is forced
+            // true for them) and toggle on every tap same as always.
+            if (s->tl_was_visible_before_press) {
+                bool playing = !app_state::media_playing();
+                app_state::set_media_playing(playing);
+                apply_paused_visual(s, !playing);
+                gatt_server::notify_keyboard_command("play_pause", 0);
+            }
         } else if (abs_dx > H_SWIPE_MIN && abs_dx > abs_dy) {
             // Horizontal swipe — slide art ~40 px in the swipe direction then
             // snap back, and emit the next/prev KeyboardCommand.
@@ -414,20 +489,22 @@ lv_obj_t* make_art_block(lv_obj_t* parent, ArtState* s) {
     lv_obj_align(s->hud_pct_label, LV_ALIGN_TOP_MID, 0, -28);
 
     // Timeline bar — always created so update_seek() can show it later when
-    // Orion pushes can_seek=true + position/duration. Starts hidden; shown by
-    // update_seek() once we have a valid duration. This avoids the "built before
-    // media arrived" problem where tl_fill was null and update_seek was a no-op.
+    // Orion pushes can_seek=true + position/duration. This avoids the "built
+    // before media arrived" problem where tl_fill was null and update_seek
+    // was a no-op. Always starts HIDDEN regardless of eligibility — the bar
+    // is tap-to-reveal (media-mode.md), not shown-whenever-seekable; the
+    // user must touch the art at least once before it appears.
     {
         const uint32_t pos_s  = m.position_s;
         const uint32_t dur_s  = m.duration_s > 0 ? m.duration_s : 1;
         const int16_t  bar_w  = ART_W - TL_BAR_PAD * 2;
         const int16_t  fill_w = (int16_t)((int32_t)bar_w * (int32_t)pos_s / (int32_t)dur_s);
 
+        s->tl_seek_eligible = (has_media && m.can_seek && m.duration_s > 0);
+        s->tl_user_visible  = false;
+
         lv_obj_t* overlay = lv_obj_create(wrap);
-        // Hide until Orion confirms can_seek=true and pushes a valid duration.
-        // update_seek() manages visibility from that point on.
-        if (!(has_media && m.can_seek && m.duration_s > 0))
-            lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);  // tl_user_visible starts false
         s->tl_overlay = overlay;
         lv_obj_set_size(overlay, ART_W, TL_OVERLAY_H);
         lv_obj_align(overlay, LV_ALIGN_BOTTOM_MID, 0, 0);
@@ -506,6 +583,17 @@ lv_obj_t* make_art_block(lv_obj_t* parent, ArtState* s) {
         lv_obj_add_event_cb(overlay, on_seek_gesture, LV_EVENT_PRESSING,   s);
         lv_obj_add_event_cb(overlay, on_seek_gesture, LV_EVENT_RELEASED,   s);
         lv_obj_add_event_cb(overlay, on_seek_gesture, LV_EVENT_PRESS_LOST, s);
+
+        // Auto-hide countdown — created paused; reveal_timeline() resets +
+        // resumes it on every touch, the callback re-pauses itself after
+        // firing so it sits idle (not ticking) between reveals.
+        s->tl_hide_timer = lv_timer_create([](lv_timer_t* t) {
+            auto* st = static_cast<ArtState*>(lv_timer_get_user_data(t));
+            st->tl_user_visible = false;
+            apply_timeline_visibility(st);
+            lv_timer_pause(t);
+        }, TL_AUTO_HIDE_MS, s);
+        lv_timer_pause(s->tl_hide_timer);
     }
 
     // Gesture handlers — bound to the wrapper so the art + overlays move
@@ -719,6 +807,10 @@ lv_obj_t* create() {
         ArtState* mine = static_cast<ArtState*>(lv_event_get_user_data(e));
         if (g_active_art == mine) g_active_art = nullptr;
         if (g_pos_timer) { lv_timer_delete(g_pos_timer); g_pos_timer = nullptr; }
+        // Per-instance timer (unlike g_pos_timer above) — LVGL timers are a
+        // separate registry from the lv_obj tree, so deleting `mine` below
+        // would otherwise leak this one.
+        if (mine->tl_hide_timer) lv_timer_delete(mine->tl_hide_timer);
         delete mine;
     }, LV_EVENT_DELETE, state);
     return screen;
@@ -823,14 +915,24 @@ void clear_album_art() {
 void update_seek(uint32_t position_s, uint32_t duration_s) {
     app_state::set_media_seek(position_s, duration_s);
     if (!g_active_art) return;
-    // Show the timeline overlay only when we have a valid duration AND the
-    // OS supports seeking; hide it otherwise (no media, or non-seekable stream).
-    const bool show = (duration_s > 0 && app_state::media().can_seek);
-    if (g_active_art->tl_overlay) {
-        if (show) lv_obj_clear_flag(g_active_art->tl_overlay, LV_OBJ_FLAG_HIDDEN);
-        else       lv_obj_add_flag(g_active_art->tl_overlay,   LV_OBJ_FLAG_HIDDEN);
+    // Eligible = we have a valid duration AND the OS supports seeking (no
+    // media, or a non-seekable stream, makes the bar meaningless regardless
+    // of whether the user wants to see it). This does NOT by itself make the
+    // bar visible — see ArtState's tl_user_visible doc comment; visibility is
+    // tap-to-reveal, apply_timeline_visibility() combines both.
+    const bool eligible = (duration_s > 0 && app_state::media().can_seek);
+    if (eligible != g_active_art->tl_seek_eligible) {
+        g_active_art->tl_seek_eligible = eligible;
+        if (!eligible) {
+            // No longer anything to show — drop any pending reveal rather
+            // than let a later track that becomes eligible again inherit a
+            // stale "user asked to see it" flag from an unrelated track.
+            g_active_art->tl_user_visible = false;
+            if (g_active_art->tl_hide_timer) lv_timer_pause(g_active_art->tl_hide_timer);
+        }
+        apply_timeline_visibility(g_active_art);
     }
-    if (!g_active_art->tl_fill || !show) return;
+    if (!g_active_art->tl_fill || !eligible) return;
     const uint32_t dur    = duration_s > 0 ? duration_s : 1;
     const int16_t  bar_w  = ART_W - TL_BAR_PAD * 2;
     const int16_t  fill_w = (int16_t)((int32_t)bar_w * (int32_t)position_s / (int32_t)dur);

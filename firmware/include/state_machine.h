@@ -118,6 +118,14 @@ void on_reconnect_begin();
 // BLE reconnect to Orion finished — Device Status → RUNTIME_READY (M5).
 void on_reconnect_end();
 
+// Called by screen_meeting_list::create() / screen_no_meetings::create() to
+// register the live calendar-runtime screen's containers, so a reconnect sync
+// can refresh ONLY the left panel in place (refresh_runtime_left) instead of
+// rebuilding the whole screen — leaving the status bar + profile card (which
+// update their own contents live) untouched. Auto-cleared when the screen is
+// deleted.
+void register_runtime_calendar(lv_obj_t* screen, lv_obj_t* body, lv_obj_t* left);
+
 // ── Runtime state setters (called by BLE layer in M5) ─────────────────────
 
 // Update whether the BLE PC link is currently up.

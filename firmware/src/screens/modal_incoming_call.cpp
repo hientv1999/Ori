@@ -6,6 +6,7 @@
 #include "ble/ancs_client.h"
 #include "theme.h"
 #include "ui_helpers.h"
+#include "widgets/widget_status_bar.h"
 
 // Incoming-call banner + in-call dialog.
 //
@@ -104,6 +105,11 @@ void on_answer(lv_event_t* e) {
     uint32_t uid = ctx->uid;
     ancs_client::answer_notification(uid);
     modal_incoming_call::show_active(uid);
+    // show_active() -> session_start(uid) just flipped session_state() to
+    // "answered" for this uid — refresh the status-bar tile ring NOW (yellow
+    // -> red) instead of waiting for the ANCS Modified round-trip that
+    // ancs_client's own on_notification_source path would otherwise rely on.
+    widget_status_bar::refresh_active();
 }
 
 // End an active call: same ANCS Negative action (= hang up). Stops the timer now
@@ -308,6 +314,13 @@ void close_all() {
     // timer and tear down any open banner/dialog so nothing stale lingers.
     session_stop();
     if (g_call_scrim) lv_obj_delete(g_call_scrim);
+}
+
+bool session_state(uint32_t* uid_out, uint32_t* elapsed_s_out) {
+    if (!g_session.running) return false;
+    if (uid_out)       *uid_out       = g_session.uid;
+    if (elapsed_s_out) *elapsed_s_out = g_session.elapsed_s;
+    return true;
 }
 
 } // namespace modal_incoming_call

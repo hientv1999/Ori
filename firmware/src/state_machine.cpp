@@ -16,6 +16,7 @@
 #include <cbor.h>
 #include "screens/modal_countdown.h"
 #include "screens/modal_factory_reset.h"
+#include "screens/modal_iphone_info.h"
 #include "screens/modal_unpair_phone.h"
 #include "screens/screen_calendar.h"
 #include "screens/screen_clock.h"
@@ -110,6 +111,21 @@ bool g_alerted_mins[MINUTES_PER_DAY] = {};
 // a new one, preventing memory leaks.
 lv_obj_t* g_current_screen = nullptr;
 
+// The live calendar-runtime screen (NO_MEETINGS / MEETING_LIST) and its inner
+// containers, registered by those screens' create() via
+// register_runtime_calendar(). Non-null ONLY while such a screen is on top —
+// cleared on its LV_EVENT_DELETE. This is what lets a reconnect sync refresh
+// just the left panel in place (status bar + profile card untouched, no
+// full-screen teardown/reflow) instead of rebuilding the whole screen.
+lv_obj_t* g_runtime_screen = nullptr;
+lv_obj_t* g_runtime_body   = nullptr;
+lv_obj_t* g_runtime_left   = nullptr;
+
+// True while a reconnect sync is showing the in-place left-panel overlay
+// (as opposed to the full-screen fallback used when there's no live calendar
+// screen to overlay). Decides which teardown path on_reconnect_end() takes.
+bool g_reconnect_overlay_mode = false;
+
 // Countdown modal's parent screen (needed to overlay it on the right base).
 lv_obj_t* g_countdown_base = nullptr;
 
@@ -172,14 +188,6 @@ static int hhmm_to_mins(const char* s) {
     return h * 60 + m;
 }
 
-// Current local time as minutes since midnight.
-static int now_mins() {
-    time_t t = time(nullptr);
-    struct tm tm_buf;
-    localtime_r(&t, &tm_buf);
-    return tm_buf.tm_hour * 60 + tm_buf.tm_min;
-}
-
 // Current local time as seconds since midnight. Pass an already-computed
 // `tm` (e.g. tick_cb's day-rollover localtime_r()) to skip recomputing it.
 static long now_seconds(const struct tm* cached = nullptr) {
@@ -198,19 +206,21 @@ static long now_seconds(const struct tm* cached = nullptr) {
 static app_state::MeetingList filtered_meetings() {
     static app_state::Meeting buf[32];
     app_state::MeetingList all = { g_rt_display, g_rt_count };
-    int now_m = now_mins();
     uint32_t now_epoch = (uint32_t)time(nullptr);
     size_t n = 0;
+    // g_rt[i] lines up 1:1 with all.items[i] — all.count is g_rt_count itself
+    // (set_meetings_cbor fills both in the same pass, see g_rt_display's decl).
+    // List membership and in_progress both key off the same precise epoch
+    // fields already computed for each meeting — no reason to also re-derive
+    // an end-of-day-minutes value from a formatted "HH:MM" string (as this did
+    // previously): that was minute-granularity (up to 59s of lag removing an
+    // expired meeting from the list) and did needless string parsing on every
+    // 1 s tick for every meeting.
     for (size_t i = 0; i < all.count && n < 32; ++i) {
-        const app_state::Meeting& m = all.items[i];
-        int end_m = hhmm_to_mins(m.end);
-        if (end_m < 0 || end_m >= now_m) {
-            buf[n] = m;
-            // Recompute in_progress from epoch if available, else from string.
-            if (g_rt_count > 0) {
-                const RtMeeting& rt = g_rt[i];
-                buf[n].in_progress = (now_epoch >= rt.start_epoch && now_epoch <= rt.end_epoch);
-            }
+        const RtMeeting& rt = g_rt[i];
+        if (now_epoch <= rt.end_epoch) {
+            buf[n] = all.items[i];
+            buf[n].in_progress = (now_epoch >= rt.start_epoch);
             ++n;
         }
     }
@@ -1029,23 +1039,143 @@ void on_ota_ack_close() {
     evaluate();
 }
 
+void register_runtime_calendar(lv_obj_t* screen, lv_obj_t* body, lv_obj_t* left) {
+    g_runtime_screen = screen;
+    g_runtime_body   = body;
+    g_runtime_left   = left;
+    // Clear the pointers when THIS screen is deleted — guarded by identity so
+    // the normal load order (new screen registers itself, THEN the old screen's
+    // delete fires) can't have the outgoing screen's delete null out the
+    // incoming screen's freshly-registered pointers.
+    lv_obj_add_event_cb(screen, [](lv_event_t* e) {
+        if (static_cast<lv_obj_t*>(lv_event_get_target(e)) == g_runtime_screen) {
+            g_runtime_screen = nullptr;
+            g_runtime_body   = nullptr;
+            g_runtime_left   = nullptr;
+        }
+    }, LV_EVENT_DELETE, nullptr);
+}
+
+// Rebuilds ONLY the left panel of the live calendar-runtime screen in place —
+// the shared status bar + profile card (which already updated their own
+// contents live during the sync) are never touched, so there's no full-screen
+// teardown, no re-layout, and no status-bar-timer churn. Picks meeting-list vs
+// no-meetings from the freshly-synced data, exactly as compute_target_state()
+// would. No-op if no calendar screen is live.
+static void refresh_runtime_left() {
+    if (!g_runtime_body) return;
+    app_state::MeetingList list = filtered_meetings();
+    // Built as body's LAST child; move to index 0 so the body's flex order
+    // stays [left, divider, profile card], then drop the old left panel.
+    lv_obj_t* new_left = (list.count > 0)
+        ? screen_meeting_list::build_left(g_runtime_body, list, !g_pc_connected)
+        : screen_no_meetings::build_left(g_runtime_body);
+    lv_obj_move_to_index(new_left, 0);
+    if (g_runtime_left) lv_obj_delete(g_runtime_left);
+    g_runtime_left = new_left;
+}
+
+// Shared tail of on_reconnect_end() — split out so the RECONNECT_MIN_MS
+// minimum-visible deferral can invoke the exact same completion logic from its
+// timer callback. Fires on EVERY SyncEnd (a reconnect resync, a user-initiated
+// profile/photo/Time Off push, AND a tiny periodic time-sync) — so it must be
+// cheap in the common case and only do real work when something visible
+// actually changed.
+static void finish_reconnect_now() {
+    bool was_overlay          = g_reconnect_overlay_mode;
+    bool was_reconnect_screen = (g_state == AppState::RECONNECT_SYNCING);
+    g_reconnect_overlay_mode  = false;
+    screen_reconnect_syncing::destroy_overlay();
+
+    // Mirror the guard in on_reconnect_begin(): a sync that ran while the
+    // countdown modal was up never touched g_state on the way in, so don't
+    // touch it on the way out either — the modal stays exactly as it is until
+    // the user taps Close.
+    if (g_state == AppState::COUNTDOWN) return;
+
+    if (g_runtime_body) {
+        // A live calendar screen (NO_MEETINGS / MEETING_LIST) is on top → never
+        // a full-screen rebuild. Set the real target first so the next
+        // evaluate() tick no-ops (compute_target_state early-returns
+        // RECONNECT_SYNCING while that's the state, so it must be cleared here).
+        app_state::MeetingList list = filtered_meetings();
+        g_state = (list.count > 0) ? AppState::MEETING_LIST : AppState::NO_MEETINGS;
+        if (was_overlay) {
+            // Big sync (photo / profile / meetings / Time Off): rebuild ONLY the
+            // left panel in place — the shared status bar + profile card, whose
+            // own contents already updated live during the sync (set_photo /
+            // set_profile / set_presence), are left untouched. Then repaint the
+            // screen to recover from the NVS-commit blackout that blanked the
+            // whole framebuffer (run_staged_commit, ble-protocol.md §6.0) — a
+            // redraw of the existing widget tree, NOT a rebuild: no allocation,
+            // no re-layout, no status-bar-timer churn.
+            refresh_runtime_left();
+            lv_obj_invalidate(lv_scr_act());
+        }
+        // Otherwise this was a tiny periodic sync that never showed an overlay
+        // (time-only — meetings arrive only in an over-200-byte sync, which does
+        // show the overlay). Nothing visible changed, so leave the live meeting
+        // list exactly as it is: no rebuild, no repaint, no flicker.
+        return;
+    }
+
+    // No live calendar screen to refresh in place. Only rebuild if a reconnect
+    // SCREEN is actually up — the full-screen fallback shown when the sync began
+    // while in Clock/Calendar/media, or a calendar screen that was replaced
+    // mid-sync. A tiny periodic sync arriving while in Clock/Calendar reaches
+    // here with was_reconnect_screen == false and is correctly left alone
+    // (unlike the old unconditional rebuild, which yanked the user out of Clock).
+    if (was_reconnect_screen) {
+        g_force_rebuild = true;
+        g_state = AppState::NO_MEETINGS;
+        evaluate();
+    }
+}
+
 void on_reconnect_begin() {
     // Never overlay the reconnect-syncing UI on top of an OTA takeover.
     if (ota_receiver::is_active()) return;
+    // Never preempt the 5-minute countdown modal — it's priority 3, strictly
+    // above Reconnect-Syncing's priority 4 (state-machine.md), and must persist
+    // until the user taps Close. Let the sync run silently underneath (same as
+    // a tiny periodic sync arriving during Clock/Calendar); finish_reconnect_now()
+    // has a matching guard so on_reconnect_end() doesn't clobber g_state back
+    // out of COUNTDOWN either. Without this, a resync landing inside the
+    // 5-minute window would tear down the countdown screen entirely — and
+    // since the meeting's alerted flag is already set, the alert would never
+    // come back.
+    if (g_state == AppState::COUNTDOWN) return;
     // Idempotent — guards against being called twice for the same reconnect.
     if (g_state == AppState::RECONNECT_SYNCING) return;
     LOG("[sm] on_reconnect_begin (meetings cached=%u)\n", (unsigned)g_rt_count);
-    // Always show the overlay on every reconnect/resync — including the very
-    // first sync after a fresh boot (meetings RAM-only, so g_rt_count==0 then).
-    // Profile, Photo, and Time Off are NVS-backed and can be large enough that the
-    // sync takes a while AND ends in a display blackout for the flash commit
-    // (ble-protocol.md §6.0) — without this overlay the user would otherwise
-    // sit on a static "No meetings today" screen and then have it go black
-    // with no explanation. on_reconnect_end() re-evaluates to the real
-    // meeting list (or back to "No meetings today") once the sync finishes;
-    // the progress ring is driven by real byte progress from BEGIN onward
-    // (ble-protocol.md §6.0, ble_manager's OrioningProgress fan-out).
+    // Shown on every reconnect/resync — including the very first sync after a
+    // fresh boot (meetings RAM-only, so g_rt_count==0 then). Profile, Photo,
+    // and Time Off are NVS-backed and can be large enough that the sync takes a
+    // while AND ends in a display blackout for the flash commit
+    // (ble-protocol.md §6.0) — without this the user would otherwise sit on a
+    // static "No meetings today" screen and then have it go black with no
+    // explanation. The progress ring is driven by real byte progress from
+    // BEGIN onward (ble_manager's OrioningProgress fan-out).
     g_reconnect_shown_ms = millis();
+
+    // Preferred path: if a live calendar-runtime screen is on top, mask ONLY
+    // its left panel with the sync ring — leaving the status bar + profile card
+    // exactly as they are (no teardown, no reflow, no timer churn). This is the
+    // common case (reconnecting from the normal meeting/no-meetings screen) and
+    // the whole point of this design. The profile card keeps updating its photo/
+    // name/presence live underneath (set_photo / set_profile), so nothing about
+    // the surrounding chrome flashes.
+    if (g_runtime_left &&
+        (g_state == AppState::NO_MEETINGS || g_state == AppState::MEETING_LIST)) {
+        g_reconnect_overlay_mode = true;
+        g_state = AppState::RECONNECT_SYNCING;
+        screen_reconnect_syncing::create_overlay(g_runtime_left);
+        return;
+    }
+
+    // Fallback: no calendar left panel to overlay (reconnecting from Clock/
+    // Calendar/media, or first screen). Use the standalone reconnect screen.
+    g_reconnect_overlay_mode = false;
     g_state = AppState::RECONNECT_SYNCING;
     apply_widget_defaults();
     load_screen(build_reconnect_screen());
@@ -1053,6 +1183,35 @@ void on_reconnect_begin() {
 
 void on_reconnect_end() {
     LOG("[sm] on_reconnect_end\n");
+
+    // Guaranteed-late second ANCS relay resync (char 0010/0011,
+    // ble-protocol.md §13). The FIRST resync attempt is Ori's own
+    // onSubscribe()-triggered one (ancs_client's resync_orion_* functions,
+    // fired from gatt_server.cpp's onSubscribe()) — but on a BONDED
+    // RECONNECT that one is a race Orion structurally cannot win: NimBLE's
+    // own host stack (ble_gatts_bonding_restored(), nimble/host/src/
+    // ble_gatts.c) restores every persisted CCCD for the reconnecting peer
+    // and re-fires the subscribe event — and thus this resync — the instant
+    // encryption is restored, entirely server-side, with NO new CCCD write
+    // from the central required. That happens before Orion has necessarily
+    // even finished GATT service discovery, let alone subscribed — so no
+    // amount of Orion subscribing earlier can reliably beat it (confirmed
+    // 2026-07 via hardware log: Ori's onSubscribe/resync fires and sends
+    // "clear" + every queued notification correctly, but Orion's receiver
+    // — created as early as its OWN code allows — still isn't alive yet,
+    // and the burst is lost for the rest of that connection). This point
+    // (on_reconnect_end, fired only on a genuine reconnect's SyncEnd, never
+    // on first pairing) is causally guaranteed to be AFTER Orion's own
+    // subscribe: Orion sends SyncControl{END} — what triggers this — only
+    // as the last step of run_sync(), which its Rust code always runs
+    // strictly after subscribing to these two characteristics. Both resync
+    // functions are idempotent (a full clear + re-add of whatever's
+    // currently queued/live, same as an ordinary filter-change resync) —
+    // firing them again here on top of a first resync that DID land is a
+    // harmless no-op-equivalent refresh, not a correctness risk.
+    ancs_client::resync_orion_relay();
+    ancs_client::resync_orion_call_state();
+
     // Resume the meeting-check tick if an OTA had paused it (no-op otherwise —
     // this is also the normal BLE reconnect-overlay exit). dismiss_error() routes
     // a failed/aborted OTA here.
@@ -1060,26 +1219,20 @@ void on_reconnect_end() {
 
     // poll() drains the BLE event queue in a single while-loop, so on_reconnect_end()
     // can fire in the same drain as on_reconnect_begin() — before LVGL renders even
-    // one frame of the overlay. Enforce a minimum visible duration by deferring the
-    // screen transition when the overlay was shown too recently.
+    // one frame of the overlay. Enforce a minimum visible duration by deferring
+    // completion when the overlay was shown too recently.
     if (g_state == AppState::RECONNECT_SYNCING && g_reconnect_shown_ms) {
         uint32_t elapsed = millis() - g_reconnect_shown_ms;
         if (elapsed < RECONNECT_MIN_MS) {
             lv_timer_create([](lv_timer_t* t) {
                 lv_timer_delete(t);
-                g_force_rebuild = true;
-                g_state = AppState::NO_MEETINGS;
-                state_machine::evaluate();
+                finish_reconnect_now();
             }, RECONNECT_MIN_MS - elapsed, nullptr);
             return;
         }
     }
 
-    // Clear the RECONNECT_SYNCING sentinel so compute_target_state() runs
-    // the full logic (it early-returns RECONNECT_SYNCING when g_state matches).
-    g_force_rebuild = true;
-    g_state = AppState::NO_MEETINGS;
-    evaluate();
+    finish_reconnect_now();
 }
 
 void set_presence(uint8_t presence_byte) {
@@ -1154,6 +1307,12 @@ void set_phone_connected(bool connected) {
     // window between connect and the first notification.
     widget_status_bar::set_all_phone_connected(connected);
     widget_status_bar::set_default_phone_connected(connected);
+    // Same authoritative signal drives an already-open iPhone Info modal's
+    // connection dot/label/name/badges, if one happens to be open — no-op
+    // otherwise. Every caller of this function reaches it from a plain
+    // function-call chain (ble_manager::poll()'s event drain), never from
+    // inside an LVGL callback, so it's safe to rebuild synchronously here.
+    modal_iphone_info::set_connected(connected);
     if (connected) {
         // Connecting implies a bond now exists — persist the flag and update the
         // active bar immediately so tapping the icon goes to the unpair modal

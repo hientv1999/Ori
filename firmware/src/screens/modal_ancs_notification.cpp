@@ -5,6 +5,7 @@
 
 #include "app_state.h"
 #include "ble/ancs_client.h"
+#include "screens/modal_incoming_call.h"
 #include "theme.h"
 #include "ui_helpers.h"
 #include "widgets/widget_status_bar.h"
@@ -397,6 +398,16 @@ lv_obj_t* create(lv_obj_t* base_screen, uint32_t uid) {
     ui::add_close_x(card, on_close, ctx);
 
     return scrim;
+}
+
+void open_for_uid(lv_obj_t* base_screen, uint32_t uid) {
+    uint8_t cat = app_state::ancs_category(uid);
+    if (cat == app_state::AncsCategory::INCOMING_CALL ||
+        cat == app_state::AncsCategory::ACTIVE_CALL) {
+        modal_incoming_call::show_active(uid);
+    } else {
+        create(base_screen, uid);
+    }
 }
 
 void close_if_showing(uint32_t uid) {
