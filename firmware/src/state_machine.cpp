@@ -445,43 +445,48 @@ AppState compute_target_state() {
 
 // ─── Periodic tick ────────────────────────────────────────────────────────
 
-static void tick_cb(lv_timer_t* /*t*/) {
-    // First clock source after a cold boot (Orion Time Sync or iPhone CTS):
-    // force one rebuild so the current screen repaints with a valid date — in
-    // particular the "No meetings today" calendar glyph, which falls back to a
-    // generic grid (no today / no week highlight) while the clock is unset and
-    // would otherwise stay stale once the time arrives. Excluded during SETUP:
-    // none of the wizard screens show clock-derived content, and forcing a
-    // rebuild there tears down and recreates the live setup screen (its own
-    // step transitions are already driven explicitly by screen_setup::set_step).
-    // That teardown fires the outgoing screen's DELETE handler, which closes
-    // the iPhone pairing window (ble_manager::set_iphone_pairing_window(false))
-    // — since Time Sync typically lands in the same sync that also advances
-    // Step 3/4 to PhonePairing, this force-rebuild used to slam the just-opened
-    // pairing window shut a moment later with nothing left to reopen it.
+// First clock source after a cold boot (Orion Time Sync or iPhone CTS):
+// force one rebuild so the current screen repaints with a valid date — in
+// particular the "No meetings today" calendar glyph, which falls back to a
+// generic grid (no today / no week highlight) while the clock is unset and
+// would otherwise stay stale once the time arrives. Excluded during SETUP:
+// none of the wizard screens show clock-derived content, and forcing a
+// rebuild there tears down and recreates the live setup screen (its own
+// step transitions are already driven explicitly by screen_setup::set_step).
+// That teardown fires the outgoing screen's DELETE handler, which closes
+// the iPhone pairing window (ble_manager::set_iphone_pairing_window(false))
+// — since Time Sync typically lands in the same sync that also advances
+// Step 3/4 to PhonePairing, this force-rebuild used to slam the just-opened
+// pairing window shut a moment later with nothing left to reopen it.
+// Returns whether the clock is currently set, for callers later in the same
+// tick that also need it.
+static bool check_clock_just_set() {
     static bool s_clock_was_set = false;
     bool clock_now = app_state::clock_is_set();
     if (clock_now && !s_clock_was_set && g_state != AppState::SETUP) g_force_rebuild = true;
     s_clock_was_set = clock_now;
+    return clock_now;
+}
 
-    // Day rollover (e.g. past midnight): the calendar glyph and month grid pin
-    // "today" and the current-week highlight at build time, so refresh when the
-    // local date advances.
-    //   • CALENDAR_VIEW — re-render the open month grid in place (keeps the
-    //     user's navigation; just recomputes the highlight).
-    //   • CLOCK — nothing to do (it shows the time, not the date).
-    //   • everything else — force a normal rebuild of the current screen.
+// Day rollover (e.g. past midnight): the calendar glyph and month grid pin
+// "today" and the current-week highlight at build time, so refresh when the
+// local date advances.
+//   • CALENDAR_VIEW — re-render the open month grid in place (keeps the
+//     user's navigation; just recomputes the highlight).
+//   • CLOCK — nothing to do (it shows the time, not the date).
+//   • everything else — force a normal rebuild of the current screen.
+// Populates *out_lt with the current local time (when the clock is set) so
+// the caller can pass it on to check_meeting_alert() — avoids a second
+// redundant time()+localtime_r() in the same 1 Hz callback. Returns whether
+// *out_lt was populated.
+static bool check_day_rollover(bool clock_now, struct tm* out_lt) {
     static int s_last_day_key = -1;
-    // Computed once per tick (when the clock is set) and reused below by
-    // check_countdown() — avoids a second redundant time()+localtime_r() in
-    // the same 1 Hz callback.
-    struct tm lt;
     bool have_lt = false;
     if (clock_now) {
         time_t now = time(nullptr);
-        localtime_r(&now, &lt);
+        localtime_r(&now, out_lt);
         have_lt = true;
-        int day_key = (lt.tm_year + 1900) * 1000 + lt.tm_yday;  // unique per calendar day
+        int day_key = (out_lt->tm_year + 1900) * 1000 + out_lt->tm_yday;  // unique per calendar day
         if (s_last_day_key != -1 && day_key != s_last_day_key) {
             if (g_state == AppState::CALENDAR_VIEW) {
                 screen_calendar::refresh_today();
@@ -491,8 +496,12 @@ static void tick_cb(lv_timer_t* /*t*/) {
         }
         s_last_day_key = day_key;
     }
+    return have_lt;
+}
 
-    // 5-minute pre-meeting alert.
+// 5-minute pre-meeting alert. Returns true if an alert fired (fire_countdown()
+// already rebuilt the screen) — the caller should skip the rest of the tick.
+static bool check_meeting_alert(bool have_lt, const struct tm* lt) {
     if (g_state != AppState::COUNTDOWN   &&
         g_state != AppState::SETUP       &&
         g_state != AppState::OTA_UPDATING &&
@@ -505,25 +514,28 @@ static void tick_cb(lv_timer_t* /*t*/) {
         int diff_s        = 0;
         int key           = -1;
 
-        if (check_countdown(&title, &org, &loc, &diff_s, &key, have_lt ? &lt : nullptr)) {
+        if (check_countdown(&title, &org, &loc, &diff_s, &key, have_lt ? lt : nullptr)) {
             if (key >= 0 && key < MINUTES_PER_DAY) g_alerted_mins[key] = true;
             LOG("[sm] countdown alert for meeting key=%d\n", key);
             fire_countdown(title, org, loc, diff_s);
-            return;  // screen already updated; skip re-evaluate below
+            return true;
         }
     }
+    return false;
+}
 
-    // Meeting content changed under our feet — a meeting crossed into/out of
-    // "in progress" or expired off the front — without the MEETING_LIST vs
-    // NO_MEETINGS *AppState* changing (compute_target_state() only tells them
-    // apart by count>0). evaluate()'s "unchanged" no-op guard would otherwise
-    // leave a stale in-progress highlight or an expired row on screen until
-    // some unrelated event forces a rebuild (meeting-list.md's "now crosses
-    // start → row turns red" / "now crosses end → row is removed" promises
-    // this happens every tick). Diff against the last-seen snapshot and force
-    // a rebuild when it doesn't match. Scoped to Calendar mode (g_mode == 0)
-    // — in Controls/media mode this state renders the media screen instead,
-    // which has nothing meeting-related to refresh.
+// Meeting content changed under our feet — a meeting crossed into/out of
+// "in progress" or expired off the front — without the MEETING_LIST vs
+// NO_MEETINGS *AppState* changing (compute_target_state() only tells them
+// apart by count>0). evaluate()'s "unchanged" no-op guard would otherwise
+// leave a stale in-progress highlight or an expired row on screen until
+// some unrelated event forces a rebuild (meeting-list.md's "now crosses
+// start → row turns red" / "now crosses end → row is removed" promises
+// this happens every tick). Diff against the last-seen snapshot and force
+// a rebuild when it doesn't match. Scoped to Calendar mode (g_mode == 0)
+// — in Controls/media mode this state renders the media screen instead,
+// which has nothing meeting-related to refresh.
+static void check_meeting_content_changed(bool clock_now) {
     if (clock_now && g_mode == 0 &&
         (g_state == AppState::MEETING_LIST || g_state == AppState::NO_MEETINGS)) {
         static size_t s_last_count = (size_t)-1;
@@ -539,6 +551,17 @@ static void tick_cb(lv_timer_t* /*t*/) {
             g_force_rebuild = true;
         }
     }
+}
+
+static void tick_cb(lv_timer_t* /*t*/) {
+    bool clock_now = check_clock_just_set();
+
+    struct tm lt;
+    bool have_lt = check_day_rollover(clock_now, &lt);
+
+    if (check_meeting_alert(have_lt, &lt)) return;  // screen already updated; skip re-evaluate below
+
+    check_meeting_content_changed(clock_now);
 
     state_machine::evaluate();
 }

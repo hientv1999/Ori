@@ -339,68 +339,89 @@ static void animate_art_swipe(lv_obj_t* wrap, int direction /* +1=right, -1=left
     lv_anim_start(&a);
 }
 
-void on_art_gesture(lv_event_t* e) {
-    auto* s = static_cast<ArtState*>(lv_event_get_user_data(e));
-    if (!s) return;
-    lv_indev_t* indev = lv_indev_get_act();
-    if (!indev) return;
-    lv_event_code_t code = lv_event_get_code(e);
-    lv_point_t p;
-    lv_indev_get_point(indev, &p);
+// PRESSED — begin tracking a new touch: reveal the timeline bar and record
+// the press origin + current volume as the baseline for whatever this touch
+// turns out to be (tap, h-swipe, or v-swipe).
+void on_art_pressed(ArtState* s, lv_point_t p) {
+    // Capture BEFORE reveal_timeline() below changes it — see
+    // tl_was_visible_before_press's doc comment. Not eligible at all
+    // (nothing to reveal) counts as "already visible" so a tap on a
+    // non-seekable track still toggles play/pause normally, same as
+    // before this bar existed.
+    s->tl_was_visible_before_press = !s->tl_seek_eligible || s->tl_user_visible;
+    // Any touch on the art — tap, swipe, or the start of a volume drag —
+    // reveals the timeline bar and (re)starts its 5 s idle countdown.
+    reveal_timeline(s);
+    s->start_x = p.x;
+    s->start_y = p.y;
+    s->start_volume = app_state::media().volume;
+    s->tracking = true;
+    s->vertical_engaged = false;
+}
 
-    if (code == LV_EVENT_PRESSED) {
-        // Capture BEFORE reveal_timeline() below changes it — see
-        // tl_was_visible_before_press's doc comment. Not eligible at all
-        // (nothing to reveal) counts as "already visible" so a tap on a
-        // non-seekable track still toggles play/pause normally, same as
-        // before this bar existed.
-        s->tl_was_visible_before_press = !s->tl_seek_eligible || s->tl_user_visible;
-        // Any touch on the art — tap, swipe, or the start of a volume drag —
-        // reveals the timeline bar and (re)starts its 5 s idle countdown.
-        reveal_timeline(s);
-        s->start_x = p.x;
-        s->start_y = p.y;
-        s->start_volume = app_state::media().volume;
-        s->tracking = true;
+// PRESSING — live drag tracking. Latches vertical_engaged the first tick the
+// drag crosses the vertical-swipe threshold (and shows the volume HUD +
+// engages the drag-wins BLE override right then), then keeps the HUD synced
+// to the drag on every subsequent tick while engaged.
+void on_art_pressing(ArtState* s, lv_point_t p) {
+    if (!s->tracking) return;
+    int dx = p.x - s->start_x;
+    int dy = p.y - s->start_y;
+    if (!s->vertical_engaged && abs(dy) > V_SWIPE_ENGAGE && abs(dy) > abs(dx)) {
+        s->vertical_engaged = true;
+        show_hud(s, true);
+        // Set drag-wins override: ignore incoming HostVolumeState pushes.
+        gatt_server_set_vol_swipe_active(true);
+    }
+    if (s->vertical_engaged) {
+        // Negative dy (swipe up) = louder; positive dy = quieter.
+        int new_vol = s->start_volume + (-dy) * V_SENS_NUM / V_SENS_DEN;
+        set_volume_visual(s, new_vol);
+    }
+}
+
+enum class ReleaseGesture { kNone, kTap, kSwipeH };
+
+// Pure decision, no state mutation and no BLE calls: given the total
+// displacement of a finished touch that is ALREADY known not to be a
+// vertical volume swipe (caller checks s->vertical_engaged first — see
+// on_art_released), classify it as a tap, a horizontal swipe, or neither.
+// Mirrors the original inline if/else-if precedence exactly: tap is checked
+// before h-swipe.
+ReleaseGesture classify_release_gesture(int abs_dx, int abs_dy) {
+    if (abs_dx < TAP_MAX && abs_dy < TAP_MAX) return ReleaseGesture::kTap;
+    if (abs_dx > H_SWIPE_MIN && abs_dx > abs_dy) return ReleaseGesture::kSwipeH;
+    return ReleaseGesture::kNone;
+}
+
+// RELEASED / PRESS_LOST — finalize whatever this touch turned out to be. A
+// vertical swipe latched during PRESSING is finished here directly (it
+// bypasses classify_release_gesture entirely, same as the original code);
+// otherwise the total displacement is classified as a tap or h-swipe and
+// dispatched to its side effects.
+void on_art_released(ArtState* s, lv_point_t p) {
+    if (!s->tracking) return;
+    s->tracking = false;
+    int dx = p.x - s->start_x;
+    int dy = p.y - s->start_y;
+
+    if (s->vertical_engaged) {
+        // Release vertical swipe — emit KeyboardCommand{op:"vol_set", arg:N}.
+        int new_vol = s->start_volume + (-dy) * V_SENS_NUM / V_SENS_DEN;
+        if (new_vol < 0)   new_vol = 0;
+        if (new_vol > 100) new_vol = 100;
+        set_volume_visual(s, new_vol);
+        show_hud(s, false);
         s->vertical_engaged = false;
-    } else if (code == LV_EVENT_PRESSING) {
-        if (!s->tracking) return;
-        int dx = p.x - s->start_x;
-        int dy = p.y - s->start_y;
-        if (!s->vertical_engaged && abs(dy) > V_SWIPE_ENGAGE && abs(dy) > abs(dx)) {
-            s->vertical_engaged = true;
-            show_hud(s, true);
-            // Set drag-wins override: ignore incoming HostVolumeState pushes.
-            gatt_server_set_vol_swipe_active(true);
-        }
-        if (s->vertical_engaged) {
-            // Negative dy (swipe up) = louder; positive dy = quieter.
-            int new_vol = s->start_volume + (-dy) * V_SENS_NUM / V_SENS_DEN;
-            set_volume_visual(s, new_vol);
-        }
-    } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
-        if (!s->tracking) return;
-        s->tracking = false;
-        int dx = p.x - s->start_x;
-        int dy = p.y - s->start_y;
-        int abs_dx = abs(dx);
-        int abs_dy = abs(dy);
+        // Clear the swipe-override so incoming HostVolumeState pushes resume
+        // after the 800 ms linger (ble-protocol.md §12 drag-wins rule).
+        gatt_server_set_vol_swipe_active(false);
+        gatt_server::notify_keyboard_command("vol_set", (uint32_t)new_vol);
+        return;
+    }
 
-        if (s->vertical_engaged) {
-            // Release vertical swipe — emit KeyboardCommand{op:"vol_set", arg:N}.
-            int new_vol = s->start_volume + (-dy) * V_SENS_NUM / V_SENS_DEN;
-            if (new_vol < 0)   new_vol = 0;
-            if (new_vol > 100) new_vol = 100;
-            set_volume_visual(s, new_vol);
-            show_hud(s, false);
-            s->vertical_engaged = false;
-            // Clear the swipe-override so incoming HostVolumeState pushes resume
-            // after the 800 ms linger (ble-protocol.md §12 drag-wins rule).
-            gatt_server_set_vol_swipe_active(false);
-            gatt_server::notify_keyboard_command("vol_set", (uint32_t)new_vol);
-            return;
-        }
-        if (abs_dx < TAP_MAX && abs_dy < TAP_MAX) {
+    switch (classify_release_gesture(abs(dx), abs(dy))) {
+        case ReleaseGesture::kTap:
             // Tap = play/pause toggle, but ONLY once the timeline bar is
             // already visible. The first tap on a hidden-and-eligible bar is
             // consumed entirely by revealing it (already done on PRESSED,
@@ -414,13 +435,35 @@ void on_art_gesture(lv_event_t* e) {
                 apply_paused_visual(s, !playing);
                 gatt_server::notify_keyboard_command("play_pause", 0);
             }
-        } else if (abs_dx > H_SWIPE_MIN && abs_dx > abs_dy) {
+            break;
+        case ReleaseGesture::kSwipeH: {
             // Horizontal swipe — slide art ~40 px in the swipe direction then
             // snap back, and emit the next/prev KeyboardCommand.
             const int dir = (dx > 0) ? 1 : -1;
             animate_art_swipe(s->wrap, dir);
             gatt_server::notify_keyboard_command(dx > 0 ? "next" : "prev", 0);
+            break;
         }
+        case ReleaseGesture::kNone:
+            break;
+    }
+}
+
+void on_art_gesture(lv_event_t* e) {
+    auto* s = static_cast<ArtState*>(lv_event_get_user_data(e));
+    if (!s) return;
+    lv_indev_t* indev = lv_indev_get_act();
+    if (!indev) return;
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_point_t p;
+    lv_indev_get_point(indev, &p);
+
+    if (code == LV_EVENT_PRESSED) {
+        on_art_pressed(s, p);
+    } else if (code == LV_EVENT_PRESSING) {
+        on_art_pressing(s, p);
+    } else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
+        on_art_released(s, p);
     }
 }
 
