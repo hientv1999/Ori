@@ -315,6 +315,101 @@ namespace ble_manager {
 static bool delete_bond_matching_addr(const uint8_t addr[6]);
 }
 
+// Peer-slot resolution for a fresh connection, extracted verbatim from
+// OriServerCallbacks::onConnect() — same statements, same order, just named.
+// Called AFTER the MTU/data-length/connection-parameter tuning and the
+// documented "do NOT call startSecurity() here" window (see onConnect()'s own
+// comments on the SMP-collision race and the conn-param-update pool
+// exhaustion fix) — this function does not touch or reorder anything in that
+// section, it only wraps what already ran strictly after it.
+static void classify_and_handle_peer(NimBLEConnInfo& info, uint16_t handle,
+                                      const uint8_t orion_addr[6],
+                                      const uint8_t iphone_addr[6]) {
+    if (conn_matches(info, orion_addr)) {
+        // Known Orion reconnecting (matched by identity address).
+        LOG("[ble] Orion reconnected (bonded peer)\n");
+        g_orion_connected = true;
+        g_orion_conn      = handle;
+        BleEvent ev = {};
+        ev.type = BleEventType::OrionConnected;
+        ev.data.conn_handle = handle;
+        eq_push(ev);
+    } else if (conn_matches(info, iphone_addr)) {
+        // Known iPhone reconnecting (matched by identity address).
+        // Track the link, but do NOT start ANCS here: the ANCS service is
+        // encrypted, so discovery + CCCD subscription must wait until the
+        // link re-encrypts. The IphoneConnected event (which starts ANCS) is
+        // posted from onAuthenticationComplete, after encryption is restored.
+        // Starting it here (pre-encryption) made the CCCD writes fail
+        // silently, so iOS never delivered notifications.
+        LOG("[ble] iPhone reconnected (bonded peer) — awaiting encryption\n");
+        g_iphone_connected = true;
+        g_iphone_conn      = handle;
+    } else {
+        // Unknown peer — fresh connection, awaiting pairing.
+        // Passkey modal is shown via onPassKeyDisplay() when NimBLE begins
+        // the passkey exchange — not here on connect.
+        LOG("[ble] unknown peer — awaiting bond\n");
+
+        // Arm the "never even started pairing" watchdog — see
+        // UNKNOWN_PEER_BOND_TIMEOUT_MS's doc comment. Cleared by
+        // onPassKeyDisplay() (bonding actually started) or onDisconnect()
+        // (peer went away on its own); enforced in poll().
+        //
+        // Scoped to Orion's own pairing window only — while orion_addr is
+        // still empty, i.e. before Orion has ever bonded. Once Orion is
+        // bonded, an unknown peer connecting is the iPhone pairing window
+        // (Setup Step 3/4 or a runtime re-pair) instead, and a real
+        // iPhone can legitimately take longer than 2s to work through
+        // iOS's own Bluetooth pairing flow — this watchdog must not
+        // apply there, only to Orion's own bonding window.
+        if (ble_manager::is_bond_slot_empty(orion_addr)) {
+            g_unknown_peer_pending  = true;
+            g_unknown_peer_conn     = handle;
+            g_unknown_peer_deadline = millis() + UNKNOWN_PEER_BOND_TIMEOUT_MS;
+        }
+
+        // During the iPhone-pairing window (Setup Step 4 / runtime re-pair),
+        // request security immediately so the passkey prompt appears right
+        // away. Without this, a central that doesn't auto-initiate pairing
+        // on its own (e.g. nRF Connect standing in for an iPhone) sits
+        // connected-but-unencrypted until the user manually writes to an
+        // encrypted characteristic. Unlike the Orion case above, there is no
+        // central-driven pairing to race here — this window is mutually
+        // exclusive with Orion's Step 2 bonding window.
+        if (g_iphone_pairing_window && ble_manager::is_bond_slot_empty(iphone_addr)) {
+            LOG("[ble] iPhone pairing window open — requesting security\n");
+            NimBLEDevice::startSecurity(handle);
+        }
+    }
+}
+
+// Advertising-restart decision for a fresh connection, extracted verbatim
+// from OriServerCallbacks::onConnect() — runs strictly after
+// classify_and_handle_peer() above, same as before extraction.
+static void maybe_restart_advertising_after_connect(NimBLEConnInfo& info,
+                                                      const uint8_t orion_addr[6],
+                                                      const uint8_t iphone_addr[6]) {
+    // BLE auto-stops advertising when a connection forms. Re-advertise after
+    // a KNOWN peer (re)connects whenever Ori still needs to be discoverable:
+    //   • both peers bonded → the other bonded peer can still reconnect;
+    //   • iPhone-pairing window open + iPhone slot empty → the ANCS advert
+    //     must survive an Orion (re)connect, or the iPhone can never see Ori
+    //     (this is the "advertising disappears at the pairing screen" bug).
+    // We skip this for an UNKNOWN peer — that's a fresh pairing in progress,
+    // and re-advertising mid-bond would invite a second connection.
+    // restart_advertising() stops again on its own once both are connected.
+    bool known_peer = conn_matches(info, orion_addr) ||
+                       conn_matches(info, iphone_addr);
+    bool both_bonded = !ble_manager::is_bond_slot_empty(orion_addr) &&
+                       !ble_manager::is_bond_slot_empty(iphone_addr);
+    bool ancs_window = g_iphone_pairing_window &&
+                       ble_manager::is_bond_slot_empty(iphone_addr);
+    if (known_peer && (both_bonded || ancs_window)) {
+        ble_manager::restart_advertising();
+    }
+}
+
 // ── NimBLE Server callbacks ────────────────────────────────────────────────
 
 class OriServerCallbacks : public NimBLEServerCallbacks {
@@ -369,82 +464,9 @@ public:
         uint8_t iphone_addr[6] = {};
         load_both_bond_addrs(orion_addr, iphone_addr);
 
-        if (conn_matches(info, orion_addr)) {
-            // Known Orion reconnecting (matched by identity address).
-            LOG("[ble] Orion reconnected (bonded peer)\n");
-            g_orion_connected = true;
-            g_orion_conn      = handle;
-            BleEvent ev = {};
-            ev.type = BleEventType::OrionConnected;
-            ev.data.conn_handle = handle;
-            eq_push(ev);
-        } else if (conn_matches(info, iphone_addr)) {
-            // Known iPhone reconnecting (matched by identity address).
-            // Track the link, but do NOT start ANCS here: the ANCS service is
-            // encrypted, so discovery + CCCD subscription must wait until the
-            // link re-encrypts. The IphoneConnected event (which starts ANCS) is
-            // posted from onAuthenticationComplete, after encryption is restored.
-            // Starting it here (pre-encryption) made the CCCD writes fail
-            // silently, so iOS never delivered notifications.
-            LOG("[ble] iPhone reconnected (bonded peer) — awaiting encryption\n");
-            g_iphone_connected = true;
-            g_iphone_conn      = handle;
-        } else {
-            // Unknown peer — fresh connection, awaiting pairing.
-            // Passkey modal is shown via onPassKeyDisplay() when NimBLE begins
-            // the passkey exchange — not here on connect.
-            LOG("[ble] unknown peer — awaiting bond\n");
+        classify_and_handle_peer(info, handle, orion_addr, iphone_addr);
 
-            // Arm the "never even started pairing" watchdog — see
-            // UNKNOWN_PEER_BOND_TIMEOUT_MS's doc comment. Cleared by
-            // onPassKeyDisplay() (bonding actually started) or onDisconnect()
-            // (peer went away on its own); enforced in poll().
-            //
-            // Scoped to Orion's own pairing window only — while orion_addr is
-            // still empty, i.e. before Orion has ever bonded. Once Orion is
-            // bonded, an unknown peer connecting is the iPhone pairing window
-            // (Setup Step 3/4 or a runtime re-pair) instead, and a real
-            // iPhone can legitimately take longer than 2s to work through
-            // iOS's own Bluetooth pairing flow — this watchdog must not
-            // apply there, only to Orion's own bonding window.
-            if (ble_manager::is_bond_slot_empty(orion_addr)) {
-                g_unknown_peer_pending  = true;
-                g_unknown_peer_conn     = handle;
-                g_unknown_peer_deadline = millis() + UNKNOWN_PEER_BOND_TIMEOUT_MS;
-            }
-
-            // During the iPhone-pairing window (Setup Step 4 / runtime re-pair),
-            // request security immediately so the passkey prompt appears right
-            // away. Without this, a central that doesn't auto-initiate pairing
-            // on its own (e.g. nRF Connect standing in for an iPhone) sits
-            // connected-but-unencrypted until the user manually writes to an
-            // encrypted characteristic. Unlike the Orion case above, there is no
-            // central-driven pairing to race here — this window is mutually
-            // exclusive with Orion's Step 2 bonding window.
-            if (g_iphone_pairing_window && ble_manager::is_bond_slot_empty(iphone_addr)) {
-                LOG("[ble] iPhone pairing window open — requesting security\n");
-                NimBLEDevice::startSecurity(handle);
-            }
-        }
-
-        // BLE auto-stops advertising when a connection forms. Re-advertise after
-        // a KNOWN peer (re)connects whenever Ori still needs to be discoverable:
-        //   • both peers bonded → the other bonded peer can still reconnect;
-        //   • iPhone-pairing window open + iPhone slot empty → the ANCS advert
-        //     must survive an Orion (re)connect, or the iPhone can never see Ori
-        //     (this is the "advertising disappears at the pairing screen" bug).
-        // We skip this for an UNKNOWN peer — that's a fresh pairing in progress,
-        // and re-advertising mid-bond would invite a second connection.
-        // restart_advertising() stops again on its own once both are connected.
-        bool known_peer = conn_matches(info, orion_addr) ||
-                           conn_matches(info, iphone_addr);
-        bool both_bonded = !ble_manager::is_bond_slot_empty(orion_addr) &&
-                           !ble_manager::is_bond_slot_empty(iphone_addr);
-        bool ancs_window = g_iphone_pairing_window &&
-                           ble_manager::is_bond_slot_empty(iphone_addr);
-        if (known_peer && (both_bonded || ancs_window)) {
-            ble_manager::restart_advertising();
-        }
+        maybe_restart_advertising_after_connect(info, orion_addr, iphone_addr);
     }
 
     void onDisconnect(NimBLEServer* server,

@@ -1089,6 +1089,171 @@ void on_notification_source(const uint8_t* data, uint16_t len) {
     }
 }
 
+// ── GetAppAttributes response (CommandID 0x01) — app display name ──
+// Extracted verbatim from on_data_source()'s cmd_id==0x01 branch. Operates
+// directly on the g_ds_buf/g_ds_len reassembly globals exactly as the inline
+// code did; on_data_source() unconditionally `return`s right after calling
+// this, so both of this function's own return points (AppIdentifier not yet
+// fully arrived vs. fully parsed) map 1:1 onto the original inline behavior.
+// This is a distinct ANCS command from GetNotificationAttributes below and
+// has its own, separate completeness check — it does not touch the
+// fragment-completeness heuristic that guards the cmd_id==0x00 path.
+static void handle_get_app_attributes_response() {
+    // [0]=0x01, [1..]=AppIdentifier (null-terminated), then attr records.
+    size_t p = 1, ai = 0;
+    char app_id[128] = {};
+    while (p < g_ds_len && g_ds_buf[p] != 0x00) {
+        if (ai < sizeof(app_id) - 1) app_id[ai++] = (char)g_ds_buf[p];
+        ++p;
+    }
+    if (p >= g_ds_len) return;            // AppIdentifier not fully arrived yet
+    app_id[ai] = '\0';
+    ++p;                                   // skip the null terminator
+    char name[64] = {};
+    while (p + 3 <= g_ds_len) {
+        uint8_t  aid  = g_ds_buf[p];
+        uint16_t alen = (uint16_t)(g_ds_buf[p + 1] | (g_ds_buf[p + 2] << 8));
+        p += 3;
+        if (p + alen > g_ds_len) break;
+        if (aid == 0x00) {                 // Display Name
+            size_t c = alen < sizeof(name) - 1 ? alen : sizeof(name) - 1;
+            memcpy(name, &g_ds_buf[p], c);
+            name[c] = '\0';
+        }
+        p += alen;
+    }
+    if (name[0]) {
+        char fname[40] = {};
+        ui::sanitize_text(name, fname, sizeof(fname));
+        appname_cache_put(app_id, fname);
+        app_state::set_ancs_display_name_for_bundle(app_id, fname);
+        LOG("[ancs] app name: %s -> '%s'\n", app_id, fname);
+    }
+    g_ds_len = 0;
+}
+
+// Call-notification side effects (modal show/answer state + AncsCallState
+// relay) for a just-confirmed-complete GetNotificationAttributes response.
+// Split out of process_notification_attributes() purely for readability —
+// every input here is already a fully-parsed local value; nothing in this
+// function touches the DS reassembly buffer or re-derives the fragment-
+// completeness heuristic. Verbatim body, not reordered or inverted.
+static void handle_call_notification(uint32_t resp_uid, uint8_t cat, uint8_t flags,
+                                      bool preexisting, const char* display_name,
+                                      const char* ftitle, const char* fpos,
+                                      const char* fneg, bool neg_action,
+                                      const char* token) {
+    // Call notification that isn't part of the reconnect backlog → call overlay.
+    // Two call categories: the classic INCOMING_CALL (1, native Phone app) and
+    // ACTIVE_CALL (12), which modern iOS reports for ongoing VoIP/CallKit calls
+    // such as Viber. A ringing call still offers the ANCS positive (answer)
+    // action; once it's answered the phone drops that action (only hang-up
+    // remains) — that's how we tell "ringing" from "on call". VoIP calls often
+    // arrive already in the no-positive-action state, so they open the in-call
+    // dialog directly. Best-effort: relies on iOS's action flags.
+    bool is_call = (cat == app_state::AncsCategory::INCOMING_CALL ||
+                    cat == app_state::AncsCategory::ACTIVE_CALL);
+    if (is_call && !preexisting && !ota_receiver::is_active() && passes_filter(cat, flags)) {
+        bool can_answer = (flags & EvtFlag::POSITIVE_ACTION) != 0;
+        if (can_answer) {
+            modal_incoming_call::show(resp_uid);          // ringing
+            relay_call_state(1, resp_uid, 0, display_name, ftitle, fpos, fneg, neg_action, token);
+        } else {
+            modal_incoming_call::notify_active(resp_uid); // on call
+            // Seed "e" from the just-(re)started session so Orion's timer
+            // reflects real elapsed time (relevant when this is a Modified
+            // event on an already-active call rather than a fresh answer).
+            uint32_t elapsed = 0;
+            modal_incoming_call::session_state(nullptr, &elapsed);
+            relay_call_state(2, resp_uid, elapsed, display_name, ftitle, fpos, fneg, neg_action, token);
+        }
+        // Refresh the status-bar tile ring (yellow ringing / red answered) for
+        // this uid now — queue_add() below is a no-op for a uid already
+        // queued (the ringing->active transition is usually a Modified event
+        // on the SAME uid, e.g. the call was answered on the phone itself
+        // rather than via Ori's own Answer button), so without this the ring
+        // would silently stay yellow for the rest of the call.
+        widget_status_bar::refresh_active();
+    }
+}
+
+// Everything that happens once a GetNotificationAttributes response is
+// confirmed complete by the fragment-completeness heuristic in
+// on_data_source(): recover the stashed NS metadata, resolve icon/app name,
+// sanitize text, store the detail record, fire call-notification side
+// effects, queue + relay to Orion. Split out of on_data_source() purely for
+// readability — every parameter here is already a fully-parsed local value
+// (title/subtitle/body/date/pos_label/neg_label point at on_data_source()'s
+// stack buffers, filled by the parse loop before the completeness check
+// passed). This function does not read g_ds_buf and does not re-derive the
+// completeness check; it only resets g_ds_len/g_pending_uid at the very end,
+// in the same relative position as the original inline code.
+static void process_notification_attributes(uint32_t resp_uid, const char* app_id,
+                                              const char* title, const char* subtitle,
+                                              const char* body, const char* date,
+                                              const char* pos_label, const char* neg_label) {
+    // Recover the NS-event metadata stashed for this UID (flags + category).
+    uint8_t flags = 0, cat = app_state::AncsCategory::OTHER;
+    pmeta_take(resp_uid, &flags, &cat);
+    bool silent      = (flags & EvtFlag::SILENT)            != 0;
+    bool important   = (flags & EvtFlag::IMPORTANT)        != 0;
+    bool preexisting = (flags & EvtFlag::PREEXISTING)      != 0;
+    bool neg_action  = (flags & EvtFlag::NEGATIVE_ACTION)  != 0;
+
+    // Resolve icon token + human-readable app name. Built-in map first (instant),
+    // then the GetAppAttributes cache; if still unknown, fire a one-off fetch —
+    // its async reply back-fills the name for this and future notifications.
+    const BundleMap* bm = lookup_bundle(app_id);
+    const char* token        = bm ? bm->token : "unknown";
+    const char* display_name = bm ? bm->name  : appname_cache_lookup(app_id);
+    if (!display_name) request_app_attributes(app_id);
+
+    // Timestamp (ANCS Date attribute).
+    char hhmm[6] = {};
+    time_t recv_epoch = parse_ancs_date(date, hhmm, sizeof(hhmm));
+
+    // Drop glyphs the UI font can't render (emoji, CJK, …) before storing.
+    // fbody must match AncsDetailEntry::body[513] (app_state.cpp) — this is
+    // the buffer that actually feeds set_ancs_detail() below; a smaller size
+    // here would silently truncate before the larger persistent/wire caps
+    // ever got a chance to matter.
+    char ftitle[193] = {}, fsub[129] = {}, fbody[513] = {};
+    char fpos[33] = {}, fneg[33] = {};
+    ui::sanitize_text(title,     ftitle, sizeof(ftitle));
+    ui::sanitize_text(subtitle,  fsub,   sizeof(fsub));
+    ui::sanitize_text(body,      fbody,  sizeof(fbody));
+    ui::sanitize_text(pos_label, fpos,   sizeof(fpos));
+    ui::sanitize_text(neg_label, fneg,   sizeof(fneg));
+
+    // Store detail BEFORE queue_add so the status-bar tile built during the
+    // queue_add → publish_queue → refresh can read this UID's category/importance.
+    app_state::set_ancs_detail(resp_uid, token, display_name, ftitle, fsub, fbody,
+                               recv_epoch, hhmm, app_id, cat, important, silent,
+                               fpos, fneg, neg_action);
+
+    // Genuinely-new notifications animate in; the backlog iOS replays on connect
+    // (PreExisting flag) populates silently. Only animate if the notification
+    // passes the current filter — filtered-out entries are stored but not surfaced.
+    if (!preexisting && passes_filter(cat, flags)) widget_status_bar::note_new_notification(resp_uid);
+
+    handle_call_notification(resp_uid, cat, flags, preexisting, display_name,
+                              ftitle, fpos, fneg, neg_action, token);
+
+    queue_add(resp_uid, token);
+    // Relay to Orion (char 0010) — fires for both Added and Modified (this
+    // function runs once per GetNotificationAttributes response, whichever
+    // triggered it); relay_ancs_add() itself excludes calls (relayed above via
+    // AncsCallState instead) and applies the current ancs_filter.
+    relay_ancs_add(resp_uid, token);
+
+    g_ds_len = 0;
+    g_pending_uid = 0;
+
+    LOG("[ancs] attr uid=%u app=%s cat=%u%s title='%s'\n",
+        (unsigned)resp_uid, app_id, (unsigned)cat,
+        preexisting ? " (preexisting)" : "", ftitle);
+}
+
 void on_data_source(const uint8_t* data, uint16_t len) {
     if (len == 0) return;
 
@@ -1105,37 +1270,7 @@ void on_data_source(const uint8_t* data, uint16_t len) {
 
     // ── GetAppAttributes response (CommandID 0x01) — app display name ──
     if (cmd_id == 0x01) {
-        // [0]=0x01, [1..]=AppIdentifier (null-terminated), then attr records.
-        size_t p = 1, ai = 0;
-        char app_id[128] = {};
-        while (p < g_ds_len && g_ds_buf[p] != 0x00) {
-            if (ai < sizeof(app_id) - 1) app_id[ai++] = (char)g_ds_buf[p];
-            ++p;
-        }
-        if (p >= g_ds_len) return;            // AppIdentifier not fully arrived yet
-        app_id[ai] = '\0';
-        ++p;                                   // skip the null terminator
-        char name[64] = {};
-        while (p + 3 <= g_ds_len) {
-            uint8_t  aid  = g_ds_buf[p];
-            uint16_t alen = (uint16_t)(g_ds_buf[p + 1] | (g_ds_buf[p + 2] << 8));
-            p += 3;
-            if (p + alen > g_ds_len) break;
-            if (aid == 0x00) {                 // Display Name
-                size_t c = alen < sizeof(name) - 1 ? alen : sizeof(name) - 1;
-                memcpy(name, &g_ds_buf[p], c);
-                name[c] = '\0';
-            }
-            p += alen;
-        }
-        if (name[0]) {
-            char fname[40] = {};
-            ui::sanitize_text(name, fname, sizeof(fname));
-            appname_cache_put(app_id, fname);
-            app_state::set_ancs_display_name_for_bundle(app_id, fname);
-            LOG("[ancs] app name: %s -> '%s'\n", app_id, fname);
-        }
-        g_ds_len = 0;
+        handle_get_app_attributes_response();
         return;
     }
 
@@ -1199,96 +1334,8 @@ void on_data_source(const uint8_t* data, uint16_t len) {
     if (!got_last_attr) return;
     if (!got_app_id) { g_ds_len = 0; return; }
 
-    // Recover the NS-event metadata stashed for this UID (flags + category).
-    uint8_t flags = 0, cat = app_state::AncsCategory::OTHER;
-    pmeta_take(resp_uid, &flags, &cat);
-    bool silent      = (flags & EvtFlag::SILENT)            != 0;
-    bool important   = (flags & EvtFlag::IMPORTANT)        != 0;
-    bool preexisting = (flags & EvtFlag::PREEXISTING)      != 0;
-    bool neg_action  = (flags & EvtFlag::NEGATIVE_ACTION)  != 0;
-
-    // Resolve icon token + human-readable app name. Built-in map first (instant),
-    // then the GetAppAttributes cache; if still unknown, fire a one-off fetch —
-    // its async reply back-fills the name for this and future notifications.
-    const BundleMap* bm = lookup_bundle(app_id);
-    const char* token        = bm ? bm->token : "unknown";
-    const char* display_name = bm ? bm->name  : appname_cache_lookup(app_id);
-    if (!display_name) request_app_attributes(app_id);
-
-    // Timestamp (ANCS Date attribute).
-    char hhmm[6] = {};
-    time_t recv_epoch = parse_ancs_date(date, hhmm, sizeof(hhmm));
-
-    // Drop glyphs the UI font can't render (emoji, CJK, …) before storing.
-    // fbody must match AncsDetailEntry::body[513] (app_state.cpp) — this is
-    // the buffer that actually feeds set_ancs_detail() below; a smaller size
-    // here would silently truncate before the larger persistent/wire caps
-    // ever got a chance to matter.
-    char ftitle[193] = {}, fsub[129] = {}, fbody[513] = {};
-    char fpos[33] = {}, fneg[33] = {};
-    ui::sanitize_text(title,     ftitle, sizeof(ftitle));
-    ui::sanitize_text(subtitle,  fsub,   sizeof(fsub));
-    ui::sanitize_text(body,      fbody,  sizeof(fbody));
-    ui::sanitize_text(pos_label, fpos,   sizeof(fpos));
-    ui::sanitize_text(neg_label, fneg,   sizeof(fneg));
-
-    // Store detail BEFORE queue_add so the status-bar tile built during the
-    // queue_add → publish_queue → refresh can read this UID's category/importance.
-    app_state::set_ancs_detail(resp_uid, token, display_name, ftitle, fsub, fbody,
-                               recv_epoch, hhmm, app_id, cat, important, silent,
-                               fpos, fneg, neg_action);
-
-    // Genuinely-new notifications animate in; the backlog iOS replays on connect
-    // (PreExisting flag) populates silently. Only animate if the notification
-    // passes the current filter — filtered-out entries are stored but not surfaced.
-    if (!preexisting && passes_filter(cat, flags)) widget_status_bar::note_new_notification(resp_uid);
-
-    // Call notification that isn't part of the reconnect backlog → call overlay.
-    // Two call categories: the classic INCOMING_CALL (1, native Phone app) and
-    // ACTIVE_CALL (12), which modern iOS reports for ongoing VoIP/CallKit calls
-    // such as Viber. A ringing call still offers the ANCS positive (answer)
-    // action; once it's answered the phone drops that action (only hang-up
-    // remains) — that's how we tell "ringing" from "on call". VoIP calls often
-    // arrive already in the no-positive-action state, so they open the in-call
-    // dialog directly. Best-effort: relies on iOS's action flags.
-    bool is_call = (cat == app_state::AncsCategory::INCOMING_CALL ||
-                    cat == app_state::AncsCategory::ACTIVE_CALL);
-    if (is_call && !preexisting && !ota_receiver::is_active() && passes_filter(cat, flags)) {
-        bool can_answer = (flags & EvtFlag::POSITIVE_ACTION) != 0;
-        if (can_answer) {
-            modal_incoming_call::show(resp_uid);          // ringing
-            relay_call_state(1, resp_uid, 0, display_name, ftitle, fpos, fneg, neg_action, token);
-        } else {
-            modal_incoming_call::notify_active(resp_uid); // on call
-            // Seed "e" from the just-(re)started session so Orion's timer
-            // reflects real elapsed time (relevant when this is a Modified
-            // event on an already-active call rather than a fresh answer).
-            uint32_t elapsed = 0;
-            modal_incoming_call::session_state(nullptr, &elapsed);
-            relay_call_state(2, resp_uid, elapsed, display_name, ftitle, fpos, fneg, neg_action, token);
-        }
-        // Refresh the status-bar tile ring (yellow ringing / red answered) for
-        // this uid now — queue_add() below is a no-op for a uid already
-        // queued (the ringing->active transition is usually a Modified event
-        // on the SAME uid, e.g. the call was answered on the phone itself
-        // rather than via Ori's own Answer button), so without this the ring
-        // would silently stay yellow for the rest of the call.
-        widget_status_bar::refresh_active();
-    }
-
-    queue_add(resp_uid, token);
-    // Relay to Orion (char 0010) — fires for both Added and Modified (this
-    // function runs once per GetNotificationAttributes response, whichever
-    // triggered it); relay_ancs_add() itself excludes calls (relayed above via
-    // AncsCallState instead) and applies the current ancs_filter.
-    relay_ancs_add(resp_uid, token);
-
-    g_ds_len = 0;
-    g_pending_uid = 0;
-
-    LOG("[ancs] attr uid=%u app=%s cat=%u%s title='%s'\n",
-        (unsigned)resp_uid, app_id, (unsigned)cat,
-        preexisting ? " (preexisting)" : "", ftitle);
+    process_notification_attributes(resp_uid, app_id, title, subtitle, body, date,
+                                     pos_label, neg_label);
 }
 
 void request_attributes(uint32_t notif_uid) {
