@@ -4,6 +4,7 @@
 #include <lvgl.h>
 
 #include "app_state.h"
+#include "assets/ancs_badge_icons.h"
 #include "ble/ancs_client.h"
 #include "screens/modal_incoming_call.h"
 #include "theme.h"
@@ -220,6 +221,9 @@ lv_obj_t* create(lv_obj_t* base_screen, uint32_t uid) {
 
     // Silent badge — same look as before, now a real flex child of header_row
     // (was an absolute overlay) so the title can size around it automatically.
+    // Bell-off glyph (same asset + recolour as modal_ancs_list.cpp's row
+    // badge, ancs_badge_icons::silent()) leads the "Silent" text so the icon
+    // and the word mean the same thing everywhere this badge appears.
     if (ref_nv_silent) {
         lv_obj_t* badge = lv_obj_create(header_row);
         lv_obj_remove_style_all(badge);
@@ -234,6 +238,15 @@ lv_obj_t* create(lv_obj_t* base_screen, uint32_t uid) {
         lv_obj_set_size(badge, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
         lv_obj_clear_flag(badge, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_clear_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_set_flex_flow(badge, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(badge, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(badge, 4, 0);
+
+        lv_obj_t* icon = lv_image_create(badge);
+        lv_image_set_src(icon, ancs_badge_icons::silent());
+        lv_obj_clear_flag(icon, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_image_recolor(icon, theme::color(theme::COLOR_TEXT_TERTIARY), 0);
+        lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
 
         lv_obj_t* lbl = lv_label_create(badge);
         lv_label_set_text(lbl, "Silent");
