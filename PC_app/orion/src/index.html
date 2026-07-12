@@ -74,16 +74,51 @@
     <div class="screen-stack">
 
     <!-- ── MAIN SCREEN ── -->
-    <div id="s-main">
+    <!-- pending-init: held hidden until get_initial_state's first response
+         (app.js bootstrap) confirms this is actually the right screen to
+         show — see styles.css's #s-main.pending-init comment. -->
+    <div id="s-main" class="pending-init">
       <div class="main-hdr">
         <div class="conn-area">
           <div class="h-dot on" id="hDot"></div>
-          <div class="h-device">
+          <div class="h-device" onclick="openOriInfoModal()">
             <div class="h-name" id="hName">Ori-XT-9F</div>
             <div class="h-state" id="hState">Connected</div>
           </div>
+          <!-- Manual reconnect — visible only while disconnected (setConn()).
+               Wakes the backend's reconnect-supervisor loop immediately
+               instead of leaving it to wait out its own exponential backoff
+               (up to 30s) — for when Ori was off for a while and the user
+               just powered it back on and doesn't want to wait. -->
+          <div class="h-ico reconnect-btn" id="reconnectIco" title="Reconnect" onclick="doForceReconnect()" style="display:none;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" />
+              <polyline points="23 4 23 10 17 10" />
+              <polyline points="1 20 1 14 7 14" />
+            </svg>
+          </div>
         </div>
         <div class="hdr-icons">
+          <!-- Call quick-access chip — appears to the LEFT of the phone icon
+               only while a call is ringing/active (updateCallChip in app.js),
+               showing the calling app's own icon. Click reopens the incoming/
+               in-call view so the user can check caller identity + running call
+               time after dismissing the full modal. Content filled at runtime. -->
+          <div class="h-ico h-ico-lg" id="callIco" title="Call" onclick="openCallFromChip()" style="display:none;"></div>
+          <!-- Read-only: Orion just observes Ori's iPhone/ANCS bond (char 000F) —
+               it doesn't manage phone pairing, that's done on Ori's own screen.
+               Hidden entirely when no iPhone has ever been bonded. Disconnected
+               state is shown via a diagonal slash (.phone-slash), not a colour
+               change — legible regardless of red/grey colour perception, and
+               matches Ori's own status-bar phone icon (screen-layout.md). -->
+          <div class="h-ico h-ico-lg" id="phoneIco" title="iPhone connected" onclick="openIphoneInfoModal()" style="display:none;">
+            <svg width="21" height="21" viewBox="0 0 20 20" fill="none">
+              <rect x="5" y="1.5" width="10" height="17" rx="2.2" stroke="currentColor" stroke-width="1.7" />
+              <path d="M8.5 15.5h3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+              <line class="phone-slash" x1="2.5" y1="17.5" x2="17.5" y2="2.5" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" />
+            </svg>
+          </div>
           <div class="h-ico" id="fwIco" title="Firmware up to date" onclick="clickFw()" style="display:none;">
             <svg width="14" height="14" viewBox="0 0 20 20" fill="none">
               <path d="M10 3v11M6 9.5l4-4 4 4" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"
@@ -91,8 +126,8 @@
               <path d="M4 17h12" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" />
             </svg>
           </div>
-          <div class="h-ico" id="gearIco" title="Settings" onclick="show('s-settings')">
-            <svg width="15" height="15" viewBox="0 0 20 20" fill="none">
+          <div class="h-ico h-ico-lg" id="gearIco" title="Settings" onclick="show('s-settings')">
+            <svg width="21" height="21" viewBox="0 0 20 20" fill="none">
               <path d="M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z" stroke="currentColor" stroke-width="1.7" />
               <path
                 d="M17 10a7 7 0 01-.1.9l1.8 1.4a.5.5 0 010 .6l-1.7 3a.5.5 0 01-.6.2l-2.1-.9c-.5.4-1 .7-1.5.9l-.3 2.3a.5.5 0 01-.5.4H9a.5.5 0 01-.5-.4l-.3-2.3a6.6 6.6 0 01-1.5-.9l-2.1.9a.5.5 0 01-.6-.2l-1.7-3a.5.5 0 010-.6L4.1 11A7 7 0 014 10a7 7 0 01.1-.9L2.3 7.7a.5.5 0 010-.6l1.7-3a.5.5 0 01.6-.2l2.1.9c.5-.4 1-.7 1.5-.9L8.5 1.6A.5.5 0 019 1.2h2a.5.5 0 01.5.4l.3 2.3c.5.2 1 .5 1.5.9l2.1-.9a.5.5 0 01.6.2l1.7 3a.5.5 0 010 .6l-1.8 1.4c.1.3.1.6.1.9z"
@@ -477,7 +512,7 @@
       <div class="body">
         <div class="form-body">
           <div class="fgrp">
-            <div class="flbl"><span><span id="toPeriodLblTxt">Period</span> <span style="color:var(--danger);">*</span></span><span class="field-err" id="periodErr" style="display:none;"></span></div>
+            <div class="flbl"><span><span id="toPeriodLblTxt">Period</span> <span style="color:var(--danger);">*</span></span></div>
             <div class="period-display" id="periodDisplay" onclick="togglePeriodCal()">
               <span class="period-display-txt" id="periodText" style="color:var(--t3);">Select dates…</span>
               <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"
@@ -497,8 +532,7 @@
             </div>
           </div>
           <div class="fgrp">
-            <div class="flbl"><span><span id="toDestLblTxt">Destination</span> <span style="color:var(--danger);">*</span></span><span class="fcnt" id="dtCnt">0 / 48</span> <span class="field-err"
-                id="destErr" style="display:none;"></span></div>
+            <div class="flbl"><span><span id="toDestLblTxt">Destination</span> <span style="color:var(--danger);">*</span></span><span class="fcnt" id="dtCnt">0 / 48</span></div>
             <input class="finp" id="timeOffDt" value="" maxlength="48" placeholder="City, Country"
               oninput="timeOffDirty=true;cc('timeOffDt','dtCnt',48);updateToSaveState();updateTimeOff()">
           </div>
@@ -605,10 +639,18 @@
               <select class="finp" id="ss1" onchange="applySlot(1)">
                 <option value="vol-mute" selected>Volume Mute</option>
                 <option value="mic-mute">Mic Mute</option>
-                <option value="screenshot">Screenshot</option>
+                <option value="screenshot">Snip Tools</option>
                 <option value="lock-screen">Lock Screen</option>
                 <option value="calculator">Calculator</option>
-                <option value="favorite">Favorite</option>
+                <option value="copy">Copy</option>
+                <option value="cut">Cut</option>
+                <option value="paste">Paste</option>
+                <option value="undo">Undo</option>
+                <option value="redo">Redo</option>
+                <option value="save">Save</option>
+                <option value="favorite-1">Favorite 1</option>
+                <option value="favorite-2">Favorite 2</option>
+                <option value="favorite-3">Favorite 3</option>
               </select>
               <div class="fav-kbd" id="fav1">
                 <div class="kbd-recorder" id="kbdRec1" onclick="startKbdRecord(1)">
@@ -626,10 +668,18 @@
               <select class="finp" id="ss2" onchange="applySlot(2)">
                 <option value="vol-mute">Volume Mute</option>
                 <option value="mic-mute" selected>Mic Mute</option>
-                <option value="screenshot">Screenshot</option>
+                <option value="screenshot">Snip Tools</option>
                 <option value="lock-screen">Lock Screen</option>
                 <option value="calculator">Calculator</option>
-                <option value="favorite">Favorite</option>
+                <option value="copy">Copy</option>
+                <option value="cut">Cut</option>
+                <option value="paste">Paste</option>
+                <option value="undo">Undo</option>
+                <option value="redo">Redo</option>
+                <option value="save">Save</option>
+                <option value="favorite-1">Favorite 1</option>
+                <option value="favorite-2">Favorite 2</option>
+                <option value="favorite-3">Favorite 3</option>
               </select>
               <div class="fav-kbd" id="fav2">
                 <div class="kbd-recorder" id="kbdRec2" onclick="startKbdRecord(2)">
@@ -647,10 +697,18 @@
               <select class="finp" id="ss3" onchange="applySlot(3)">
                 <option value="vol-mute">Volume Mute</option>
                 <option value="mic-mute">Mic Mute</option>
-                <option value="screenshot" selected>Screenshot</option>
+                <option value="screenshot" selected>Snip Tools</option>
                 <option value="lock-screen">Lock Screen</option>
                 <option value="calculator">Calculator</option>
-                <option value="favorite">Favorite</option>
+                <option value="copy">Copy</option>
+                <option value="cut">Cut</option>
+                <option value="paste">Paste</option>
+                <option value="undo">Undo</option>
+                <option value="redo">Redo</option>
+                <option value="save">Save</option>
+                <option value="favorite-1">Favorite 1</option>
+                <option value="favorite-2">Favorite 2</option>
+                <option value="favorite-3">Favorite 3</option>
               </select>
               <div class="fav-kbd" id="fav3">
                 <div class="kbd-recorder" id="kbdRec3" onclick="startKbdRecord(3)">
@@ -814,7 +872,7 @@
                 <div class="pg-row-main" id="settingsAutoMain">Run automatically</div>
                 <div class="pg-row-sub" id="settingsAutoSub">Launch at Windows startup</div>
               </div>
-              <div class="toggle on" id="autoToggle" onclick="this.classList.toggle('on')"></div>
+              <div class="toggle" id="autoToggle" onclick="toggleAutostart()"></div>
             </div>
             <div class="pg-row" style="cursor:pointer;" onclick="openCalendarSource()">
               <div>
@@ -857,6 +915,97 @@
 
     <!-- ── MODALS ── -->
 
+    <!-- Ori device info / stats -->
+    <div class="modal-bg" id="m-ori-info">
+      <div class="modal">
+        <div class="modal-title" id="oriInfoTitle">Ori-XT-9F</div>
+        <div class="prof-pres" style="justify-content:center;margin:6px 0 16px;">
+          <span class="p-dot available" id="oriInfoDot"></span>
+          <span id="oriInfoState">Connected</span>
+        </div>
+        <div class="pg-card" style="text-align:left;">
+          <div class="about-row"><span id="oriInfoFwLbl">Firmware</span><span id="oriInfoFw">—</span></div>
+          <div class="about-row"><span id="oriInfoAddrLbl">Address</span><span id="oriInfoAddr" style="font-family:ui-monospace,'Cascadia Mono',Consolas,monospace;font-size:12.5px;">—</span></div>
+          <div class="about-row"><span id="oriInfoPhoneLbl">iPhone</span><span id="oriInfoPhone">—</span></div>
+          <div class="about-row"><span id="oriInfoSyncLbl">Synced</span><span id="oriInfoSync">—</span></div>
+        </div>
+        <div class="btn-row" style="margin-top:16px;">
+          <button class="btn btn-sec btn-full" id="oriInfoCloseBtn" onclick="hideModal('m-ori-info')">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- iPhone info / stats — tapping the header phone icon (while paired) opens
+         this instead of jumping straight to the Unpair confirm. Unpair here
+         routes to m-unpair-phone for the actual confirmation. Counts + signal
+         come straight from Ori's ANCS client over the Phone Bond Status
+         characteristic (char 000F, ble-protocol.md §3) — Ori sees the iPhone
+         link directly, Orion just relays. -->
+    <div class="modal-bg" id="m-iphone-info">
+      <div class="modal">
+        <div class="modal-title" id="ipInfoTitle">Xander's iPhone</div>
+        <div class="prof-pres" style="justify-content:space-between;margin:6px 0 16px;">
+          <span style="display:flex;align-items:center;gap:5px;">
+            <span class="p-dot available" id="ipInfoDot"></span>
+            <span id="ipInfoState">Connected</span>
+          </span>
+          <span class="sig-bars" id="ipInfoSigBars"><span></span><span></span><span></span><span></span></span>
+        </div>
+        <div class="ip-stats">
+          <div class="ip-stat" id="ipInfoMissedTile">
+            <div class="ip-icon-wrap">
+              <svg id="ipInfoMissedIco" viewBox="0 0 24 24" fill="none">
+                <path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+              </svg>
+              <span class="ip-badge" id="ipInfoMissedBadge">2</span>
+            </div>
+          </div>
+          <div class="ip-stat" id="ipInfoUnreadTile">
+            <div class="ip-icon-wrap">
+              <svg id="ipInfoUnreadIco" viewBox="0 0 24 24" fill="none">
+                <path d="M6 4 H18 A3 3 0 0 1 21 7 V14 A3 3 0 0 1 18 17 L13 17 8 21 8 17 6 17 A3 3 0 0 1 3 14 V7 A3 3 0 0 1 6 4 Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/>
+              </svg>
+              <span class="ip-badge" id="ipInfoUnreadBadge">5</span>
+            </div>
+          </div>
+          <div class="ip-stat" id="ipInfoNotifTile">
+            <div class="ip-icon-wrap">
+              <svg id="ipInfoNotifIco" viewBox="0 0 24 24" fill="none">
+                <path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span class="ip-badge" id="ipInfoNotifBadge">7</span>
+            </div>
+          </div>
+        </div>
+        <div class="btn-row" style="margin-top:16px;">
+          <button class="btn btn-sec btn-full" id="ipInfoCancelBtn" onclick="hideModal('m-iphone-info')">Cancel</button>
+          <button class="btn btn-dng btn-full" id="ipInfoUnpairBtn" onclick="ipInfoToUnpair()">Unpair</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ANCS drill-down list — tap a call/message/notifications icon in the
+         iPhone Info modal. Orion-only (see app.js's ANCS_STORE — a live
+         mirror fed by the ancs-notification event, ble-protocol.md §13). -->
+    <div class="modal-bg" id="m-ancs-list">
+      <div class="modal ancs-list-modal">
+        <div class="modal-title" id="ancsListTitle">Notifications</div>
+        <div class="ancs-list-body" id="ancsListBody"></div>
+        <div class="btn-row" style="margin-top:14px;">
+          <button class="btn btn-sec btn-full" id="ancsListBackBtn" onclick="ancsListBack()">Back</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ANCS drill-down detail — same layout as Ori's own ANCS overlay.
+         Content + action buttons are built entirely in JS (openAncsDetail)
+         since the button set/labels are dynamic (pos_label/neg_label/
+         has_neg_action from Ori), not a fixed template. -->
+    <div class="modal-bg" id="m-ancs-detail">
+      <div class="modal" style="width:300px;" id="ancsDetailCard"></div>
+    </div>
+
     <!-- Discard unsaved changes -->
     <div class="modal-bg" id="m-discard">
       <div class="modal">
@@ -881,6 +1030,18 @@
       </div>
     </div>
 
+    <!-- Unpair iPhone -->
+    <div class="modal-bg" id="m-unpair-phone">
+      <div class="modal">
+        <div class="modal-title" id="unpairPhoneTitle">Unpair iPhone</div>
+        <div class="modal-body" id="unpairPhoneBody">The paired iPhone will stop sharing notifications with Ori. Re-pair a phone from Ori's own screen when you're ready.</div>
+        <div class="btn-row" style="margin-top:16px;">
+          <button class="btn btn-sec btn-full" id="unpairPhoneCancelBtn" onclick="hideModal('m-unpair-phone')">Cancel</button>
+          <button class="btn btn-dng btn-full" id="unpairPhoneBtn" onclick="doUnpairPhone()">Unpair</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Pairing failed -->
     <div class="modal-bg" id="m-pairfail">
       <div class="modal">
@@ -896,11 +1057,25 @@
     <div class="modal-bg" id="m-pair">
       <div class="modal">
         <div id="sp1">
-          <div class="modal-title" id="suPkTitle">Confirm pairing</div>
-          <div class="spin"></div>
-          <div class="modal-body"><span id="suPkBodyPre">Windows will ask you to confirm a pairing code — check it matches the 6-digit code shown on </span><span id="suPasskeyDevName">Ori</span><span id="suPkBodySuf">, then accept it there.</span></div>
+          <div class="modal-title" id="suPkTitle">Enter passkey</div>
+          <div class="modal-body"><span id="suPkBodyPre">Enter the 6-digit code shown on </span><span id="suPasskeyDevName">Ori</span><span id="suPkBodySuf">.</span></div>
+          <div class="pk-row">
+            <input class="pk-d pk-inp" id="suPk0" type="text" inputmode="numeric" maxlength="1" autocomplete="off"
+              oninput="suPkInput(event,0)" onkeydown="suPkKeydown(event,0)" onpaste="suPkPaste(event)">
+            <input class="pk-d pk-inp" id="suPk1" type="text" inputmode="numeric" maxlength="1" autocomplete="off"
+              oninput="suPkInput(event,1)" onkeydown="suPkKeydown(event,1)" onpaste="suPkPaste(event)">
+            <input class="pk-d pk-inp" id="suPk2" type="text" inputmode="numeric" maxlength="1" autocomplete="off"
+              oninput="suPkInput(event,2)" onkeydown="suPkKeydown(event,2)" onpaste="suPkPaste(event)">
+            <input class="pk-d pk-inp" id="suPk3" type="text" inputmode="numeric" maxlength="1" autocomplete="off"
+              oninput="suPkInput(event,3)" onkeydown="suPkKeydown(event,3)" onpaste="suPkPaste(event)">
+            <input class="pk-d pk-inp" id="suPk4" type="text" inputmode="numeric" maxlength="1" autocomplete="off"
+              oninput="suPkInput(event,4)" onkeydown="suPkKeydown(event,4)" onpaste="suPkPaste(event)">
+            <input class="pk-d pk-inp" id="suPk5" type="text" inputmode="numeric" maxlength="1" autocomplete="off"
+              oninput="suPkInput(event,5)" onkeydown="suPkKeydown(event,5)" onpaste="suPkPaste(event)">
+          </div>
           <div class="btn-row">
-            <button class="btn btn-sec btn-full" id="suPkCancelBtn" onclick="hideModal('m-pair')">Cancel</button>
+            <button class="btn btn-sec btn-full" id="suPkCancelBtn" onclick="suCancelPairing()">Cancel</button>
+            <button class="btn btn-primary btn-full" id="suPkPairBtn" onclick="suSubmitPasskey()">Pair</button>
           </div>
         </div>
         <div id="sp2" style="display:none;">
@@ -928,7 +1103,7 @@
         <div id="fw-c">
           <div class="modal-title" id="fwTitle">Ori Update Available</div>
           <div class="modal-body">
-            <span style="color:var(--t1);font-weight:600;">1.0.0 → 1.1.0</span>
+            <span style="color:var(--t1);font-weight:600;" id="oufVerLine">1.0.0 → 1.1.0</span>
             <ul class="fw-changelog" id="fwChangelog">
               <li>Added Vietnamese, Spanish, and French language support</li>
               <li>Faster reconnect after Ori goes to sleep</li>
@@ -1013,6 +1188,17 @@
           ontouchend="onCropTouchEnd(event)"></canvas>
       </div>
       <div class="crop-hint" id="cropHintTxt">Drag crop box to reposition · Drag corners to resize · Scroll or pinch to zoom · Drag outside box to pan</div>
+    </div>
+
+    <!-- Incoming call — auto-appears over whatever Orion is currently
+         showing the moment AncsCallState{st:1} arrives (ble-protocol.md
+         §13): ringing banner -> Answer/Decline; once answered, an in-call
+         view with a live duration timer. Placed last in the DOM so it
+         stacks above every other modal-bg. Content is built entirely in JS
+         (showIncomingCall/showActiveCall in app.js), same as the ANCS
+         detail modal. -->
+    <div class="modal-bg" id="m-incoming-call">
+      <div class="modal" style="width:300px;" id="callCard"></div>
     </div>
 
     </div><!-- /screen-stack -->

@@ -1,0 +1,84 @@
+// Chunking protocol — ble-protocol.md §5. Frame: seq_num(u16 LE) |
+// total_frags(u16 LE) | payload_len(u16 LE) | payload. Mirrors
+// tools/mock_orion_ble.py's make_frames()/write_chunked() byte-for-byte.
+
+/// Per-fragment payload at MTU 247: 247 - 3 (ATT header) - 6 (frame header).
+/// Also the ceiling `frag_size_for_mtu` clamps to — ble-protocol.md §5 was
+/// designed and firmware's reassembly buffer sized around this figure, so a
+/// larger negotiated MTU doesn't grow fragments past it.
+pub const FRAG_SIZE: usize = 238;
+
+/// Windowed flow control (§5): stream Write-No-Response, with a Write-with-
+/// response checkpoint every WINDOW fragments (and on the last one) so the
+/// sender never runs more than one window ahead of Ori's RX buffer.
+pub const CHUNK_WINDOW: usize = 32;
+
+/// Per-fragment payload size for a given negotiated ATT MTU (`mtu - 3 ATT
+/// header - 6 frame header`, capped at `FRAG_SIZE`). Windows negotiates ATT
+/// MTU automatically on connect and doesn't expose an app-level "request
+/// 247" API (unlike Android/BlueZ) — btleplug's `Peripheral::mtu()` only
+/// reports whatever the OS actually settled on. This makes the wire format
+/// adapt to that real value instead of blindly assuming the 247-byte best
+/// case: a peripheral that only grants the 23-byte default still gets
+/// correctly-sized (if smaller and more numerous) fragments rather than
+/// writes larger than the negotiated MTU allows.
+pub fn frag_size_for_mtu(mtu: u16) -> usize {
+    (mtu as usize).saturating_sub(3 + 6).clamp(1, FRAG_SIZE)
+}
+
+/// Splits `payload` into wire frames of at most `frag_size` bytes each —
+/// see `frag_size_for_mtu`. An empty payload still produces one zero-length
+/// frame — that's how Ori is told "no data" for this item.
+///
+/// `seq_num`/`total_frags` are wire `u16` fields (§5's frame format) — the
+/// `chunks.len() as u16` / `i as u16` casts below silently wrap instead of
+/// erroring if fragment count ever exceeds 65535. That can't happen today:
+/// the real-world ATT MTU floor (23 — BLE's own spec minimum, and
+/// btleplug's `DEFAULT_MTU_SIZE`) keeps `frag_size_for_mtu` at ≥ 14, and even
+/// the largest capped payload (`TIME_OFF_PHOTO_MAX_BYTES` = 512 KB, in
+/// `central.rs`) divides to ~37,450 fragments — comfortably under
+/// `u16::MAX`. The `debug_assert!`s below are a tripwire against that
+/// relationship silently breaking in the future (a bumped `*_MAX_BYTES` cap,
+/// or a lower real-world MTU floor), so it fails loudly in debug builds
+/// instead of corrupting the wire frames.
+pub fn make_frames(payload: &[u8], frag_size: usize) -> Vec<Vec<u8>> {
+    if payload.is_empty() {
+        return vec![frame(0, 1, &[])];
+    }
+    let chunks: Vec<&[u8]> = payload.chunks(frag_size.max(1)).collect();
+    debug_assert!(
+        chunks.len() <= u16::MAX as usize,
+        "chunk total ({}) exceeds u16::MAX — total_frags would silently wrap on the wire",
+        chunks.len()
+    );
+    let total = chunks.len() as u16;
+    chunks
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            debug_assert!(i <= u16::MAX as usize, "fragment index ({i}) exceeds u16::MAX — seq_num would silently wrap on the wire");
+            frame(i as u16, total, c)
+        })
+        .collect()
+}
+
+fn frame(seq: u16, total: u16, payload: &[u8]) -> Vec<u8> {
+    debug_assert!(
+        payload.len() <= u16::MAX as usize,
+        "fragment payload ({} bytes) exceeds u16::MAX — payload_len would silently wrap on the wire",
+        payload.len()
+    );
+    let mut buf = Vec::with_capacity(6 + payload.len());
+    buf.extend_from_slice(&seq.to_le_bytes());
+    buf.extend_from_slice(&total.to_le_bytes());
+    buf.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+    buf.extend_from_slice(payload);
+    buf
+}
+
+/// Returns, for each frame index, whether it should be sent as a
+/// Write-with-response checkpoint (every `CHUNK_WINDOW`th fragment, and
+/// always the last one).
+pub fn is_checkpoint(index: usize, total_frames: usize) -> bool {
+    (index + 1) % CHUNK_WINDOW == 0 || index + 1 == total_frames
+}

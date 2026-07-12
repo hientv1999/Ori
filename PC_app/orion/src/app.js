@@ -6,6 +6,12 @@ const $=id=>document.getElementById(id);
 const invoke=(...a)=>window.__TAURI__.core.invoke(...a);
 const listen=(...a)=>window.__TAURI__.event.listen(...a);
 
+// TEMPORARY DEBUG: mirror a log line to BOTH the webview console and the
+// backend terminal (via the debug_log command) so a single terminal capture
+// shows the Rust BLE path and this JS ANCS path interleaved. Remove with the
+// debug_log command once the ANCS-list issue is resolved.
+function dlog(msg){ console.log(msg); try{ invoke('debug_log',{msg}); }catch(_){} }
+
 // Declared up front (not with the rest of the I18N block below) because
 // code below reads them before the script has run far enough to reach the
 // I18N block — a `let`/`const` referenced before its own declaration line
@@ -84,8 +90,133 @@ function confirmDiscard(){
   if(_discardAction){_discardAction();_discardAction=null;}
 }
 
+// Used only by setConn() — force-closes a currently-open subscreen when a
+// background connection-state change makes it stale, but ONLY for the
+// screens that are actually gated behind #connRequiredSections' own
+// visibility (Notification Filter, Clock Face, Time Format, Quick Actions;
+// pc-app.md/screen-layout.md). Their entry row on the main screen is hidden
+// during Connecting/Syncing ONLY (not Disconnected, since 2026-07-11 — see
+// setConn()'s own comment) — so setConn() only calls this when transitioning
+// INTO one of those two states; leaving one open across THOSE would strand
+// the user on a screen they can no longer navigate back into via the row
+// that opened it. A transition into Disconnected does the opposite of
+// stranding: the row stays reachable, and the whole point of that state now
+// is to let the user keep editing right where they are (queued locally,
+// synced on reconnect — save*() functions' pending_* handling).
+//
+// Settings, Profile, Time Off, and Calendar Source are NOT connection-gated
+// (pc-app.md: "Profile and Time Off subscreens ... are accessible regardless
+// of connection state"; Settings never was either) and must NEVER be
+// force-closed here — conn-state cycles through connecting/rec/on on every
+// ordinary background BLE reconnect (completely normal for a wireless
+// link), and closing whatever the user happens to have open because of that
+// blip (previously: any screen at all, via an unconditional back()
+// fallthrough) is its own bad surprise, independent of whether anything was
+// actually unsaved.
+//
+// Each of the four gated screens still keeps its own unsaved-edit guard —
+// mirrors backWithCheck()'s dirty checks, minus the confirmation modal,
+// since popping up "Discard changes?" out of nowhere because of a
+// connectivity blip would be its own bad surprise.
+//
+// s-setup does NOT go through this function at all: openSetupWizard() now
+// unwinds the whole stack itself before showing it, and suFinishSetup()
+// explicitly pops it back off once setup completes — see their own
+// comments. (Previously this function's generic "close whatever's on top"
+// fallback was what made both of those work, and only one stack level deep;
+// now that the fallback is gone, they own that job directly.)
+function dismissTransientScreen(){
+  // Tear down an armed-but-not-yet-recorded shortcut recorder unconditionally,
+  // same as backWithCheck() does for its 's-shortcuts' case — otherwise a
+  // reconnect blip while the recorder is armed (but before any key is
+  // pressed) leaves the capturing document keydown listener orphaned, and
+  // the user's next keystroke anywhere in the app gets silently swallowed.
+  if(_kbdRecSlot) stopKbdRecord();
+  const top=stack[stack.length-1];
+  const gatedAndClean=
+    (top==='s-ancs'&&ancsPending===ancsLevel)||
+    (top==='s-clock'&&clockPending===clockFace)||
+    (top==='s-timeformat'&&timeFormatPending===timeFormat)||
+    (top==='s-shortcuts'&&!_isSlotsDirty());
+  if(gatedAndClean) back();
+}
+
 function showModal(id){$(id).classList.add('show');}
 function hideModal(id){$(id).classList.remove('show');}
+// Instantly hides a modal — no opacity fade. Kept as a building block for
+// switchModal() below; see that function for why a plain fade (even a
+// single one-directional fade-in) still isn't enough on its own.
+function hideModalInstant(id){
+  const el=$(id);
+  el.style.transition='none';
+  el.classList.remove('show');
+  void el.offsetHeight; // flush layout so transition:none takes effect before it's restored below
+  el.style.transition='';
+}
+// Instantly shows a modal — no opacity fade. Counterpart to hideModalInstant,
+// used when something else is being closed instantly in the same call (e.g.
+// callTakeOverScreen interrupting an already-open modal for an incoming
+// call) — pairs with an instant hide so nothing crossfades or reveals an
+// unblurred frame in between.
+function showModalInstant(id){
+  const el=$(id);
+  el.style.transition='none';
+  el.classList.add('show');
+  void el.offsetHeight;
+  el.style.transition='';
+}
+// Switches from one open modal directly to another with ZERO animation on
+// BOTH sides — for modal-to-modal navigation only (iPhone Info -> ANCS
+// list, list <-> detail, list -> iPhone Info, iPhone Info -> Unpair, any
+// open modal -> incoming-call takeover, setup's Pair -> Pair-failed). The
+// very first modal open (e.g. tapping the header phone icon from the bare
+// main screen) is untouched — plain showModal() there keeps its normal
+// fade-in, which was never reported as a problem.
+//
+// Two things were tried and both still showed the main screen, unblurred,
+// for a frame before the destination modal's own blur caught up:
+//   1. A plain hideModal()+showModal() crossfades two independently semi-
+//      transparent + backdrop-blurred .modal-bg layers at once — since
+//      that doesn't blend additively, the combined coverage of whatever's
+//      behind both actually DIPS below either endpoint mid-transition
+//      (50% opaque * 50% opaque = only 25% combined coverage).
+//   2. Killing only the OUTGOING modal's transition (hideModalInstant) and
+//      leaving the incoming modal's normal fade-in removes that dip, but
+//      still starts the incoming modal at a hard opacity:0 — a real,
+//      user-visible frame of the fully-unblurred main screen before its
+//      backdrop-filter blur (re-)promotes and ramps in over the fade.
+// Disabling the CSS transition on BOTH elements for one atomic DOM update
+// removes every intermediate animation frame entirely: the browser has
+// nothing to paint except "old modal gone, new modal fully there, already
+// blurred" in a single step, so there's nothing left to flicker.
+function switchModal(fromId, toId){
+  const from=$(fromId), to=$(toId);
+  from.style.transition='none';
+  to.style.transition='none';
+  from.classList.remove('show');
+  to.classList.add('show');
+  void to.offsetHeight; // flush so the fully-switched state is what actually paints
+  from.style.transition='';
+  to.style.transition='';
+}
+// The id of whichever .modal-bg is currently open, or null — at most one is
+// ever open at a time in normal use. Lets a destination modal that's reached
+// from more than one origin (e.g. the ANCS list, opened either straight from
+// iPhone Info or via Detail's "back") switch instantly from WHICHEVER one is
+// actually showing, without each call site having to know or hardcode it.
+function currentOpenModal(){
+  const el=document.querySelector('.modal-bg.show');
+  return el?el.id:null;
+}
+// Opens `toId`: instantly (switchModal, no animation) if another modal is
+// currently open, or with the normal fade-in if nothing was (a bare main
+// screen -> first modal open, which was never reported as flickering and
+// keeps its established look).
+function openModalFrom(toId){
+  const from=currentOpenModal();
+  if(from && from!==toId) switchModal(from,toId);
+  else showModal(toId);
+}
 
 let fwAvail=false;
 let orionFwVersion='';
@@ -99,34 +230,974 @@ function updateOrionUpdateRow(){
   if(orionUpdateAvail){
     $('orionUpdateMain').textContent=t.rowMain;
     $('orionUpdateSub').textContent=t.rowSub.replace('{v}',orionUpdateVersion);
+    // Orion app self-update modal's version line — current→new, same pairing
+    // settingsAppVer/orionUpdateSub above already use (orionAppVersion is
+    // this app's own current version; orionUpdateVersion is the new one from
+    // the 'orion-update-available' event). NOT orionFwVersion — that variable
+    // holds Ori's (the device's) new firmware version from the unrelated
+    // 'fw-update-available' event and belongs on the Ori firmware modal
+    // (m-fw's oufVerLine, see clickFw()), not here.
+    $('ouVerLine').textContent=orionAppVersion+' → '+orionUpdateVersion;
   }
 }
 let connState='on';
 function setConn(s){
   connState=s;
+  // Reveal the main screen the first time it has anything authoritative to
+  // show (see styles.css's #s-main.pending-init comment) — covers both the
+  // bootstrap's "already paired" launch path and first-time setup finishing
+  // (suFinishSetup's setConn('on'), which never touched #s-main before). A
+  // no-op everywhere else, since the class is already gone by then.
+  $('s-main').classList.remove('pending-init');
+  invoke('set_tray_status',{state:s}).catch(()=>{});
   const dot=$('hDot'),state=$('hState');
   const connSections=$('connRequiredSections'),toDivider=$('mainTimeOffDivider'),fwIco=$('fwIco');
   const t=I18N[appLang].main;
   dot.className='h-dot '+s;
+  // Manual reconnect stays visible for as long as Orion ISN'T connected.
+  // Its spin/click-guard (.is-retrying) is driven separately, by
+  // setReconnectBusy() off the "reconnect-attempt" event — NOT by this
+  // state — because an attempt can be quietly running (scanning for Ori)
+  // for a while before this ever leaves "off" (ble-protocol.md's Connecting
+  // state only starts once Ori is actually found). Keying the button off
+  // conn-state alone left it looking idle/clickable for most of a typical
+  // attempt, which is exactly what prompted this split.
+  $('reconnectIco').style.display=s==='on'?'none':'';
   if(s==='on'){
     state.textContent=t.connected;
     connSections.style.display='';toDivider.style.display='none';
     fwIco.style.display=fwAvail?'':'none';
     readSlotsFromDevice(); // Orion reads Device Settings from Ori on connect (ble-protocol.md §6.4)
+    // Re-derive the phone icon from the cached status: the backend's
+    // phone_bond_watcher is spawned BEFORE the supervisor emits "on", so its
+    // initial read can race ahead of this event — arriving while connState
+    // was still 'rec', where setPhoneBondStatus cached it but kept the icon
+    // hidden. Without this re-apply, a lost race leaves the icon hidden
+    // until the next iPhone state-change notify (potentially hours). In the
+    // normal ordering the cache is still blank here and this is a no-op.
+    setPhoneBondStatus(lastPhoneBondStatus);
+  } else if(s==='connecting'){
+    // Ori found, BLE link + encryption being established — before the real
+    // sync (`run_sync`) starts. Same not-yet-synced treatment as "rec".
+    state.textContent=t.connecting;
+    connSections.style.display='none';toDivider.style.display='';
+    fwIco.style.display='none';
+    setPhoneBondStatus({b:false,c:false,n:''});
   } else if(s==='rec'){
     state.textContent=t.syncing;
     connSections.style.display='none';toDivider.style.display='';
     fwIco.style.display='none';
+    setPhoneBondStatus({b:false,c:false,n:''});
   } else {
+    // Disconnected. Unlike Connecting/Syncing, the Notification Filter /
+    // Clock Face / Time Format / Quick Actions rows stay VISIBLE and
+    // editable here (2026-07-11) — the whole point of this state is that
+    // the user can change them with no live link at all: each save*()
+    // function's save_device_settings call persists the edit into Orion's
+    // own local store (SavedState::pending_clock_face/pending_time_format/
+    // pending_ancs_filter) and run_sync flushes it to Ori on the next
+    // successful reconnect (central.rs). No readSlotsFromDevice() call
+    // here — there's no link to read from, and the rows already show
+    // whatever's currently in clockFace/timeFormat/ancsLevel/slotCommitted,
+    // which is exactly right whether that's the last value Ori confirmed or
+    // an offline edit still waiting to be delivered.
     state.textContent=t.disconnected;
-    connSections.style.display='none';toDivider.style.display='';
+    connSections.style.display='';toDivider.style.display='none';
     fwIco.style.display='none';
+    setPhoneBondStatus({b:false,c:false,n:''});
+    // Ori link is broken — close every ANCS/call surface, since their content
+    // is relayed from Ori and can no longer be verified or acted on (request:
+    // "Close all modals related to ANCS notification / incoming / ongoing call
+    // if the Ori connection is broken"). Reconnect's resync repopulates a
+    // still-live call/notification, so this is not done on connecting/rec.
+    closeAncsSurfacesOnDrop();
   }
-  back();
+  // Only Connecting/Syncing actually hide connRequiredSections (above) — a
+  // gated subscreen left open across those needs closing (dismissTransientScreen's
+  // own doc comment); Disconnected keeps the row reachable, so there's
+  // nothing to strand.
+  if(s==='connecting'||s==='rec') dismissTransientScreen();
+}
+
+// Header's manual reconnect button — nudges the backend past its current
+// exponential backoff wait instead of the user having to wait up to 30s for
+// the next automatic attempt. No optimistic UI change here beyond what
+// setReconnectBusy already does on its own — the real `reconnect-attempt`/
+// `conn-state` events (already listened for) drive the header once the
+// nudged attempt actually starts/succeeds. Guarded against firing while a
+// reconnect is already in flight — belt-and-suspenders alongside the icon's
+// own .is-retrying (pointer-events:none): the backend's `force_reconnect` is
+// already a safe no-op in that state, but skipping the invoke entirely
+// avoids relying on CSS alone to prevent a double-trigger, and avoids
+// banking a stray notify permit that would otherwise fire early on some
+// later, unrelated backoff sleep.
+function doForceReconnect(){
+  if(reconnectBusy) return;
+  invoke('force_reconnect').catch(()=>{});
+}
+
+// Tracks whether a reconnect attempt is actually running right now —
+// scanning included, not just the found-and-connecting sub-phase `setConn`
+// covers (see its comment). This — not conn-state — is what the button's
+// spin + click-guard key off, because scanning for Ori (the bulk of a
+// typical attempt when it's genuinely unreachable) is silent on conn-state
+// by design. Backend emits this from `supervise_connection_loop`, bracketing
+// the whole `ble::reconnect` call — so it covers both a user-clicked nudge
+// and Ori's own periodic background scan attempts equally.
+let reconnectBusy=false;
+function setReconnectBusy(busy){
+  reconnectBusy=busy;
+  $('reconnectIco').classList.toggle('is-retrying',busy);
+  // The header label should read "Connecting…" for the whole time an
+  // attempt is actually running — including the scan itself, which
+  // conn-state stays silent through by design (setConn's "connecting" only
+  // fires once Ori is actually found). Only ever touches the label, never
+  // `connState` — connSections/toDivider/fwIco/phone-status visibility all
+  // still key off the real conn-state, not this flag.
+  if(busy){
+    $('hState').textContent=I18N[appLang].main.connecting;
+  } else if(connState==='off'){
+    // Attempt just ended without ever moving past "off" (not found, or
+    // failed) — conn-state's own "off" only re-fires once per settle
+    // sequence (supervise_connection_loop's settled_off guard), so a later
+    // retry in the same sequence would otherwise leave this stuck reading
+    // "Connecting…" once its busy window ends with nothing to revert it.
+    $('hState').textContent=I18N[appLang].main.disconnected;
+  }
+  // else: connState is already 'connecting'/'rec'/'on' — setConn() just set
+  // the right text for that transition; nothing to do here.
+}
+
+// Orion just observes Ori's iPhone/ANCS bond (char 000F, ble-protocol.md
+// §3/§11) — read once on connect, then updated on every notify. Read-only:
+// Orion has no phone-pairing action of its own to offer (that's done on
+// Ori's own screen). Hidden whenever Orion isn't connected to Ori (nothing
+// live to report) or no iPhone has ever been bonded (b:false — nothing to
+// show). Disconnected state is a diagonal slash (.phone-slash in the SVG),
+// not a colour change, mirroring Ori's own status-bar phone icon.
+let lastPhoneBondStatus={b:false,c:false,n:'',m:0,u:0,t:0,s:0};
+function setPhoneBondStatus(status){
+  lastPhoneBondStatus=status;
+  const ico=$('phoneIco');
+  if(connState!=='on'||!status.b){
+    ico.style.display='none';
+  } else {
+    ico.style.display='';
+    const t=I18N[appLang].main;
+    if(status.c){
+      ico.classList.remove('phone-disconnected');
+      ico.title=t.phoneConnectedTitle.replace('{name}',status.n||t.phoneUnknownName);
+    } else {
+      ico.classList.add('phone-disconnected');
+      ico.title=t.phoneDisconnectedTitle;
+    }
+  }
+  // Keep an already-open iPhone Info modal live — Ori pushes a fresh
+  // PhoneBondStatus (char 000F) on every queue/filter change AND on every
+  // RSSI bucket change (~5 s poll while connected), but previously only the
+  // header icon above reacted to it; the modal's own dot/state/signal-bars/
+  // badges were rendered once at open and then sat stale for as long as it
+  // stayed open. openIphoneInfoModal() already does exactly the full
+  // re-render this needs (name/dot/state/sigbars/badges + tile onclicks) and
+  // is safe to call again while already open — same idempotent re-render
+  // pattern already used elsewhere for a language switch, see the
+  // 'm-iphone-info' checks near the listen() handlers below.
+  if($('m-iphone-info').classList.contains('show')) openIphoneInfoModal();
+}
+
+// Lights up the first `level` (0-4) bars of a .sig-bars element — shared by
+// the Ori info modal and the iPhone info modal.
+function renderSigBars(id,level){
+  const el=$(id); if(!el) return;
+  [...el.children].forEach((b,i)=>b.classList.toggle('active',i<level));
+}
+
+// iPhone info / stats — tapping the header phone icon (while an iPhone is
+// bonded) opens this read-only snapshot instead of jumping straight to the
+// Unpair confirm. Counts + signal come straight from Ori's ANCS client,
+// relayed over the Phone Bond Status characteristic (char 000F) into
+// lastPhoneBondStatus's m/u/t/s fields — real data, not a mock. The Unpair
+// button routes to the existing confirm modal (m-unpair-phone) so the
+// destructive action still takes a deliberate second tap.
+function openIphoneInfoModal(){
+  const t=I18N[appLang].iphoneInfoModal;
+  const s=lastPhoneBondStatus;
+  $('ipInfoTitle').textContent=s.n||I18N[appLang].unpairPhoneModal.fallbackName;
+  $('ipInfoState').textContent=s.c?I18N[appLang].main.connected:I18N[appLang].main.disconnected;
+  $('ipInfoDot').className='p-dot '+(s.c?'available':'offline');
+  renderSigBars('ipInfoSigBars',s.c?s.s:0);
+  $('ipInfoSigBars').title=t.sigLbl;
+
+  // Counts + badges are only meaningful while the iPhone link is actually up.
+  // Disconnected: icons stay visible but dimmed (.zero) and badges hidden —
+  // not replaced with a text hint (matches the final Ori_UI_Prototype.js design).
+  const setStat=(icoId,badgeId,tileId,count,label)=>{
+    const shown=s.c?count:0;
+    $(icoId).classList.toggle('zero',shown===0);
+    const badge=$(badgeId);
+    badge.style.display=(s.c&&shown>0)?'':'none';
+    badge.textContent=shown>99?'99+':shown;
+    $(tileId).title=label;
+  };
+  setStat('ipInfoMissedIco','ipInfoMissedBadge','ipInfoMissedTile',s.m,t.missedLbl);
+  setStat('ipInfoUnreadIco','ipInfoUnreadBadge','ipInfoUnreadTile',s.u,t.unreadLbl);
+  setStat('ipInfoNotifIco','ipInfoNotifBadge','ipInfoNotifTile',s.t,t.notifLbl);
+  // Tap-to-drill-down (ble-protocol.md §13) — clickable whenever connected,
+  // even at zero count (opens the empty state rather than being inert — a
+  // dimmed icon means "nothing here right now," not "you can't check"; same
+  // policy as Ori's own on-device modal_iphone_info.cpp). Gated on
+  // PhoneBondStatus's own live connection flag (char 000F), not
+  // ANCS_STORE.size — that's the authoritative link state even if Orion's
+  // local mirror is momentarily behind.
+  $('ipInfoMissedTile').onclick=s.c?()=>openAncsListModal('missed'):null;
+  $('ipInfoUnreadTile').onclick=s.c?()=>openAncsListModal('unread'):null;
+  $('ipInfoNotifTile').onclick=s.c?()=>openAncsListModal('other'):null;
+  $('ipInfoMissedTile').style.cursor=$('ipInfoMissedTile').onclick?'pointer':'';
+  $('ipInfoUnreadTile').style.cursor=$('ipInfoUnreadTile').onclick?'pointer':'';
+  $('ipInfoNotifTile').style.cursor=$('ipInfoNotifTile').onclick?'pointer':'';
+  $('ipInfoCancelBtn').textContent=I18N[appLang].common.cancel;
+  $('ipInfoUnpairBtn').textContent=I18N[appLang].unpairPhoneModal.unpair;
+  openModalFrom('m-iphone-info');
+}
+// Unpair from the info modal → hand off to the existing confirm modal.
+function ipInfoToUnpair(){
+  openUnpairPhoneModal();
+}
+
+// Tapping Unpair on the iPhone info modal offers to unpair the bonded
+// iPhone — the one phone-pairing action Orion can actually take (re-pairing
+// still only happens on Ori's own screen). Available whether or not the
+// phone link is currently connected: the bond lives in Ori's NVS either way,
+// and Unpair Phone (Device Command char 0008, ble-protocol.md §3) only needs
+// the Orion<->Ori link up, not the iPhone one.
+function openUnpairPhoneModal(){
+  const t=I18N[appLang].unpairPhoneModal;
+  const name=lastPhoneBondStatus.n||t.fallbackName;
+  $('unpairPhoneBody').textContent=t.body.replace('{name}',name);
+  openModalFrom('m-unpair-phone');
+}
+function doUnpairPhone(){
+  hideModal('m-unpair-phone');
+  invoke('unpair_phone').catch(()=>{});
+  // Ori notifies Phone Bond Status back to {b:false,c:false} once it
+  // processes this; the phone-bond-status listener below will pick that up
+  // and hide the icon. No optimistic local update — wait for the real event.
+}
+
+// ── ANCS drill-down — tap a call/message/notifications icon in the iPhone
+// Info modal to see the underlying notifications for that one category, then
+// tap a row for its detail (or, for a still-ringing call, the incoming-call
+// takeover instead). Orion-only: Ori's own iPhone Info icons are
+// informational, this drill-down doesn't exist on the device screen.
+//
+// ANCS_STORE is a live mirror fed entirely by the 'ancs-notification' event
+// (char 0010, ble-protocol.md §13) — there is no local mock data here, only
+// a place to hold whatever Ori has actually relayed. Bucketed exactly like
+// PhoneBondStatus's own m/u/t aggregate counts (char 000F): category 2
+// (MissedCall) -> missed, category 4 (Social) -> unread, everything else ->
+// other. Calls (category 1 IncomingCall, category 12 ActiveCall) never
+// arrive via ancs-notification at all — they're relayed exclusively via
+// 'ancs-call-state' (see CallSession below), so they never appear as a row
+// in any bucket/list.
+const ANCS_STORE={missed:new Map(),unread:new Map(),other:new Map()};
+function ancsBucketFor(category){
+  return category===2?'missed':category===4?'unread':'other';
+}
+// Escapes untrusted external text (notification title/body/app/action
+// labels all originate from arbitrary phone apps, unlike the rest of this
+// file's mostly-static UI strings) before it's interpolated into an
+// innerHTML template — same concern suRenderDevices() addresses for BLE
+// device names, just via escaping here instead of textContent since these
+// templates are built as strings, not DOM nodes, to keep this a faithful
+// structural port of the prototype's own ancs*() functions.
+function escapeHtml(s){
+  return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+// "add" covers both a genuinely-new notification and an ANCS Modified event
+// — Orion replaces its stored copy in place, keyed by uid (ble-protocol.md
+// §13). Removes any stale copy first in case a Modified event ever changed
+// a notification's category (not expected in practice, but keying strictly
+// by uid keeps this correct either way). Returns the bucket it landed in.
+function ancsUpsert(n){
+  ancsRemove(n.u);
+  const bucket=ancsBucketFor(n.c);
+  ANCS_STORE[bucket].set(n.u,{
+    uid:n.u,app:n.a||'',title:n.t||'',body:n.b||'',recvEpoch:n.e||0,
+    pos_label:n.p||'',neg_label:n.n||'',has_neg_action:!!n.g,silent:!!n.s,
+    icon_token:n.k||'',
+  });
+  return bucket;
+}
+// Deletes uid from whichever bucket actually has it (a "remove" for a uid
+// Orion never received — e.g. one the filter was already excluding — is a
+// harmless no-op, same as on Ori itself). Returns the bucket it was removed
+// from, or null.
+function ancsRemove(uid){
+  for(const bucket of ['missed','unread','other']){
+    if(ANCS_STORE[bucket].delete(uid)) return bucket;
+  }
+  return null;
+}
+function ancsClearAll(){
+  ANCS_STORE.missed.clear();ANCS_STORE.unread.clear();ANCS_STORE.other.clear();
+}
+// Newest-first, derived from recv_epoch (not array/insertion order — a
+// real Map has no guaranteed relayed-order under Modified-event replacement)
+// with uid as a stable tiebreaker for same-second arrivals.
+function ancsBucketItems(bucket){
+  return [...ANCS_STORE[bucket].values()].sort((a,b)=>(b.recvEpoch-a.recvEpoch)||(b.uid-a.uid));
+}
+
+function ancsTimeAgo(epoch){
+  const t=I18N[appLang].ancsList;
+  if(!epoch) return '';
+  const diffS=Math.max(0,Math.floor(Date.now()/1000)-epoch);
+  if(diffS<60) return t.justNow;
+  const mins=Math.floor(diffS/60);
+  if(mins<60) return t.minAgo.replace('{n}',mins);
+  const hours=Math.floor(mins/60);
+  if(hours<24) return t.hourAgo.replace('{n}',hours);
+  return t.dayAgo.replace('{n}',Math.floor(hours/24));
+}
+
+const ANCS_ICON_PATHS={
+  call:'<path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>',
+  message:'<path d="M6 4 H18 A3 3 0 0 1 21 7 V14 A3 3 0 0 1 18 17 L13 17 8 21 8 17 6 17 A3 3 0 0 1 3 14 V7 A3 3 0 0 1 6 4 Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/>',
+  bell:'<path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M13.73 21a2 2 0 0 1-3.46 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>',
+  close:'<path d="M5 5 L19 19 M19 5 L5 19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+  'bell-off':'<path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M13.73 21a2 2 0 0 1-3.46 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 3 L21 21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
+};
+function ancsIconSvg(kind){
+  return '<svg viewBox="0 0 24 24" fill="none">'+ANCS_ICON_PATHS[kind]+'</svg>';
+}
+// Category fallback icon is always a circle (background-color bubble), never
+// a rounded square — reserved for tokens with no brand asset. A real brand
+// icon (ANCS_APP_ICON_MAP below) renders as a rounded square instead, see
+// ancsIconMarkup().
+function ancsCategoryClass(bucket){
+  return bucket==='missed'?'cat-missed':bucket==='unread'?'cat-unread':'cat-other';
+}
+function ancsIconKind(bucket){
+  return bucket==='missed'?'call':bucket==='unread'?'message':'bell';
+}
+
+// Real per-app brand icons, keyed by the same icon_token vocabulary Ori's own
+// on-device status bar uses (firmware/img/ANCS_icons/, ble-protocol.md §13's
+// "Icon tokens" — 48 brand apps + twitter). Ported directly from the same
+// 60×60 source images the firmware compiles into flash (`convert_icons.py`'s
+// `cropped/` output), so Orion's icons are pixel-identical to Ori's.
+const ANCS_APP_ICON_MAP={
+  gmail:'assets/ancs_icons/gmail.png', messenger:'assets/ancs_icons/messenger.png',
+  instagram:'assets/ancs_icons/instagram.png', facebook:'assets/ancs_icons/facebook.png',
+  whatsapp:'assets/ancs_icons/whatsapp.png', slack:'assets/ancs_icons/slack.png',
+  twitter:'assets/ancs_icons/twitter.png', teams:'assets/ancs_icons/teams.png',
+  sms:'assets/ancs_icons/sms.png', phone:'assets/ancs_icons/phone.png',
+  discord:'assets/ancs_icons/discord.png', telegram:'assets/ancs_icons/telegram.png',
+  youtube:'assets/ancs_icons/youtube.png', youtube_music:'assets/ancs_icons/youtube_music.png',
+  tiktok:'assets/ancs_icons/tiktok.png', spotify:'assets/ancs_icons/spotify.png',
+  wechat:'assets/ancs_icons/wechat.png', line:'assets/ancs_icons/line.png',
+  zoom:'assets/ancs_icons/zoom.png', outlook:'assets/ancs_icons/outlook.png',
+  snapchat:'assets/ancs_icons/snapchat.png', google_meet:'assets/ancs_icons/google_meet.png',
+  facetime:'assets/ancs_icons/facetime.png', linkedin:'assets/ancs_icons/linkedin.png',
+  reddit:'assets/ancs_icons/reddit.png', threads:'assets/ancs_icons/threads.png',
+  twitch:'assets/ancs_icons/twitch.png', uber:'assets/ancs_icons/uber.png',
+  apple_music:'assets/ancs_icons/apple_music.png', amazon:'assets/ancs_icons/amazon.png',
+  viber:'assets/ancs_icons/viber.png', claude:'assets/ancs_icons/claude.png',
+  chatgpt:'assets/ancs_icons/chatgpt.png', google_map:'assets/ancs_icons/google_map.png',
+  google_photos:'assets/ancs_icons/google_photos.png', health:'assets/ancs_icons/health.png',
+  apple_calendar:'assets/ancs_icons/apple_calendar.png', apple_findmy:'assets/ancs_icons/apple_findmy.png',
+  apple_mail:'assets/ancs_icons/apple_mail.png', apple_maps:'assets/ancs_icons/apple_maps.png',
+  apple_reminders:'assets/ancs_icons/apple_reminders.png', apple_wallet:'assets/ancs_icons/apple_wallet.png',
+  github:'assets/ancs_icons/github.png', google_authenticator:'assets/ancs_icons/google_authenticator.png',
+  microsoft_authenticator:'assets/ancs_icons/microsoft_authenticator.png', notion:'assets/ancs_icons/notion.png',
+  venmo:'assets/ancs_icons/venmo.png', skype:'assets/ancs_icons/skype.png',
+  paypal:'assets/ancs_icons/paypal.png',
+};
+// Shared icon-tile inner markup for the list row and the detail header. A
+// recognised icon_token renders the real brand icon; "" or an unrecognised
+// token (Orion/firmware drifted out of sync on the supported set) falls back
+// to the category glyph — mirrors Ori's own ancs_icons::image()/
+// category_image() fallback chain (ble-protocol.md §13).
+function ancsIconMarkup(bucket,iconToken){
+  const img=ANCS_APP_ICON_MAP[iconToken];
+  return img?'<img class="ancs-app-icon-img" src="'+img+'" alt="">':ancsIconSvg(ancsIconKind(bucket));
+}
+function ancsIconTileClass(baseClass,bucket,iconToken){
+  return baseClass+(ANCS_APP_ICON_MAP[iconToken]?' has-img':' '+ancsCategoryClass(bucket));
+}
+
+const ANCS_LIST_TITLES=()=>I18N[appLang].ancsList.titles;
+const ANCS_LIST_EMPTY=()=>I18N[appLang].ancsList.empty;
+
+// Groups raw notifications by (app, title) — same rule Ori's own
+// app_state::ancs_collect_same_title uses for the status-bar tiles and the
+// stacked-message overlay. ancsBucketItems() is already newest-first, so the
+// first item seen for a key is the group's reference (most recent).
+function ancsGroupItems(bucket){
+  const items=ancsBucketItems(bucket);
+  const order=[];
+  const byKey={};
+  items.forEach(it=>{
+    const key=it.app+'|'+it.title;
+    if(!byKey[key]){
+      byKey[key]={uids:[],items:[]};
+      order.push(byKey[key]);
+    }
+    byKey[key].uids.push(it.uid);
+    byKey[key].items.push(it);
+  });
+  return order.map(g=>({uids:g.uids,items:g.items,ref:g.items[0],count:g.items.length}));
+}
+function ancsFindGroup(bucket,uid){
+  return ancsGroupItems(bucket).find(g=>g.uids.indexOf(uid)!==-1);
+}
+
+// Row shows icon + title + latest preview only — no timestamp (shown in the
+// detail modal once opened) and one row per GROUP, not per raw notification.
+function openAncsListModal(bucket){
+  const t=I18N[appLang].ancsList;
+  $('ancsListTitle').textContent=ANCS_LIST_TITLES()[bucket];
+  const groups=ancsGroupItems(bucket);
+  dlog('[ORION-DEBUG] openAncsListModal bucket='+bucket+': '+ANCS_STORE[bucket].size+' raw item(s), '+groups.length+' group(s)');
+  const bodyEl=$('ancsListBody');
+  bodyEl.dataset.bucket=bucket;
+  bodyEl.innerHTML=groups.length===0?'<div class="ancs-list-empty">'+ANCS_LIST_EMPTY()[bucket]+'</div>':
+    groups.map(g=>{
+      const it=g.ref;
+      const stacked=g.count>1;
+      // Both badges overlap the icon's top-right corner, so they're
+      // mutually exclusive — count wins when a stacked group's reference
+      // happens to also be silent, same priority as Ori's own status-bar
+      // tile (stacked-count is the more load-bearing signal of the two).
+      const countBadge=stacked?'<div class="ancs-row-count">'+(g.count>9?'9+':g.count)+'</div>':'';
+      const silentBadge=(!stacked && it.silent)?
+        '<div class="ancs-row-silent-badge" title="'+t.silentTitle+'">'+ancsIconSvg('bell-off')+'</div>':'';
+      // Swiping is only wired when there's actually a negative action to
+      // send (mirrors the detail modal's danger/Read-all button — same
+      // has_neg_action field) — a row with nothing to dismiss doesn't swipe.
+      return '<div class="ancs-row-wrap">'+
+        '<div class="ancs-row" data-uid="'+it.uid+'" data-bucket="'+bucket+'" data-has-del="'+(it.has_neg_action?'1':'')+'">'+
+          '<div class="ancs-row-icon-wrap">'+
+            '<div class="'+ancsIconTileClass('ancs-row-icon',bucket,it.icon_token)+'">'+ancsIconMarkup(bucket,it.icon_token)+'</div>'+
+            countBadge+
+            silentBadge+
+          '</div>'+
+          '<div class="ancs-row-text">'+
+            '<div class="ancs-row-title">'+escapeHtml(it.title)+'</div>'+
+            '<div class="ancs-row-preview">'+escapeHtml(it.body)+'</div>'+
+          '</div>'+
+        '</div>'+
+      '</div>';
+    }).join('');
+  ancsInitRowGestures(bodyEl);
+  openModalFrom('m-ancs-list');
+}
+
+// Swipe-left-to-delete — dragging a row left past ANCS_SWIPE_COMMIT of its
+// own width and releasing dismisses it (or its whole stacked group); the row
+// itself slides with the drag and fades proportionally (further dragged =
+// fainter) — no revealed background/icon underneath. Pointer events cover
+// mouse drag and trackpad/touch alike. Only one row can be mid-drag at a
+// time (ancsSwipeState).
+const ANCS_SWIPE_COMMIT = 0.35; // fraction of row width that commits the delete
+let ancsSwipeState = null;
+
+function ancsInitRowGestures(container){
+  container.querySelectorAll('.ancs-row').forEach(row=>{
+    row.addEventListener('pointerdown', ancsSwipeStart);
+    row.addEventListener('click', ancsRowClick);
+  });
+}
+
+function ancsRowClick(e){
+  const row=e.currentTarget;
+  // A completed drag (in either direction) shouldn't also open the detail —
+  // pointerup fires just before click. The flag is cleared here, one-shot.
+  if(row.dataset.suppressClick){ delete row.dataset.suppressClick; return; }
+  openAncsDetail(Number(row.dataset.uid), row.dataset.bucket);
+}
+
+function ancsSwipeStart(e){
+  if(e.button!==undefined && e.button!==0) return; // primary mouse button / touch / pen only
+  const row=e.currentTarget;
+  if(!row.dataset.hasDel) return; // nothing to swipe to
+  const rect=row.getBoundingClientRect();
+  ancsSwipeState={row,startX:e.clientX,dx:0,width:rect.width,dragging:false,pointerId:e.pointerId};
+  row.addEventListener('pointermove', ancsSwipeMove);
+  row.addEventListener('pointerup', ancsSwipeEnd);
+  row.addEventListener('pointercancel', ancsSwipeEnd);
+}
+
+function ancsSwipeMove(e){
+  const s=ancsSwipeState;
+  if(!s || e.pointerId!==s.pointerId) return;
+  const rawDx=e.clientX-s.startX;
+  if(!s.dragging){
+    if(Math.abs(rawDx)<6) return; // ignore tiny jitter so plain clicks stay clicks
+    s.dragging=true;
+    s.row.style.transition='none';
+    s.row.setPointerCapture(s.pointerId);
+  }
+  s.dx=Math.max(-s.width,Math.min(0,rawDx)); // left only, clamped to the row's own width
+  s.row.style.transform='translateX('+s.dx+'px)';
+  // Fade proportionally to how far it's been dragged — at dx=0 fully
+  // opaque, at dx=-width fully transparent. This IS the delete affordance;
+  // there's no separate revealed panel to look at instead.
+  s.row.style.opacity=String(Math.max(0,1-Math.abs(s.dx)/s.width));
+}
+
+function ancsSwipeEnd(e){
+  const s=ancsSwipeState;
+  if(!s || e.pointerId!==s.pointerId) return;
+  s.row.removeEventListener('pointermove', ancsSwipeMove);
+  s.row.removeEventListener('pointerup', ancsSwipeEnd);
+  s.row.removeEventListener('pointercancel', ancsSwipeEnd);
+  const committed=s.dragging && Math.abs(s.dx)>s.width*ANCS_SWIPE_COMMIT;
+  const uid=Number(s.row.dataset.uid), bucket=s.row.dataset.bucket;
+  s.row.style.transition='transform .18s ease-out, opacity .18s ease-out';
+  if(committed){
+    s.row.style.transform='translateX(-100%)';
+    s.row.style.opacity='0';
+    // No local mutation, no re-render here — the row already reads as
+    // "gone" visually; the actual removal from ANCS_STORE (and thus the
+    // list, on its next render) only happens once the real
+    // AncsNotification{op:"remove"} notify confirms Ori actually cleared
+    // it (ble-protocol.md §13's "never optimistic" rule).
+    setTimeout(()=>{ ancsRowQuickDismiss(uid,bucket); },160);
+  } else {
+    s.row.style.transform='translateX(0)';
+    s.row.style.opacity='1';
+  }
+  if(s.dragging) s.row.dataset.suppressClick='1';
+  ancsSwipeState=null;
+}
+
+// Button set/labels are derived from the notification's own fields — same
+// rule Ori's modal_ancs_notification.cpp uses: positive action (if any) as
+// the accent button, negative action (if any) as the danger button, and a
+// plain Close only when NEITHER is offered. Never a hardcoded "Answer" /
+// "Decline" / "Dismiss" string — whatever pos_label/neg_label says is what
+// renders. (Stacked groups skip this — single "Read all" instead, below.)
+function ancsActionsHTML(it,uid,bucket){
+  const t=I18N[appLang].ancsList;
+  const hasPos=!!it.pos_label;
+  const hasNeg=!!it.has_neg_action;
+  let html='';
+  if(hasPos) html+='<button class="btn btn-primary btn-full" onclick="ancsPositiveAction('+uid+',\''+bucket+'\')">'+escapeHtml(it.pos_label)+'</button>';
+  if(hasNeg) html+='<button class="btn btn-dng btn-full" onclick="ancsNegativeAction('+uid+',\''+bucket+'\')">'+escapeHtml(it.neg_label||t.dismissFallback)+'</button>';
+  if(!hasPos&&!hasNeg) html+='<button class="btn btn-sec btn-full" onclick="ancsBackToList(\''+bucket+'\')">'+t.closeFallback+'</button>';
+  return html;
+}
+
+// Layout mirrors Ori's own ANCS overlay: silent badge top-left, close-X
+// top-right (both corners; the X dismisses unconditionally, same as Ori's
+// ui::add_close_x, regardless of which action buttons are below), icon,
+// title, body/time, actions. No app-name line — the icon + title already
+// identify the source. Stacked groups (count > 1) replace the single
+// body/time/action-buttons with every message (oldest first, divider-split)
+// and one "Read all" button. Stashes which bucket/uids are on screen
+// (dataset) so a later 'remove'/'clear' event can tell whether THIS detail
+// just went stale (ble-protocol.md §13).
+function openAncsDetail(uid,bucket){
+  const t=I18N[appLang].ancsList;
+  const g=ancsFindGroup(bucket,uid);
+  if(!g) return;
+  const it=g.ref;
+  const stacked=g.count>1;
+  const iconCls=ancsIconTileClass('ad-app-icon',bucket,it.icon_token);
+  const silentBadge=it.silent?
+    '<div class="ad-silent-badge">'+ancsIconSvg('bell-off')+t.silentBadge+'</div>':'';
+
+  let bodyHtml;
+  if(stacked){
+    const oldestFirst=g.items.slice().reverse();
+    bodyHtml='<div class="ad-count">'+t.messagesCount.replace('{n}',g.count)+'</div>'+
+      oldestFirst.map((m,i)=>(i>0?'<div class="ad-divider"></div>':'')+
+        '<div class="ad-body">'+escapeHtml(m.body)+'</div>'+
+        '<div class="ad-time">'+ancsTimeAgo(m.recvEpoch)+'</div>'
+      ).join('');
+  } else {
+    bodyHtml=(it.body?'<div class="ad-body">'+escapeHtml(it.body)+'</div>':'')+
+      '<div class="ad-time">'+ancsTimeAgo(it.recvEpoch)+'</div>';
+  }
+  const actions=stacked?
+    '<button class="btn btn-dng btn-full" onclick="ancsReadAllGroup('+it.uid+',\''+bucket+'\')">'+t.readAll+'</button>'
+    :ancsActionsHTML(it,it.uid,bucket);
+
+  const card=$('ancsDetailCard');
+  card.dataset.bucket=bucket;
+  card.dataset.uids=g.uids.join(',');
+  card.innerHTML=
+    '<div class="ancs-detail'+(it.silent?' has-silent':'')+'">'+
+      silentBadge+
+      '<div class="ad-close-x" onclick="ancsBackToList(\''+bucket+'\')">'+ancsIconSvg('close')+'</div>'+
+      '<div class="'+iconCls+'">'+ancsIconMarkup(bucket,it.icon_token)+'</div>'+
+      '<div class="ad-title">'+escapeHtml(it.title)+'</div>'+
+      bodyHtml+
+      '<div class="ad-actions">'+actions+'</div>'+
+    '</div>';
+  openModalFrom('m-ancs-detail');
+}
+
+// Dismissing a detail — by action, Read all, or the corner X — always
+// returns to the list it was opened from, not the screen behind everything.
+// The user drilled in one level at a time, so they back out the same way.
+function ancsBackToList(bucket){
+  openAncsListModal(bucket);
+}
+
+// Action taps write AncsNotificationAction (char 0012) and stop there — no
+// local mutation, no navigation. ble-protocol.md §13: "Orion does not
+// update its own UI optimistically on write: it waits for the resulting
+// AncsNotification{op:"remove"} ... the same as every other state change in
+// this protocol." The stale-detail handling wired into the
+// 'ancs-notification' listener below is what actually closes this modal and
+// returns to the list, once Ori confirms the notification is really gone.
+function ancsPositiveAction(uid,bucket){
+  invoke('ancs_notification_action',{u:uid,a:0}).catch(e=>console.error('ancs_notification_action failed:',e));
+}
+function ancsNegativeAction(uid,bucket){
+  invoke('ancs_notification_action',{u:uid,a:1}).catch(e=>console.error('ancs_notification_action failed:',e));
+}
+// "Read all" on a stacked group — one write per uid (Negative/dismiss —
+// same action a lone row's own Dismiss button sends), mirroring the loop in
+// modal_ancs_notification.cpp's on_read().
+function ancsReadAllGroup(refUid,bucket){
+  const g=ancsFindGroup(bucket,refUid);
+  if(!g) return;
+  g.uids.forEach(uid=>invoke('ancs_notification_action',{u:uid,a:1}).catch(e=>console.error('ancs_notification_action failed:',e)));
+}
+// Row's own swipe-to-delete commit — clears the whole group (if stacked),
+// same as Read all above.
+function ancsRowQuickDismiss(uid,bucket){
+  const g=ancsFindGroup(bucket,uid);
+  if(!g) return;
+  g.uids.forEach(u=>invoke('ancs_notification_action',{u,a:1}).catch(e=>console.error('ancs_notification_action failed:',e)));
+}
+// Back from the list → iPhone Info (re-render so any change above shows).
+function ancsListBack(){
+  openIphoneInfoModal();
+}
+
+// Re-renders the drill-down list in place if it's currently open and showing
+// this bucket — called after every ANCS_STORE mutation (ble-protocol.md §13:
+// "if the drill-down list modal is currently open, re-render it in place").
+function ancsRefreshOpenList(bucket){
+  const bodyEl=$('ancsListBody');
+  if($('m-ancs-list').classList.contains('show') && bodyEl.dataset.bucket===bucket){
+    openAncsListModal(bucket);
+  }
+}
+// Closes the detail modal and returns to its list if it's currently showing
+// the uid that was just removed — "never leaves a detail open for content
+// that no longer exists on the phone" (ble-protocol.md §13, pc-app.md).
+function ancsCloseStaleDetail(uid,bucket){
+  const card=$('ancsDetailCard');
+  if(!$('m-ancs-detail').classList.contains('show')) return false;
+  if(card.dataset.bucket!==bucket) return false;
+  const shown=(card.dataset.uids||'').split(',').map(Number);
+  if(shown.indexOf(uid)===-1) return false;
+  ancsBackToList(bucket); // closes detail, re-renders the (now-updated) list
+  return true;
+}
+function ancsRefreshIphoneInfoIfOpen(){
+  if($('m-iphone-info').classList.contains('show')) openIphoneInfoModal();
+}
+
+// ── Incoming call — auto-appears over whatever Orion is currently showing
+// the instant AncsCallState{st:1} arrives (char 0011, ble-protocol.md §13),
+// mirroring Ori's own modal_incoming_call.cpp: a ringing banner with
+// Answer/Decline, then (once answered) an in-call view with a live mm:ss
+// duration timer that keeps running independent of the dialog's visibility
+// — reopening it shows the running time, not a reset one.
+const CallSession={running:false,uid:0,elapsedS:0,timerId:null,label:null};
+
+function callSessionStart(uid,seedElapsedS){
+  if(CallSession.running && CallSession.uid===uid) return; // already running — never reset an in-progress call
+  callSessionStop();
+  CallSession.running=true;
+  CallSession.uid=uid;
+  CallSession.elapsedS=seedElapsedS||0; // seeded from AncsCallState's "e" on a reconnect mid-call, not restarted at zero
+  CallSession.timerId=setInterval(()=>{
+    CallSession.elapsedS++;
+    if(CallSession.label) CallSession.label.textContent=callFmtDuration(CallSession.elapsedS);
+  },1000);
+}
+function callSessionStop(){
+  if(CallSession.timerId) clearInterval(CallSession.timerId);
+  CallSession.running=false;CallSession.uid=0;CallSession.elapsedS=0;CallSession.timerId=null;CallSession.label=null;
+}
+function callFmtDuration(s){
+  const hh=Math.floor(s/3600),mm=Math.floor((s%3600)/60),ss=s%60;
+  const pad=n=>String(n).padStart(2,'0');
+  return hh>0?hh+':'+pad(mm)+':'+pad(ss):pad(mm)+':'+pad(ss);
+}
+// Every other modal is hidden first so the call takes over the whole panel
+// cleanly, regardless of what was open when it arrived — matches Ori
+// creating its scrim on lv_screen_active(), which always ends up topmost no
+// matter what screen/modal was showing. Instant (hideModalInstant), not a
+// plain classList.remove — showModal('m-incoming-call') follows in the same
+// call, so a normal fade-out here would still show a frame of unblurred main
+// screen before the incoming-call view's own blur ramps in (switchModal's
+// comment). Returns whether anything was actually interrupted, so the caller
+// can show m-incoming-call instantly too in that case — nothing was
+// interrupted → the call is arriving fresh over a bare main screen, where
+// the normal fade-in was never reported as a problem.
+function callTakeOverScreen(){
+  const open=[...document.querySelectorAll('.modal-bg.show')];
+  open.forEach(m=>hideModalInstant(m.id));
+  return open.length>0;
+}
+
+// Field-richness note: AncsCallState (char 0011) carries the full caller
+// context — st/u/e plus a (app), t (title), p/n (action labels), g
+// (has_neg_action), and k (icon token) — decoded by the Rust backend
+// (src-tauri/src/ble/cbor.rs) and relayed here via 'ancs-call-state'. Calls
+// never arrive via 'ancs-notification' (ble-protocol.md §13: no separate
+// char-0010 payload to look the call up in), so this event is the ONLY source
+// for the title/app/icon/action-labels this view and the header chip need.
+// Every text field is still read defensively (missing → empty), so a bare
+// st:2 (reconnect mid-call, or a follow-up tick with no metadata) falls back
+// to the last cached meta and then to generic ANCS Answer/Decline copy —
+// CBOR's own "unknown/absent keys" tolerance (ble-protocol.md §4/§9).
+let lastCallMeta=null; // {uid,title,app,icon} — cached whenever a richer payload supplies it, so a bare st:2 (e.g. reconnect mid-call, or a follow-up tick with no metadata) can still show a title/icon
+function callMetaFor(c){
+  if(c.t||c.a||c.k) lastCallMeta={uid:c.u,title:c.t||'',app:c.a||'',icon:c.k||''};
+  const cached=lastCallMeta&&lastCallMeta.uid===c.u?lastCallMeta:null;
+  return {
+    title:c.t||(cached&&cached.title)||'',
+    app:c.a||(cached&&cached.app)||'',
+    icon:c.k||(cached&&cached.icon)||'', // calling app's icon token (AncsCallState "k") — shows the real brand icon, falling back to the call glyph
+    pos_label:c.p||'',
+    neg_label:c.n||'',
+    has_neg_action:c.g!==undefined?!!c.g:true, // a ringing/active call is always declinable/endable unless told otherwise
+  };
+}
+
+// Call app-icon markup — the real brand icon (viber/phone/…) when Ori relayed
+// a recognised icon token on AncsCallState ("k"), else the generic ringing
+// call glyph. Mirrors ancsIconMarkup()/ancsIconTileClass() for notifications,
+// but with the call glyph (not a category bell) as the fallback. Used by both
+// the incoming/active call modal and the header call chip below.
+function callIconInner(iconToken){
+  const img=ANCS_APP_ICON_MAP[iconToken];
+  return img?'<img class="ancs-app-icon-img" src="'+img+'" alt="">':ancsIconSvg('call');
+}
+function callIconTileClass(base,iconToken){
+  return base+(ANCS_APP_ICON_MAP[iconToken]?' has-img':' cat-ringing');
+}
+
+// Latest call state (the raw AncsCallState payload), so the header call chip
+// can reopen the correct view on click and pick the right app icon. null
+// whenever there's no live call (st:0, or the Ori link dropped).
+let currentCall=null;
+
+// Header call chip — a quick-access icon shown to the LEFT of the phone icon
+// whenever a call is ringing/active, so the user can reopen the call view
+// (caller identity + running duration) after dismissing the full modal with
+// its close button. Shows the calling app's own icon; clicking it reopens the
+// ringing/in-call modal per the live state. Hidden whenever there's no call.
+// Ring color: solid yellow while ringing (.ringing), solid red once answered/
+// active (.on-call) — mirrors Ori's own status-bar call tile ring exactly
+// (widget_status_bar.cpp's make_ancs_tile, styles.css's --call-ring-* vars).
+function updateCallChip(){
+  const chip=$('callIco');
+  if(!chip) return;
+  if(currentCall&&(currentCall.st===1||currentCall.st===2)){
+    const m=callMetaFor(currentCall);
+    const t=I18N[appLang].incomingCall;
+    chip.innerHTML=callIconInner(m.icon);
+    chip.classList.toggle('has-img',!!ANCS_APP_ICON_MAP[m.icon]);
+    chip.classList.toggle('ringing',currentCall.st===1);
+    chip.classList.toggle('on-call',currentCall.st===2);
+    chip.title=currentCall.st===1?t.incoming:t.onCall;
+    chip.style.display='';
+  }else{
+    chip.style.display='none';
+    chip.classList.remove('has-img','ringing','on-call');
+    chip.innerHTML='';
+  }
+}
+// Click the header call chip → reopen the current call view exactly as it
+// appeared. Reopening an active call never resets its timer (callSessionStart
+// no-ops for an already-running uid). No-op if the call ended meanwhile (the
+// chip would already be hidden).
+function openCallFromChip(){
+  if(!currentCall) return;
+  if(currentCall.st===1) showIncomingCall(currentCall);
+  else if(currentCall.st===2) showActiveCall(currentCall);
+}
+
+// Ori link broke (conn-state "off") — every ANCS-derived surface (drill-down
+// list, its detail, the ringing/in-call view, and the iPhone Info hub that
+// opens them) is now showing data Orion can no longer verify or act on (an
+// action write would just fail), so tear them all down. The call session
+// timer stops and currentCall clears too; if the call is still live when Ori
+// reconnects, resync_orion_call_state replays it (ble-protocol.md §13) and the
+// view + chip come back, its timer reseeded from the relayed elapsed seconds.
+// Only fired on a sustained disconnect, NOT on the transient connecting/rec
+// reconnect phases — those are reconciled by the resync itself (clear+re-add
+// for notifications, a fresh st for calls), so closing there would just be a
+// flicker before the same content returns.
+function closeAncsSurfacesOnDrop(){
+  hideModal('m-ancs-detail');
+  hideModal('m-ancs-list');
+  hideModal('m-incoming-call');
+  hideModal('m-iphone-info');
+  callSessionStop();
+  currentCall=null;
+  updateCallChip();
+}
+
+function showIncomingCall(c){
+  const t=I18N[appLang].incomingCall;
+  const m=callMetaFor(c);
+  const interrupted=callTakeOverScreen();
+  $('callCard').innerHTML=
+    '<div class="ancs-detail">'+
+      '<div class="ad-close-x" title="'+t.dismissRingingTitle+'" onclick="hideModal(\'m-incoming-call\')">'+ancsIconSvg('close')+'</div>'+
+      '<div class="'+callIconTileClass('ad-app-icon',m.icon)+'">'+callIconInner(m.icon)+'</div>'+
+      '<div class="ad-eyebrow">'+t.incoming+'</div>'+
+      '<div class="ad-title">'+escapeHtml(m.title||t.unknownCaller)+'</div>'+
+      (m.app?'<div class="ad-time" style="text-align:center;">'+escapeHtml(m.app)+'</div>':'')+
+      '<div class="ad-actions">'+
+        '<button class="btn btn-primary btn-full" onclick="callAnswer('+c.u+')">'+escapeHtml(m.pos_label||t.answerFallback)+'</button>'+
+        (m.has_neg_action?'<button class="btn btn-dng btn-full" onclick="callDecline('+c.u+')">'+escapeHtml(m.neg_label||t.declineFallback)+'</button>':'')+
+      '</div>'+
+    '</div>';
+  (interrupted?showModalInstant:showModal)('m-incoming-call');
+}
+// No optimistic switch to the active-call view — wait for the real
+// AncsCallState{st:2} the answer produces (same "never optimistic" rule as
+// the ANCS actions above).
+function callAnswer(uid){
+  invoke('ancs_notification_action',{u:uid,a:0}).catch(e=>console.error('ancs_notification_action failed:',e));
+}
+// ANCS Negative on a ringing call = Decline — same action code the general
+// dismiss path uses, just reached from a different screen. Wait for
+// AncsCallState{st:0} to actually close the ringing view.
+function callDecline(uid){
+  invoke('ancs_notification_action',{u:uid,a:1}).catch(e=>console.error('ancs_notification_action failed:',e));
+}
+function showActiveCall(c){
+  const t=I18N[appLang].incomingCall;
+  const m=callMetaFor(c);
+  callSessionStart(c.u,c.e);
+  const interrupted=callTakeOverScreen();
+  $('callCard').innerHTML=
+    '<div class="ancs-detail">'+
+      '<div class="ad-close-x" title="'+t.hideActiveTitle+'" onclick="hideModal(\'m-incoming-call\')">'+ancsIconSvg('close')+'</div>'+
+      '<div class="'+callIconTileClass('ad-app-icon',m.icon)+'">'+callIconInner(m.icon)+'</div>'+
+      '<div class="ad-eyebrow">'+t.onCall+'</div>'+
+      '<div class="ad-title">'+escapeHtml(m.title||t.unknownCaller)+'</div>'+
+      '<div class="ad-call-timer" id="callTimerLabel">'+callFmtDuration(CallSession.elapsedS)+'</div>'+
+      '<div class="ad-actions">'+
+        '<button class="btn btn-dng btn-full" onclick="callEnd('+c.u+')">'+t.endCall+'</button>'+
+      '</div>'+
+    '</div>';
+  CallSession.label=$('callTimerLabel');
+  (interrupted?showModalInstant:showModal)('m-incoming-call');
+}
+// Same ANCS Negative action as Decline (hanging up = declining, from ANCS's
+// point of view) — "End call" is a fixed literal for the same reason the
+// eyebrow text is (mirrors Ori's own on_end_call(), which hardcodes it too,
+// independent of neg_label, since by now the ringing-era label no longer
+// fits). Wait for AncsCallState{st:0} to close the view + stop the timer.
+function callEnd(uid){
+  invoke('ancs_notification_action',{u:uid,a:1}).catch(e=>console.error('ancs_notification_action failed:',e));
+}
+
+// Ori device info / stats — tapping the header's device name + connection
+// state opens a read-only snapshot of everything Orion knows about this
+// specific Ori: identity (name, firmware, address) and its other bond
+// (iPhone/ANCS). get_ori_info serves cached values only (no live BLE read),
+// see its Rust doc comment — firmware version and address populate within
+// moments of the next connect regardless. No Signal/RSSI row: btleplug's
+// Windows backend only refreshes that from advertising packets, which stop
+// the moment Ori is connected, so it'd just show a stale pre-connect
+// reading — same "don't show what you can't verify" policy Ori itself
+// applies to presence/weather.
+async function openOriInfoModal(){
+  const t=I18N[appLang].oriInfoModal;
+  const info=await invoke('get_ori_info').catch(()=>null);
+  if(!info) return;
+
+  $('oriInfoTitle').textContent=info.name||$('hName').textContent;
+  $('oriInfoState').textContent=$('hState').textContent;
+  $('oriInfoDot').className='p-dot '+(connState==='on'?'available':connState==='off'?'offline':'away');
+
+  $('oriInfoFwLbl').textContent=t.fwLbl;$('oriInfoFw').textContent=info.firmware_version||t.unknown;
+  $('oriInfoAddrLbl').textContent=t.addrLbl;$('oriInfoAddr').textContent=info.address||t.unknown;
+  $('oriInfoPhoneLbl').textContent=t.phoneLbl;
+  $('oriInfoPhone').textContent=lastPhoneBondStatus.b?(lastPhoneBondStatus.n||I18N[appLang].unpairPhoneModal.fallbackName):t.notPaired;
+  $('oriInfoSyncLbl').textContent=t.syncLbl;
+  const secs=info.last_synced_secs_ago;
+  $('oriInfoSync').textContent = secs==null ? t.unknown : secs<60 ? t.justNow : t.minAgo.replace('{n}',Math.round(secs/60));
+
+  $('oriInfoCloseBtn').textContent=I18N[appLang].pairfail.close;
+  showModal('m-ori-info');
 }
 
 let pfChanged=false,pfRemoved=false;
 let pfCommitted={name:'',title:'',email:'',phone:''};
+// Populates the profile card + the editor's underlying inputs from the
+// backend's cached profile (`get_initial_state`'s `profile` field) — the
+// one thing that's normally missing on every app launch that ISN'T the
+// tail end of first-time setup (`suFinishSetup` is the only other place
+// that ever touches these elements), which is why the panel used to show a
+// blank profile card after a plain app restart / reconnect. No-op when
+// there's no real cached name yet (fresh install) — leaves the HTML's own
+// placeholder markup alone rather than computing bogus initials from an
+// empty string.
+function hydrateProfileCard(profile){
+  if(!profile||!profile.name||!profile.name.trim()) return;
+  $('nmInp').value=profile.name;
+  $('tlInp').value=profile.title||'';
+  $('emInp').value=profile.email||'';
+  $('phInp').value=profile.phone||'';
+  $('mainName').textContent=profile.name;
+  const photo=$('mainProfPhoto');
+  if(profile.photoDataUrl){
+    photo.style.backgroundImage=`url(${profile.photoDataUrl})`;
+    photo.style.backgroundSize='cover';photo.style.backgroundPosition='center';
+    $('mainProfInitials').style.display='none';
+  } else {
+    photo.style.backgroundImage='';
+    $('mainProfInitials').style.display='';
+    const parts=profile.name.trim().split(' ');
+    $('mainProfInitials').textContent=(parts[0][0]+(parts[1]?parts[1][0]:'')).toUpperCase();
+  }
+}
+// Same fix as hydrateProfileCard, just never extended to Time Off originally
+// — get_initial_state's `time_off` field is the backend's persisted entry,
+// which otherwise only ever reached the UI right after saveTimeOff() ran in
+// this same session. Without this, a plain relaunch showed "no Time Off"
+// even though the store and Ori both still had a real one, and saving a new
+// entry in that state would have silently overwritten the still-valid one.
+function hydrateTimeOffCard(timeOff){
+  if(!timeOff||!timeOff.start||!timeOff.end||!timeOff.destination) return;
+  // Wire fields are epoch SECONDS, and "end" is exclusive (midnight the day
+  // after the last selected day — see saveTimeOff's own comment on why);
+  // convert back to the inclusive last-day Date toCommittedEnd otherwise
+  // always holds.
+  const start=new Date(timeOff.start*1000);
+  const exclusiveEnd=new Date(timeOff.end*1000);
+  const end=new Date(exclusiveEnd.getFullYear(),exclusiveEnd.getMonth(),exclusiveEnd.getDate()-1);
+  toCommittedStart=start;toCommittedEnd=end;toCommittedDest=timeOff.destination;
+  toCommittedPhotoUrl=timeOff.photoDataUrl||null;
+  timeOffActive=true;
+  $('timeOffToggle').classList.add('on');
+  $('mainTimeOffDest').textContent=toCommittedDest;$('mainTimeOffTextDest').textContent=toCommittedDest;
+  const f=v=>v.toLocaleDateString(LOCALE_MAP[appLang],{month:'short',day:'numeric'});
+  const range=f(start)+' – '+f(end);
+  $('mainTimeOffDates').textContent=range;$('mainTimeOffTextDates').textContent=range;
+  if(toCommittedPhotoUrl){
+    const b=$('mainTimeOffBanner');
+    b.style.backgroundImage=`url(${toCommittedPhotoUrl})`;
+    b.style.backgroundSize='cover';b.style.backgroundPosition='center';b.style.backgroundRepeat='no-repeat';
+  }
+  setTimeOffState(true);
+}
 function openProfileScreen(){
   pfOrigUrl=null;pfPendingUrl=null;pfRemoved=false;
   const savedBg=$('mainProfPhoto').style.backgroundImage;
@@ -181,7 +1252,13 @@ function saveProfile(){
     const parts=name.trim().split(' ');
     $('mainProfInitials').textContent=(parts[0][0]+(parts[1]?parts[1][0]:'')).toUpperCase();
   }
-  invoke('save_profile',{name,title:$('tlInp').value,email:$('emInp').value,phone:$('phInp').value,photoDataUrl,photoRemoved});
+  // Can now genuinely reject (e.g. a disk-full/permissions failure writing
+  // the local store) instead of always silently succeeding — surfaced to
+  // the console rather than left as an unhandled promise rejection; the UI
+  // already optimistically applied the edit above, so there's no pending
+  // state to roll back here.
+  invoke('save_profile',{input:{name,title:$('tlInp').value,email:$('emInp').value,phone:$('phInp').value,photoDataUrl,photoRemoved}})
+    .catch(e=>console.error('save_profile failed:',e));
   pfRemoved=false;
   pfChanged=false;$('pfSaveBtn').setAttribute('disabled','');back();
 }
@@ -233,7 +1310,8 @@ function exitTimeOff(){
   toCommittedStart=null;toCommittedEnd=null;toCommittedDest='';toCommittedPhotoUrl=null;
   $('mainTimeOffBanner').style.backgroundImage='';
   $('timeOffToggle').classList.remove('on');setTimeOffState(false);back();
-  invoke('clear_timeoff');
+  // Can now genuinely reject — see save_profile's comment on why.
+  invoke('clear_timeoff').catch(e=>console.error('clear_timeoff failed:',e));
 }
 function setTimeOffState(active){
   const card=$('mainTimeOffCard');
@@ -269,13 +1347,18 @@ function saveTimeOff(){
     toCommittedPhotoUrl=null;
   }
   toCommittedStart=selStart;toCommittedEnd=selEnd;toCommittedDest=dest;
-  invoke('save_timeoff',{start:selStart.getTime(),end:selEnd.getTime(),destination:dest,photoDataUrl,photoRemoved});
+  // Wire fields are epoch SECONDS (ble-protocol.md §4), not JS milliseconds
+  // — and `selEnd` is local midnight at the *start* of the last selected
+  // day, so the end sent to Ori is midnight at the start of the day after,
+  // covering that whole last day rather than excluding almost all of it.
+  const endExclusive=new Date(selEnd.getFullYear(),selEnd.getMonth(),selEnd.getDate()+1);
+  // Can now genuinely reject — see save_profile's comment on why.
+  invoke('save_timeoff',{input:{start:Math.floor(selStart.getTime()/1000),end:Math.floor(endExclusive.getTime()/1000),destination:dest,photoDataUrl,photoRemoved}})
+    .catch(e=>console.error('save_timeoff failed:',e));
   timeOffPhotoRemoved=false;
   timeOffDirty=false;timeOffActive=true;
   $('timeOffToggle').classList.add('on');setTimeOffState(true);back();
 }
-function hideToErr(id){$(id).style.display='none';}
-
 let calYear,calMonth,selStart=null,selEnd=null,selPhase=0,calHover=null;
 function initCal(){const t=new Date();calYear=t.getFullYear();calMonth=t.getMonth();renderCal();}
 function togglePeriodCal(){
@@ -284,8 +1367,15 @@ function togglePeriodCal(){
   else{cal.style.display='';disp.classList.add('open');renderCal();}
 }
 function calNav(dir){
-  calMonth+=dir;
-  if(calMonth<0){calMonth=11;calYear--;}if(calMonth>11){calMonth=0;calYear++;}
+  let y=calYear,m=calMonth+dir;
+  if(m<0){m=11;y--;}if(m>11){m=0;y++;}
+  // Never navigate before the current real month — mirrors the same
+  // year/month comparison renderCal() uses to disable .pcal-nav-prev, as a
+  // belt-and-suspenders guard in case a caller bypasses the disabled button
+  // (e.g. a future programmatic call).
+  const today=new Date();
+  if(dir<0&&(y<today.getFullYear()||(y===today.getFullYear()&&m<today.getMonth()))) return;
+  calYear=y;calMonth=m;
   renderCal();
 }
 function renderCal(){
@@ -310,7 +1400,7 @@ function renderCal(){
   if(selPhase===1&&calHover!==null){const hd=new Date(calYear,calMonth,calHover);if(hd>selStart)hEnd=hd;}
   const rangeEnd=selEnd||hEnd;
   for(let d=1;d<=daysInMonth;d++){
-    const cd=new Date(calYear,calMonth,d),past=cd<=today;
+    const cd=new Date(calYear,calMonth,d),past=cd<today;
     const isSS=selStart&&cd.getTime()===selStart.getTime();
     const isSE=selEnd&&cd.getTime()===selEnd.getTime();
     const inRange=selStart&&rangeEnd&&cd>selStart&&cd<rangeEnd;
@@ -322,13 +1412,35 @@ function renderCal(){
     grid.appendChild(el);
   }
 }
+// Hover-preview restyle only — used instead of a full renderCal() on every
+// mousemove, which used to clear #pcalGrid's innerHTML and recreate every
+// weekday-header + day-cell element (plus re-attach each day's onclick) on
+// every hovered-cell change. None of that structure actually changes while
+// hovering (same month, same today/past/dis classification) — only which
+// cells count as sel-start/sel-end/in-range shifts as calHover moves. This
+// walks the grid's already-built day cells (stable data-d, same recipe
+// renderCal() used) and just retoggles those three classes.
+function updateCalRangeClasses(){
+  let hEnd=null;
+  if(selPhase===1&&calHover!==null){const hd=new Date(calYear,calMonth,calHover);if(hd>selStart)hEnd=hd;}
+  const rangeEnd=selEnd||hEnd;
+  document.querySelectorAll('#pcalGrid .pcal-d[data-d]').forEach(el=>{
+    const cd=new Date(calYear,calMonth,parseInt(el.dataset.d));
+    const isSS=selStart&&cd.getTime()===selStart.getTime();
+    const isSE=selEnd&&cd.getTime()===selEnd.getTime();
+    const inRange=selStart&&rangeEnd&&cd>selStart&&cd<rangeEnd;
+    el.classList.toggle('sel-start',!!isSS);
+    el.classList.toggle('sel-end',!!isSE);
+    el.classList.toggle('in-range',!!inRange);
+  });
+}
 function onCalMove(e){
   if(selPhase!==1) return;
   const cell=e.target.closest('.pcal-d[data-d]:not(.dis)');
   const d=cell?parseInt(cell.dataset.d):null;
-  if(d!==calHover){calHover=d;renderCal();}
+  if(d!==calHover){calHover=d;updateCalRangeClasses();}
 }
-function onCalLeave(){if(calHover!==null){calHover=null;renderCal();}}
+function onCalLeave(){if(calHover!==null){calHover=null;updateCalRangeClasses();}}
 function selectDay(d){
   const date=new Date(calYear,calMonth,d);
   if(selPhase===0||selPhase===2){selStart=date;selEnd=null;selPhase=1;}
@@ -578,7 +1690,8 @@ function saveCalSource(){
   calSrc=calPending;
   const info=calInfo[calSrc];
   $('mainCalSub').textContent=info.name+_calStatusSuffix(info);
-  invoke('set_calendar_source',{source:calSrc});
+  // Can now genuinely reject — see save_profile's comment on why.
+  invoke('set_calendar_source',{source:calSrc}).catch(e=>console.error('set_calendar_source failed:',e));
   back();
 }
 function discardCalSource(){calPending=calSrc;_renderCalOpts(calPending);back();}
@@ -630,23 +1743,38 @@ const siImgMap={
   'mic-mute':'assets/shortcut_icons/mic-mute.png',
   'screenshot':'assets/shortcut_icons/screenshot.png',
   'lock-screen':'assets/shortcut_icons/lock-screen.png',
-  'favorite':'assets/shortcut_icons/favorite.png',
-  'calculator':'assets/shortcut_icons/calculator.png'
+  'favorite-1':'assets/shortcut_icons/favorite-1.png',
+  'favorite-2':'assets/shortcut_icons/favorite-2.png',
+  'favorite-3':'assets/shortcut_icons/favorite-3.png',
+  'calculator':'assets/shortcut_icons/calculator.png',
+  'copy':'assets/shortcut_icons/copy.png',
+  'cut':'assets/shortcut_icons/cut.png',
+  'paste':'assets/shortcut_icons/paste.png',
+  'undo':'assets/shortcut_icons/undo.png',
+  'redo':'assets/shortcut_icons/redo.png',
+  'save':'assets/shortcut_icons/save.png'
 };
 function applySlot(n){
   const v=$('ss'+n).value;
   $('si'+n).src=siImgMap[v]||'';
   const favEl=$('fav'+n);
-  favEl.style.display=v==='favorite'?'block':'none';
-  if(v==='favorite') renderKbdCombo(n);
+  const isFav=v.startsWith('favorite');
+  favEl.style.display=isFav?'block':'none';
+  if(isFav) renderKbdCombo(n);
   _updateSlotSave();
 }
 // Orion reads Device Settings from Ori on every (re)connect to recover the
 // NVS-persisted fields (clock_face, time_format, ancs_filter, shortcut slot
 // tokens) — ble-protocol.md §6.4. Presence/weather are ephemeral and not
-// returned here.
+// returned here. The Favorite key combos, in contrast, never live on Ori
+// (host-side action mapping is Orion-local — pc-app.md), so they're fetched
+// separately from Orion's own store; without this a combo recorded in a
+// previous session would still fire but show as "Not set" here after a restart.
 function readSlotsFromDevice(){
-  invoke('read_device_settings').then(s=>{
+  Promise.all([
+    invoke('read_device_settings'),
+    invoke('get_shortcut_combos').catch(()=>[[],[],[]]),
+  ]).then(([s,combos])=>{
     if(s.c!==undefined){
       clockFace=s.c===1?'analog':'digital';
       $('mcDig').style.display=clockFace==='digital'?'flex':'none';$('mcAna').style.display=clockFace==='analog'?'block':'none';
@@ -659,7 +1787,8 @@ function readSlotsFromDevice(){
     [1,2,3].forEach(n=>{
       const tok=s[String(n)];
       if(tok){slotCommitted[n-1]=tok;$('ss'+n).value=tok;}
-      kbdCommitted[n-1]=[];_kbdCombos[n-1]=[];
+      const combo=(combos&&combos[n-1])||[];
+      kbdCommitted[n-1]=[...combo];_kbdCombos[n-1]=[...combo];
       applySlot(n);
       $('ms'+n).src=siImgMap[$('ss'+n).value]||'';
     });
@@ -680,11 +1809,30 @@ function renderKbdCombo(n){
   const parts=_kbdCombos[n-1];
   const disp=$('kbdDisp'+n),hint=$('kbdHint'+n);
   const t=I18N[appLang].quickActions;
+  // Built via DOM APIs, not innerHTML — `parts` holds raw `e.key` values
+  // (_onKbdKey below), which for a symbol key produced with Shift (e.g.
+  // Shift+, -> "<") is exactly that literal character. Interpolating it
+  // into an HTML string let a recorded "<" (or similar) silently vanish
+  // from the display instead of showing it, because the parser read it as
+  // markup rather than text — same class of bug, and same fix
+  // (createElement + textContent), as suRenderDevices()'s BLE device names.
+  disp.innerHTML='';
   if(!parts.length){
-    disp.innerHTML=`<span class="kbd-unset">${t.notSet}</span>`;
+    const span=document.createElement('span');
+    span.className='kbd-unset';span.textContent=t.notSet;
+    disp.appendChild(span);
     hint.textContent=t.clickToSet;
   } else {
-    disp.innerHTML=parts.map(p=>`<kbd class="kc">${p}</kbd>`).join('<span class="kbd-sep"> + </span>');
+    parts.forEach((p,i)=>{
+      if(i>0){
+        const sep=document.createElement('span');
+        sep.className='kbd-sep';sep.textContent=' + ';
+        disp.appendChild(sep);
+      }
+      const kbd=document.createElement('kbd');
+      kbd.className='kc';kbd.textContent=p;
+      disp.appendChild(kbd);
+    });
     hint.textContent=t.clickToChange;
   }
 }
@@ -776,7 +1924,7 @@ function _isSlotsDirty(){
   });
 }
 function _hasIncompleteFavorite(){
-  return [1,2,3].some(n=>$('ss'+n).value==='favorite'&&_kbdCombos[n-1].length===0);
+  return [1,2,3].some(n=>$('ss'+n).value.startsWith('favorite')&&_kbdCombos[n-1].length===0);
 }
 function _updateSlotSave(){
   const btn=$('slotsSaveBtn'); if(!btn) return;
@@ -807,19 +1955,25 @@ function setTimeFormat(f){timeFormatPending=f;_renderTimeFormat(f);_updateTimeFo
 function saveAncs(){
   ancsLevel=ancsPending;
   [0,1,2,3].forEach(i=>$('an-ico-'+i).style.display=i===ancsLevel?'block':'none');
-  invoke('save_device_settings',{f:ancsLevel});
+  // Can now genuinely reject — see save_profile's comment on why.
+  invoke('save_device_settings',{settings:{f:ancsLevel}})
+    .catch(e=>console.error('save_device_settings (notification filter) failed:',e));
   back();
 }
 function saveClock(){
   clockFace=clockPending;
   $('mcDig').style.display=clockFace==='digital'?'flex':'none';$('mcAna').style.display=clockFace==='analog'?'block':'none';
-  invoke('save_device_settings',{c:clockFace==='analog'?1:0});
+  // Can now genuinely reject — see save_profile's comment on why.
+  invoke('save_device_settings',{settings:{c:clockFace==='analog'?1:0}})
+    .catch(e=>console.error('save_device_settings (clock face) failed:',e));
   back();
 }
 function saveTimeFormat(){
   timeFormat=timeFormatPending;
   _renderMainTimeFormatPreview();
-  invoke('save_device_settings',{h:timeFormat==='12'?1:0});
+  // Can now genuinely reject — see save_profile's comment on why.
+  invoke('save_device_settings',{settings:{h:timeFormat==='12'?1:0}})
+    .catch(e=>console.error('save_device_settings (time format) failed:',e));
   back();
 }
 function saveSlots(){
@@ -829,7 +1983,9 @@ function saveSlots(){
   [1,2,3].forEach(i=>$('ms'+i).src=siImgMap[$('ss'+i).value]||'');
   // Icon tokens go to Ori over BLE; Favorite key combos are a local Orion
   // setting only (pc-app.md — "host-side action mapping is local to Orion").
-  invoke('save_shortcuts',{slots:slotCommitted,combos:kbdCommitted});
+  // Can now genuinely reject — see save_profile's comment on why.
+  invoke('save_shortcuts',{slots:slotCommitted,combos:kbdCommitted})
+    .catch(e=>console.error('save_shortcuts failed:',e));
   back();
 }
 
@@ -850,7 +2006,8 @@ function discardShortcuts(){
 // paired device.
 function doReset(){
   hideModal('m-reset');
-  invoke('clear_all');
+  // Can now genuinely reject — see save_profile's comment on why.
+  invoke('clear_all').catch(e=>console.error('clear_all failed:',e));
   calSrc='ms';calPending='ms';_renderCalOpts('ms');
   $('mainCalSub').textContent=calInfo.ms.name+_calStatusSuffix(calInfo.ms);
   $('nmInp').value='';$('tlInp').value='';$('emInp').value='';$('phInp').value='';
@@ -887,13 +2044,23 @@ function doReset(){
   openSetupWizard();
 }
 
-function clickFw(){
-  if(fwAvail){showModal('m-fw');}
+async function clickFw(){
+  if(fwAvail){
+    // oufVerLine's current→new version line: current comes from Ori's cached
+    // Firmware Revision String (get_ori_info, same source openOriInfoModal
+    // reads); new is orionFwVersion, set from the 'fw-update-available'
+    // event payload (see the listener below) — that's Ori's device firmware,
+    // not Orion's own app version, so it belongs on this modal only.
+    const info=await invoke('get_ori_info').catch(()=>null);
+    $('oufVerLine').textContent=(info&&info.firmware_version||I18N[appLang].oriInfoModal.unknown)+' → '+orionFwVersion;
+    showModal('m-fw');
+  }
   else{const ico=$('fwIco');ico.style.transition='transform .15s';ico.style.transform='rotate(20deg)';setTimeout(()=>ico.style.transform='',300);}
 }
 function startFwInstall(){
   $('fw-c').style.display='none';$('fw-i').style.display='';
-  invoke('firmware_install');
+  // Can now genuinely reject — see save_profile's comment on why.
+  invoke('firmware_install').catch(e=>console.error('firmware_install failed:',e));
 }
 // Driven by 'fw-progress' events from the USB CDC OTA sender (ota.md) — phase
 // is one of "downloading"/"verifying"/"installing"/"done".
@@ -924,7 +2091,8 @@ function fwApplyProgress({pct,phase,version}){
 // automatic relaunch.
 function startOrionInstall(){
   $('ou-c').style.display='none';$('ou-i').style.display='';
-  invoke('orion_update_install');
+  // Can now genuinely reject — see save_profile's comment on why.
+  invoke('orion_update_install').catch(e=>console.error('orion_update_install failed:',e));
 }
 // Driven by 'orion-update-progress' events; phase is
 // "downloading"/"installing"/"ready".
@@ -948,7 +2116,8 @@ function restartOrion(){
   updateOrionUpdateRow();
   $('ou-c').style.display='';$('ou-i').style.display='none';$('ou-d').style.display='none';
   $('ouRing').style.strokeDashoffset=358;$('ouPct').textContent='0%';
-  invoke('orion_restart');
+  // Can now genuinely reject — see save_profile's comment on why.
+  invoke('orion_restart').catch(e=>console.error('orion_restart failed:',e));
 }
 
 // ── Language (single, union setting for Orion's own UI) ─────────────────────
@@ -971,16 +2140,29 @@ const I18N={
       emailLbl:'Email',emailPh:'name@company.com',phoneLbl:'Phone',phonePh:'+1 555 000 0000',next:'Next'},
     discover:{editProfile:'Edit profile',title:'Select your Ori',sub:'Make sure Ori is powered on and in pairing mode.',
       scanning:'Looking for nearby Ori devices…',rescan:'Scan again',strongSignal:'Strong signal',weakSignal:'Weak signal'},
-    passkey:{title:'Confirm pairing',bodyPre:'Windows will ask you to confirm a pairing code — check it matches the 6-digit code shown on ',bodySuf:', then accept it there.',cancel:'Cancel'},
+    passkey:{title:'Enter passkey',bodyPre:'Enter the 6-digit code shown on ',bodySuf:'.',cancel:'Cancel',pair:'Pair'},
     connecting:{title:'Pairing with Ori…',sub:'Waiting for Ori to confirm…'},
     syncing:{title:'Setting up Ori…',progressLabel:'A busy day ahead…',doneLabel:'Ori is set up!'},
     pairfail:{title:'Couldn’t pair with Ori',body:'The passkey didn’t match, or the request timed out on Ori. Pick a device to try again.',close:'Close'},
+    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Address',phoneLbl:'iPhone',syncLbl:'Synced',
+      notPaired:'Not paired',justNow:'Just now',minAgo:'{n} min ago',unknown:'Unknown'},
+    iphoneInfoModal:{missedLbl:'Calls',unreadLbl:'Unread messages',sigLbl:'Signal',notifLbl:'Notifications'},
+    ancsList:{titles:{missed:'Calls',unread:'Messages',other:'Notifications'},
+      empty:{missed:'No calls',unread:'No messages',other:'No notifications'},
+      silentBadge:'Silent',silentTitle:'Delivered silently',readAll:'Read all',
+      dismissFallback:'Dismiss',closeFallback:'Close',messagesCount:'{n} messages',
+      justNow:'Just now',minAgo:'{n} min ago',hourAgo:'{n}h ago',dayAgo:'{n}d ago'},
+    incomingCall:{incoming:'Incoming call',onCall:'On call',endCall:'End call',
+      answerFallback:'Answer',declineFallback:'Decline',unknownCaller:'Unknown caller',
+      dismissRingingTitle:'Dismiss — call keeps ringing',hideActiveTitle:'Hide — call keeps going'},
     settings:{title:'Settings',general:'General',auto:'Run automatically',autoSub:'Launch at Windows startup',
       calendar:'Calendar Source',language:'Language',about:'About',app:'Version',reset:'Reset'},
-    main:{connected:'Connected',syncing:'Syncing…',disconnected:'Disconnected',timeOff:'Time Off',
+    main:{connected:'Connected',connecting:'Connecting…',syncing:'Syncing…',disconnected:'Disconnected',timeOff:'Time Off',
       noTimeOffPlanned:'No Time Off planned',tapToSet:'Tap to set',notifFilterRow:'Notification Filter',
       clockFaceRow:'Clock Face',timeFormatRow:'Time Format',quickActionsRow:'Quick Actions',presenceAvailable:'Available',
-      settingsIcoTitle:'Settings',minimizeIcoTitle:'Minimize',fwUpToDate:'Firmware up to date',fwAvailable:'Firmware update available'},
+      settingsIcoTitle:'Settings',minimizeIcoTitle:'Minimize',fwUpToDate:'Firmware up to date',fwAvailable:'Firmware update available',
+      phoneConnectedTitle:'{name} — Connected',phoneDisconnectedTitle:'iPhone disconnected',phoneUnknownName:'iPhone',
+      reconnectTitle:'Reconnect'},
     profileEditor:{title:'Profile'},
     timeOffEditor:{periodLbl:'Period',selectDates:'Select dates…',selectStartDate:'Select start date',
       selectEndDate:'Now select end date',destinationLbl:'Destination',destinationPh:'City, Country',
@@ -990,7 +2172,7 @@ const I18N={
       signInMicrosoft:'Sign in with Microsoft',signOutMicrosoft:'Sign out from Microsoft'},
     quickActions:{slotPrefix:'Slot',notSet:'Not set',clickToSet:'Click to set',clickToChange:'Click to change',
       pressShortcut:'Press shortcut…',escToCancel:'Esc to cancel',
-      actionLabels:{'vol-mute':'Volume Mute','mic-mute':'Mic Mute',screenshot:'Screenshot','lock-screen':'Lock Screen',favorite:'Favorite',calculator:'Calculator'}},
+      actionLabels:{'vol-mute':'Volume Mute','mic-mute':'Mic Mute',screenshot:'Snip Tools','lock-screen':'Lock Screen','favorite-1':'Favorite 1','favorite-2':'Favorite 2','favorite-3':'Favorite 3',calculator:'Calculator',copy:'Copy',cut:'Cut',paste:'Paste',undo:'Undo',redo:'Redo',save:'Save'}},
     clockFace:{digitalLbl:'Digital',digitalSub:'Large digits',analogLbl:'Analog',analogSub:'Tick dial with hands'},
     timeFormat:{h24Lbl:'24-hour',h24Sub:'e.g. 14:30',h12Lbl:'12-hour',h12Sub:'e.g. 2:30 PM'},
     notifFilter:{disabledLbl:'Disabled',disabledSub:'No notifications shown on Ori',callOnlyLbl:'Call Only',
@@ -1000,6 +2182,9 @@ const I18N={
     resetModal:{title:'Reset',
       body:'This will erase your profile, settings, and factory reset Ori.',
       reset:'Reset'},
+    unpairPhoneModal:{title:'Unpair iPhone',
+      body:'Ori will no longer show notifications from {name}.',
+      fallbackName:'The paired iPhone',unpair:'Unpair'},
     fwModal:{title:'Ori Update Available',update:'Update',
       updatingFirmware:'Updating Ori…',keepPluggedIn:'Keep Ori plugged in',verifying:'Verifying…',
       nowRunning:'Now running {v}',done:'Done',
@@ -1025,16 +2210,29 @@ const I18N={
       emailLbl:'Email',emailPh:'ten@congty.com',phoneLbl:'Số điện thoại',phonePh:'+84 90 000 0000',next:'Tiếp theo'},
     discover:{editProfile:'Sửa hồ sơ',title:'Chọn Ori của bạn',sub:'Đảm bảo Ori đã mở và đang ở chế độ ghép nối.',
       scanning:'Đang tìm thiết bị Ori gần đây…',rescan:'Quét lại',strongSignal:'Tín hiệu mạnh',weakSignal:'Tín hiệu yếu'},
-    passkey:{title:'Xác nhận ghép nối',bodyPre:'Windows sẽ yêu cầu bạn xác nhận mã ghép nối — kiểm tra mã đó khớp với mã 6 số hiển thị trên ',bodySuf:', sau đó chấp nhận ở đó.',cancel:'Hủy'},
+    passkey:{title:'Nhập mã ghép nối',bodyPre:'Nhập mã 6 số hiển thị trên ',bodySuf:'.',cancel:'Hủy',pair:'Ghép nối'},
     connecting:{title:'Đang ghép nối với Ori…',sub:'Đang chờ Ori xác nhận…'},
     syncing:{title:'Đang thiết lập Ori…',progressLabel:'Một ngày bận rộn đang chờ…',doneLabel:'Ori đã thiết lập xong!'},
     pairfail:{title:'Không thể ghép nối với Ori',body:'Mã ghép nối không khớp, hoặc yêu cầu đã hết thời gian chờ trên Ori. Hãy chọn một thiết bị để thử lại.',close:'Đóng'},
+    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Địa chỉ',phoneLbl:'iPhone',syncLbl:'Đồng bộ',
+      notPaired:'Chưa ghép nối',justNow:'Vừa xong',minAgo:'{n} phút trước',unknown:'Chưa rõ'},
+    iphoneInfoModal:{missedLbl:'Cuộc gọi',unreadLbl:'Tin chưa đọc',sigLbl:'Tín hiệu',notifLbl:'Thông báo'},
+    ancsList:{titles:{missed:'Cuộc gọi',unread:'Tin nhắn',other:'Thông báo'},
+      empty:{missed:'Không có cuộc gọi',unread:'Không có tin nhắn',other:'Không có thông báo'},
+      silentBadge:'Im lặng',silentTitle:'Gửi ở chế độ im lặng',readAll:'Đọc tất cả',
+      dismissFallback:'Bỏ qua',closeFallback:'Đóng',messagesCount:'{n} tin nhắn',
+      justNow:'Vừa xong',minAgo:'{n} phút trước',hourAgo:'{n} giờ trước',dayAgo:'{n} ngày trước'},
+    incomingCall:{incoming:'Cuộc gọi đến',onCall:'Đang gọi',endCall:'Kết thúc cuộc gọi',
+      answerFallback:'Trả lời',declineFallback:'Từ chối',unknownCaller:'Không rõ số',
+      dismissRingingTitle:'Bỏ qua — cuộc gọi vẫn đổ chuông',hideActiveTitle:'Ẩn — cuộc gọi vẫn tiếp tục'},
     settings:{title:'Cài đặt',general:'Chung',auto:'Tự động chạy',autoSub:'Khởi động cùng Windows',
       calendar:'Nguồn lịch',language:'Ngôn ngữ',about:'Giới thiệu',app:'Phiên bản',reset:'Đặt lại'},
-    main:{connected:'Đã kết nối',syncing:'Đang đồng bộ…',disconnected:'Đã ngắt kết nối',timeOff:'Nghỉ phép',
+    main:{connected:'Đã kết nối',connecting:'Đang kết nối…',syncing:'Đang đồng bộ…',disconnected:'Đã ngắt kết nối',timeOff:'Nghỉ phép',
       noTimeOffPlanned:'Chưa có lịch nghỉ phép',tapToSet:'Nhấn để đặt',notifFilterRow:'Bộ lọc thông báo',
       clockFaceRow:'Mặt đồng hồ',timeFormatRow:'Định dạng giờ',quickActionsRow:'Thao tác nhanh',presenceAvailable:'Đang hoạt động',
-      settingsIcoTitle:'Cài đặt',minimizeIcoTitle:'Thu nhỏ',fwUpToDate:'Firmware đã mới nhất',fwAvailable:'Có bản cập nhật firmware'},
+      settingsIcoTitle:'Cài đặt',minimizeIcoTitle:'Thu nhỏ',fwUpToDate:'Firmware đã mới nhất',fwAvailable:'Có bản cập nhật firmware',
+      phoneConnectedTitle:'{name} — Đã kết nối',phoneDisconnectedTitle:'iPhone đã ngắt kết nối',phoneUnknownName:'iPhone',
+      reconnectTitle:'Kết nối lại'},
     profileEditor:{title:'Hồ sơ'},
     timeOffEditor:{periodLbl:'Khoảng thời gian',selectDates:'Chọn ngày…',selectStartDate:'Chọn ngày bắt đầu',
       selectEndDate:'Bây giờ chọn ngày kết thúc',destinationLbl:'Điểm đến',destinationPh:'Thành phố, Quốc gia',
@@ -1044,7 +2242,7 @@ const I18N={
       signInMicrosoft:'Đăng nhập bằng Microsoft',signOutMicrosoft:'Đăng xuất khỏi Microsoft'},
     quickActions:{slotPrefix:'Khe',notSet:'Chưa đặt',clickToSet:'Nhấn để đặt',clickToChange:'Nhấn để đổi',
       pressShortcut:'Nhấn tổ hợp phím…',escToCancel:'Nhấn Esc để hủy',
-      actionLabels:{'vol-mute':'Tắt âm lượng','mic-mute':'Tắt mic',screenshot:'Chụp màn hình','lock-screen':'Khóa màn hình',favorite:'Yêu thích',calculator:'Máy tính'}},
+      actionLabels:{'vol-mute':'Tắt âm lượng','mic-mute':'Tắt mic',screenshot:'Công cụ cắt','lock-screen':'Khóa màn hình','favorite-1':'Yêu thích 1','favorite-2':'Yêu thích 2','favorite-3':'Yêu thích 3',calculator:'Máy tính',copy:'Sao chép',cut:'Cắt',paste:'Dán',undo:'Hoàn tác',redo:'Làm lại',save:'Lưu'}},
     clockFace:{digitalLbl:'Số',digitalSub:'Chữ số lớn',analogLbl:'Kim',analogSub:'Mặt số kim chỉ giờ'},
     timeFormat:{h24Lbl:'24 giờ',h24Sub:'VD: 14:30',h12Lbl:'12 giờ',h12Sub:'VD: 2:30 CH'},
     notifFilter:{disabledLbl:'Tắt',disabledSub:'Không hiển thị thông báo trên Ori',callOnlyLbl:'Chỉ cuộc gọi',
@@ -1054,6 +2252,9 @@ const I18N={
     resetModal:{title:'Đặt lại',
       body:'Việc này sẽ xóa hồ sơ, cài đặt của bạn, và đặt lại Ori về mặc định gốc.',
       reset:'Đặt lại'},
+    unpairPhoneModal:{title:'Hủy ghép nối iPhone',
+      body:'Ori sẽ không còn hiển thị thông báo từ {name} nữa.',
+      fallbackName:'iPhone đã ghép nối',unpair:'Hủy ghép nối'},
     fwModal:{title:'Có bản cập nhật Ori',update:'Cập nhật',
       updatingFirmware:'Đang cập nhật Ori…',keepPluggedIn:'Giữ Ori được cắm điện',verifying:'Đang xác minh…',
       nowRunning:'Đang chạy {v}',done:'Hoàn tất',
@@ -1079,16 +2280,29 @@ const I18N={
       emailLbl:'Correo',emailPh:'nombre@empresa.com',phoneLbl:'Teléfono',phonePh:'+34 600 000 000',next:'Siguiente'},
     discover:{editProfile:'Editar perfil',title:'Selecciona tu Ori',sub:'Asegúrate de que Ori esté encendido y en modo de emparejamiento.',
       scanning:'Buscando dispositivos Ori cercanos…',rescan:'Buscar de nuevo',strongSignal:'Señal fuerte',weakSignal:'Señal débil'},
-    passkey:{title:'Confirmar emparejamiento',bodyPre:'Windows te pedirá confirmar un código de emparejamiento — comprueba que coincide con el código de 6 dígitos que aparece en ',bodySuf:', y acéptalo allí.',cancel:'Cancelar'},
+    passkey:{title:'Introduce el código',bodyPre:'Introduce el código de 6 dígitos que aparece en ',bodySuf:'.',cancel:'Cancelar',pair:'Emparejar'},
     connecting:{title:'Emparejando con Ori…',sub:'Esperando confirmación de Ori…'},
     syncing:{title:'Configurando Ori…',progressLabel:'Un día ocupado por delante…',doneLabel:'¡Ori está listo!'},
     pairfail:{title:'No se pudo emparejar con Ori',body:'El código no coincidió, o la solicitud caducó en Ori. Elige un dispositivo para intentarlo de nuevo.',close:'Cerrar'},
+    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Dirección',phoneLbl:'iPhone',syncLbl:'Sincronizado',
+      notPaired:'No vinculado',justNow:'Ahora mismo',minAgo:'Hace {n} min',unknown:'Desconocido'},
+    iphoneInfoModal:{missedLbl:'Llamadas',unreadLbl:'Mensajes sin leer',sigLbl:'Señal',notifLbl:'Notificaciones'},
+    ancsList:{titles:{missed:'Llamadas',unread:'Mensajes',other:'Notificaciones'},
+      empty:{missed:'Sin llamadas',unread:'Sin mensajes',other:'Sin notificaciones'},
+      silentBadge:'Silencio',silentTitle:'Entregada en silencio',readAll:'Leer todo',
+      dismissFallback:'Descartar',closeFallback:'Cerrar',messagesCount:'{n} mensajes',
+      justNow:'Ahora mismo',minAgo:'Hace {n} min',hourAgo:'Hace {n} h',dayAgo:'Hace {n} d'},
+    incomingCall:{incoming:'Llamada entrante',onCall:'En llamada',endCall:'Finalizar llamada',
+      answerFallback:'Responder',declineFallback:'Rechazar',unknownCaller:'Número desconocido',
+      dismissRingingTitle:'Descartar — la llamada sigue sonando',hideActiveTitle:'Ocultar — la llamada sigue en curso'},
     settings:{title:'Configuración',general:'General',auto:'Iniciar automáticamente',autoSub:'Abrir al iniciar Windows',
       calendar:'Fuente de calendario',language:'Idioma',about:'Acerca de',app:'Versión',reset:'Restablecer'},
-    main:{connected:'Conectado',syncing:'Sincronizando…',disconnected:'Desconectado',timeOff:'Tiempo libre',
+    main:{connected:'Conectado',connecting:'Conectando…',syncing:'Sincronizando…',disconnected:'Desconectado',timeOff:'Tiempo libre',
       noTimeOffPlanned:'Sin tiempo libre planeado',tapToSet:'Toca para configurar',notifFilterRow:'Filtro de notificaciones',
       clockFaceRow:'Esfera del reloj',timeFormatRow:'Formato de hora',quickActionsRow:'Acciones rápidas',presenceAvailable:'Disponible',
-      settingsIcoTitle:'Configuración',minimizeIcoTitle:'Minimizar',fwUpToDate:'Firmware actualizado',fwAvailable:'Actualización de firmware disponible'},
+      settingsIcoTitle:'Configuración',minimizeIcoTitle:'Minimizar',fwUpToDate:'Firmware actualizado',fwAvailable:'Actualización de firmware disponible',
+      phoneConnectedTitle:'{name} — Conectado',phoneDisconnectedTitle:'iPhone desconectado',phoneUnknownName:'iPhone',
+      reconnectTitle:'Reconectar'},
     profileEditor:{title:'Perfil'},
     timeOffEditor:{periodLbl:'Periodo',selectDates:'Selecciona fechas…',selectStartDate:'Selecciona la fecha de inicio',
       selectEndDate:'Ahora selecciona la fecha de fin',destinationLbl:'Destino',destinationPh:'Ciudad, país',
@@ -1098,7 +2312,7 @@ const I18N={
       signInMicrosoft:'Iniciar sesión con Microsoft',signOutMicrosoft:'Cerrar sesión de Microsoft'},
     quickActions:{slotPrefix:'Ranura',notSet:'Sin definir',clickToSet:'Haz clic para definir',clickToChange:'Haz clic para cambiar',
       pressShortcut:'Presiona el atajo…',escToCancel:'Esc para cancelar',
-      actionLabels:{'vol-mute':'Silenciar volumen','mic-mute':'Silenciar micrófono',screenshot:'Captura de pantalla','lock-screen':'Bloquear pantalla',favorite:'Favorito',calculator:'Calculadora'}},
+      actionLabels:{'vol-mute':'Silenciar volumen','mic-mute':'Silenciar micrófono',screenshot:'Herramienta de recorte','lock-screen':'Bloquear pantalla','favorite-1':'Favorito 1','favorite-2':'Favorito 2','favorite-3':'Favorito 3',calculator:'Calculadora',copy:'Copiar',cut:'Cortar',paste:'Pegar',undo:'Deshacer',redo:'Rehacer',save:'Guardar'}},
     clockFace:{digitalLbl:'Digital',digitalSub:'Dígitos grandes',analogLbl:'Analógico',analogSub:'Esfera con agujas'},
     timeFormat:{h24Lbl:'24 horas',h24Sub:'p. ej. 14:30',h12Lbl:'12 horas',h12Sub:'p. ej. 2:30 p.m.'},
     notifFilter:{disabledLbl:'Desactivado',disabledSub:'No se muestran notificaciones en Ori',callOnlyLbl:'Solo llamadas',
@@ -1108,6 +2322,9 @@ const I18N={
     resetModal:{title:'Restablecer',
       body:'Esto eliminará tu perfil, tus ajustes, y restablecerá Ori a los valores de fábrica.',
       reset:'Restablecer'},
+    unpairPhoneModal:{title:'Desvincular iPhone',
+      body:'Ori dejará de mostrar notificaciones de {name}.',
+      fallbackName:'El iPhone vinculado',unpair:'Desvincular'},
     fwModal:{title:'Actualización de Ori disponible',update:'Actualizar',
       updatingFirmware:'Actualizando Ori…',keepPluggedIn:'Mantén Ori conectado',verifying:'Verificando…',
       nowRunning:'Ahora ejecutando {v}',done:'Listo',
@@ -1133,16 +2350,29 @@ const I18N={
       emailLbl:'E-mail',emailPh:'nom@entreprise.com',phoneLbl:'Téléphone',phonePh:'+33 6 00 00 00 00',next:'Suivant'},
     discover:{editProfile:'Modifier le profil',title:'Sélectionnez votre Ori',sub:"Assurez-vous qu'Ori est allumé et en mode d'appairage.",
       scanning:"Recherche d'appareils Ori à proximité…",rescan:'Rescanner',strongSignal:'Signal fort',weakSignal:'Signal faible'},
-    passkey:{title:'Confirmer le jumelage',bodyPre:'Windows va vous demander de confirmer un code de jumelage — vérifiez qu\'il correspond au code à 6 chiffres affiché sur ',bodySuf:', puis acceptez-le.',cancel:'Annuler'},
+    passkey:{title:'Saisir le code',bodyPre:'Saisissez le code à 6 chiffres affiché sur ',bodySuf:'.',cancel:'Annuler',pair:'Appairer'},
     connecting:{title:'Appairage avec Ori…',sub:"En attente de confirmation d'Ori…"},
     syncing:{title:"Configuration d'Ori…",progressLabel:'Une journée bien remplie vous attend…',doneLabel:'Ori est configuré !'},
     pairfail:{title:"Impossible d'appairer avec Ori",body:'Le code ne correspondait pas, ou la demande a expiré sur Ori. Choisissez un appareil pour réessayer.',close:'Fermer'},
+    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Adresse',phoneLbl:'iPhone',syncLbl:'Synchronisé',
+      notPaired:'Non associé',justNow:"À l'instant",minAgo:'Il y a {n} min',unknown:'Inconnu'},
+    iphoneInfoModal:{missedLbl:'Appels',unreadLbl:'Messages non lus',sigLbl:'Signal',notifLbl:'Notifications'},
+    ancsList:{titles:{missed:'Appels',unread:'Messages',other:'Notifications'},
+      empty:{missed:'Aucun appel',unread:'Aucun message',other:'Aucune notification'},
+      silentBadge:'Silencieux',silentTitle:'Livrée en mode silencieux',readAll:'Tout lire',
+      dismissFallback:'Ignorer',closeFallback:'Fermer',messagesCount:'{n} messages',
+      justNow:"À l'instant",minAgo:'Il y a {n} min',hourAgo:'Il y a {n} h',dayAgo:'Il y a {n} j'},
+    incomingCall:{incoming:'Appel entrant',onCall:'En appel',endCall:"Terminer l'appel",
+      answerFallback:'Répondre',declineFallback:'Refuser',unknownCaller:'Numéro inconnu',
+      dismissRingingTitle:"Ignorer — l'appel continue de sonner",hideActiveTitle:"Masquer — l'appel continue"},
     settings:{title:'Paramètres',general:'Général',auto:'Démarrage automatique',autoSub:'Lancer au démarrage de Windows',
       calendar:'Source de calendrier',language:'Langue',about:'À propos',app:'Version',reset:'Réinitialiser'},
-    main:{connected:'Connecté',syncing:'Synchronisation…',disconnected:'Déconnecté',timeOff:'Congé',
+    main:{connected:'Connecté',connecting:'Connexion…',syncing:'Synchronisation…',disconnected:'Déconnecté',timeOff:'Congé',
       noTimeOffPlanned:'Aucun congé prévu',tapToSet:'Toucher pour définir',notifFilterRow:'Filtre de notifications',
       clockFaceRow:"Cadran de l'horloge",timeFormatRow:"Format de l'heure",quickActionsRow:'Actions rapides',presenceAvailable:'Disponible',
-      settingsIcoTitle:'Paramètres',minimizeIcoTitle:'Réduire',fwUpToDate:'Firmware à jour',fwAvailable:'Mise à jour du firmware disponible'},
+      settingsIcoTitle:'Paramètres',minimizeIcoTitle:'Réduire',fwUpToDate:'Firmware à jour',fwAvailable:'Mise à jour du firmware disponible',
+      phoneConnectedTitle:'{name} — Connecté',phoneDisconnectedTitle:'iPhone déconnecté',phoneUnknownName:'iPhone',
+      reconnectTitle:'Reconnecter'},
     profileEditor:{title:'Profil'},
     timeOffEditor:{periodLbl:'Période',selectDates:'Sélectionner les dates…',selectStartDate:'Sélectionner la date de début',
       selectEndDate:'Sélectionnez maintenant la date de fin',destinationLbl:'Destination',destinationPh:'Ville, pays',
@@ -1152,7 +2382,7 @@ const I18N={
       signInMicrosoft:'Se connecter avec Microsoft',signOutMicrosoft:'Se déconnecter de Microsoft'},
     quickActions:{slotPrefix:'Emplacement',notSet:'Non défini',clickToSet:'Cliquer pour définir',clickToChange:'Cliquer pour modifier',
       pressShortcut:'Appuyez sur le raccourci…',escToCancel:'Échap pour annuler',
-      actionLabels:{'vol-mute':'Muet volume','mic-mute':'Muet micro',screenshot:"Capture d'écran",'lock-screen':"Verrouiller l'écran",favorite:'Favori',calculator:'Calculatrice'}},
+      actionLabels:{'vol-mute':'Muet volume','mic-mute':'Muet micro',screenshot:'Outil de capture','lock-screen':"Verrouiller l'écran",'favorite-1':'Favori 1','favorite-2':'Favori 2','favorite-3':'Favori 3',calculator:'Calculatrice',copy:'Copier',cut:'Couper',paste:'Coller',undo:'Annuler',redo:'Rétablir',save:'Enregistrer'}},
     clockFace:{digitalLbl:'Numérique',digitalSub:'Grands chiffres',analogLbl:'Analogique',analogSub:'Cadran à aiguilles'},
     timeFormat:{h24Lbl:'24 heures',h24Sub:'ex. 14:30',h12Lbl:'12 heures',h12Sub:'ex. 2:30 PM'},
     notifFilter:{disabledLbl:'Désactivé',disabledSub:'Aucune notification affichée sur Ori',callOnlyLbl:'Appels uniquement',
@@ -1162,6 +2392,9 @@ const I18N={
     resetModal:{title:"Réinitialiser",
       body:"Cela supprimera votre profil, vos réglages, et réinitialisera Ori aux paramètres d'usine.",
       reset:'Réinitialiser'},
+    unpairPhoneModal:{title:"Dissocier l'iPhone",
+      body:"Ori n'affichera plus les notifications de {name}.",
+      fallbackName:"L'iPhone associé",unpair:'Dissocier'},
     fwModal:{title:"Mise à jour d'Ori disponible",update:'Mettre à jour',
       updatingFirmware:"Mise à jour d'Ori…",keepPluggedIn:'Gardez Ori branché',verifying:'Vérification…',
       nowRunning:'Exécute maintenant {v}',done:'Terminé',
@@ -1212,6 +2445,7 @@ function applyI18n(){
   $('suPkBodyPre').textContent=t.passkey.bodyPre;
   $('suPkBodySuf').textContent=t.passkey.bodySuf;
   $('suPkCancelBtn').textContent=t.passkey.cancel;
+  $('suPkPairBtn').textContent=t.passkey.pair;
   $('suConnTitle').textContent=t.connecting.title;
   $('suConnSub').textContent=t.connecting.sub;
   $('suSyncTitle').textContent=t.syncing.title;
@@ -1240,8 +2474,13 @@ function applyI18n(){
   $('mainPText').textContent=t.main.presenceAvailable;
   $('gearIco').title=t.main.settingsIcoTitle;
   $('appMinimizeIco').title=t.main.minimizeIcoTitle;
+  $('reconnectIco').title=t.main.reconnectTitle;
   $('fwIco').title=fwAvail?t.main.fwAvailable:t.main.fwUpToDate;
-  $('hState').textContent={on:t.main.connected,rec:t.main.syncing,off:t.main.disconnected}[connState];
+  // reconnectBusy (scanning, not yet found) overrides connState's own text
+  // the same way setReconnectBusy does — otherwise switching language
+  // mid-attempt would revert "Connecting…" back to "Disconnected" here.
+  $('hState').textContent=reconnectBusy?t.main.connecting:
+    {on:t.main.connected,connecting:t.main.connecting,rec:t.main.syncing,off:t.main.disconnected}[connState];
   // profile editor
   $('pfEditTitle').textContent=t.profileEditor.title;
   $('pfPhotoLbl2').textContent=t.profile.photoLbl;
@@ -1328,6 +2567,19 @@ function applyI18n(){
   $('resetBody').textContent=t.resetModal.body;
   $('resetBtn').textContent=t.resetModal.reset;
   $('resetCancelBtn').textContent=t.common.cancel;
+  $('unpairPhoneTitle').textContent=t.unpairPhoneModal.title;
+  $('unpairPhoneBtn').textContent=t.unpairPhoneModal.unpair;
+  $('unpairPhoneCancelBtn').textContent=t.common.cancel;
+  $('ancsListBackBtn').textContent=t.common.back;
+  // ANCS list/detail and the incoming-call view are built entirely at
+  // open-time (openAncsListModal/openAncsDetail/showIncomingCall/
+  // showActiveCall all read I18N[appLang] fresh on every render) — nothing
+  // else here is static markup that needs a language-switch refresh.
+  // Re-derive rather than translate the last-set string in place: the icon's
+  // tooltip embeds the phone's name and connected/disconnected wording, so a
+  // language switch needs the same status→string logic setPhoneBondStatus
+  // already has, not a copy of it. No-op while nothing has ever been bonded.
+  if(lastPhoneBondStatus.b) setPhoneBondStatus(lastPhoneBondStatus);
   $('fwTitle').textContent=t.fwModal.title;
   $('fwChangelog').innerHTML=t.fwModal.changelog.map(item=>`<li>${item}</li>`).join('');
   $('fwCancelBtn').textContent=t.common.cancel;
@@ -1349,6 +2601,16 @@ function applyI18n(){
 let suPhotoUrl=null,suSelectedDevice=null;
 
 function openSetupWizard(){
+  // Entering first-run setup (fresh boot, factory reset, or a needs-repair
+  // route-back — see the listeners at the bottom of this file) always takes
+  // over the whole panel, so unwind whatever subscreen(s) are currently open
+  // first — Settings -> Calendar Source can nest two deep — rather than
+  // leaving them buried underneath s-setup in the stack. This used to be
+  // handled implicitly (and only one stack level deep) by
+  // dismissTransientScreen()'s old unconditional back() fallthrough; now
+  // that it's scoped to only the connection-gated screens (see its own
+  // comment), this is s-setup's own cleanup to do.
+  while(stack.length) back();
   $('suNmInp').value='';$('suTlInp').value='';$('suEmInp').value='';$('suPhInp').value='';
   cc('suNmInp','suNmCnt',32);cc('suTlInp','suTlCnt',32);cc('suEmInp','suEmCnt',32);cc('suPhInp','suPhCnt',16);
   $('suProfileNext').setAttribute('disabled','');
@@ -1398,6 +2660,9 @@ function suShowStep(name){
 function suShowPairPhase(n){
   [1,2,3].forEach(i=>$('sp'+i).style.display=i===n?'':'none');
   showModal('m-pair');
+  // Phase 1 (Enter Passkey) — let the user start typing the code shown on
+  // Ori's screen immediately, without having to click into the first box.
+  if(n===1) $('suPk0').focus();
 }
 function suGoDiscover(){
   if($('suProfileNext').hasAttribute('disabled')) return;
@@ -1409,30 +2674,99 @@ function suStartScan(){
   $('suScanning').style.display='';$('suDevList').style.display='none';$('suDevList').innerHTML='';
   invoke('ble_scan');
 }
+// Built via DOM APIs, not innerHTML — d.name comes straight off an
+// unauthenticated BLE advertisement (central.rs only checks it starts with
+// "Ori-"; anything can broadcast that). Concatenating it into an HTML string
+// (previously also embedded inside an inline onclick="...") let a
+// maliciously-named nearby device execute script in this webview — which
+// has withGlobalTauri + no CSP, i.e. direct invoke() access to every Tauri
+// command. textContent + addEventListener never parse the name as markup.
 function suRenderDevices(devices){
   const t=I18N[appLang].discover;
-  $('suDevList').innerHTML=devices.map(d=>
-    '<div class="su-dev" onclick="suSelectDevice(\''+d.name+'\')">'+
-      '<div class="su-dev-ico"><div class="wm" style="font-size:12px;"><span class="o">o</span><span class="r">r</span><span class="i">i</span></div></div>'+
-      '<div class="su-dev-info"><div class="su-dev-name">'+d.name+'</div><div class="su-dev-sig">'+(d.strong?t.strongSignal:t.weakSignal)+'</div></div>'+
-      '<div class="chev">›</div>'+
-    '</div>'
-  ).join('')+'<div class="su-rescan" onclick="suStartScan()">⟳ '+t.rescan+'</div>';
+  const list=$('suDevList');
+  list.innerHTML='';
+  devices.forEach(d=>{
+    const row=document.createElement('div');
+    row.className='su-dev';
+    row.addEventListener('click',()=>suSelectDevice(d.name));
+
+    const ico=document.createElement('div');
+    ico.className='su-dev-ico';
+    const wm=document.createElement('div');
+    wm.className='wm';wm.style.fontSize='12px';
+    ['o','r','i'].forEach(ch=>{
+      const span=document.createElement('span');
+      span.className=ch;span.textContent=ch;
+      wm.appendChild(span);
+    });
+    ico.appendChild(wm);
+
+    const info=document.createElement('div');
+    info.className='su-dev-info';
+    const nameEl=document.createElement('div');
+    nameEl.className='su-dev-name';nameEl.textContent=d.name;
+    const sigEl=document.createElement('div');
+    sigEl.className='su-dev-sig';sigEl.textContent=d.strong?t.strongSignal:t.weakSignal;
+    info.appendChild(nameEl);info.appendChild(sigEl);
+
+    const chev=document.createElement('div');
+    chev.className='chev';chev.textContent='›';
+
+    row.appendChild(ico);row.appendChild(info);row.appendChild(chev);
+    list.appendChild(row);
+  });
+  const rescan=document.createElement('div');
+  rescan.className='su-rescan';
+  rescan.textContent='⟳ '+t.rescan;
+  rescan.addEventListener('click',suStartScan);
+  list.appendChild(rescan);
   $('suScanning').style.display='none';$('suDevList').style.display='';
 }
 function suSelectDevice(name){
   suSelectedDevice=name;$('suPasskeyDevName').textContent=name;
+  suResetPasskeyInputs();
   suShowPairPhase(1);
-  invoke('ble_pair',{name,profile:{
-    name:$('suNmInp').value,title:$('suTlInp').value,email:$('suEmInp').value,phone:$('suPhInp').value
+  // Connecting and starting the WinRT pairing ceremony here — not on
+  // submit — is what actually makes Ori generate and show its 6-digit
+  // code; the user needs something to read before they can type it.
+  invoke('ble_start_pairing',{name}).catch(()=>suShowPairFail());
+}
+// Orion is the entry side — Ori displays the 6-digit code on its own screen,
+// the user types it here. On Windows this drives WinRT's
+// DeviceInformationCustomPairing (PairingRequested → ProvidePin), which lets
+// an app own the passkey UI instead of the system flyout. macOS's
+// CoreBluetooth has no equivalent hook (hard platform wall, not yet solved
+// for macOS — that build hasn't started) — deferred until that work begins.
+function suResetPasskeyInputs(){
+  for(let i=0;i<6;i++){$('suPk'+i).value='';}
+}
+function suPkInput(e,idx){
+  const el=e.target;
+  el.value=el.value.replace(/[^0-9]/g,'').slice(-1);
+  if(el.value&&idx<5) $('suPk'+(idx+1)).focus();
+}
+function suPkKeydown(e,idx){
+  if(e.key==='Backspace'&&!e.target.value&&idx>0) $('suPk'+(idx-1)).focus();
+  // Enter submits from any digit box — suSubmitPasskey() already no-ops if
+  // fewer than 6 digits have been entered, so this is safe even mid-typing.
+  if(e.key==='Enter') suSubmitPasskey();
+}
+function suPkPaste(e){
+  const text=e.clipboardData.getData('text').replace(/[^0-9]/g,'').slice(0,6);
+  if(!text.length) return;
+  e.preventDefault();
+  [...text].forEach((ch,i)=>{if($('suPk'+i)) $('suPk'+i).value=ch;});
+  $('suPk'+Math.min(text.length,5)).focus();
+}
+function suSubmitPasskey(){
+  const entered=[0,1,2,3,4,5].map(i=>$('suPk'+i).value).join('');
+  if(entered.length<6) return;
+  suShowPairPhase(2);
+  invoke('ble_submit_passkey',{passkey:entered,profile:{
+    name:$('suNmInp').value,title:$('suTlInp').value,email:$('suEmInp').value,phone:$('suPhInp').value,
+    photoDataUrl:suPhotoUrl
   }}).catch(()=>suShowPairFail());
 }
-// Pairing itself is OS-native (Windows/macOS Bluetooth prompt) — Orion never
-// sees or handles the 6-digit code (setup-flow.md, ble-protocol.md §6.1).
-// sp1 above just tells the user what to expect; the backend drives us
-// through sp2 ('pairing-connecting') then sp3 ('sync-progress') once the OS
-// bond completes and the real BEGIN/END sync starts.
-listen('pairing-connecting',()=>suShowPairPhase(2));
 function suUpdateSyncProgress({pct,label,done}){
   suShowPairPhase(3);
   const ring=$('suRing'),pctEl=$('suPct'),lbl=$('suLbl');
@@ -1441,7 +2775,16 @@ function suUpdateSyncProgress({pct,label,done}){
   lbl.textContent=label||I18N[appLang].syncing.progressLabel;
   if(done) setTimeout(suFinishSetup,1200);
 }
-function suShowPairFail(){hideModal('m-pair');showModal('m-pairfail');}
+// Backing out of the passkey screen before submitting a code — tells the
+// backend to drop the in-flight WinRT pairing ceremony (ble::cancel_pairing)
+// instead of just hiding the modal, which used to leave a blocking-pool
+// thread parked and a polling task running until Ori's own ~30s pairing
+// timeout cleaned it up on its own.
+function suCancelPairing(){
+  hideModal('m-pair');
+  invoke('ble_cancel_pairing');
+}
+function suShowPairFail(){openModalFrom('m-pairfail');}
 function suPairFailClose(){
   hideModal('m-pairfail');
   suShowStep('discover');
@@ -1465,8 +2808,46 @@ function suFinishSetup(){
   }
   hideModal('m-pair');
   setConn('on');
+  // Pop s-setup off the stack ourselves — dismissTransientScreen() (run
+  // inside setConn() above) no longer does this generically, since its
+  // fallthrough is now scoped to only the connection-gated screens (see its
+  // comment). openSetupWizard() guarantees s-setup is the sole stack entry
+  // at this point (nothing else is pushed during the wizard flow — every
+  // step/phase change within it uses suShowStep()/suShowPairPhase(), which
+  // toggle sub-panels in place rather than touching `stack`), so this is
+  // always safe, but the top-of-stack check is a defensive no-op guard in
+  // case that invariant ever changes.
+  if(stack[stack.length-1]==='s-setup') back();
   $('hName').textContent=suSelectedDevice||'Ori-XT-9F';
   $('suRing').style.strokeDashoffset=358;$('suPct').textContent='0%';
+}
+
+// ── Run at login (Settings > General) ───────────────────────────────────────
+// Purely a local OS-level setting (tauri-plugin-autostart, pc-app.md) — no
+// BLE/Ori dependency, so unlike the connection-gated settings (clock face /
+// ANCS filter / shortcuts, hydrated only on a live connect via
+// readSlotsFromDevice) this is fetched once, eagerly, at app bootstrap,
+// alongside get_initial_state below — Settings itself isn't connection-gated
+// either (pc-app.md), so its toggle shouldn't have to wait for one.
+let autostartEnabled=false;
+function setAutostartToggle(enabled){
+  autostartEnabled=enabled;
+  $('autoToggle').classList.toggle('on',enabled);
+}
+// Optimistic flip + revert-on-failure, same pattern as the Save handlers
+// above (e.g. saveProfile's invoke(...).catch(...)) — the toggle isn't a
+// staged Save/Discard subscreen, so there's no pending state to hold; on
+// rejection we just revert the class and log, mirroring how those handlers
+// treat a backend failure as "surface it, don't block the optimistic UI".
+async function toggleAutostart(){
+  const next=!autostartEnabled;
+  setAutostartToggle(next);
+  try{
+    await invoke('set_autostart_enabled',{enabled:next});
+  }catch(e){
+    console.error('set_autostart_enabled failed:',e);
+    setAutostartToggle(!next);
+  }
 }
 
 // ── App bootstrap — real backend wiring (replaces the prototype's fake
@@ -1475,16 +2856,89 @@ initCal(); // after I18N (renderCal reads it for locale-aware month/weekday name
 applyI18n();
 
 listen('conn-state',e=>setConn(e.payload));
+listen('reconnect-attempt',e=>setReconnectBusy(e.payload));
 listen('scan-result',e=>suRenderDevices(e.payload));
 listen('sync-progress',e=>suUpdateSyncProgress(e.payload));
 listen('pairing-failed',()=>suShowPairFail());
+// Backend detected Ori's bond is gone — either it advertised SETUP (a
+// factory reset, ble-protocol.md §7.1) or repeated reconnect attempts kept
+// failing past discovery (the encryption-failure fallback, same section).
+// Either way Orion has already cleared its own local pairing record; route
+// straight back to the setup wizard the same way doClearAll() does.
+listen('needs-repair',()=>{setConn('off');openSetupWizard();});
+listen('phone-bond-status',e=>{
+  setPhoneBondStatus(e.payload);
+  // Ori pushes a fresh notify on every ANCS queue change (missed/unread/
+  // notification counts), not just on connect/disconnect — if the iPhone
+  // Info modal is open when one arrives, refresh it in place so the badges
+  // update live instead of only reflecting the snapshot from when it opened.
+  if($('m-iphone-info').classList.contains('show')) openIphoneInfoModal();
+});
 listen('fw-update-available',e=>{fwAvail=true;orionFwVersion=e.payload.version;
   const ico=$('fwIco');ico.style.display='';ico.classList.add('fw-on');ico.title=I18N[appLang].main.fwAvailable;});
 listen('fw-progress',e=>fwApplyProgress(e.payload));
+// ANCS relay (chars 0010/0011, ble-protocol.md §13) — feeds ANCS_STORE and
+// the incoming-call takeover. See the ANCS drill-down / incoming-call
+// sections above for the store, rendering, and action-write functions this
+// drives.
+listen('ancs-notification',e=>{
+  const n=e.payload;
+  dlog('[ORION-DEBUG] ancs-notification event: '+JSON.stringify(n));
+  if(n.o==='add'){
+    const bucket=ancsUpsert(n);
+    dlog('[ORION-DEBUG]   add -> bucket='+bucket+', store now: missed='+ANCS_STORE.missed.size+' unread='+ANCS_STORE.unread.size+' other='+ANCS_STORE.other.size);
+    ancsRefreshOpenList(bucket);
+    ancsRefreshIphoneInfoIfOpen();
+    return;
+  }
+  if(n.o==='remove'){
+    const bucket=ancsRemove(n.u);
+    dlog('[ORION-DEBUG]   remove u='+n.u+' -> bucket='+bucket);
+    if(!bucket) return; // never relayed to Orion in the first place — harmless no-op, same as on Ori itself
+    if(!ancsCloseStaleDetail(n.u,bucket)) ancsRefreshOpenList(bucket);
+    ancsRefreshIphoneInfoIfOpen();
+    return;
+  }
+  if(n.o==='clear'){
+    dlog('[ORION-DEBUG]   clear -> wiping ANCS_STORE');
+    // Full clear-and-repopulate (an ANCS filter change, ble-protocol.md
+    // §13) — every currently-shown uid in any open detail is gone, and any
+    // open list is now empty, regardless of which bucket either was showing.
+    const detailBucket=$('ancsDetailCard').dataset.bucket;
+    const detailWasOpen=$('m-ancs-detail').classList.contains('show');
+    ancsClearAll();
+    if(detailWasOpen) ancsBackToList(detailBucket); // closes detail, re-renders its (now-empty) list
+    else if($('m-ancs-list').classList.contains('show')) openAncsListModal($('ancsListBody').dataset.bucket);
+    ancsRefreshIphoneInfoIfOpen();
+  }
+});
+listen('ancs-call-state',e=>{
+  const c=e.payload;
+  // Remember the live call so the header chip can reopen it and knows which
+  // app icon to draw; cleared on st:0. Applies equally to a call relayed by
+  // resync_orion_call_state the instant Orion (re)connects — that's what makes
+  // an already-ringing/ongoing call show up immediately (ble-protocol.md §13).
+  currentCall=(c.st===1||c.st===2)?c:null;
+  if(c.st===1) showIncomingCall(c);
+  else if(c.st===2) showActiveCall(c);
+  else { callSessionStop(); hideModal('m-incoming-call'); }
+  updateCallChip();
+});
 listen('orion-update-available',e=>{orionUpdateAvail=true;orionUpdateVersion=e.payload.version;updateOrionUpdateRow();});
 listen('orion-update-progress',e=>ouApplyProgress(e.payload));
 
 invoke('get_initial_state').then(state=>{
+  hydrateProfileCard(state.profile);
+  hydrateTimeOffCard(state.time_off);
+  // setConn() reveals #s-main (removes .pending-init) — see its own
+  // comment. The unpaired/error paths below leave #s-main hidden;
+  // openSetupWizard()'s #s-setup renders fine as its own overlay
+  // regardless of #s-main's visibility.
   if(state.paired) setConn(state.connection);
   else openSetupWizard();
 }).catch(()=>openSetupWizard());
+
+// Independent of the pairing bootstrap above — a failure here must never
+// route into openSetupWizard() (this has nothing to do with pairing state).
+invoke('get_autostart_enabled').then(setAutostartToggle)
+  .catch(e=>console.error('get_autostart_enabled failed:',e));

@@ -19,12 +19,65 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
-tauri-plugin-opener = "2"
 tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["time", "sync", "rt", "macros"] }
+btleplug = "0.12.0"
+ciborium = "0.2.2"
+sha2 = "0.11.0"
+uuid = "1.23.4"
+serde_bytes = "0.11.19"
+futures = "0.3.32"
+tokio-stream = "0.1.18"
+base64 = "0.22.1"
+# default-features off: the crate's defaults pull in AVIF/AV1 (rav1e/ravif),
+# WebP, TIFF, etc. — Windows GSMTC thumbnails are JPEG or PNG in practice
+# (BMP kept as a cheap fallback); no need for the rest.
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "bmp"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.61", features = ["Win32_Graphics_Gdi", "Win32_Foundation"] }
+# 0.62 (bumped from 0.61 2026-07): btleplug 0.12 itself pins `windows = "0.62"`,
+# so staying on 0.61 here meant our own WinRT/Win32 call sites and btleplug's
+# compiled against two separate copies of the whole windows-rs family
+# (windows-core/windows-future/windows-numerics/...). This bump makes our own
+# code share btleplug's 0.62 copy instead (confirmed via `cargo tree -i
+# windows` — `orion` no longer appears anywhere under the 0.61 subtree). It
+# does NOT fully collapse `windows` to one version binary-wide: tauri/wry/tao/
+# webview2-com (none of which we control here) still pin `windows = "0.61"`
+# transitively, so both 0.61 and 0.62 are still linked into the final binary
+# — just as "tauri's stack (0.61) vs. orion+btleplug (0.62)" instead of the
+# previous "orion+tauri's stack (0.61) vs. btleplug (0.62)". Fully eliminating
+# it would mean bumping tauri/wry/tao themselves, once/if they ship a windows
+# 0.62-compatible release — out of scope here. All 15 feature names below are
+# unchanged between 0.61 and 0.62 (verified against the published feature
+# list) — this was otherwise a pure version bump, no feature renames needed.
+windows = { version = "0.62", features = [
+    "Win32_Graphics_Gdi",
+    "Win32_Foundation",
+    "Win32_System_Time",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_System_Shutdown",
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Devices_Bluetooth",
+    "Devices_Enumeration",
+    "Foundation",
+    "Media_Control",
+    "Storage_Streams",
+] }
+# Must track `windows`'s own windows-core generation (0.3.x here pulls
+# windows-core 0.62.x, matching `windows` 0.62 above) — pinning this to the
+# old 0.2.1 (windows-core ^0.61) while `windows` itself moved to 0.62 would
+# just reintroduce the same duplicate-compile problem one dependency lower,
+# for windows-core specifically. As of windows-future 0.3.2, `windows`'s own
+# default "std" feature already forwards to "windows-future/std" (unlike
+# 0.61, where it didn't — hence this was originally added as a workaround);
+# kept explicit anyway so `IAsyncOperation<T>: IntoFuture` (needed for
+# `.await` on WinRT async calls, `media.rs`/`pairing.rs`) doesn't silently
+# depend on `windows`'s default feature set never changing again.
+windows-future = { version = "0.3", features = ["std"] }
 
