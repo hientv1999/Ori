@@ -354,11 +354,41 @@ lv_obj_t* create_error(const char* message, lv_event_cb_t on_close) {
     make_title(mid, "Update failed");
     lv_obj_t* g = make_warn_glyph(mid);
     lv_obj_set_style_margin_top(g, 30, 0);
-    lv_obj_t* sub = make_sub(mid,
+
+    // Error text is capped to a fixed viewport — 1.5x the original 2-line
+    // height (3 lines) — rather than an unbounded WRAP height, so a message
+    // that actually renders that tall can't grow past the space this screen
+    // budgets for it and clip behind the Close button below. A message
+    // longer than 3 lines scrolls within this area instead.
+    //
+    // `mid` is a flex-grow column that fills root's content box (root's
+    // height minus its pad_top/pad_bottom), so growing the viewport's height
+    // without also enlarging that box would just eat into `mid`'s own
+    // centering slack rather than move the button. Shrinking root's
+    // pad_bottom by the exact same delta grows the content box (and so
+    // `mid`, and the button that follows it, right after) by that amount —
+    // the button lands lower by exactly the extra height the text area gained.
+    const lv_coord_t line_h     = theme::font_title()->line_height;
+    const lv_coord_t sub_h      = line_h * 3;   // 1.5x the original line_h * 2
+    const lv_coord_t grow_delta = sub_h - (line_h * 2);
+    lv_obj_set_style_pad_bottom(root, 70 - grow_delta, 0);
+
+    lv_obj_t* sub_wrap = lv_obj_create(mid);
+    lv_obj_set_width(sub_wrap, 600);
+    lv_obj_set_height(sub_wrap, sub_h);
+    lv_obj_set_style_bg_opa(sub_wrap, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(sub_wrap, 0, 0);
+    lv_obj_set_style_pad_all(sub_wrap, 0, 0);
+    lv_obj_set_style_pad_top(sub_wrap, 24, 0);
+    lv_obj_add_flag(sub_wrap, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(sub_wrap, LV_OBJ_FLAG_SCROLL_MOMENTUM);
+    lv_obj_set_scroll_dir(sub_wrap, LV_DIR_VER);
+
+    lv_obj_t* sub = make_sub(sub_wrap,
         message ? message : "The update couldn't be installed — try again from Orion");
     lv_obj_set_width(sub, 600);
     lv_label_set_long_mode(sub, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_pad_top(sub, 24, 0);
+
     ui::make_btn(root, "Close", ui::BtnStyle::Tertiary, on_close, nullptr,
                  16, 40, theme::font_title());
     return lv_obj_get_parent(root);

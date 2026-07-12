@@ -1104,6 +1104,20 @@ static void refresh_runtime_left() {
 static void finish_reconnect_now() {
     bool was_overlay          = g_reconnect_overlay_mode;
     bool was_reconnect_screen = (g_state == AppState::RECONNECT_SYNCING);
+    // ota_receiver::dismiss_error() ("Close" on the Update-failed screen)
+    // flips g_ota_state to Idle BEFORE routing through on_reconnect_end() into
+    // here, specifically so this is distinguishable from a background BLE sync
+    // that happens to complete WHILE the Update-failed screen is still up
+    // (gatt_server::set_ota_active(false) already ran when the error screen
+    // appeared, so BLE data writes aren't NACKed during it) — that case must
+    // leave the error screen alone until the user actually taps Close.
+    // on_ota_begin()/ota_show() did a full-screen takeover (load_screen()),
+    // which tears down the runtime screen and nulls g_runtime_body via its
+    // delete callback, so neither branch below would otherwise ever fire for
+    // a real dismiss (only the debug-serial trigger, which uses a separate
+    // unconditional rebuild path, exercised the Close button correctly).
+    bool leaving_ota = (g_state == AppState::OTA_UPDATING) &&
+                        !ota_receiver::is_active();
     g_reconnect_overlay_mode  = false;
     screen_reconnect_syncing::destroy_overlay();
 
@@ -1142,10 +1156,12 @@ static void finish_reconnect_now() {
     // No live calendar screen to refresh in place. Only rebuild if a reconnect
     // SCREEN is actually up — the full-screen fallback shown when the sync began
     // while in Clock/Calendar/media, or a calendar screen that was replaced
-    // mid-sync. A tiny periodic sync arriving while in Clock/Calendar reaches
-    // here with was_reconnect_screen == false and is correctly left alone
-    // (unlike the old unconditional rebuild, which yanked the user out of Clock).
-    if (was_reconnect_screen) {
+    // mid-sync — or we're actually leaving an OTA takeover (see leaving_ota
+    // above). A tiny periodic sync arriving while in Clock/Calendar, or one
+    // that completes in the background while Update-failed is still shown,
+    // reaches here with both flags false and is correctly left alone (unlike
+    // the old unconditional rebuild, which yanked the user out of Clock).
+    if (was_reconnect_screen || leaving_ota) {
         g_force_rebuild = true;
         g_state = AppState::NO_MEETINGS;
         evaluate();
