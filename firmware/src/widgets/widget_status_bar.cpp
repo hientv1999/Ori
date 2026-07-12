@@ -738,7 +738,12 @@ ModeToggleCb g_default_mode_cb  = nullptr;
 TimeTapCb    g_default_time_tap_cb = nullptr;
 TimeLongPressCb g_default_time_long_press_cb = nullptr;
 
-lv_obj_t* create(lv_obj_t* parent) {
+// ===== create() helpers — each builds one section of the bar, in the exact
+// order create() previously built it inline. Split for readability only;
+// no widget, style, or callback wiring changes vs. the prior single-function
+// version. =====
+
+static lv_obj_t* make_bar_container(lv_obj_t* parent) {
     lv_obj_t* bar = lv_obj_create(parent);
     lv_obj_set_size(bar, lv_obj_get_width(parent), HEIGHT);
     lv_obj_set_pos(bar, 0, 0);
@@ -755,7 +760,10 @@ lv_obj_t* create(lv_obj_t* parent) {
 
     lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    return bar;
+}
 
+static StatusBarState* make_bar_state() {
     auto* state = new StatusBarState();
     state->show_datetime     = true;
     state->pc_connected      = g_default_pc_connected;
@@ -769,8 +777,11 @@ lv_obj_t* create(lv_obj_t* parent) {
     state->time_long_press_timer = nullptr;
     state->time_long_press_fired = false;
     state->mode_toggle    = nullptr;
+    return state;
+}
 
-    // ===== Date/time block — tappable to enter Clock mode =====
+// ===== Date/time block — tappable to enter Clock mode =====
+static void make_datetime_block(lv_obj_t* bar, StatusBarState* state) {
     state->datetime_row = lv_obj_create(bar);
     lv_obj_set_size(state->datetime_row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(state->datetime_row, LV_OPA_TRANSP, 0);
@@ -826,8 +837,10 @@ lv_obj_t* create(lv_obj_t* parent) {
     state->date_label = lv_label_create(state->datetime_row);
     lv_obj_set_style_text_color(state->date_label, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
     lv_obj_set_style_text_font(state->date_label, theme::font_meta(), 0);
+}
 
-    // ===== Spacer (flex-grow) =====
+// ===== Spacer (flex-grow) =====
+static void make_spacer(lv_obj_t* bar) {
     lv_obj_t* spacer = lv_obj_create(bar);
     lv_obj_set_flex_grow(spacer, 1);
     lv_obj_set_height(spacer, 1);
@@ -836,21 +849,23 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_style_pad_all(spacer, 0, 0);
     lv_obj_clear_flag(spacer, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(spacer, LV_OBJ_FLAG_CLICKABLE);
+}
 
-    // ===== Right cluster: ANCS row, phone-disconnect, mode-toggle =====
-    //
-    // These three sit directly in the bar's flex (not nested in a
-    // `right_row` container) so the bar's flex algorithm sees all of
-    // them up-front and can size + position them correctly even as
-    // visibility toggles at runtime. An earlier nested-container design
-    // relied on LV_SIZE_CONTENT to re-sum children when visibility
-    // changed; LVGL's flex did not propagate that reliably and the
-    // phone-disconnect glyph ended up stacked on top of the mode-toggle
-    // in the same flex cell. Putting them in the bar directly lets the
-    // bar's flex use the spacer's flex_grow to absorb the slack.
-    //
-    // `ancs_row` is the only sub-container that needs its own flex — for
-    // the variable number of ANCS tiles with the right inter-tile gap.
+// ===== Right cluster: ANCS row, phone-disconnect, mode-toggle =====
+//
+// These three sit directly in the bar's flex (not nested in a
+// `right_row` container) so the bar's flex algorithm sees all of
+// them up-front and can size + position them correctly even as
+// visibility toggles at runtime. An earlier nested-container design
+// relied on LV_SIZE_CONTENT to re-sum children when visibility
+// changed; LVGL's flex did not propagate that reliably and the
+// phone-disconnect glyph ended up stacked on top of the mode-toggle
+// in the same flex cell. Putting them in the bar directly lets the
+// bar's flex use the spacer's flex_grow to absorb the slack.
+//
+// `ancs_row` is the only sub-container that needs its own flex — for
+// the variable number of ANCS tiles with the right inter-tile gap.
+static void make_ancs_row(lv_obj_t* bar, StatusBarState* state) {
     state->ancs_row = lv_obj_create(bar);
     // Width is recomputed by refresh() based on the actual tile count
     // (LV_SIZE_CONTENT does NOT re-expand reliably after lv_obj_delete_children()).
@@ -864,12 +879,13 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_flex_flow(state->ancs_row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(state->ancs_row, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(state->ancs_row, ICON_GAP, 0);
+}
 
+static void make_phone_cluster(lv_obj_t* bar, StatusBarState* state) {
     // Phone icon — direct child of bar, between ANCS and mode-toggle.
     // Always visible; set_phone_connected() recolours it (neutral when
     // connected, danger red when disconnected).
     state->phone_icon = make_phone_icon(bar);
-
 
     // Tap or long-press on the phone-disconnect icon. Deferred via 1ms timer —
     // same pattern as on_mode_toggle_tap/on_time_tap: calling lv_scr_load_anim
@@ -885,7 +901,9 @@ lv_obj_t* create(lv_obj_t* parent) {
     // Paint the glyph colour + ANCS-row visibility for the inherited connection
     // state (make_phone_icon only draws the disconnected glyph).
     set_phone_connected(bar, state->phone_connected);
+}
 
+static void make_mode_toggle_cluster(lv_obj_t* bar, StatusBarState* state) {
     // Mode-toggle — direct child of bar, rightmost when visible.
     state->mode_toggle = make_mode_toggle(bar, state);
     if (!state->pc_connected) {
@@ -895,7 +913,9 @@ lv_obj_t* create(lv_obj_t* parent) {
     // phone, mode). Spacer takes flex_grow=1 → absorbs slack so the
     // right cluster stays anchored to the right edge.
     lv_obj_set_style_pad_column(bar, 16, 0);
+}
 
+static void setup_bar_lifecycle(lv_obj_t* bar, StatusBarState* state) {
     // 1-second timer keeps the clock live without needing the state machine
     // to call refresh() externally. Deleted explicitly on LV_EVENT_DELETE
     // because lv_timer_create() produces a free-standing timer, not a child.
@@ -912,6 +932,18 @@ lv_obj_t* create(lv_obj_t* parent) {
         if (g_active_bar == (lv_obj_t*)lv_event_get_target(e)) g_active_bar = nullptr;
         delete st;
     }, LV_EVENT_DELETE, state);
+}
+
+lv_obj_t* create(lv_obj_t* parent) {
+    lv_obj_t* bar = make_bar_container(parent);
+    auto* state = make_bar_state();
+
+    make_datetime_block(bar, state);
+    make_spacer(bar);
+    make_ancs_row(bar, state);
+    make_phone_cluster(bar, state);
+    make_mode_toggle_cluster(bar, state);
+    setup_bar_lifecycle(bar, state);
 
     refresh(bar);
     return bar;

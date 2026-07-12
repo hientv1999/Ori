@@ -202,14 +202,56 @@ void apply_timeline_visibility(ArtState* s) {
     else         lv_obj_add_flag(s->tl_overlay,   LV_OBJ_FLAG_HIDDEN);
 }
 
+constexpr uint32_t TL_FADE_OUT_MS = 400;
+
+void tl_overlay_opa_cb(void* obj, int32_t v) {
+    lv_obj_set_style_opa(static_cast<lv_obj_t*>(obj), (lv_opa_t)v, 0);
+}
+
+// Runs once the auto-hide fade finishes: actually hides the overlay (so it
+// stops intercepting seek touches once invisible) and restores full opacity
+// for next time — reveal_timeline() always shows the bar instantly, never
+// fading in, so it must not still be transparent on its next reveal.
+void tl_fade_out_done(lv_anim_t* a) {
+    lv_obj_t* overlay = static_cast<lv_obj_t*>(a->var);
+    lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_opa(overlay, LV_OPA_COVER, 0);
+}
+
+// Auto-hide timeout ONLY — fades the bar out over TL_FADE_OUT_MS instead of
+// snapping it away instantly. Every other hide path (track becomes
+// non-seekable, etc.) still goes through apply_timeline_visibility() for an
+// instant hide; only the idle-timeout dismissal should feel gradual.
+void fade_out_timeline(ArtState* s) {
+    if (!s || !s->tl_overlay) return;
+    s->tl_user_visible = false;
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, s->tl_overlay);
+    lv_anim_set_exec_cb(&a, tl_overlay_opa_cb);
+    lv_anim_set_values(&a, LV_OPA_COVER, LV_OPA_TRANSP);
+    lv_anim_set_duration(&a, TL_FADE_OUT_MS);
+    lv_anim_set_path_cb(&a, lv_anim_path_ease_in);
+    lv_anim_set_completed_cb(&a, tl_fade_out_done);
+    lv_anim_start(&a);
+}
+
 // Called on any touch of the art surface (tap, swipe, or a press on the
 // timeline overlay itself) — reveals the bar and (re)starts the 5 s idle
-// countdown. A no-op when nothing is currently seekable: there's nothing to
+// countdown. Always instant, never a fade-in — including cancelling and
+// snapping back from a fade-out that was already in progress, so a touch
+// that lands mid-fade doesn't leave the bar to keep dimming (or get hidden
+// by the fade's own completion callback) right after the user asked to see
+// it again. A no-op when nothing is currently seekable: there's nothing to
 // reveal, and leaving tl_user_visible false in that case means a later
 // track that DOES become seekable doesn't spuriously start out shown from a
 // stale flag.
 void reveal_timeline(ArtState* s) {
     if (!s || !s->tl_seek_eligible) return;
+    if (s->tl_overlay) {
+        lv_anim_delete(s->tl_overlay, tl_overlay_opa_cb);
+        lv_obj_set_style_opa(s->tl_overlay, LV_OPA_COVER, 0);
+    }
     s->tl_user_visible = true;
     apply_timeline_visibility(s);
     if (s->tl_hide_timer) {
@@ -382,8 +424,13 @@ void on_art_gesture(lv_event_t* e) {
     }
 }
 
-lv_obj_t* make_art_block(lv_obj_t* parent, ArtState* s) {
-    // Outer wrapper — fixed size, used as the gesture surface and animation target.
+// ===== make_art_block() helpers — each builds one section of the art
+// block, in the exact order make_art_block() previously built it inline.
+// Split for readability only; no widget, style, or callback wiring changes
+// vs. the prior single-function version. =====
+
+// Outer wrapper — fixed size, used as the gesture surface and animation target.
+static lv_obj_t* make_art_wrap(lv_obj_t* parent, ArtState* s) {
     lv_obj_t* wrap = lv_obj_create(parent);
     s->wrap = wrap;
     lv_obj_set_size(wrap, ART_W, ART_H);
@@ -394,13 +441,13 @@ lv_obj_t* make_art_block(lv_obj_t* parent, ArtState* s) {
     lv_obj_set_style_clip_corner(wrap, true, LV_PART_MAIN);
     lv_obj_clear_flag(wrap, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(wrap, LV_OBJ_FLAG_CLICKABLE);
+    return wrap;
+}
 
-    const auto& m        = app_state::media();
-    const bool has_media = m.has_media;
-
-    // Album art gradient fallback — approximates the HTML prototype's mock
-    // gradient. Always visible behind s->art_img (below), which overlays the
-    // real decoded JPEG from the Media Album Art characteristic once it arrives.
+// Album art gradient fallback — approximates the HTML prototype's mock
+// gradient. Always visible behind s->art_img (below), which overlays the
+// real decoded JPEG from the Media Album Art characteristic once it arrives.
+static void make_art_gradient(lv_obj_t* wrap, ArtState* s) {
     s->art = lv_obj_create(wrap);
     lv_obj_set_size(s->art, ART_W, ART_H);
     lv_obj_align(s->art, LV_ALIGN_CENTER, 0, 0);
@@ -420,10 +467,12 @@ lv_obj_t* make_art_block(lv_obj_t* parent, ArtState* s) {
     lv_obj_set_style_shadow_opa(s->art, LV_OPA_60, LV_PART_MAIN);
     lv_obj_clear_flag(s->art, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(s->art, LV_OBJ_FLAG_CLICKABLE);
+}
 
-    // lv_image overlay — sits on top of the gradient and shows the decoded
-    // JPEG once set_album_art() delivers it. Hidden until then so the
-    // gradient fallback shows through.
+// lv_image overlay — sits on top of the gradient and shows the decoded
+// JPEG once set_album_art() delivers it. Hidden until then so the
+// gradient fallback shows through.
+static void make_art_image(lv_obj_t* wrap, ArtState* s) {
     s->art_img = lv_image_create(wrap);
     lv_obj_set_size(s->art_img, ART_W, ART_H);
     lv_obj_align(s->art_img, LV_ALIGN_CENTER, 0, 0);
@@ -439,13 +488,10 @@ lv_obj_t* make_art_block(lv_obj_t* parent, ArtState* s) {
     } else {
         lv_obj_add_flag(s->art_img, LV_OBJ_FLAG_HIDDEN);
     }
+}
 
-    // Centred play-triangle overlay shown while paused. Drawn via lv_canvas
-    // because LV_SYMBOL_PLAY (FontAwesome U+F04B) is not present in our
-    // custom Montserrat fonts — see make_play_triangle() for the why.
-    s->paused_overlay = make_play_triangle(wrap);
-
-    // Volume HUD — vertical fill bar + percentage text, on the right edge.
+// Volume HUD — vertical fill bar + percentage text, on the right edge.
+static void make_volume_hud(lv_obj_t* wrap, ArtState* s) {
     s->hud = lv_obj_create(wrap);
     lv_obj_set_size(s->hud, 60, 180);
     lv_obj_align(s->hud, LV_ALIGN_RIGHT_MID, -16, 0);
@@ -485,114 +531,134 @@ lv_obj_t* make_art_block(lv_obj_t* parent, ArtState* s) {
     lv_obj_set_style_text_color(s->hud_pct_label, lv_color_white(), 0);
     lv_obj_set_style_text_font(s->hud_pct_label, theme::font_meta(), 0);
     lv_obj_align(s->hud_pct_label, LV_ALIGN_TOP_MID, 0, -28);
+}
 
-    // Timeline bar — always created so update_seek() can show it later when
-    // Orion pushes can_seek=true + position/duration. This avoids the "built
-    // before media arrived" problem where tl_fill was null and update_seek
-    // was a no-op. Always starts HIDDEN regardless of eligibility — the bar
-    // is tap-to-reveal (media-mode.md), not shown-whenever-seekable; the
-    // user must touch the art at least once before it appears.
-    {
-        const uint32_t pos_s  = m.position_s;
-        const uint32_t dur_s  = m.duration_s > 0 ? m.duration_s : 1;
-        const int16_t  bar_w  = ART_W - TL_BAR_PAD * 2;
-        const int16_t  fill_w = (int16_t)((int32_t)bar_w * (int32_t)pos_s / (int32_t)dur_s);
+// Timeline bar — always created so update_seek() can show it later when
+// Orion pushes can_seek=true + position/duration. This avoids the "built
+// before media arrived" problem where tl_fill was null and update_seek
+// was a no-op. Always starts HIDDEN regardless of eligibility — the bar
+// is tap-to-reveal (media-mode.md), not shown-whenever-seekable; the
+// user must touch the art at least once before it appears.
+static void make_timeline_overlay(lv_obj_t* wrap, ArtState* s) {
+    // Re-read current media state — same value make_art_block() read
+    // earlier in the original single-function version; nothing mutates
+    // app_state between then and now within this synchronous UI build.
+    const auto& m        = app_state::media();
+    const bool has_media = m.has_media;
 
-        s->tl_seek_eligible = (has_media && m.can_seek && m.duration_s > 0);
-        s->tl_user_visible  = false;
+    const uint32_t pos_s  = m.position_s;
+    const uint32_t dur_s  = m.duration_s > 0 ? m.duration_s : 1;
+    const int16_t  bar_w  = ART_W - TL_BAR_PAD * 2;
+    const int16_t  fill_w = (int16_t)((int32_t)bar_w * (int32_t)pos_s / (int32_t)dur_s);
 
-        lv_obj_t* overlay = lv_obj_create(wrap);
-        lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);  // tl_user_visible starts false
-        s->tl_overlay = overlay;
-        lv_obj_set_size(overlay, ART_W, TL_OVERLAY_H);
-        lv_obj_align(overlay, LV_ALIGN_BOTTOM_MID, 0, 0);
-        lv_obj_set_style_bg_color(overlay, lv_color_black(), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(overlay, LV_OPA_70, LV_PART_MAIN);
-        lv_obj_set_style_border_width(overlay, 0, LV_PART_MAIN);
-        lv_obj_set_style_pad_all(overlay, 0, LV_PART_MAIN);
-        lv_obj_set_style_radius(overlay, 0, LV_PART_MAIN);
-        lv_obj_clear_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
-        // overlay is intentionally clickable — seek events land here so
-        // they never reach wrap's on_art_gesture handler.
+    s->tl_seek_eligible = (has_media && m.can_seek && m.duration_s > 0);
+    s->tl_user_visible  = false;
 
-        // Track.
-        lv_obj_t* track = lv_obj_create(overlay);
-        lv_obj_set_size(track, bar_w, TL_BAR_H);
-        lv_obj_set_pos(track, TL_BAR_PAD, 8);
-        lv_obj_set_style_radius(track, 2, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(track, lv_color_white(), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(track, LV_OPA_20, LV_PART_MAIN);
-        lv_obj_set_style_border_width(track, 0, LV_PART_MAIN);
-        lv_obj_set_style_pad_all(track, 0, LV_PART_MAIN);
-        lv_obj_clear_flag(track, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_clear_flag(track, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t* overlay = lv_obj_create(wrap);
+    lv_obj_add_flag(overlay, LV_OBJ_FLAG_HIDDEN);  // tl_user_visible starts false
+    s->tl_overlay = overlay;
+    lv_obj_set_size(overlay, ART_W, TL_OVERLAY_H);
+    lv_obj_align(overlay, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_color(overlay, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(overlay, LV_OPA_70, LV_PART_MAIN);
+    lv_obj_set_style_border_width(overlay, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(overlay, 0, LV_PART_MAIN);
+    lv_obj_set_style_radius(overlay, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
+    // overlay is intentionally clickable — seek events land here so
+    // they never reach wrap's on_art_gesture handler.
 
-        // Accent fill — width updated live during seek via s->tl_fill.
-        lv_obj_t* fill = lv_obj_create(track);
-        s->tl_fill = fill;
-        lv_obj_set_size(fill, fill_w, LV_PCT(100));
-        lv_obj_align(fill, LV_ALIGN_LEFT_MID, 0, 0);
-        lv_obj_set_style_radius(fill, 2, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(fill, theme::color(theme::COLOR_ACCENT), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(fill, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_border_width(fill, 0, LV_PART_MAIN);
-        lv_obj_set_style_pad_all(fill, 0, LV_PART_MAIN);
-        lv_obj_clear_flag(fill, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_clear_flag(fill, LV_OBJ_FLAG_CLICKABLE);
+    // Track.
+    lv_obj_t* track = lv_obj_create(overlay);
+    lv_obj_set_size(track, bar_w, TL_BAR_H);
+    lv_obj_set_pos(track, TL_BAR_PAD, 8);
+    lv_obj_set_style_radius(track, 2, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(track, lv_color_white(), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(track, LV_OPA_20, LV_PART_MAIN);
+    lv_obj_set_style_border_width(track, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(track, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(track, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(track, LV_OBJ_FLAG_CLICKABLE);
 
-        // Thumb dot at the playhead — position updated live during seek via s->tl_thumb.
-        lv_obj_t* thumb = lv_obj_create(overlay);
-        s->tl_thumb = thumb;
-        lv_obj_set_size(thumb, TL_THUMB_SZ, TL_THUMB_SZ);
-        lv_obj_set_pos(thumb,
-            TL_BAR_PAD + fill_w - TL_THUMB_SZ / 2,
-            8 - (TL_THUMB_SZ - TL_BAR_H) / 2);
-        lv_obj_set_style_radius(thumb, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(thumb, theme::color(theme::COLOR_ACCENT), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(thumb, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_border_width(thumb, 0, LV_PART_MAIN);
-        lv_obj_set_style_shadow_color(thumb, theme::color(theme::COLOR_ACCENT), LV_PART_MAIN);
-        lv_obj_set_style_shadow_width(thumb, 6, LV_PART_MAIN);
-        lv_obj_set_style_shadow_opa(thumb, LV_OPA_50, LV_PART_MAIN);
-        lv_obj_clear_flag(thumb, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_clear_flag(thumb, LV_OBJ_FLAG_CLICKABLE);
+    // Accent fill — width updated live during seek via s->tl_fill.
+    lv_obj_t* fill = lv_obj_create(track);
+    s->tl_fill = fill;
+    lv_obj_set_size(fill, fill_w, LV_PCT(100));
+    lv_obj_align(fill, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_radius(fill, 2, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(fill, theme::color(theme::COLOR_ACCENT), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(fill, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(fill, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(fill, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(fill, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(fill, LV_OBJ_FLAG_CLICKABLE);
 
-        // Timestamps.
-        char cur_buf[8], dur_buf[8];
-        fmt_time(cur_buf, sizeof(cur_buf), pos_s);
-        fmt_time(dur_buf, sizeof(dur_buf), dur_s);
+    // Thumb dot at the playhead — position updated live during seek via s->tl_thumb.
+    lv_obj_t* thumb = lv_obj_create(overlay);
+    s->tl_thumb = thumb;
+    lv_obj_set_size(thumb, TL_THUMB_SZ, TL_THUMB_SZ);
+    lv_obj_set_pos(thumb,
+        TL_BAR_PAD + fill_w - TL_THUMB_SZ / 2,
+        8 - (TL_THUMB_SZ - TL_BAR_H) / 2);
+    lv_obj_set_style_radius(thumb, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(thumb, theme::color(theme::COLOR_ACCENT), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(thumb, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(thumb, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_color(thumb, theme::color(theme::COLOR_ACCENT), LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(thumb, 6, LV_PART_MAIN);
+    lv_obj_set_style_shadow_opa(thumb, LV_OPA_50, LV_PART_MAIN);
+    lv_obj_clear_flag(thumb, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(thumb, LV_OBJ_FLAG_CLICKABLE);
 
-        s->tl_dur_s = dur_s;
+    // Timestamps.
+    char cur_buf[8], dur_buf[8];
+    fmt_time(cur_buf, sizeof(cur_buf), pos_s);
+    fmt_time(dur_buf, sizeof(dur_buf), dur_s);
 
-        auto make_time_label = [&](const char* text, lv_align_t align, int16_t x_ofs) -> lv_obj_t* {
-            lv_obj_t* lbl = lv_label_create(overlay);
-            lv_label_set_text(lbl, text);
-            lv_obj_set_style_text_font(lbl, theme::font_body(), 0);
-            lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
-            lv_obj_set_style_text_opa(lbl, LV_OPA_80, 0);
-            lv_obj_align(lbl, align, x_ofs, -4);
-            return lbl;
-        };
-        s->tl_cur_label = make_time_label(cur_buf, LV_ALIGN_BOTTOM_LEFT,  TL_BAR_PAD);
-                          make_time_label(dur_buf, LV_ALIGN_BOTTOM_RIGHT, -TL_BAR_PAD);
+    s->tl_dur_s = dur_s;
 
-        // Seek events land on the overlay so they do not reach wrap's on_art_gesture.
-        lv_obj_add_event_cb(overlay, on_seek_gesture, LV_EVENT_PRESSED,    s);
-        lv_obj_add_event_cb(overlay, on_seek_gesture, LV_EVENT_PRESSING,   s);
-        lv_obj_add_event_cb(overlay, on_seek_gesture, LV_EVENT_RELEASED,   s);
-        lv_obj_add_event_cb(overlay, on_seek_gesture, LV_EVENT_PRESS_LOST, s);
+    auto make_time_label = [&](const char* text, lv_align_t align, int16_t x_ofs) -> lv_obj_t* {
+        lv_obj_t* lbl = lv_label_create(overlay);
+        lv_label_set_text(lbl, text);
+        lv_obj_set_style_text_font(lbl, theme::font_body(), 0);
+        lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
+        lv_obj_set_style_text_opa(lbl, LV_OPA_80, 0);
+        lv_obj_align(lbl, align, x_ofs, -4);
+        return lbl;
+    };
+    s->tl_cur_label = make_time_label(cur_buf, LV_ALIGN_BOTTOM_LEFT,  TL_BAR_PAD);
+                      make_time_label(dur_buf, LV_ALIGN_BOTTOM_RIGHT, -TL_BAR_PAD);
 
-        // Auto-hide countdown — created paused; reveal_timeline() resets +
-        // resumes it on every touch, the callback re-pauses itself after
-        // firing so it sits idle (not ticking) between reveals.
-        s->tl_hide_timer = lv_timer_create([](lv_timer_t* t) {
-            auto* st = static_cast<ArtState*>(lv_timer_get_user_data(t));
-            st->tl_user_visible = false;
-            apply_timeline_visibility(st);
-            lv_timer_pause(t);
-        }, TL_AUTO_HIDE_MS, s);
-        lv_timer_pause(s->tl_hide_timer);
-    }
+    // Seek events land on the overlay so they do not reach wrap's on_art_gesture.
+    lv_obj_add_event_cb(overlay, on_seek_gesture, LV_EVENT_PRESSED,    s);
+    lv_obj_add_event_cb(overlay, on_seek_gesture, LV_EVENT_PRESSING,   s);
+    lv_obj_add_event_cb(overlay, on_seek_gesture, LV_EVENT_RELEASED,   s);
+    lv_obj_add_event_cb(overlay, on_seek_gesture, LV_EVENT_PRESS_LOST, s);
+
+    // Auto-hide countdown — created paused; reveal_timeline() resets +
+    // resumes it on every touch, the callback re-pauses itself after
+    // firing so it sits idle (not ticking) between reveals.
+    s->tl_hide_timer = lv_timer_create([](lv_timer_t* t) {
+        auto* st = static_cast<ArtState*>(lv_timer_get_user_data(t));
+        fade_out_timeline(st);
+        lv_timer_pause(t);
+    }, TL_AUTO_HIDE_MS, s);
+    lv_timer_pause(s->tl_hide_timer);
+}
+
+lv_obj_t* make_art_block(lv_obj_t* parent, ArtState* s) {
+    lv_obj_t* wrap = make_art_wrap(parent, s);
+
+    make_art_gradient(wrap, s);
+    make_art_image(wrap, s);
+
+    // Centred play-triangle overlay shown while paused. Drawn via lv_canvas
+    // because LV_SYMBOL_PLAY (FontAwesome U+F04B) is not present in our
+    // custom Montserrat fonts — see make_play_triangle() for the why.
+    s->paused_overlay = make_play_triangle(wrap);
+
+    make_volume_hud(wrap, s);
+    make_timeline_overlay(wrap, s);
 
     // Gesture handlers — bound to the wrapper so the art + overlays move
     // as one when LVGL dispatches events.
@@ -619,7 +685,8 @@ lv_obj_t* make_meta_block(lv_obj_t* parent, ArtState* s) {
     lv_obj_set_flex_align(meta, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     const auto& m = app_state::media();
-    const bool has = m.has_media;
+    const bool has        = m.has_media && m.title[0];
+    const bool has_artist = has && m.artist[0];
 
     // LV_LABEL_LONG_DOT in LVGL 8.x truncates only when the label's HEIGHT
     // is constrained to a single line — otherwise the label grows to a
@@ -641,10 +708,13 @@ lv_obj_t* make_meta_block(lv_obj_t* parent, ArtState* s) {
     // Box height matches the font's real line_height (32), same reasoning
     // as the title box above. pad_top is the actual (flex-layout) gap from
     // the title now — no more negative translate_y faking a tighter gap.
+    // Checked independently of `has` (title's own presence) — a track with a
+    // title but no artist tag must still fall back to "No artist" rather than
+    // render blank; same independent check update_meta() already applies.
     s->artist_label = lv_label_create(meta);
     lv_obj_set_size(s->artist_label, META_W, 32);
     lv_label_set_long_mode(s->artist_label, LV_LABEL_LONG_DOT);
-    lv_label_set_text(s->artist_label, has ? m.artist : "No artist");
+    lv_label_set_text(s->artist_label, has_artist ? m.artist : "No artist");
     lv_obj_set_style_text_color(s->artist_label, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
     lv_obj_set_style_text_font(s->artist_label, theme::font_meta(), 0);
     lv_obj_set_style_text_align(s->artist_label, LV_TEXT_ALIGN_CENTER, 0);
