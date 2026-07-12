@@ -137,6 +137,15 @@ void init() {
 TouchPoint last_frame[5] = {};
 uint8_t    last_count    = 0;
 
+// Shared by every "nothing new to report" exit in poll() below (no pending
+// IRQ, a bus error, or the GT911's buffer-ready bit still clear) — all three
+// mean the same thing: hold last state, don't flap. Same copy + return
+// `last_frame`/`last_count` that each site performed inline before.
+static uint8_t return_cached(TouchPoint out[5]) {
+    for (uint8_t i = 0; i < 5; ++i) out[i] = last_frame[i];
+    return last_count;
+}
+
 uint8_t poll(TouchPoint out[5]) {
     // ISR-gated read: only hit the I²C bus when the GT911 INT line has pulsed.
     //
@@ -147,24 +156,21 @@ uint8_t poll(TouchPoint out[5]) {
     // keeps returning until the GT911 reports 0) while eliminating idle I²C
     // transactions that would otherwise fire 5× per GT911 frame.
     if (!touch_pending) {
-        for (uint8_t i = 0; i < 5; ++i) out[i] = last_frame[i];
-        return last_count;
+        return return_cached(out);
     }
     touch_pending = false;  // ack the edge before the read so a race re-arms it
 
     uint8_t status = 0;
     if (!read_reg16(REG_STATUS, &status, 1)) {
         // Bus error — hold last state to avoid flapping.
-        for (uint8_t i = 0; i < 5; ++i) out[i] = last_frame[i];
-        return last_count;
+        return return_cached(out);
     }
 
     // Bit 7 (0x80) = "buffer ready". If clear, the GT911 hasn't
     // published a new frame since our last read. The finger may still
     // be down — return what we last saw.
     if ((status & 0x80) == 0) {
-        for (uint8_t i = 0; i < 5; ++i) out[i] = last_frame[i];
-        return last_count;
+        return return_cached(out);
     }
 
     // Fresh frame.

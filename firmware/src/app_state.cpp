@@ -190,6 +190,17 @@ static AncsDetailEntry* newest_detail_for_token(const char* token) {
     return best;
 }
 
+// Find the live detail entry for a UID (nullptr = none). Shared first-match
+// linear scan used by every uid-keyed lookup/mutator below — same "for (auto&
+// e : k_detail) if (e.used && e.uid == uid)" loop each of them used to spell
+// out individually, same iteration order (k_detail's storage order), same
+// empty-array behaviour (data==nullptr/n==0 before app_state::init() runs,
+// which every one of these callers already tolerated identically).
+static AncsDetailEntry* find_by_uid(uint32_t uid) {
+    for (auto& e : k_detail) if (e.used && e.uid == uid) return &e;
+    return nullptr;
+}
+
 void dismiss_ancs_notification(const char* token) {
     if (!token) return;
     // Drop the detail entry the modal was showing (the newest for this token),
@@ -213,8 +224,7 @@ void set_ancs_detail(uint32_t uid, const char* token, const char* display_name,
                      const char* pos_label, const char* neg_label, bool neg_action) {
     // Reuse the slot for this uid (Modified), else a free slot, else evict the
     // oldest (lowest seq) so a full queue keeps the most recent detail.
-    AncsDetailEntry* slot = nullptr;
-    for (auto& e : k_detail) if (e.used && e.uid == uid) { slot = &e; break; }
+    AncsDetailEntry* slot = find_by_uid(uid);
     if (!slot) for (auto& e : k_detail) if (!e.used) { slot = &e; break; }
     if (!slot) { slot = &k_detail[0]; for (auto& e : k_detail) if (e.seq < slot->seq) slot = &e; }
 
@@ -247,27 +257,27 @@ void set_ancs_display_name_for_bundle(const char* bundle, const char* name) {
 }
 
 uint8_t ancs_category(uint32_t uid) {
-    for (auto& e : k_detail) if (e.used && e.uid == uid) return e.category;
-    return AncsCategory::OTHER;
+    AncsDetailEntry* d = find_by_uid(uid);
+    return d ? d->category : AncsCategory::OTHER;
 }
 
 bool ancs_is_important(uint32_t uid) {
-    for (auto& e : k_detail) if (e.used && e.uid == uid) return e.important;
-    return false;
+    AncsDetailEntry* d = find_by_uid(uid);
+    return d ? d->important : false;
 }
 
 time_t ancs_recv_epoch(uint32_t uid) {
-    for (auto& e : k_detail) if (e.used && e.uid == uid) return e.recv_epoch;
-    return 0;
+    AncsDetailEntry* d = find_by_uid(uid);
+    return d ? d->recv_epoch : 0;
 }
 
 const char* ancs_title(uint32_t uid) {
-    for (auto& e : k_detail) if (e.used && e.uid == uid) return e.title;
-    return "";
+    AncsDetailEntry* d = find_by_uid(uid);
+    return d ? d->title : "";
 }
 
 void remove_ancs_detail(uint32_t uid) {
-    for (auto& e : k_detail) if (e.used && e.uid == uid) { e.used = false; return; }
+    if (AncsDetailEntry* d = find_by_uid(uid)) d->used = false;
 }
 
 uint32_t ancs_notification_uid(const char* token) {
@@ -370,16 +380,15 @@ const AncsNotification& ancs_notification(const char* token) {
 }
 
 const AncsNotification& ancs_notification_by_uid(uint32_t uid) {
-    for (auto& e : k_detail) if (e.used && e.uid == uid) return fill_detail_view(&e);
-    return k_ancs_fallback;
+    AncsDetailEntry* d = find_by_uid(uid);
+    return d ? fill_detail_view(d) : k_ancs_fallback;
 }
 
 size_t ancs_collect_same_title(uint32_t uid, uint32_t* out_uids, size_t max) {
     if (!out_uids || max == 0) return 0;
 
     // Find the reference entry whose (token, title) defines the group.
-    AncsDetailEntry* ref = nullptr;
-    for (auto& e : k_detail) if (e.used && e.uid == uid) { ref = &e; break; }
+    AncsDetailEntry* ref = find_by_uid(uid);
     if (!ref) return 0;
 
     // Gather every live entry sharing the reference's app token AND title.

@@ -282,25 +282,24 @@ static bool extract_image_version(const uint8_t* img, uint32_t len,
 
 // Map a protocol failure code to a plain-language line for the Update-failed
 // screen. (The wire still carries the terse code in the REJECT/FAILED frame.)
+// Table-driven — same code -> message mapping as before, just not a chain of
+// separately-typed-out strcmp/return pairs; unmatched codes still fall through
+// to the same generic line.
 static const char* friendly_reason(const char* code) {
-    if (!strcmp(code, "usb_timeout"))
-        return "Lost connection — the USB cable may have come loose. Try again";
-    if (!strcmp(code, "truncated"))
-        return "The download didn't finish — check the cable and try again";
-    if (!strcmp(code, "hash_mismatch"))
-        return "The update was corrupted in transfer (checksum failed)";
-    if (!strcmp(code, "size_overflow"))
-        return "The update package was invalid (size mismatch)";
-    if (!strcmp(code, "flash_error"))
-        return "Couldn't save the update to storage. Try again";
-    if (!strcmp(code, "version_mismatch"))
-        return "The update didn't match its expected version — try again from Orion";
-    if (!strcmp(code, "bad_image"))
-        return "That file isn't a valid Ori firmware image";
-    if (!strcmp(code, "too_large"))
-        return "This update is too large for Ori";
-    if (!strcmp(code, "no_memory"))
-        return "Not enough memory to receive the update. Try again";
+    static const struct { const char* code; const char* message; } kReasons[] = {
+        { "usb_timeout",      "Lost connection — the USB cable may have come loose. Try again" },
+        { "truncated",        "The download didn't finish — check the cable and try again" },
+        { "hash_mismatch",    "The update was corrupted in transfer (checksum failed)" },
+        { "size_overflow",    "The update package was invalid (size mismatch)" },
+        { "flash_error",      "Couldn't save the update to storage. Try again" },
+        { "version_mismatch", "The update didn't match its expected version — try again from Orion" },
+        { "bad_image",        "That file isn't a valid Ori firmware image" },
+        { "too_large",        "This update is too large for Ori" },
+        { "no_memory",        "Not enough memory to receive the update. Try again" },
+    };
+    for (const auto& r : kReasons) {
+        if (!strcmp(code, r.code)) return r.message;
+    }
     return "The update couldn't be completed. Please try again";
 }
 

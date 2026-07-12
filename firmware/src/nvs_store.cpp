@@ -29,6 +29,32 @@ bool g_is_first_boot   = true;
 bool g_awaiting_sync   = false;
 bool g_awaiting_phone  = false;
 
+// Shared body for the small uint8 preferences below (mode, clock_face,
+// time_format, notif_filter): open read-only, read with the same default
+// used on a missing key, close. Mirrors each call site's original
+// prefs.begin/getUChar/end sequence exactly — only the key/default vary.
+uint8_t get_uchar(const char* key, uint8_t dflt) {
+    uint8_t v = dflt;
+    if (prefs.begin(NAMESPACE, /*readOnly=*/true)) {
+        v = (uint8_t)prefs.getUChar(key, dflt);
+        prefs.end();
+    }
+    return v;
+}
+
+// Shared body for the small uint8 preferences below: open read-write, write,
+// close, then log. Logs unconditionally after the attempt, same as every
+// original setter (success or failure of prefs.begin() was never itself
+// logged). `%d` matches every original format string's printed output for a
+// uint8_t value (0-255 always prints identically as %d or %u).
+void set_uchar(const char* key, uint8_t val, const char* log_name) {
+    if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
+        prefs.putUChar(key, val);
+        prefs.end();
+    }
+    LOG("[nvs] %s=%d\n", log_name, (int)val);
+}
+
 } // namespace
 
 namespace nvs {
@@ -122,77 +148,41 @@ bool is_awaiting_phone_pairing() {
 // ── Mode toggle persistence ────────────────────────────────────────────────
 
 uint8_t get_mode() {
-    uint8_t v = 0;  // default: Calendar
-    if (prefs.begin(NAMESPACE, /*readOnly=*/true)) {
-        v = (uint8_t)prefs.getUChar(k_mode, 0);
-        prefs.end();
-    }
-    return v;
+    return get_uchar(k_mode, 0);  // default: Calendar
 }
 
 void set_mode(uint8_t mode) {
-    if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
-        prefs.putUChar(k_mode, mode);
-        prefs.end();
-    }
-    LOG("[nvs] mode=%d\n", (int)mode);
+    set_uchar(k_mode, mode, "mode");
 }
 
 // ── Clock-face preference ──────────────────────────────────────────────────
 
 uint8_t get_clock_face() {
-    uint8_t v = 0;  // default: Digital
-    if (prefs.begin(NAMESPACE, /*readOnly=*/true)) {
-        v = (uint8_t)prefs.getUChar(k_clock_face, 0);
-        prefs.end();
-    }
-    return v;
+    return get_uchar(k_clock_face, 0);  // default: Digital
 }
 
 void set_clock_face(uint8_t face) {
-    if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
-        prefs.putUChar(k_clock_face, face);
-        prefs.end();
-    }
-    LOG("[nvs] clock_face=%d\n", (int)face);
+    set_uchar(k_clock_face, face, "clock_face");
 }
 
 // ── Time format preference (0 = 24-hour, 1 = 12-hour) ──────────────────────
 
 uint8_t get_time_format() {
-    uint8_t v = 0;  // default: 24-hour
-    if (prefs.begin(NAMESPACE, /*readOnly=*/true)) {
-        v = (uint8_t)prefs.getUChar(k_time_format, 0);
-        prefs.end();
-    }
-    return v;
+    return get_uchar(k_time_format, 0);  // default: 24-hour
 }
 
 void set_time_format(uint8_t fmt) {
-    if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
-        prefs.putUChar(k_time_format, fmt);
-        prefs.end();
-    }
-    LOG("[nvs] time_format=%d\n", (int)fmt);
+    set_uchar(k_time_format, fmt, "time_format");
 }
 
 // ── ANCS notification filter ───────────────────────────────────────────────
 
 uint8_t get_notif_filter() {
-    uint8_t v = 0x03;  // default: All
-    if (prefs.begin(NAMESPACE, /*readOnly=*/true)) {
-        v = (uint8_t)prefs.getUChar(k_notif_filter, 0x03);
-        prefs.end();
-    }
-    return v;
+    return get_uchar(k_notif_filter, 0x03);  // default: All
 }
 
 void set_notif_filter(uint8_t level) {
-    if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
-        prefs.putUChar(k_notif_filter, level);
-        prefs.end();
-    }
-    LOG("[nvs] notif_filter=%u\n", (unsigned)level);
+    set_uchar(k_notif_filter, level, "notif_filter");
 }
 
 // ── Shortcut slot tokens ───────────────────────────────────────────────────
