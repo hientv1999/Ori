@@ -19,8 +19,6 @@
 // Declared in gatt_server.cpp — sets the vol-swipe override flag.
 extern "C" void gatt_server_set_vol_swipe_active(bool active);
 
-// Media mode. BLE commands wired in M5.
-
 namespace {
 
 constexpr int16_t LEFT_PANEL_WIDTH  = 528;
@@ -222,8 +220,8 @@ void reveal_timeline(ArtState* s) {
 
 // Seek gesture — bound to the timeline overlay so touches in the bottom 46 px
 // of the art are handled here exclusively and do NOT bubble to on_art_gesture.
-// Drags update the fill/thumb/label live; release emits the seek command stub
-// (M5 fires KeyboardCommand{op:"seek", arg:new_pos}).
+// Drags update the fill/thumb/label live; release emits
+// KeyboardCommand{op:"seek", arg:new_pos}.
 void on_seek_gesture(lv_event_t* e) {
     auto* s = static_cast<ArtState*>(lv_event_get_user_data(e));
     if (!s || !s->tl_fill) return;
@@ -400,9 +398,9 @@ lv_obj_t* make_art_block(lv_obj_t* parent, ArtState* s) {
     const auto& m        = app_state::media();
     const bool has_media = m.has_media;
 
-    // Album art — a solid colored object styled with a gradient that
-    // approximates the HTML prototype's mock gradient. In M5 this becomes
-    // an lv_img driven by the Media Album Art JPEG bytes.
+    // Album art gradient fallback — approximates the HTML prototype's mock
+    // gradient. Always visible behind s->art_img (below), which overlays the
+    // real decoded JPEG from the Media Album Art characteristic once it arrives.
     s->art = lv_obj_create(wrap);
     lv_obj_set_size(s->art, ART_W, ART_H);
     lv_obj_align(s->art, LV_ALIGN_CENTER, 0, 0);
@@ -657,7 +655,7 @@ lv_obj_t* make_meta_block(lv_obj_t* parent, ArtState* s) {
     return meta;
 }
 
-// User-assignable shortcut buttons. M5 wires tap → KeyboardCommand{op:"shortcut", arg:N}.
+// User-assignable shortcut buttons — tap emits KeyboardCommand{op:"shortcut", arg:N}.
 lv_obj_t* make_shortcuts_row(lv_obj_t* parent, ArtState* s) {
     lv_obj_t* row = lv_obj_create(parent);
     // Row box height = button height (72) + internal pad_top (8). Button
@@ -693,7 +691,6 @@ lv_obj_t* make_shortcuts_row(lv_obj_t* parent, ArtState* s) {
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
 
-        // M5: emit KeyboardCommand{op:"shortcut", arg:slot} on tap.
         // slot is 1-indexed per ble-protocol.md. Store as user_data.
         lv_obj_set_user_data(btn, reinterpret_cast<void*>((uintptr_t)(i + 1)));
         lv_obj_add_event_cb(btn, [](lv_event_t* e) {

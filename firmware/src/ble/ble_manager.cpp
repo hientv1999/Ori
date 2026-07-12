@@ -22,7 +22,6 @@
 #include <string.h>
 
 #include "nvs_store.h"
-#include "nvs_sync.h"
 #include "photo_cache.h"
 #include "state_machine.h"
 #include "factory_reset.h"

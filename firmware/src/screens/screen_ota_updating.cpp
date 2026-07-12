@@ -86,9 +86,6 @@ lv_obj_t* create() {
     lv_obj_set_style_text_align(sub, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_top(sub, 24, 0);
 
-    // M5: no mock timer — progress driven by ota_receiver::poll() calling
-    // screen_ota_updating::set_progress() on each USB CDC PROGRESS frame.
-
     lv_obj_set_user_data(screen, state);
     lv_obj_add_event_cb(screen, on_screen_delete, LV_EVENT_DELETE, state);
 

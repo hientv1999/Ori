@@ -227,7 +227,7 @@ static app_state::MeetingList filtered_meetings() {
     return { buf, n };
 }
 
-// Scan the mock meeting list and return true if we just entered a 5-min
+// Scan the runtime meeting list and return true if we just entered a 5-min
 // window for any un-alerted meeting. Populates out_* with the meeting data
 // if returning true.
 static bool check_countdown(const char** out_title,
@@ -248,11 +248,8 @@ static bool check_countdown(const char** out_title,
         long diff = start_s - now_s;
         if (diff < 0 || diff > ALERT_WINDOW_S) continue;
         if (start_mins >= MINUTES_PER_DAY) continue;  // defensive: keep the array index in bounds
+        if (g_alerted_mins[start_mins]) continue;     // already alerted this boot
 
-        // Within the 5-min window — check if already alerted this boot.
-        if (g_alerted_mins[start_mins]) continue;
-
-        // New alert.
         *out_title = m.title;
         *out_org   = m.org;
         *out_loc   = m.loc;

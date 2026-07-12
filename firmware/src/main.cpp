@@ -149,7 +149,7 @@ void setup() {
     screen_manager::init();
     mem_snapshot("after screen_manager");
 
-    // Load cached profile text and photos from NVS before first screen draw.
+    // Load cached profile text from NVS and photos from LittleFS before first screen draw.
     {
         // Buffers sized for the 32/32/32/16-char field limits at worst-case
         // UTF-8 (3 bytes/char for the scripts we ship, e.g. Vietnamese).
@@ -178,7 +178,7 @@ void setup() {
     // load from NVS at boot. After a power cycle the list is empty until Orion
     // reconnects and re-pushes it.
 
-    // M5: OTA receiver + BLE stack.
+    // OTA receiver + BLE stack.
     // ota_receiver must be initialised before ble_manager because it sets up
     // the USB CDC framing parser which runs independently of BLE.
     ota_receiver::init();
@@ -198,7 +198,7 @@ void loop() {
 
     nvs::tick();
 
-    // M5: drain BLE event queue before LVGL so BLE-driven state changes are
+    // Drain BLE event queue before LVGL so BLE-driven state changes are
     // reflected in the current frame. ota_receiver polls USB CDC for OTA frames.
     ble_manager::poll();
     ota_receiver::poll();

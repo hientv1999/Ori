@@ -11,17 +11,17 @@ typedef struct _lv_obj_t lv_obj_t;
 // header just for the show_countdown_if_imminent() parameter type.
 namespace app_state { struct Meeting; }
 
-// Ori — State Machine (M4)
+// Ori — State Machine
 //
 // Owns the left-panel priority logic, periodic ticks, 5-minute pre-meeting
 // alert, Time Off window detection, and meeting expiry.
 //
 // Priority order (highest → lowest):
 //   1. SETUP             — first-boot / factory-reset setup flow
-//   2. OTA_UPDATING      — firmware update in progress (future M5 trigger)
+//   2. OTA_UPDATING      — firmware update in progress
 //   3. TIME_OFF_ACTIVE   — current time within cached Time Off window
 //   4. COUNTDOWN         — 5-min pre-meeting alert modal
-//   5. RECONNECT_SYNCING — Orion reconnected, hash-manifest in progress (M5)
+//   5. RECONNECT_SYNCING — Orion reconnected, hash-manifest sync in progress
 //   6+. Mode-driven (g_mode):
 //       MEETING_LIST / NO_MEETINGS — Calendar mode (mode=0, default)
 //       [Media rendered via MEETING_LIST/NO_MEETINGS path — mode=1]
@@ -101,7 +101,7 @@ void on_unpair_phone();
 // User tapped the mode-toggle button in the status bar.
 void on_mode_toggle();
 
-// Orion began a firmware update over USB CDC (M5 will call this).
+// Orion began a firmware update over USB CDC. Called from ota_receiver.
 void on_ota_begin();
 
 // Load a full-screen OTA takeover screen built by ota_receiver (Firmware
@@ -112,10 +112,10 @@ void ota_show(lv_obj_t* screen);
 // flag and return to normal runtime.
 void on_ota_ack_close();
 
-// BLE reconnect to Orion began — hash-manifest flow starting (M5).
+// BLE reconnect to Orion began — hash-manifest flow starting.
 void on_reconnect_begin();
 
-// BLE reconnect to Orion finished — Device Status → RUNTIME_READY (M5).
+// BLE reconnect to Orion finished — Device Status → RUNTIME_READY.
 void on_reconnect_end();
 
 // Called by screen_meeting_list::create() / screen_no_meetings::create() to
@@ -126,7 +126,7 @@ void on_reconnect_end();
 // deleted.
 void register_runtime_calendar(lv_obj_t* screen, lv_obj_t* body, lv_obj_t* left);
 
-// ── Runtime state setters (called by BLE layer in M5) ─────────────────────
+// ── Runtime state setters (called by the BLE layer) ────────────────────────
 
 // Update whether the BLE PC link is currently up.
 void set_pc_connected(bool connected);
@@ -190,8 +190,8 @@ uint8_t current_mode();
 
 // Clock-face preference (0 = Digital, 1 = Analog) — which screen
 // build_clock_screen() shows for the CLOCK state. Persists immediately to
-// NVS; safe to call from any non-LVGL-timer context (currently the
-// ORI_DEBUG_SERIAL cycler; eventually an Orion-driven BLE write).
+// NVS; safe to call from any non-LVGL-timer context (the ORI_DEBUG_SERIAL
+// cycler, or an Orion-driven Device Settings BLE write).
 void    set_clock_face(uint8_t face);
 uint8_t current_clock_face();
 

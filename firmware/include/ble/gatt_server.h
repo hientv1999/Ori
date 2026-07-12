@@ -12,7 +12,7 @@
 //
 // This file owns:
 //   - Service + characteristic registration with NimBLE
-//   - Read/Write callbacks for all 15 chars
+//   - Read/Write callbacks for all 18 chars
 //   - Chunked reassembly (delegates to chunked_transfer.h for photo/meetings/Time Off/art)
 //   - SHA-256 hash computation and NVS save after SyncControl{op:"END"}
 //   - State machine transitions triggered by GATT events

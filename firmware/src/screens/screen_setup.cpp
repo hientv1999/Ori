@@ -271,7 +271,6 @@ lv_obj_t* make_ok_check(lv_obj_t* parent) {
     return root;
 }
 
-// Forward declarations of step event handlers.
 void on_start_clicked(lv_event_t* e);
 void on_next_clicked(lv_event_t* e);
 void on_skip_phone_clicked(lv_event_t* e);
@@ -448,8 +447,6 @@ void build_complete(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
 
     // Countdown bar — 3 px accent strip at the very bottom of the screen.
     // Drains from full width to zero in 5000 ms, synced with the auto-advance timer.
-
-    // Create and track the countdown bar
     lv_obj_t* bar = lv_bar_create(screen);
     s->countdown_bar = bar;
     lv_obj_set_size(bar, 800, 3);
@@ -490,7 +487,6 @@ void rebuild_for(lv_obj_t* screen, SetupState* s) {
         s->complete_timer = nullptr;
     }
 
-    // Cancel countdown bar animation if it exists
     if (s->countdown_bar) {
         lv_anim_del(s->countdown_bar, NULL);
         s->countdown_bar = nullptr;
@@ -512,7 +508,6 @@ void rebuild_for(lv_obj_t* screen, SetupState* s) {
     lv_obj_set_style_bg_color(s->content, theme::color(theme::COLOR_BG), 0);
     lv_obj_set_style_bg_opa(s->content, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(s->content, 0, 0);
-    // pad_top=20 = content-padding(20)
     lv_obj_set_style_pad_top(s->content, 24, 0);
     lv_obj_set_style_pad_left(s->content, 0, 0);
     lv_obj_set_style_pad_right(s->content, 0, 0);

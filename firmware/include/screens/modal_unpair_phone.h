@@ -7,7 +7,8 @@
 // Triggered when the user wants to remove the current phone BLE bond.
 // Centered alert card with phone icon, "Unpair phone?" heading, body copy,
 // and Cancel + Unpair (danger) buttons.
-// M3 wires Cancel to dismiss; Unpair is a stub (M4 wires to actual bond wipe).
+// Cancel dismisses; Unpair calls state_machine::on_unpair_phone(), which
+// wipes the bond. The user re-pairs later via the status-bar phone icon.
 
 namespace modal_unpair_phone {
 

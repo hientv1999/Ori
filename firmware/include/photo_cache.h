@@ -7,7 +7,7 @@
 // Ori — profile photo decode-once PSRAM cache.
 //
 // The profile photo arrives as a JPEG over BLE (228×228, ≤40 KB).
-// This module persists the raw JPEG to NVS ("photo" namespace) and decodes
+// This module persists the raw JPEG to LittleFS (/photos/) and decodes
 // it once to an RGB565 pixel buffer in PSRAM.  LVGL renders directly from
 // the PSRAM buffer via a static lv_image_dsc_t — zero re-decode per frame.
 //
@@ -21,24 +21,24 @@ namespace photo_cache {
 void mount_fs();
 
 // Called from main setup() after nvs::init().
-// Loads the JPEG from NVS (if present) and decodes it to PSRAM so the
+// Loads the JPEG from LittleFS (if present) and decodes it to PSRAM so the
 // profile card shows the stored photo immediately on boot, before BLE
 // reconnects.
 void init();
 
 // Called when the profile photo BLE transfer completes (from ble_manager
-// poll, on the Arduino main task).  Saves the JPEG to NVS, decodes to
+// poll, on the Arduino main task).  Saves the JPEG to LittleFS, decodes to
 // PSRAM, and calls widget_profile_card::set_photo() on the active screen.
 //
 // The caller transfers ownership of the buffer to photo_cache: do NOT free
 // buf after this call.  photo_cache::store() frees it internally after
-// copying to NVS.
+// copying to LittleFS.
 void store(uint8_t* jpeg, size_t len);
 
 // Returns the decoded profile photo descriptor, or nullptr if none stored.
 const lv_image_dsc_t* get();
 
-// Erases profile photo from NVS and frees PSRAM buffer.
+// Erases profile photo from LittleFS and frees PSRAM buffer.
 void clear();
 
 // Decode a compiled-in placeholder JPEG (228×228) into PSRAM.

@@ -75,7 +75,6 @@ lv_obj_t* create() {
 
     build_ring_contents(left);
 
-    // Clear module-level reference when this screen is deleted.
     lv_obj_add_event_cb(screen, [](lv_event_t*) { g_ring = nullptr; },
                         LV_EVENT_DELETE, nullptr);
 

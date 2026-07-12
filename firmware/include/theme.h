@@ -90,7 +90,7 @@ const lv_font_t* font_meta();         // 24 px — meeting meta line, status bar
 const lv_font_t* font_title();        // 26 px — meeting title, headings
 const lv_font_t* font_h2();           // 28 px — setup section headings
 const lv_font_t* font_time();         // 30 px — status bar time
-const lv_font_t* font_display();      // 36 px — empty state headline / setup welcome
+const lv_font_t* font_display();      // 42 px — empty state headline / setup welcome
 const lv_font_t* font_large();        // 48 px — passkey modal
 const lv_font_t* font_clock_xl();      // 96 px, digits + ':' + '-' only — clock face hour/minute
 const lv_font_t* font_wordmark_xl();   // 90 px, glyphs 'o'/'r'/'i'/space ONLY — boot splash wordmark

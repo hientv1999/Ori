@@ -25,10 +25,13 @@
 //   0x07 VALIDATED   Ori → PC   CBOR: {}
 //   0x08 FAILED      Ori → PC   CBOR: { reason }
 //
-// Reject conditions (ota.md):
-//   - countdown modal active
-//   - total_size > inactive slot capacity
-//   - fw_version matches current firmware
+// BEGIN reject reasons: busy (transfer already in progress), missing_fields,
+// too_large (total_size > inactive slot capacity), no_memory (PSRAM staging
+// alloc failed). END failure reasons: truncated, hash_mismatch, bad_image,
+// version_mismatch (binary's embedded version disagrees with the BEGIN
+// claim — same-version reinstalls and downgrades are allowed). There is no
+// countdown-active reject — a pending meeting never blocks the update. Full
+// list and rationale: ota.md.
 //
 // While OTA is in progress: all BLE data characteristic writes are NACKed
 // (gatt_server::is_ota_active() returns true).

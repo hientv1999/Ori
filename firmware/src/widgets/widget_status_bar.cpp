@@ -643,10 +643,7 @@ void rebuild_mode_toggle_glyph(lv_obj_t* btn, widget_status_bar::Mode mode) {
     }
 }
 
-// Deferred callbacks. Calling state-machine functions directly from within
-// LVGL's event dispatch stack overflows the loopTask stack (NVS flash write +
-// full screen rebuild on top of the event depth). Store the callback here and
-// fire it from a 1 ms one-shot timer at the top of lv_timer_handler().
+// Deferred callbacks — same stack-overflow reason as s_deferred_phone_cb above.
 static std::function<void()> s_deferred_toggle_cb;
 static std::function<void()> s_deferred_time_tap_cb;
 

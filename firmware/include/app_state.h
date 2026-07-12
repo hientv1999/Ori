@@ -5,7 +5,7 @@
 // Holds shared data types and runtime state for subsystems that write from
 // BLE handlers and read from UI screens: ANCS notification queue, media
 // playback state, meeting/Time Off types, and shortcut config.
-// Real data is populated by NVS (M4) and BLE (M5); nothing here is mock.
+// Real data is populated by NVS and BLE; nothing here is mock.
 
 #include <stdint.h>
 #include <stddef.h>
@@ -73,8 +73,8 @@ struct Media {
     const char* artist;
     bool        has_media;
     int         volume;      // 0..100 — mirrors Host Volume State characteristic
-    uint32_t    position_s;  // playback position in seconds — updated by BLE seek (M5)
-    uint32_t    duration_s;  // total track duration in seconds — from MediaMetadata (M5)
+    uint32_t    position_s;  // playback position in seconds — updated by BLE seek
+    uint32_t    duration_s;  // total track duration in seconds — from MediaMetadata
     bool        can_seek;    // mirrors MediaMetadata.can_seek — hides the timeline
                              // scrubber when false (app doesn't support OS seek API)
 };
@@ -97,7 +97,7 @@ constexpr size_t SHORTCUT_COUNT = 3;
 
 // ANCS icon set + phone connectivity.
 //
-// MAX_ANCS_NOTIFICATIONS — internal queue depth. The ANCS handler (M5) tracks
+// MAX_ANCS_NOTIFICATIONS — internal queue depth. The ANCS handler tracks
 //   up to this many live notifications. When a new one arrives and the queue is
 //   full, the oldest entry is displaced (FIFO). When the user reads one (taps
 //   the icon → detail modal → close), the entry is removed and the queue shifts
@@ -143,8 +143,9 @@ void              set_ancs_config(const AncsConfig& cfg);
 void              dismiss_ancs_notification(const char* token);
 
 // ANCS notification content for the detail modal.
-// Fields are populated from ANCS Notification Attribute commands (M5):
-// Title, Message, Date, DisplayName. Returns a generic fallback until M5.
+// Fields are populated from ANCS Notification Attribute commands:
+// Title, Message, Date, DisplayName. Returns a generic fallback until a
+// notification's attributes have arrived.
 struct AncsNotification {
     const char* display_name;   // human-readable app name ("Gmail", "Messenger")
     const char* title;          // notification title / sender name

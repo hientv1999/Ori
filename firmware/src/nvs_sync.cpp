@@ -1,4 +1,4 @@
-﻿// Ori NVS Sync Data — M5
+﻿// Ori NVS Sync Data
 //
 // SHA-256 hashes and profile strings for the hash-manifest delta reconnect.
 // All operations use the same "ori" Preferences namespace as nvs_store.cpp.

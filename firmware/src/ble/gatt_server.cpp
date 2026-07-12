@@ -1,4 +1,4 @@
-// Ori GATT Server — 15 characteristics, ble-protocol.md v1.0.
+// Ori GATT Server — 18 characteristics, ble-protocol.md v1.0.
 //
 // Service UUID: 6F726900-0000-4F72-9F00-000000000000
 // Each char UUID replaces bytes 4-5 with the offset:
@@ -17,6 +17,9 @@
 //   000D Media Album Art         Write no-rsp (enc, chunked)
 //   000E Device Settings         Read+Write (enc) — presence | shortcuts | clock face | ANCS filter
 //   000F Phone Bond Status       Read+Notify (enc)
+//   0010 ANCS Notification       Read+Notify (enc)
+//   0011 ANCS Call State         Read+Notify (enc)
+//   0012 ANCS Notification Action Write (enc)
 //
 // Firmware version no longer rides this service — it's exposed via the BLE
 // SIG standard Device Information Service (0x180A) / Firmware Revision
@@ -72,8 +75,6 @@ void ble_post_ancs_resubscribed_event(bool call_state);
 #include "nvs_sync.h"
 #include "state_machine.h"
 #include "app_state.h"
-#include "widgets/widget_profile_card.h"
-#include "screens/screen_media_mode.h"
 #include "lcd_panel.h"
 #include "ui_helpers.h"
 

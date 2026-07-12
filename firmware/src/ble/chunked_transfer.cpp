@@ -58,7 +58,6 @@ bool feed(Context* ctx, const uint8_t* data, uint16_t len) {
         ctx->buf_len = max_size;
     }
 
-    // Check for gap.
     if (seq_num != ctx->expected_seq) {
         LOG("[chunk] gap: expected seq %u got %u\n",
                        (unsigned)ctx->expected_seq, (unsigned)seq_num);
@@ -69,7 +68,6 @@ bool feed(Context* ctx, const uint8_t* data, uint16_t len) {
         return false;
     }
 
-    // Bounds check before copy.
     if (ctx->received + payload_len > ctx->buf_len) {
         LOG("[chunk] ERROR: overflow in buf\n");
         if (ctx->on_complete) ctx->on_complete(nullptr, 0, "NACK_TOO_LARGE");
@@ -77,7 +75,6 @@ bool feed(Context* ctx, const uint8_t* data, uint16_t len) {
         return false;
     }
 
-    // Append fragment payload.
     memcpy(ctx->buf + ctx->received, payload, payload_len);
     ctx->received     += payload_len;
     ctx->expected_seq++;
@@ -92,7 +89,6 @@ bool feed(Context* ctx, const uint8_t* data, uint16_t len) {
         ctx->on_fragment(seq_num, total_frags, payload_len);
     }
 
-    // Last fragment?
     if (seq_num == total_frags - 1) {
         uint8_t* complete_buf = ctx->buf;
         size_t   complete_len = ctx->received;

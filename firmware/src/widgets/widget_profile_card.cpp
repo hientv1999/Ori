@@ -492,8 +492,8 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_add_flag(s->photo_img, LV_OBJ_FLAG_HIDDEN);
 
     // Apply a cached photo immediately if one was already received before
-    // this card was created (e.g. boot with NVS photo, or screen transition
-    // after photo arrived).
+    // this card was created (e.g. boot with a LittleFS-cached photo, or
+    // screen transition after photo arrived).
     if (g_default_photo) {
         lv_image_set_src(s->photo_img, g_default_photo);
         lv_obj_clear_flag(s->photo_img, LV_OBJ_FLAG_HIDDEN);

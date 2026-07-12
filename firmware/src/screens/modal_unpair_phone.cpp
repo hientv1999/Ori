@@ -15,8 +15,9 @@
 // Layout matches modal_factory_reset — same card width, same icon circle,
 // same button row — adapted for the phone-unpairing context.
 //
-// Cancel dismisses; Unpair calls state_machine::on_unpair_phone() which
-// will wipe the phone bond in M5, then loads the re-pair screen.
+// Cancel dismisses; Unpair calls state_machine::on_unpair_phone(), which
+// wipes the phone bond. The user re-pairs later by tapping the phone icon —
+// unpairing does not auto-navigate to a re-pair screen (see below).
 
 namespace {
 
@@ -29,9 +30,7 @@ void on_unpair_confirm(lv_event_t* e) {
     lv_obj_t* scrim = static_cast<lv_obj_t*>(lv_event_get_user_data(e));
     lv_obj_delete(scrim);
     LOG("[modal_unpair_phone] Unpair confirmed\n");
-    // Notify state machine (M5 wires BLE bond wipe here). The user re-pairs
-    // later by tapping the phone icon (setup-flow.md "Runtime Re-Pair iPhone")
-    // — unpairing does not auto-navigate to a re-pair screen.
+    // See module header comment above re: re-pair navigation.
     state_machine::on_unpair_phone();
 }
 

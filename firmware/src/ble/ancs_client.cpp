@@ -34,7 +34,6 @@
 #include "app_state.h"
 #include "state_machine.h"
 #include "ota_receiver.h"
-#include "assets/ancs_icons.h"
 #include "screens/modal_ancs_list.h"
 #include "screens/modal_ancs_notification.h"
 #include "screens/modal_incoming_call.h"

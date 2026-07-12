@@ -12,7 +12,8 @@
 //   "notif_filt"  — uint8: ANCS filter level 0-3
 //   "sc_1/2/3"    — string: shortcut slot token (≤19 chars + null)
 //
-// Profile, photo, and meeting/Time Off hashes are M5 scope — reserved slots.
+// Profile, photo, and meeting/Time Off hashes live in the "ori" namespace too,
+// under keys owned by nvs_sync.h.
 namespace nvs {
 
 void    init();

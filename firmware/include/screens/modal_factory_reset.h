@@ -4,9 +4,10 @@
 
 // Ori — Factory reset confirmation modal.
 //
-// Triggered (in M4) by long-pressing the profile photo for 3 s. Centered
-// alert card with warning icon, "Reset Ori?" heading, body copy, and
-// Cancel + Reset buttons. M3 wires Cancel to dismiss; Reset is a stub.
+// Triggered by long-pressing the profile photo for 3 s. Centered alert card
+// with warning icon, "Reset Ori?" heading, body copy, and Cancel + Reset
+// buttons. Cancel dismisses; Reset calls factory_reset::execute() (deferred
+// one tick — see the .cpp).
 
 namespace modal_factory_reset {
 

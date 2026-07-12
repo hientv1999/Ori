@@ -8,10 +8,12 @@
 // Shown over the active screen when an ANCS notification arrives with
 // CategoryID = IncomingCall (and it isn't part of the reconnect backlog).
 //
-//  • Ringing  (show):        "Decline" sends the ANCS Negative action (clears
-//                            the call on the iPhone); "Dismiss" only hides the
-//                            banner (the call keeps ringing). No "Answer" — Ori
-//                            has no audio path, you answer on the phone.
+//  • Ringing  (show):        "Answer" sends the ANCS Positive action and
+//                            switches to the in-call dialog; "Decline" sends
+//                            the ANCS Negative action (clears the call on the
+//                            iPhone); "Dismiss" only hides the banner (the
+//                            call keeps ringing). Ori has no audio path either
+//                            way — the call itself is always carried by the phone.
 //  • On call  (show_active): once the call is answered on the phone the ANCS
 //                            notification stops offering the positive (answer)
 //                            action; ancs_client detects that and swaps to this

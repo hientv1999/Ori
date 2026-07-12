@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <stddef.h>
 
-// Ori NVS Sync Data — M5 extension to nvs_store.
+// Ori NVS Sync Data — extension to nvs_store for the BLE hash-manifest sync.
 //
 // Stores per-item SHA-256 hashes (for hash-manifest delta reconnect per
 // ble-protocol.md §6.2) and the synced string payload for Profile Info.

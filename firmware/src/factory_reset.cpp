@@ -1,6 +1,6 @@
 ﻿// Ori factory reset — shared execution path for local long-press and remote BLE.
 //
-// M5: wipes both NimBLE bond records + NVS bond addresses in addition to the
+// Wipes both NimBLE bond records + NVS bond addresses in addition to the
 // "ori" namespace keys.
 
 #include "factory_reset.h"
@@ -20,7 +20,7 @@ void execute() {
     // Wipe all NVS keys in the "ori" namespace.
     nvs::factory_reset();
 
-    // Erase both cached photos from NVS and free their PSRAM decode buffers.
+    // Erase both cached photos from LittleFS and free their PSRAM decode buffers.
     photo_cache::clear();
     photo_cache::clear_time_off();
 

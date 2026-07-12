@@ -5,7 +5,7 @@
 // Ori — Media mode screen.
 //
 // Left-panel layout, 528 × 396 px area:
-//   1. Album-art image (240 × 240, centred horizontally)
+//   1. Album-art image (484 × 216, full panel width)
 //        - Tap                 → play/pause toggle
 //        - Horizontal swipe    → prev / next track
 //        - Vertical swipe      → volume, with momentary HUD overlay

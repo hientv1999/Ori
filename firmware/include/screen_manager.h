@@ -1,12 +1,12 @@
 #pragma once
 
-// Ori — screen lifecycle owner and serial debug cycler (M3).
+// Ori — screen lifecycle owner and serial debug cycler.
 //
 // The serial cycler lets you navigate every screen from the serial monitor
 // without touching the device. Define ORI_DEBUG_SERIAL in platformio.ini
 // build_flags to enable it, then press '?' for the key map.
 //
-// State machine + persistence are M4.
+// State machine + persistence live in state_machine.cpp / nvs_store.cpp.
 
 namespace screen_manager {
 
