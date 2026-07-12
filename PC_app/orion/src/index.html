@@ -919,18 +919,23 @@
     <div class="modal-bg" id="m-ori-info">
       <div class="modal">
         <div class="modal-title" id="oriInfoTitle">Ori-XT-9F</div>
-        <div class="prof-pres" style="justify-content:center;margin:6px 0 16px;">
-          <span class="p-dot available" id="oriInfoDot"></span>
-          <span id="oriInfoState">Connected</span>
+        <div class="prof-pres" style="justify-content:space-between;margin:6px 0 16px;">
+          <span style="display:flex;align-items:center;gap:5px;">
+            <span class="p-dot available" id="oriInfoDot"></span>
+            <span id="oriInfoState">Connected</span>
+          </span>
+          <span class="sig-bars" id="oriInfoSigBars"><span></span><span></span><span></span><span></span></span>
         </div>
         <div class="pg-card" style="text-align:left;">
           <div class="about-row"><span id="oriInfoFwLbl">Firmware</span><span id="oriInfoFw">—</span></div>
           <div class="about-row"><span id="oriInfoAddrLbl">Address</span><span id="oriInfoAddr" style="font-family:ui-monospace,'Cascadia Mono',Consolas,monospace;font-size:12.5px;">—</span></div>
+          <div class="about-row"><span id="oriInfoSnLbl">Serial Number</span><span id="oriInfoSn" style="font-family:ui-monospace,'Cascadia Mono',Consolas,monospace;font-size:12.5px;">—</span></div>
+          <div class="about-row"><span id="oriInfoMfgLbl">Manufactured</span><span id="oriInfoMfg">—</span></div>
           <div class="about-row"><span id="oriInfoPhoneLbl">iPhone</span><span id="oriInfoPhone">—</span></div>
           <div class="about-row"><span id="oriInfoSyncLbl">Synced</span><span id="oriInfoSync">—</span></div>
         </div>
         <div class="btn-row" style="margin-top:16px;">
-          <button class="btn btn-sec btn-full" id="oriInfoCloseBtn" onclick="hideModal('m-ori-info')">Close</button>
+          <button class="btn btn-sec btn-full" id="oriInfoCloseBtn" onclick="closeOriInfoModal()">Close</button>
         </div>
       </div>
     </div>

@@ -34,6 +34,12 @@ pub struct InitialState {
     // both the disk cache and Ori itself, and saving a new one in that state
     // would have silently overwritten the still-valid entry.
     time_off: TimeOffInput,
+    // UI language (store::SavedState::language) — same "nothing re-applies
+    // this on a plain relaunch" hazard as profile/time_off above, just for
+    // app.js's `appLang` instead of a BLE-facing field. Always populated
+    // ("en" default rather than `Option`) since app.js's `setAppLang` always
+    // wants a concrete code to apply, not an absent-vs-default distinction.
+    language: String,
 }
 
 /// Initial backoff before retrying a failed reconnect, doubling up to
@@ -268,7 +274,18 @@ async fn supervise_connection_loop(app: &AppHandle, already_connected: bool) {
 async fn give_up_on_bond(app: &AppHandle, mut saved: crate::store::SavedState) {
     saved.paired = false;
     saved.device_name = String::new();
+    // Both callers (SETUP-flag-detected factory reset, and giving up after
+    // repeated post-discovery failures) already drop the OS-level Windows
+    // bond before reaching here — either way, re-establishing a connection
+    // to this device (the same physical unit or a different one entirely)
+    // needs a full re-pair ceremony from scratch, which re-learns these
+    // fresh. Clearing them here matches `paired`/`device_name` just above:
+    // same event (the bond truly ending), same treatment.
+    saved.address = None;
+    saved.serial_number = None;
+    saved.manufacture_date = None;
     let _ = crate::store::save(app, &saved).await;
+    crate::ble::clear_cached_identity(&app.state::<crate::ble::BleState>()).await;
     let _ = app.emit("conn-state", "off");
     let _ = app.emit("needs-repair", ());
 }
@@ -281,6 +298,7 @@ pub async fn get_initial_state(app: AppHandle) -> InitialState {
             connection: "off",
             profile: ProfileInput::default(),
             time_off: TimeOffInput::default(),
+            language: "en".to_string(),
         };
     };
 
@@ -291,9 +309,14 @@ pub async fn get_initial_state(app: AppHandle) -> InitialState {
     // reconnect below or a later (re)pair.
     let state = app.state::<crate::ble::BleState>();
     crate::ble::set_favorite_combos(&state, saved.combos.clone()).await;
+    // Same idea, for device identity (pc-app.md's Ori Info modal) — lets it
+    // show the last-known address/serial number/manufacture date even
+    // before this session's first connect completes.
+    crate::ble::seed_cached_identity(&state, saved.address.clone(), saved.serial_number.clone(), saved.manufacture_date.clone()).await;
 
+    let language = saved.language.clone().unwrap_or_else(|| "en".to_string());
     if !saved.paired || saved.device_name.is_empty() {
-        return InitialState { paired: false, connection: "off", profile: saved.profile, time_off: saved.time_off };
+        return InitialState { paired: false, connection: "off", profile: saved.profile, time_off: saved.time_off, language };
     }
 
     // Returns immediately so the UI can render the main screen right away
@@ -303,7 +326,7 @@ pub async fn get_initial_state(app: AppHandle) -> InitialState {
     eprintln!("[ORION-DEBUG] get_initial_state: trying to claim+spawn supervisor (already_connected=false)");
     try_claim_and_spawn_supervisor(&app, &state, false).await;
 
-    InitialState { paired: true, connection: "off", profile: saved.profile, time_off: saved.time_off }
+    InitialState { paired: true, connection: "off", profile: saved.profile, time_off: saved.time_off, language }
 }
 
 #[tauri::command]
@@ -587,7 +610,7 @@ pub async fn read_device_settings(app: AppHandle) -> Result<crate::ble::cbor::De
     // Real read of char 000E on (re)connect (§6.4) — presence and weather
     // are excluded, same as the real device response.
     let state = app.state::<crate::ble::BleState>();
-    crate::ble::read_device_settings(&state).await
+    crate::ble::read_device_settings(&app, &state).await
 }
 
 /// Backs the Ori Info/Stats modal — tapping the header's device name +
@@ -748,10 +771,19 @@ pub async fn factory_reset(app: AppHandle) {
     // arrived — see ble::factory_reset's doc comment), so Orion doesn't
     // try to reconnect to a device that just wiped its own bond on next
     // launch. pc-app.md: "Orion's local profile cache is untouched," so
-    // only `paired`/`device_name` are cleared, not the cached profile.
+    // only `paired`/`device_name`/identity are cleared, not the cached
+    // profile. Identity (address/serial_number/manufacture_date) IS cleared
+    // here, unlike profile: it's specific to the physical unit that was just
+    // wiped, not authored data Orion re-pushes on the next pair regardless
+    // (provisioning.md — the values themselves survive on Ori's own factory
+    // partition, but Orion has no way to confirm this device is still the
+    // same one out from under a fresh pairing ceremony without asking again).
     if let Some(mut saved) = saved_before {
         saved.paired = false;
         saved.device_name = String::new();
+        saved.address = None;
+        saved.serial_number = None;
+        saved.manufacture_date = None;
         let _ = crate::store::save(&app, &saved).await;
     }
 }
@@ -845,6 +877,20 @@ pub async fn set_autostart_enabled(app: AppHandle, enabled: bool) -> Result<(), 
     use tauri_plugin_autostart::ManagerExt;
     let manager = app.autolaunch();
     if enabled { manager.enable() } else { manager.disable() }.map_err(|e| e.to_string())
+}
+
+/// Persists the UI language (`store::SavedState::language`) — the write side
+/// of `get_initial_state`'s `language` field. Called by app.js's
+/// `setAppLang` on every language-selector change (welcome screen and
+/// Settings both use the same selector/handler). Unlike the
+/// clock-face/time-format/ANCS-filter settings, this has no device-side
+/// counterpart to reconcile with — it's purely local to Orion, so there's no
+/// pending/offline-edit tracking needed, just a plain load-mutate-save.
+#[tauri::command]
+pub async fn set_language(app: AppHandle, code: String) -> Result<(), String> {
+    let mut saved = crate::store::load(&app).await.unwrap_or_default();
+    saved.language = Some(code);
+    crate::store::save(&app, &saved).await
 }
 
 /// TEMPORARY DEBUG: lets the frontend forward a log line to the same stderr

@@ -11,9 +11,11 @@
 // sync, ble-protocol.md §6.3, so a blank/default cache here would silently
 // reset the user's chosen icons on every reconnect).
 //
-// Deliberately small otherwise: no calendar sign-in, no bond address —
-// those are separate, later pieces (pc-app.md's "Clear All" describes a
-// broader local cache this will eventually grow into).
+// Deliberately small otherwise: no calendar sign-in — that's a separate,
+// later piece (pc-app.md's "Clear All" describes a broader local cache this
+// will eventually grow into). Bond address/serial number/manufacture date
+// (below) were added once the Ori Info modal needed to show them without a
+// live connection — see those fields' own doc comment.
 
 use crate::ble::{ProfileInput, TimeOffInput};
 use serde::{Deserialize, Serialize};
@@ -62,6 +64,32 @@ pub struct SavedState {
     pub pending_time_format: Option<u8>,
     #[serde(default)]
     pub pending_ancs_filter: Option<u8>,
+    // Device identity — Bluetooth address, serial number, manufacture date
+    // (provisioning.md). Unlike everything else in this struct, these never
+    // change for a given bond, so they're written through to disk the first
+    // time each is learned (ble::central's `run_sync`/`read_device_settings`)
+    // and read back on every app launch — this is what lets the Ori Info
+    // modal (pc-app.md) show them even before a connection completes this
+    // session, not just "cached within a session" like firmware_version.
+    // Cleared only when the bond itself ends: `commands::factory_reset`/
+    // `give_up_on_bond` (Ori was factory reset) explicitly null these three
+    // out; `clear_all` wipes the whole struct via `store::clear()` anyway.
+    #[serde(default)]
+    pub address: Option<String>,
+    #[serde(default)]
+    pub serial_number: Option<String>,
+    #[serde(default)]
+    pub manufacture_date: Option<String>,
+    // UI language ("en"/"vi"/"es"/"fr", app.js's I18N keys) — an Orion app
+    // preference, not anything about the Ori pairing relationship, so unlike
+    // `address`/`serial_number`/`manufacture_date` above it is NOT cleared by
+    // Factory Reset or the passive "Ori was reset elsewhere" path
+    // (`commands::give_up_on_bond`) — only `clear_all`'s full-file wipe
+    // resets it, same as a genuinely fresh install (which then falls back to
+    // `None` → app.js's own "en" default). `None` here also covers every
+    // `state.json` written before this field existed (`#[serde(default)]`).
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 impl Default for SavedState {
@@ -76,6 +104,10 @@ impl Default for SavedState {
             pending_clock_face: None,
             pending_time_format: None,
             pending_ancs_filter: None,
+            address: None,
+            serial_number: None,
+            manufacture_date: None,
+            language: None,
         }
     }
 }

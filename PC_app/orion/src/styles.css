@@ -204,9 +204,15 @@ body{font-family:var(--fn);overflow:hidden;user-select:none;}
 
 /* shortcut rows */
 .slot-section{padding:10px 14px 14px;}
-.slot-row{display:flex;align-items:flex-start;gap:10px;padding:9px 0;}
+.slot-row{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;padding:9px 0;}
 .slot-row+.slot-row{border-top:1px solid var(--div);}
-.slot-n{font-size:13.5px;color:var(--t3);width:40px;flex-shrink:0;padding-top:9px;}
+/* No width cap at all — same principle as .about-row's uncapped spans below:
+   let the label size to its own content instead of a hardcoded box. French's
+   "Emplacement 1" is a single unbreakable word that overflowed a fixed 40px
+   width and visually collided with .slot-ico next to it. flex-shrink:0
+   still protects it from being squeezed narrower than its content if the
+   row runs tight — .slot-sel (flex:1, shrinkable) gives up space first. */
+.slot-n{font-size:13.5px;color:var(--t3);flex-shrink:0;padding-top:9px;}
 .slot-ico{width:22px;height:36px;flex-shrink:0;display:flex;align-items:center;justify-content:center;}
 .slot-ico-img{width:18px;height:18px;object-fit:contain;filter:brightness(0) invert(1);opacity:.6;}
 .slot-sel{flex:1;display:flex;flex-direction:column;gap:6px;}
@@ -389,8 +395,13 @@ body{font-family:var(--fn);overflow:hidden;user-select:none;}
    (mirrors modal_incoming_call.cpp's own hardcoded eyebrow text). */
 .ad-eyebrow{font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--accent);margin-bottom:2px;}
 .ad-title{font-size:15px;font-weight:600;line-height:1.3;word-wrap:break-word;}
-.ad-body{margin-top:8px;font-size:13px;color:var(--t2);line-height:1.5;text-align:left;word-wrap:break-word;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;}
-.ad-time{margin-top:4px;font-size:11.5px;color:var(--t3);text-align:left;}
+/* No line-clamp — Ori's own on-device detail overlay fully wraps whatever
+   body text it has (LV_LABEL_LONG_WRAP, no line cap), so clamping it here
+   would show LESS than Ori for the same notification on top of the wire
+   cap already shortening it (ble-protocol.md §13). Let it wrap fully; the
+   modal has no fixed height, so it just grows to fit. */
+.ad-body{margin-top:8px;font-size:13px;color:var(--t2);line-height:1.5;text-align:left;word-wrap:break-word;}
+.ad-time{margin-top:4px;font-size:11.5px;color:var(--t3);text-align:right;}
 /* Live call-duration timer — replaces .ad-body/.ad-time in the "on call"
    view. Centred (not left-aligned like a message body) since it's a single
    glanceable value, matching Ori's own in-call dialog. */

@@ -2,6 +2,13 @@
 //
 // Wipes both NimBLE bond records + NVS bond addresses in addition to the
 // "ori" namespace keys.
+//
+// Deliberately does NOT touch the separate "factory" NVS partition
+// (factory_info.h, partitions.csv) — serial number and manufacture date are
+// mass-production identity, not user/pairing state, and must survive a
+// factory reset. Nothing in this file (or anywhere else in the firmware)
+// opens that partition read-write; only the one-time manufacturing flash
+// (provisioning.md) ever writes it.
 
 #include "factory_reset.h"
 

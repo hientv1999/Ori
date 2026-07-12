@@ -29,7 +29,9 @@ struct AncsDetailEntry {
     char     display_name[40];
     char     title[193];
     char     subtitle[129];  // ANCS Subtitle (mail subject / thread); "" if none
-    char     body[257];
+    char     body[513];       // matches the 512-byte max ANCS itself is asked
+                               // for (ancs_client.cpp's request_attributes())
+                               // — Ori keeps everything the phone can give it.
     time_t   recv_epoch;     // phone's notification time; 0 = unknown
     char     hhmm[6];        // "HH:MM" from ANCS Date (TZ-free); "" = unknown
     char     time_ago[24];   // formatted on lookup (fresh when the modal opens)
@@ -43,8 +45,9 @@ struct AncsDetailEntry {
     bool     used;
 };
 // Backing storage lives in PSRAM (allocated by app_state::init()) — at
-// MAX_ANCS_NOTIFICATIONS=50 entries this is ~38 KB, which would otherwise sit
-// in scarce internal SRAM for the life of the firmware. A thin span wrapper
+// MAX_ANCS_NOTIFICATIONS=50 entries this is ~52 KB (grew from ~38 KB when
+// `body` was raised from 256 to 512 bytes), which would otherwise sit in
+// scarce internal SRAM for the life of the firmware. A thin span wrapper
 // keeps every existing `for (auto& e : k_detail)` loop and `k_detail[i]`
 // access unchanged.
 struct DetailArray {

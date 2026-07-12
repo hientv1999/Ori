@@ -29,6 +29,8 @@
 #include "ble/gatt_server.h"
 #include "ble/ble_manager.h"
 #include "ble/chunked_transfer.h"
+#include "ble/rssi_util.h"
+#include "factory_info.h"
 #include "fw_version.h"
 
 // These functions are defined in ble_manager.cpp and called from the
@@ -248,6 +250,15 @@ static void sha256_of_buf(const uint8_t* buf, size_t len, uint8_t out[32]) {
     mbedtls_sha256_free(&ctx);
 }
 
+// True when a freshly-received item hash differs from what's stored for it —
+// i.e. Orion needs to (re)send that item. `stored_valid` covers both "no
+// stored hash exists yet" (NVS load failed) and "the RAM-only meetings hash
+// hasn't been set since boot" (g_meetings_hash_valid). Shared by every case
+// in handle_manifest_write()'s profile/photo/meetings/time_off comparisons.
+static bool hash_differs(bool stored_valid, const uint8_t stored[32], const uint8_t recv[32]) {
+    return !(stored_valid && memcmp(stored, recv, 32) == 0);
+}
+
 // -------------------------------------------------------------------------
 // Sync staging (PSRAM) — ble-protocol.md §6.0
 //
@@ -294,6 +305,30 @@ static void apply_profile_cbor(const uint8_t* data, size_t len);
 static void apply_photo_jpeg(uint8_t* buf, size_t n);
 static void apply_meetings_cbor(uint8_t* buf, size_t n);
 static void apply_time_off_cbor(uint8_t* buf, size_t n);
+
+// -- Device Settings (char 000E) parse/apply split -------------------------
+// Every field is optional; a present field is validated against its wire
+// range (ble-protocol.md §10) before being recorded here. Nothing in `apply`
+// runs until the whole map has parsed cleanly — see parse_device_settings().
+struct DeviceSettingsWrite {
+    bool    has_presence = false; uint8_t presence_val = 0;
+    bool    has_slots    = false;
+    char    slot1[20] = {}, slot2[20] = {}, slot3[20] = {};
+    bool    has_clock    = false; uint8_t clock_val = 0;
+    bool    has_timefmt  = false; uint8_t timefmt_val = 0;
+    bool    has_filter   = false; uint8_t filter_val = 0;
+    bool    has_weather_cond = false; uint8_t weather_cond_val = 0;
+    bool    has_weather_temp = false; int16_t weather_temp_val = 0;
+    bool    has_weather_unit = false; uint8_t weather_unit_val = 0;
+};
+// Decodes+validates the Device Settings CBOR map into `out`. Returns false
+// if the payload isn't a map, or any present field fails its range check —
+// callers must NACK and must not call apply_device_settings() in that case.
+static bool parse_device_settings(const uint8_t* data, uint16_t len, DeviceSettingsWrite& out);
+// Applies whichever fields were present, in the same fixed order the
+// original inline handler used (presence, shortcuts, clock face, time
+// format, ANCS filter, weather) — independent of wire order.
+static void apply_device_settings(const DeviceSettingsWrite& w);
 
 // Free any owned staging buffers and zero the struct.
 static void stage_reset() {
@@ -442,18 +477,25 @@ static void utf8_truncate_copy(const char* src, char* dst, size_t dst_sz) {
     dst[n] = '\0';
 }
 
-// Encode AncsNotification{op:"add", ...} (char 0010). Field caps (§10) are
-// sized so this always fits one unchunked 238-byte MTU-247 fragment (§13 "No
-// chunking") — verify buf_sz is generous enough that a mid-encode overflow
-// simply truncates the CBOR (tinycbor reports it via the buffer-size return,
-// callers here just size the stack buffer with headroom instead of checking).
+// Encode AncsNotification{op:"add", ...} (char 0010). Sent via notify_chunked()
+// (below) rather than a single notify(), so — unlike every other
+// characteristic in this file — it is NOT bound to fitting one ATT
+// notification. Field caps now match Ori's own on-device storage exactly
+// (app_state.cpp's AncsDetailEntry — token[32]/display_name[40]/title[193]/
+// body[513]/pos_label[33]/neg_label[33], each minus 1 for the null
+// terminator), so Orion never shows less than Ori itself does for the same
+// notification — see ble-protocol.md §5's "AncsNotification chunking" note
+// for the wire-level reasoning. `body` in particular now matches the full
+// 512-byte max ANCS itself is asked for (ancs_client.cpp's
+// request_attributes()) — nothing left on the table between what the phone
+// offers and what Orion ends up showing.
 static size_t cbor_encode_ancs_add(uint8_t* buf, size_t buf_sz, uint32_t uid,
                                     const char* icon_token, uint8_t category,
                                     const char* app, const char* title, const char* body,
                                     uint32_t recv_epoch, const char* pos_label,
                                     const char* neg_label, bool has_neg_action, bool silent) {
-    char t_icon[25] = {}, t_app[25] = {}, t_title[33] = {}, t_body[49] = {};
-    char t_pos[13]  = {}, t_neg[13] = {};
+    char t_icon[32] = {}, t_app[40] = {}, t_title[193] = {}, t_body[513] = {};
+    char t_pos[33]  = {}, t_neg[33] = {};
     utf8_truncate_copy(icon_token, t_icon,  sizeof(t_icon));
     utf8_truncate_copy(app,        t_app,   sizeof(t_app));
     utf8_truncate_copy(title,      t_title, sizeof(t_title));
@@ -795,11 +837,12 @@ private:
     }
 
     // -- Device Command (char 0008) — magic-routed --------------------------
-    // Accepts two 4-byte magic payloads; all others ? NACK_BAD_MAGIC.
+    // Accepts three 4-byte magic payloads; all others → NACK_BAD_MAGIC.
     //   0xFA 0xC7 0x5E 0x5E  Factory Reset
     //   0x55 0x4E 0x50 0x52  Unpair Phone ("UNPR")
+    //   0x52 0x53 0x59 0x4E  Resync ANCS relay ("RSYN") — see below
     // IMPORTANT: do not touch NVS or LVGL from this NimBLE host-task callback.
-    // Both actions are deferred to the main-task event queue.
+    // All actions are deferred to the main-task event queue.
     void handle_device_cmd(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "DeviceCommand")) return;
         if (len < 4) return;
@@ -812,6 +855,22 @@ private:
                    data[2] == 0x50 && data[3] == 0x52) {
             LOG("[gatt] DeviceCommand: iPhone unpair\n");
             ble_post_unpair_phone_event();
+        } else if (data[0] == 0x52 && data[1] == 0x53 &&
+                   data[2] == 0x59 && data[3] == 0x4E) {
+            // "RSYN" — Orion explicitly requesting a full ANCS relay replay
+            // (chars 0010/0011), sent once its notify pipeline (receivers +
+            // WinRT ValueChanged handlers + subscriptions) is fully up
+            // (ble-protocol.md §13). PULL-based on purpose: every push-timed
+            // resync (the onSubscribe-triggered one, which on a bonded
+            // reconnect fires from NimBLE's own bonding-restore before the
+            // central is even listening — see firmware.md) lost the race on
+            // real hardware, and guessing "late enough" server-side is
+            // fragile by nature. Orion asking when IT is ready is correct by
+            // construction. Reuses the exact deferred events onSubscribe()
+            // already posts — same main-task resync path, different trigger.
+            LOG("[gatt] DeviceCommand: ANCS relay resync requested\n");
+            ble_post_ancs_resubscribed_event(/*call_state=*/false);
+            ble_post_ancs_resubscribed_event(/*call_state=*/true);
         } else {
             LOG("[gatt] DeviceCommand: bad magic\n");
             uint8_t buf[64];
@@ -871,26 +930,22 @@ private:
         size_t needed_count = 0;
 
         if (got_profile) {
-            bool match = nvs_sync::load_hash(nvs_sync::HASH_KEY_PROFILE, stored)
-                         && memcmp(stored, recv_profile, 32) == 0;
-            if (!match) needed[needed_count++] = "profile";
+            bool valid = nvs_sync::load_hash(nvs_sync::HASH_KEY_PROFILE, stored);
+            if (hash_differs(valid, stored, recv_profile)) needed[needed_count++] = "profile";
         }
         if (got_photo) {
-            bool match = nvs_sync::load_hash(nvs_sync::HASH_KEY_PHOTO, stored)
-                         && memcmp(stored, recv_photo, 32) == 0;
-            if (!match) needed[needed_count++] = "photo";
+            bool valid = nvs_sync::load_hash(nvs_sync::HASH_KEY_PHOTO, stored);
+            if (hash_differs(valid, stored, recv_photo)) needed[needed_count++] = "photo";
         }
         if (got_meetings) {
             // Meetings are RAM-only: compare against the RAM hash, not NVS. After
-            // a power cycle g_meetings_hash_valid is false ? always "needed".
-            bool match = g_meetings_hash_valid
-                         && memcmp(g_meetings_hash, recv_meetings, 32) == 0;
-            if (!match) needed[needed_count++] = "meetings";
+            // a power cycle g_meetings_hash_valid is false → always "needed".
+            if (hash_differs(g_meetings_hash_valid, g_meetings_hash, recv_meetings))
+                needed[needed_count++] = "meetings";
         }
         if (got_time_off) {
-            bool match = nvs_sync::load_hash(nvs_sync::HASH_KEY_TIME_OFF, stored)
-                         && memcmp(stored, recv_time_off, 32) == 0;
-            if (!match) needed[needed_count++] = "to";
+            bool valid = nvs_sync::load_hash(nvs_sync::HASH_KEY_TIME_OFF, stored);
+            if (hash_differs(valid, stored, recv_time_off)) needed[needed_count++] = "to";
         }
 
         // Notify Orion what we need.
@@ -1065,11 +1120,31 @@ private:
     // Returns all NVS-persisted fields: "c" (clock_face), "h" (time_format),
     // "f" (ancs_filter), and "1"/"2"/"3" (shortcut slot tokens). Presence and
     // weather are not returned — ephemeral, Orion is the source of truth.
+    // Also returns three read-only fields, never accepted on a write:
+    // "s" (serial_number)/"b" (manufacture_date), from the separate
+    // write-once "factory" NVS partition, and "r" (signal_bars), Ori's own
+    // live RSSI to Orion — see ble-protocol.md §4/§6.4, provisioning.md.
+    // Live RSSI of the connection this read arrived on (Orion's own link to
+    // Ori) — Orion's Windows backend (btleplug) can't read RSSI of an already-
+    // connected peripheral, only from advertising packets, which stop the
+    // moment Ori is connected (pc-app.md). Ori CAN read it, on either side of
+    // any of its own active connections, via the same primitive
+    // NimBLEClient::getRssi() wraps for the iPhone link (ancs_client.cpp) —
+    // so Ori samples its own link to Orion fresh on every Device Settings
+    // read and hands back the bucketed bar count, mirroring PhoneBondStatus's
+    // "s" field instead of adding a dedicated characteristic for it.
+    uint8_t read_orion_signal_bars() {
+        int8_t rssi = 0;
+        int rc = ble_gap_conn_rssi(ble_manager::orion_conn_handle(), &rssi);
+        if (rc != 0) return 0;
+        return ble::rssi_to_bars(rssi);
+    }
+
     void handle_device_settings_read(NimBLECharacteristic* c) {
         CborEncoder enc, map;
-        uint8_t buf[128];
+        uint8_t buf[192];
         cbor_encoder_init(&enc, buf, sizeof(buf), 0);
-        cbor_encoder_create_map(&enc, &map, 6);
+        cbor_encoder_create_map(&enc, &map, 9);
         cbor_encode_text_stringz(&map, "c");
         cbor_encode_uint(&map, (uint64_t)nvs::get_clock_face());
         cbor_encode_text_stringz(&map, "h");
@@ -1083,6 +1158,18 @@ private:
         cbor_encode_text_stringz(&map, slots[1].icon_token ? slots[1].icon_token : "");
         cbor_encode_text_stringz(&map, "3");
         cbor_encode_text_stringz(&map, slots[2].icon_token ? slots[2].icon_token : "");
+        // Read-only device-identity/link fields — "s"/"b" come from the
+        // write-once "factory" NVS partition (factory_info.h, never touched
+        // by nvs::factory_reset()); "r" is sampled live above. None of the
+        // three are ever accepted on a Device Settings WRITE — the write
+        // handler below simply never looks for these keys, so a write that
+        // includes them is a no-op for them (§4's "unknown keys ignored").
+        cbor_encode_text_stringz(&map, "s");
+        cbor_encode_text_stringz(&map, factory_info::serial_number());
+        cbor_encode_text_stringz(&map, "b");
+        cbor_encode_text_stringz(&map, factory_info::manufacture_date());
+        cbor_encode_text_stringz(&map, "r");
+        cbor_encode_uint(&map, (uint64_t)read_orion_signal_bars());
         cbor_encoder_close_container(&enc, &map);
         size_t n = cbor_encoder_get_buffer_size(&enc, buf);
         c->setValue(buf, n);
@@ -1099,129 +1186,15 @@ private:
         if (!check_write_allowed(info, "DeviceSettings")) return;
         if (len == 0) return;
 
-        CborParser parser; CborValue root, map_val;
-        if (!cbor_open_map(data, len, parser, root, map_val)) {
+        DeviceSettingsWrite w;
+        if (!parse_device_settings(data, len, w)) {
             uint8_t buf[64];
             size_t n = cbor_encode_sync_ctrl(buf, sizeof(buf), "NACK", 0, "NACK_CBOR_DECODE");
             c_sync_ctrl->notify(buf, n);
             return;
         }
 
-        bool    has_presence = false; uint8_t presence_val = 0;
-        bool    has_slots    = false;
-        char    slot1[20] = {}, slot2[20] = {}, slot3[20] = {};
-        bool    has_clock    = false; uint8_t clock_val = 0;
-        bool    has_timefmt  = false; uint8_t timefmt_val = 0;
-        bool    has_filter   = false; uint8_t filter_val = 0;
-        bool    has_weather_cond = false; uint8_t weather_cond_val = 0;
-        bool    has_weather_temp = false; int16_t weather_temp_val = 0;
-        bool    has_weather_unit = false; uint8_t weather_unit_val = 0;
-        bool    parse_error  = false;
-
-        while (!cbor_value_at_end(&map_val) && !parse_error) {
-            char key[4] = {}; size_t key_len = sizeof(key) - 1;
-            if (cbor_value_is_text_string(&map_val)) {
-                cbor_value_copy_text_string(&map_val, key, &key_len, &map_val);
-            } else { cbor_value_advance(&map_val); continue; }
-            if (cbor_value_at_end(&map_val)) break;
-
-            if (strcmp(key, "p") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
-                uint64_t v; cbor_value_get_uint64(&map_val, &v);
-                if (v > 3) { parse_error = true; break; }
-                presence_val = (uint8_t)v; has_presence = true;
-            } else if (strcmp(key, "1") == 0 && cbor_value_is_text_string(&map_val)) {
-                size_t sz = sizeof(slot1) - 1;
-                cbor_value_copy_text_string(&map_val, slot1, &sz, nullptr);
-                has_slots = true;
-            } else if (strcmp(key, "2") == 0 && cbor_value_is_text_string(&map_val)) {
-                size_t sz = sizeof(slot2) - 1;
-                cbor_value_copy_text_string(&map_val, slot2, &sz, nullptr);
-                has_slots = true;
-            } else if (strcmp(key, "3") == 0 && cbor_value_is_text_string(&map_val)) {
-                size_t sz = sizeof(slot3) - 1;
-                cbor_value_copy_text_string(&map_val, slot3, &sz, nullptr);
-                has_slots = true;
-            } else if (strcmp(key, "c") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
-                uint64_t v; cbor_value_get_uint64(&map_val, &v);
-                if (v > 1) { parse_error = true; break; }
-                clock_val = (uint8_t)v; has_clock = true;
-            } else if (strcmp(key, "h") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
-                uint64_t v; cbor_value_get_uint64(&map_val, &v);
-                if (v > 1) { parse_error = true; break; }
-                timefmt_val = (uint8_t)v; has_timefmt = true;
-            } else if (strcmp(key, "f") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
-                uint64_t v; cbor_value_get_uint64(&map_val, &v);
-                if (v > 3) { parse_error = true; break; }
-                filter_val = (uint8_t)v; has_filter = true;
-            } else if (strcmp(key, "w") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
-                uint64_t v; cbor_value_get_uint64(&map_val, &v);
-                if (v > 6) { parse_error = true; break; }
-                weather_cond_val = (uint8_t)v; has_weather_cond = true;
-            } else if (strcmp(key, "d") == 0 && cbor_value_is_integer(&map_val)) {
-                int64_t v; cbor_value_get_int64(&map_val, &v);
-                if (v < -40 || v > 140) { parse_error = true; break; }
-                weather_temp_val = (int16_t)v; has_weather_temp = true;
-            } else if (strcmp(key, "u") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
-                uint64_t v; cbor_value_get_uint64(&map_val, &v);
-                if (v > 1) { parse_error = true; break; }
-                weather_unit_val = (uint8_t)v; has_weather_unit = true;
-            }
-            if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
-        }
-
-        if (parse_error) {
-            uint8_t buf[64];
-            size_t n = cbor_encode_sync_ctrl(buf, sizeof(buf), "NACK", 0, "NACK_CBOR_DECODE");
-            c_sync_ctrl->notify(buf, n);
-            return;
-        }
-
-        if (has_presence) {
-            widget_profile_card::Presence p;
-            switch (presence_val) {
-                case 0x00: p = widget_profile_card::Presence::Available; break;
-                case 0x01: p = widget_profile_card::Presence::Busy;      break;
-                case 0x02: p = widget_profile_card::Presence::Away;      break;
-                default:   p = widget_profile_card::Presence::Offline;   break;
-            }
-            widget_profile_card::set_default_presence(p);
-            ble_post_presence_event(p);
-            LOG("[gatt] DeviceSettings: presence=0x%02X\n", (unsigned)presence_val);
-        }
-        if (has_slots) {
-            // app_state write is safe from NimBLE host task (plain struct copy);
-            // screen_media_mode::update_shortcuts() touches LVGL — deferred.
-            app_state::set_shortcuts(slot1, slot2, slot3);
-            ble_post_shortcut_update_event();
-            LOG("[gatt] DeviceSettings: shortcuts=%s,%s,%s\n", slot1, slot2, slot3);
-        }
-        if (has_clock) {
-            // NVS write + LVGL deferred to main task via event.
-            ble_post_clock_face_event(clock_val);
-            LOG("[gatt] DeviceSettings: clock_face=0x%02X\n", (unsigned)clock_val);
-        }
-        if (has_timefmt) {
-            // NVS write + on-screen clock/meeting rebuild deferred to main task.
-            ble_post_time_format_event(timefmt_val);
-            LOG("[gatt] DeviceSettings: time_format=%s\n", timefmt_val ? "12h" : "24h");
-        }
-        if (has_filter) {
-            // NVS write + ancs_client::set_filter() deferred to main task via event.
-            ble_post_ancs_filter_event(filter_val);
-            LOG("[gatt] DeviceSettings: ancs_filter=0x%02X\n", (unsigned)filter_val);
-        }
-        if (has_weather_cond && has_weather_temp && has_weather_unit) {
-            // Ephemeral, like presence — not persisted, not read back. Only
-            // applied when ALL THREE fields are present in this write
-            // (defensive: a message with just some of the three shouldn't
-            // half-apply).
-            ble_post_weather_event(weather_cond_val, weather_temp_val, weather_unit_val);
-            LOG("[gatt] DeviceSettings: weather condition=%u temp_f=%d unit=%u\n",
-                (unsigned)weather_cond_val, (int)weather_temp_val, (unsigned)weather_unit_val);
-        } else if (has_weather_cond || has_weather_temp || has_weather_unit) {
-            LOG("[gatt] DeviceSettings: weather partial write ignored (w=%d d=%d u=%d)\n",
-                (int)has_weather_cond, (int)has_weather_temp, (int)has_weather_unit);
-        }
+        apply_device_settings(w);
     }
 
     // -- ANCS Notification Action (char 0012) — remote Answer/Decline/End
@@ -1277,6 +1250,118 @@ private:
 };
 
 static OriCharacteristicCallbacks s_char_cb;
+
+// -------------------------------------------------------------------------
+// Device Settings (char 000E) parse/apply — applied immediately outside the
+// BEGIN/END staging pipeline (unlike the apply_* group below), so the split
+// here is purely parse-then-apply, not stage-then-commit.
+// -------------------------------------------------------------------------
+
+static bool parse_device_settings(const uint8_t* data, uint16_t len, DeviceSettingsWrite& out) {
+    CborParser parser; CborValue root, map_val;
+    if (!cbor_open_map(data, len, parser, root, map_val)) return false;
+
+    while (!cbor_value_at_end(&map_val)) {
+        char key[4] = {}; size_t key_len = sizeof(key) - 1;
+        if (cbor_value_is_text_string(&map_val)) {
+            cbor_value_copy_text_string(&map_val, key, &key_len, &map_val);
+        } else { cbor_value_advance(&map_val); continue; }
+        if (cbor_value_at_end(&map_val)) break;
+
+        if (strcmp(key, "p") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
+            uint64_t v; cbor_value_get_uint64(&map_val, &v);
+            if (v > 3) return false;
+            out.presence_val = (uint8_t)v; out.has_presence = true;
+        } else if (strcmp(key, "1") == 0 && cbor_value_is_text_string(&map_val)) {
+            size_t sz = sizeof(out.slot1) - 1;
+            cbor_value_copy_text_string(&map_val, out.slot1, &sz, nullptr);
+            out.has_slots = true;
+        } else if (strcmp(key, "2") == 0 && cbor_value_is_text_string(&map_val)) {
+            size_t sz = sizeof(out.slot2) - 1;
+            cbor_value_copy_text_string(&map_val, out.slot2, &sz, nullptr);
+            out.has_slots = true;
+        } else if (strcmp(key, "3") == 0 && cbor_value_is_text_string(&map_val)) {
+            size_t sz = sizeof(out.slot3) - 1;
+            cbor_value_copy_text_string(&map_val, out.slot3, &sz, nullptr);
+            out.has_slots = true;
+        } else if (strcmp(key, "c") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
+            uint64_t v; cbor_value_get_uint64(&map_val, &v);
+            if (v > 1) return false;
+            out.clock_val = (uint8_t)v; out.has_clock = true;
+        } else if (strcmp(key, "h") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
+            uint64_t v; cbor_value_get_uint64(&map_val, &v);
+            if (v > 1) return false;
+            out.timefmt_val = (uint8_t)v; out.has_timefmt = true;
+        } else if (strcmp(key, "f") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
+            uint64_t v; cbor_value_get_uint64(&map_val, &v);
+            if (v > 3) return false;
+            out.filter_val = (uint8_t)v; out.has_filter = true;
+        } else if (strcmp(key, "w") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
+            uint64_t v; cbor_value_get_uint64(&map_val, &v);
+            if (v > 6) return false;
+            out.weather_cond_val = (uint8_t)v; out.has_weather_cond = true;
+        } else if (strcmp(key, "d") == 0 && cbor_value_is_integer(&map_val)) {
+            int64_t v; cbor_value_get_int64(&map_val, &v);
+            if (v < -40 || v > 140) return false;
+            out.weather_temp_val = (int16_t)v; out.has_weather_temp = true;
+        } else if (strcmp(key, "u") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
+            uint64_t v; cbor_value_get_uint64(&map_val, &v);
+            if (v > 1) return false;
+            out.weather_unit_val = (uint8_t)v; out.has_weather_unit = true;
+        }
+        if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
+    }
+    return true;
+}
+
+static void apply_device_settings(const DeviceSettingsWrite& w) {
+    if (w.has_presence) {
+        widget_profile_card::Presence p;
+        switch (w.presence_val) {
+            case 0x00: p = widget_profile_card::Presence::Available; break;
+            case 0x01: p = widget_profile_card::Presence::Busy;      break;
+            case 0x02: p = widget_profile_card::Presence::Away;      break;
+            default:   p = widget_profile_card::Presence::Offline;   break;
+        }
+        widget_profile_card::set_default_presence(p);
+        ble_post_presence_event(p);
+        LOG("[gatt] DeviceSettings: presence=0x%02X\n", (unsigned)w.presence_val);
+    }
+    if (w.has_slots) {
+        // app_state write is safe from NimBLE host task (plain struct copy);
+        // screen_media_mode::update_shortcuts() touches LVGL — deferred.
+        app_state::set_shortcuts(w.slot1, w.slot2, w.slot3);
+        ble_post_shortcut_update_event();
+        LOG("[gatt] DeviceSettings: shortcuts=%s,%s,%s\n", w.slot1, w.slot2, w.slot3);
+    }
+    if (w.has_clock) {
+        // NVS write + LVGL deferred to main task via event.
+        ble_post_clock_face_event(w.clock_val);
+        LOG("[gatt] DeviceSettings: clock_face=0x%02X\n", (unsigned)w.clock_val);
+    }
+    if (w.has_timefmt) {
+        // NVS write + on-screen clock/meeting rebuild deferred to main task.
+        ble_post_time_format_event(w.timefmt_val);
+        LOG("[gatt] DeviceSettings: time_format=%s\n", w.timefmt_val ? "12h" : "24h");
+    }
+    if (w.has_filter) {
+        // NVS write + ancs_client::set_filter() deferred to main task via event.
+        ble_post_ancs_filter_event(w.filter_val);
+        LOG("[gatt] DeviceSettings: ancs_filter=0x%02X\n", (unsigned)w.filter_val);
+    }
+    if (w.has_weather_cond && w.has_weather_temp && w.has_weather_unit) {
+        // Ephemeral, like presence — not persisted, not read back. Only
+        // applied when ALL THREE fields are present in this write
+        // (defensive: a message with just some of the three shouldn't
+        // half-apply).
+        ble_post_weather_event(w.weather_cond_val, w.weather_temp_val, w.weather_unit_val);
+        LOG("[gatt] DeviceSettings: weather condition=%u temp_f=%d unit=%u\n",
+            (unsigned)w.weather_cond_val, (int)w.weather_temp_val, (unsigned)w.weather_unit_val);
+    } else if (w.has_weather_cond || w.has_weather_temp || w.has_weather_unit) {
+        LOG("[gatt] DeviceSettings: weather partial write ignored (w=%d d=%d u=%d)\n",
+            (int)w.has_weather_cond, (int)w.has_weather_temp, (int)w.has_weather_unit);
+    }
+}
 
 // -------------------------------------------------------------------------
 // Sync stage commit helpers — apply one staged item to NVS / live state.
@@ -1751,25 +1836,78 @@ void notify_phone_stats(uint8_t missed, uint8_t unread, uint8_t total, uint8_t s
 // gates the relay, not just the display" / the scoping note that calls never
 // touch char 0010) — these just encode + notify exactly what they're given.
 
+// Send-side chunking for char 0010 (ble-protocol.md §5's "AncsNotification
+// chunking") — the only notify characteristic in this file whose payload can
+// exceed one ATT notification, now that AncsNotification's field caps match
+// Ori's own on-device storage (cbor_encode_ancs_add's doc comment) instead of
+// being squeezed to fit a single fragment. Reuses §5's exact frame format
+// (seq_num/total_frags/payload_len, uint16 LE) in the REVERSE direction —
+// Ori is the sender here, Orion the reassembler (central.rs). ALWAYS used for
+// every op (add/remove/clear), even though remove/clear always fit in one
+// frame (total_frags=1): a single always-framed format means Orion's
+// reassembler never has to guess whether a given notify is a raw payload or
+// a chunk frame.
+//
+// Frame size comes from the actual negotiated MTU for the Orion connection —
+// same adaptive approach central.rs's frag_size_for_mtu already uses for the
+// write direction — clamped to the existing ~238-byte convention so this
+// doesn't silently grow past what the rest of the protocol assumes.
+//
+// Sent as a tight synchronous loop: GATT server callbacks run on Ori's single
+// main task, so nothing else can interleave another notify on this same
+// characteristic mid-sequence — Orion's reassembler only ever has one
+// fragment sequence in flight at a time, never interleaved across two
+// different notifications.
+static void notify_chunked(NimBLECharacteristic* c, const uint8_t* payload, size_t payload_len) {
+    if (!c) return;
+    uint16_t mtu = ble_att_mtu(ble_manager::orion_conn_handle());
+    size_t frag_size = (mtu > 9) ? (size_t)(mtu - 3 - 6) : 20;
+    if (frag_size > 238) frag_size = 238;
+    if (frag_size < 20)  frag_size = 20;  // pathological floor — BLE's own spec MTU minimum (23) still leaves room
+
+    size_t total_frags = payload_len ? (payload_len + frag_size - 1) / frag_size : 1;
+    uint8_t frame[6 + 238];
+    for (size_t seq = 0; seq < total_frags; ++seq) {
+        size_t offset   = seq * frag_size;
+        size_t this_len = payload_len - offset;
+        if (this_len > frag_size) this_len = frag_size;
+        frame[0] = (uint8_t)(seq & 0xFF);
+        frame[1] = (uint8_t)((seq >> 8) & 0xFF);
+        frame[2] = (uint8_t)(total_frags & 0xFF);
+        frame[3] = (uint8_t)((total_frags >> 8) & 0xFF);
+        frame[4] = (uint8_t)(this_len & 0xFF);
+        frame[5] = (uint8_t)((this_len >> 8) & 0xFF);
+        memcpy(frame + 6, payload + offset, this_len);
+        if (!c->notify(frame, 6 + this_len)) {
+            LOG("[gatt] notify_chunked: frame %u/%u FAILED (mbuf pool exhausted?)\n",
+                (unsigned)(seq + 1), (unsigned)total_frags);
+        }
+    }
+}
+
 void notify_ancs_add(uint32_t uid, const char* icon_token, uint8_t category,
                       const char* app, const char* title, const char* body,
                       uint32_t recv_epoch, const char* pos_label,
                       const char* neg_label, bool has_neg_action, bool silent) {
     if (!c_ancs_notif) return;
-    uint8_t buf[256];
+    // Worst case: token(31)+display_name(39)+title(192)+body(512)+
+    // pos_label(32)+neg_label(32) all near max, plus CBOR/map overhead —
+    // 893 bytes; 1024 gives comfortable headroom (matches g_ds_buf's own
+    // 1024-byte convention in ancs_client.cpp for "the ANCS max buffer size").
+    uint8_t buf[1024];
     size_t  n = cbor_encode_ancs_add(buf, sizeof(buf), uid, icon_token, category,
                                       app, title, body, recv_epoch, pos_label,
                                       neg_label, has_neg_action, silent);
-    c_ancs_notif->notify(buf, n);
-    LOG("[gatt] AncsNotification add: uid=%u app=%s cat=%u\n",
-        (unsigned)uid, app ? app : "", (unsigned)category);
+    notify_chunked(c_ancs_notif, buf, n);
+    LOG("[gatt] AncsNotification add: uid=%u app=%s cat=%u len=%u\n",
+        (unsigned)uid, app ? app : "", (unsigned)category, (unsigned)n);
 }
 
 void notify_ancs_remove(uint32_t uid) {
     if (!c_ancs_notif) return;
     uint8_t buf[32];
     size_t  n = cbor_encode_ancs_remove(buf, sizeof(buf), uid);
-    c_ancs_notif->notify(buf, n);
+    notify_chunked(c_ancs_notif, buf, n);
     LOG("[gatt] AncsNotification remove: uid=%u\n", (unsigned)uid);
 }
 
@@ -1777,7 +1915,7 @@ void notify_ancs_clear() {
     if (!c_ancs_notif) return;
     uint8_t buf[16];
     size_t  n = cbor_encode_ancs_clear(buf, sizeof(buf));
-    c_ancs_notif->notify(buf, n);
+    notify_chunked(c_ancs_notif, buf, n);
     LOG("[gatt] AncsNotification clear\n");
 }
 
@@ -1786,9 +1924,13 @@ void notify_ancs_call_state(uint8_t st, uint32_t uid, uint32_t elapsed_s,
                              const char* pos_label, const char* neg_label,
                              bool has_neg_action, const char* icon_token) {
     if (!c_ancs_call) return;
-    // Buffer sized like AncsNotification's (256) since this now carries the
-    // same class of text fields (app/title/pos/neg labels + icon token), just
-    // fewer of them.
+    // char 0011 is NOT chunked and keeps its own independent, tighter field
+    // caps (app/title/pos/neg/icon_token, cbor_encode_ancs_call_state) —
+    // calls carry no body, so the single-fragment squeeze that motivated
+    // matching AncsNotification's caps to Ori's storage doesn't apply here
+    // (ble-protocol.md §10). This buffer only needs to be big enough for
+    // those tighter caps, unrelated to AncsNotification's own (much larger)
+    // buffer size.
     uint8_t buf[192];
     size_t  n = cbor_encode_ancs_call_state(buf, sizeof(buf), st, uid, elapsed_s,
                                              app, title, pos_label, neg_label,

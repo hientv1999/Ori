@@ -50,6 +50,14 @@ pub const ADV_FLAG_RUNTIME: u8 = 0x02;
 /// payload, magic-routed).
 pub const FACTORY_RESET_MAGIC: [u8; 4] = [0xFA, 0xC7, 0x5E, 0x5E];
 pub const UNPAIR_PHONE_MAGIC: [u8; 4] = [0x55, 0x4E, 0x50, 0x52];
+/// "RSYN" — request a full ANCS relay replay (chars 0010/0011): Ori re-sends
+/// `AncsNotification{op:"clear"}` + an `"add"` per currently-queued
+/// notification passing the filter, plus the current `AncsCallState`. Written
+/// once per (re)connect from `start_post_sync_tasks`, i.e. only after Orion's
+/// notify pipeline is provably ready to receive — the pull-based replacement
+/// for every push-timed resync that lost a race on bonded reconnects
+/// (ble-protocol.md §13, pc-app.md).
+pub const RESYNC_ANCS_MAGIC: [u8; 4] = [0x52, 0x53, 0x59, 0x4E];
 
 /// Device Status (char 0001) — single-byte enum, not CBOR (§3 table).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

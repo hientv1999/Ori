@@ -153,6 +153,14 @@ pub struct DeviceSettingsWrite {
 /// response for the `read_device_settings` command) — `skip_serializing_if`
 /// keeps an absent field genuinely `undefined` on the JS side rather than
 /// `null`, matching app.js's `s.c!==undefined` checks.
+///
+/// `serial_number`/`manufacture_date`/`signal_bars` back the Ori Info modal
+/// (pc-app.md) — piggybacked on this characteristic rather than a new one
+/// (ble-protocol.md §4/§6.4). The first two come from Ori's separate
+/// write-once "factory" NVS partition; `signal_bars` is sampled live by Ori
+/// on every read (Windows can't read RSSI of an already-connected
+/// peripheral, so Ori — which can — reports its own bucketed reading back).
+/// None of the three are ever sent on a write.
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct DeviceSettingsRead {
     #[serde(rename = "c", skip_serializing_if = "Option::is_none")]
@@ -167,6 +175,12 @@ pub struct DeviceSettingsRead {
     pub slot2: Option<String>,
     #[serde(rename = "3", skip_serializing_if = "Option::is_none")]
     pub slot3: Option<String>,
+    #[serde(rename = "s", skip_serializing_if = "Option::is_none")]
+    pub serial_number: Option<String>,
+    #[serde(rename = "b", skip_serializing_if = "Option::is_none")]
+    pub manufacture_date: Option<String>,
+    #[serde(rename = "r", skip_serializing_if = "Option::is_none")]
+    pub signal_bars: Option<u8>,
 }
 
 /// Ori → Orion, notify (char 000A) — play/pause/next/prev/vol_set/shortcut.

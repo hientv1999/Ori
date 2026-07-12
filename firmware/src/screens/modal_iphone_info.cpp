@@ -124,7 +124,7 @@ struct StatClickCtx {
 // box-shadow-as-ring primitive.
 //
 // Tappable whenever `connected` — even at zero count, opening
-// modal_ancs_list to show its empty state ("No calls" etc.) rather
+// modal_ancs_list to show its empty state ("No missed calls" etc.) rather
 // than being inert. A dimmed icon communicates "nothing here right now,"
 // not "you can't check." Only truly gated on `connected`: while
 // disconnected there's no live data to open a list onto at all (same "don't

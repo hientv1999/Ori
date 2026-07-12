@@ -3,6 +3,9 @@
 // Boot order is deliberate:
 //
 //   1. nvs::init()         — opens Preferences; cheap.
+//   1b. factory_info::init() — read-only load from the separate "factory" NVS
+//                              partition (serial number + manufacture date,
+//                              provisioning.md). Never written by firmware.
 //   2. touch::init()       — brings up the shared Wire bus, then ch422g::init()
 //                            (which leaves EXIO2/LCD_BL low so the panel is
 //                            dark), then issues the GT911 reset over EXIO1.
@@ -44,6 +47,7 @@
 #include "app_state.h"
 #include "backlight.h"
 #include "ble/ble_manager.h"
+#include "factory_info.h"
 #include "lcd_panel.h"
 #include "lvgl_display.h"
 #include "lvgl_input.h"
@@ -101,6 +105,8 @@ void setup() {
     mem_snapshot("boot");
 
     nvs::init();
+    factory_info::init();  // read-only load from the separate "factory" NVS
+                            // partition — serial number + manufacture date
     time_format::init();  // load 12/24-hour preference before any clock renders
     app_state::init();  // PSRAM-allocate the ANCS notification-detail store
     // Prime the BLE bond-address RAM cache now, before state_machine::init()

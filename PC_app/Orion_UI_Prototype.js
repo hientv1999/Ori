@@ -301,8 +301,8 @@ const ANCS_MOCK={
   ],
 };
 
-const ANCS_LIST_TITLES={missed:'Missed Calls',unread:'Messages',other:'Notifications'};
-const ANCS_LIST_EMPTY={missed:'No missed calls',unread:'No messages',other:'No notifications'};
+const ANCS_LIST_TITLES={missed:'Missed Calls',unread:'Unread Messages',other:'Notifications'};
+const ANCS_LIST_EMPTY={missed:'No missed calls',unread:'No unread messages',other:'No notifications'};
 
 // Groups raw notifications by (app, title) — same rule Ori's own
 // app_state::ancs_collect_same_title uses for the status-bar tiles and the
@@ -673,6 +673,11 @@ function callEnd(uid){
 // every open.
 const ORI_FW_VERSION='1.2.3';
 const ORI_BT_ADDRESS='58:96:1D:B1:14:2F';
+// Demo-only stand-ins for the write-once "factory" NVS partition fields
+// (factory_info.h, provisioning.md) — the real app reads these live from
+// Ori's Device Settings characteristic (char 000E, keys "s"/"b").
+const ORI_SERIAL_NUMBER='ORI-2607-000123-4';
+const ORI_MFG_DATE='2026-07-12';
 function openOriInfoModal(){
   const t=I18N[appLang].oriInfoModal;
   $('oriInfoTitle').textContent=$('hName').textContent;
@@ -681,19 +686,25 @@ function openOriInfoModal(){
 
   $('oriInfoFwLbl').textContent=t.fwLbl;$('oriInfoFw').textContent=ORI_FW_VERSION;
   $('oriInfoAddrLbl').textContent=t.addrLbl;$('oriInfoAddr').textContent=ORI_BT_ADDRESS;
-  $('oriInfoSigLbl').textContent=t.sigLbl;
+  $('oriInfoSnLbl').textContent=t.snLbl;$('oriInfoSn').textContent=ORI_SERIAL_NUMBER;
+  $('oriInfoMfgLbl').textContent=t.mfgLbl;$('oriInfoMfg').textContent=ORI_MFG_DATE;
   $('oriInfoPhoneLbl').textContent=t.phoneLbl;
   $('oriInfoSyncLbl').textContent=t.syncLbl;
 
   // Live-link-only fields — honest about what can't be verified while Ori
   // isn't actually connected right now (same "don't show what you can't
-  // verify" policy the device itself uses for presence/weather).
+  // verify" policy the device itself uses for presence/weather). Signal is
+  // Ori's own bucketed RSSI of its link to Orion (ble-protocol.md §4/§6.4) —
+  // Windows can't read RSSI of an already-connected peripheral itself, so
+  // Ori reports its own reading back over Device Settings' "r" field.
   const live=connState==='on'||connState==='rec';
   renderSigBars('oriInfoSigBars',live?4:0);
   $('oriInfoSync').textContent=connState==='on'?t.justNow:t.minAgo.replace('{n}',connState==='off'?12:5);
-  // Bond status only — no name (settings elsewhere already show the phone's
-  // own name via the Unpair modal, which is where that identity matters).
-  $('oriInfoPhone').textContent=lastPhoneBondStatus.b?t.bonded:t.notPaired;
+  // Connection state, not identity — no name here (settings elsewhere
+  // already show the phone's own name via the Unpair modal, which is where
+  // that identity matters).
+  $('oriInfoPhone').textContent = !lastPhoneBondStatus.b ? t.notSetup
+    : lastPhoneBondStatus.c ? I18N[appLang].main.connected : I18N[appLang].main.disconnected;
 
   $('oriInfoCloseBtn').textContent=I18N[appLang].pairfail.close;
   showModal('m-ori-info');
@@ -1540,11 +1551,11 @@ const I18N={
     connecting:{title:'Pairing with Ori…',sub:'Waiting for Ori to confirm…'},
     syncing:{title:'Setting up Ori…',progressLabel:'A busy day ahead…',doneLabel:'Ori is set up!'},
     pairfail:{title:'Couldn’t pair with Ori',body:'The passkey didn’t match, or the request timed out on Ori. Pick a device to try again.',close:'Close'},
-    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Address',sigLbl:'Signal',phoneLbl:'iPhone',syncLbl:'Synced',
-      bonded:'Bonded',notPaired:'Not paired',justNow:'Just now',minAgo:'{n} min ago'},
-    iphoneInfoModal:{missedLbl:'Missed calls',unreadLbl:'Unread messages',sigLbl:'Signal',notifLbl:'Notifications'},
+    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Address',snLbl:'Serial Number',mfgLbl:'Manufactured',sigLbl:'Signal',phoneLbl:'iPhone',syncLbl:'Synced',
+      notSetup:'Not setup',justNow:'Just now',minAgo:'{n} min ago'},
+    iphoneInfoModal:{missedLbl:'Missed Calls',unreadLbl:'Unread Messages',sigLbl:'Signal',notifLbl:'Notifications'},
     settings:{title:'Settings',general:'General',auto:'Run automatically',autoSub:'Launch at Windows startup',
-      calendar:'Calendar Source',language:'Language',about:'About',app:'Version',reset:'Reset'},
+      calendar:'Calendar Source',language:'Language',about:'About',app:'Software Version',reset:'Reset'},
     main:{connected:'Connected',connecting:'Connecting…',syncing:'Syncing…',disconnected:'Disconnected',timeOff:'Time Off',
       noTimeOffPlanned:'No Time Off planned',tapToSet:'Tap to set',notifFilterRow:'Notification Filter',
       clockFaceRow:'Clock Face',timeFormatRow:'Time Format',quickActionsRow:'Quick Actions',presenceAvailable:'Available',
@@ -1601,11 +1612,11 @@ const I18N={
     connecting:{title:'Đang ghép nối với Ori…',sub:'Đang chờ Ori xác nhận…'},
     syncing:{title:'Đang thiết lập Ori…',progressLabel:'Một ngày bận rộn đang chờ…',doneLabel:'Ori đã thiết lập xong!'},
     pairfail:{title:'Không thể ghép nối với Ori',body:'Mã ghép nối không khớp, hoặc yêu cầu đã hết thời gian chờ trên Ori. Hãy chọn một thiết bị để thử lại.',close:'Đóng'},
-    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Địa chỉ',sigLbl:'Tín hiệu',phoneLbl:'iPhone',syncLbl:'Đồng bộ',
-      bonded:'Đã ghép nối',notPaired:'Chưa ghép nối',justNow:'Vừa xong',minAgo:'{n} phút trước'},
-    iphoneInfoModal:{missedLbl:'Cuộc gọi nhỡ',unreadLbl:'Tin chưa đọc',sigLbl:'Tín hiệu',notifLbl:'Thông báo'},
+    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Địa chỉ',snLbl:'Số sê-ri',mfgLbl:'Ngày sản xuất',sigLbl:'Tín hiệu',phoneLbl:'iPhone',syncLbl:'Đồng bộ',
+      notSetup:'Chưa thiết lập',justNow:'Vừa xong',minAgo:'{n} phút trước'},
+    iphoneInfoModal:{missedLbl:'Cuộc gọi nhỡ',unreadLbl:'Tin nhắn chưa đọc',sigLbl:'Tín hiệu',notifLbl:'Thông báo'},
     settings:{title:'Cài đặt',general:'Chung',auto:'Tự động chạy',autoSub:'Khởi động cùng Windows',
-      calendar:'Nguồn lịch',language:'Ngôn ngữ',about:'Giới thiệu',app:'Phiên bản',reset:'Đặt lại'},
+      calendar:'Nguồn lịch',language:'Ngôn ngữ',about:'Giới thiệu',app:'Phiên bản phần mềm',reset:'Đặt lại'},
     main:{connected:'Đã kết nối',connecting:'Đang kết nối…',syncing:'Đang đồng bộ…',disconnected:'Đã ngắt kết nối',timeOff:'Nghỉ phép',
       noTimeOffPlanned:'Chưa có lịch nghỉ phép',tapToSet:'Nhấn để đặt',notifFilterRow:'Bộ lọc thông báo',
       clockFaceRow:'Mặt đồng hồ',timeFormatRow:'Định dạng giờ',quickActionsRow:'Thao tác nhanh',presenceAvailable:'Đang hoạt động',
@@ -1662,11 +1673,11 @@ const I18N={
     connecting:{title:'Emparejando con Ori…',sub:'Esperando confirmación de Ori…'},
     syncing:{title:'Configurando Ori…',progressLabel:'Un día ocupado por delante…',doneLabel:'¡Ori está listo!'},
     pairfail:{title:'No se pudo emparejar con Ori',body:'El código no coincidió, o la solicitud caducó en Ori. Elige un dispositivo para intentarlo de nuevo.',close:'Cerrar'},
-    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Dirección',sigLbl:'Señal',phoneLbl:'iPhone',syncLbl:'Sincronizado',
-      bonded:'Vinculado',notPaired:'No vinculado',justNow:'Ahora mismo',minAgo:'Hace {n} min'},
+    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Dirección',snLbl:'Número de serie',mfgLbl:'Fabricado',sigLbl:'Señal',phoneLbl:'iPhone',syncLbl:'Sincronizado',
+      notSetup:'Sin configurar',justNow:'Ahora mismo',minAgo:'Hace {n} min'},
     iphoneInfoModal:{missedLbl:'Llamadas perdidas',unreadLbl:'Mensajes sin leer',sigLbl:'Señal',notifLbl:'Notificaciones'},
     settings:{title:'Configuración',general:'General',auto:'Iniciar automáticamente',autoSub:'Abrir al iniciar Windows',
-      calendar:'Fuente de calendario',language:'Idioma',about:'Acerca de',app:'Versión',reset:'Restablecer'},
+      calendar:'Fuente de calendario',language:'Idioma',about:'Acerca de',app:'Versión del software',reset:'Restablecer'},
     main:{connected:'Conectado',connecting:'Conectando…',syncing:'Sincronizando…',disconnected:'Desconectado',timeOff:'Tiempo libre',
       noTimeOffPlanned:'Sin tiempo libre planeado',tapToSet:'Toca para configurar',notifFilterRow:'Filtro de notificaciones',
       clockFaceRow:'Esfera del reloj',timeFormatRow:'Formato de hora',quickActionsRow:'Acciones rápidas',presenceAvailable:'Disponible',
@@ -1723,11 +1734,11 @@ const I18N={
     connecting:{title:'Appairage avec Ori…',sub:"En attente de confirmation d'Ori…"},
     syncing:{title:"Configuration d'Ori…",progressLabel:'Une journée bien remplie vous attend…',doneLabel:'Ori est configuré !'},
     pairfail:{title:"Impossible d'appairer avec Ori",body:'Le code ne correspondait pas, ou la demande a expiré sur Ori. Choisissez un appareil pour réessayer.',close:'Fermer'},
-    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Adresse',sigLbl:'Signal',phoneLbl:'iPhone',syncLbl:'Synchronisé',
-      bonded:'Associé',notPaired:'Non associé',justNow:"À l'instant",minAgo:'Il y a {n} min'},
+    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Adresse',snLbl:'Numéro de série',mfgLbl:'Fabriqué',sigLbl:'Signal',phoneLbl:'iPhone',syncLbl:'Synchronisé',
+      notSetup:'Non configuré',justNow:"À l'instant",minAgo:'Il y a {n} min'},
     iphoneInfoModal:{missedLbl:'Appels manqués',unreadLbl:'Messages non lus',sigLbl:'Signal',notifLbl:'Notifications'},
     settings:{title:'Paramètres',general:'Général',auto:'Démarrage automatique',autoSub:'Lancer au démarrage de Windows',
-      calendar:'Source de calendrier',language:'Langue',about:'À propos',app:'Version',reset:'Réinitialiser'},
+      calendar:'Source de calendrier',language:'Langue',about:'À propos',app:'Version du logiciel',reset:'Réinitialiser'},
     main:{connected:'Connecté',connecting:'Connexion…',syncing:'Synchronisation…',disconnected:'Déconnecté',timeOff:'Congé',
       noTimeOffPlanned:'Aucun congé prévu',tapToSet:'Toucher pour définir',notifFilterRow:'Filtre de notifications',
       clockFaceRow:"Cadran de l'horloge",timeFormatRow:"Format de l'heure",quickActionsRow:'Actions rapides',presenceAvailable:'Disponible',

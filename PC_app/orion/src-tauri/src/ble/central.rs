@@ -128,14 +128,25 @@ pub struct BleState {
     // iteration — minus the stray emit.
     pub supervisor_task: Mutex<Option<tokio::task::AbortHandle>>,
     // Backing the Ori Info/Stats modal (pc-app.md's panel — device identity
-    // snapshot). Session-only caches, not persisted to `store::SavedState`:
-    // they repopulate within moments of the next connect regardless (fw
-    // version via `check_firmware_version`, address + sync time inside
-    // `run_sync`), so showing "unknown" for the few seconds before that on
-    // a fresh launch is honest rather than a real gap — same "don't show
-    // what you can't verify" policy the device itself uses for presence.
+    // snapshot). `cached_fw_version`/`last_synced` are genuinely session-only
+    // — firmware version can change (an OTA update) and "last synced" is
+    // meaningless across a restart — so they stay unpersisted: showing
+    // "unknown"/blank for the few seconds before the next connect repopulates
+    // them is honest rather than a real gap, same "don't show what you can't
+    // verify" policy the device itself uses for presence.
+    //
+    // `cached_address`/`cached_serial_number`/`cached_manufacture_date` are
+    // different: none of the three ever change for a given bond, so they're
+    // ALSO write-through persisted to `store::SavedState` the first time
+    // each is learned (`run_sync` for address, `read_device_settings` for
+    // serial/mfg) and seeded back from disk at app launch
+    // (`commands::get_initial_state`) — letting the Ori Info modal show them
+    // even before this session's first connect completes. Cleared only when
+    // the bond itself ends (`reset_session_caches`'s own doc comment).
     cached_fw_version: Mutex<Option<String>>,
     cached_address: Mutex<Option<String>>,
+    cached_serial_number: Mutex<Option<String>>,
+    cached_manufacture_date: Mutex<Option<String>>,
     last_synced: Mutex<Option<std::time::Instant>>,
 }
 
@@ -166,36 +177,80 @@ impl Default for BleState {
             supervisor_task: Mutex::default(),
             cached_fw_version: Mutex::default(),
             cached_address: Mutex::default(),
+            cached_serial_number: Mutex::default(),
+            cached_manufacture_date: Mutex::default(),
             last_synced: Mutex::default(),
         }
     }
 }
 
-/// Resets the per-session caches that outlive a single connection —
-/// `shortcut_slots` and `favorite_combos` — back to firmware defaults.
-/// Called on Factory Reset / Clear All: without it, pairing the (now-wiped)
-/// device again in the same app session would make `run_sync` push the
-/// previous owner's shortcut tokens to Ori while the freshly-cleared store
-/// says firmware defaults, leaving the two disagreeing until the next
-/// reconnect flip-flops it back.
+/// Clears the in-memory identity cache — `cached_address`/
+/// `cached_serial_number`/`cached_manufacture_date` — without touching
+/// shortcuts/combos. These three are write-through persisted to
+/// `store::SavedState` (see `BleState`'s own doc comment), so every caller
+/// pairs this with clearing the matching disk fields itself
+/// (`saved.address = None` etc.) — without also clearing the in-memory side,
+/// `get_ori_info` would keep answering with the old identity for the rest of
+/// this running session, until the next app restart re-seeded from the
+/// (by-then-cleared) disk copy. Split out from `reset_session_caches` below
+/// so `give_up_on_bond` (commands.rs) — which ends a bond the same way a
+/// factory reset does, but isn't a user-initiated "reset my shortcuts too"
+/// action — can clear identity alone.
+pub async fn clear_cached_identity(state: &BleState) {
+    *state.cached_address.lock().await = None;
+    *state.cached_serial_number.lock().await = None;
+    *state.cached_manufacture_date.lock().await = None;
+}
+
+/// Seeds the in-memory identity cache from `store::SavedState` at app
+/// startup (`commands::get_initial_state`) — same idea as
+/// `set_favorite_combos`'s own startup-seed call, just for these three
+/// fields instead. Lets `get_ori_info` answer with the last-known
+/// address/serial/manufacture-date before this session's first connect ever
+/// completes, which is the entire point of persisting them (pc-app.md).
+pub async fn seed_cached_identity(state: &BleState, address: Option<String>, serial_number: Option<String>, manufacture_date: Option<String>) {
+    *state.cached_address.lock().await = address;
+    *state.cached_serial_number.lock().await = serial_number;
+    *state.cached_manufacture_date.lock().await = manufacture_date;
+}
+
+/// Resets the per-session caches that outlive a single connection — back to
+/// firmware defaults (`shortcut_slots`/`favorite_combos`), plus the identity
+/// cache (`clear_cached_identity` above). Called on Factory Reset / Clear
+/// All — both `commands.rs` call sites, the only two callers. Without the
+/// shortcuts/combos reset, pairing the (now-wiped) device again in the same
+/// app session would make `run_sync` push the previous owner's shortcut
+/// tokens to Ori while the freshly-cleared store says firmware defaults,
+/// leaving the two disagreeing until the next reconnect flip-flops it back.
 pub async fn reset_session_caches(state: &BleState) {
     *state.shortcut_slots.lock().await = default_shortcut_slots();
     *state.favorite_combos.lock().await = [Vec::new(), Vec::new(), Vec::new()];
+    clear_cached_identity(state).await;
 }
 
 /// Snapshot for the Ori Info/Stats modal (pc-app.md). Deliberately serves
 /// only what's already cached — see `BleState`'s doc comment on
-/// `cached_fw_version`/`cached_address`/`last_synced` for why a fresh BLE
-/// read isn't triggered here. No RSSI/signal field: btleplug's Windows
-/// backend only ever refreshes `PeripheralProperties.rssi` from advertising
-/// packets, which stop the moment a peripheral is connected — a "signal
-/// strength" shown here would just be the frozen pre-connect reading, not a
-/// live one, so it's omitted rather than shown misleadingly.
+/// `cached_fw_version`/`cached_address`/`cached_serial_number`/
+/// `cached_manufacture_date`/`last_synced` for why a fresh BLE read isn't
+/// triggered here. `firmware_version`/`last_synced_secs_ago` are `None`
+/// until this session's first connect completes (session-only, can't be
+/// seeded from disk); `address`/`serial_number`/`manufacture_date` are
+/// seeded from `store::SavedState` at launch (`get_initial_state`), so they
+/// can already be populated here even before that. No RSSI/signal field:
+/// btleplug's Windows backend only ever refreshes `PeripheralProperties.rssi`
+/// from advertising packets, which stop the moment a peripheral is
+/// connected — a "signal strength" shown here would just be the frozen
+/// pre-connect reading, not a live one, so it's omitted rather than shown
+/// misleadingly. (Live signal bars for the Ori Info modal instead ride
+/// `read_device_settings`'s "r" field — Ori reports its own reading back,
+/// ble-protocol.md §4/§6.4 — not this cached snapshot.)
 #[derive(Serialize)]
 pub struct OriInfo {
     name: String,
     firmware_version: Option<String>,
     address: Option<String>,
+    serial_number: Option<String>,
+    manufacture_date: Option<String>,
     last_synced_secs_ago: Option<u64>,
 }
 
@@ -204,6 +259,8 @@ pub async fn get_ori_info(state: &BleState) -> OriInfo {
         name: state.device_name.lock().await.clone().unwrap_or_default(),
         firmware_version: state.cached_fw_version.lock().await.clone(),
         address: state.cached_address.lock().await.clone(),
+        serial_number: state.cached_serial_number.lock().await.clone(),
+        manufacture_date: state.cached_manufacture_date.lock().await.clone(),
         last_synced_secs_ago: state.last_synced.lock().await.map(|i| i.elapsed().as_secs()),
     }
 }
@@ -1011,6 +1068,26 @@ async fn start_post_sync_tasks(app: &AppHandle, state: &BleState, peripheral: Pe
         tokio::spawn(media_bridge(app.clone(), peripheral.clone())),
     ];
     *state.background_tasks.lock().await = tasks;
+
+    // Pull-based ANCS relay resync ("RSYN", Device Command char 0008 —
+    // ble-protocol.md §13): explicitly ask Ori to replay its full ANCS
+    // mirror (chars 0010/0011) NOW. This is the one trigger that's correct
+    // by construction: the relay watchers (`subscribe_ancs_relay_early`)
+    // have provably been subscribed AND actively draining since before
+    // `run_sync` even started, so the replay this write provokes cannot be
+    // missed. It exists because every push-timed resync lost a race on
+    // bonded reconnects — Ori's onSubscribe() fires from NimBLE's own
+    // bonding-restore the instant encryption resumes, before Orion is
+    // listening (pc-app.md's full writeup) — and no server-side "late
+    // enough" guess is robust. Best-effort: older firmware NACKs the
+    // unknown magic (write error ignored), harmlessly leaving the old
+    // push-timed behavior in place.
+    if let Ok(chr_cmd) = find_char(&peripheral, gatt::CHR_DEVICE_COMMAND) {
+        match peripheral.write(&chr_cmd, &gatt::RESYNC_ANCS_MAGIC, WriteType::WithResponse).await {
+            Ok(()) => eprintln!("[ORION-DEBUG] start_post_sync_tasks: RSYN (ANCS relay resync) requested"),
+            Err(e) => eprintln!("[ORION-DEBUG] start_post_sync_tasks: RSYN write failed: {e}"),
+        }
+    }
 }
 
 /// §6.3's periodic Time Sync refresh — re-sends just Time Sync, in its own
@@ -1633,6 +1710,13 @@ async fn ancs_notification_watcher(app: AppHandle, peripheral: Peripheral, mut n
         return;
     };
     eprintln!("[ORION-DEBUG] ancs_notif_watcher: entering notify loop on pre-subscribed receiver");
+    // Every notify on this characteristic is chunk-framed now (ble-protocol.md
+    // §5's "AncsNotification chunking") — "remove"/"clear"/most "add"s
+    // reassemble in one `feed()` call (total_frags:1), a maxed-out "add"'s
+    // 512-byte body needs a few. One reassembler for this watcher's whole
+    // connection lifetime — a fresh connection gets a fresh instance, so
+    // there's no cross-connection state to worry about.
+    let mut chunks = chunk::Reassembler::new();
     // Diagnostic: try an actual read now that the firmware gives char 0010
     // the READ property. WinRT rejects a read on a char whose *cached*
     // properties lack READ WITHOUT hitting the device — so an Err here is a
@@ -1663,7 +1747,10 @@ async fn ancs_notification_watcher(app: AppHandle, peripheral: Peripheral, mut n
                 if notif.uuid != chr.uuid {
                     continue;  // not char 0010 — another characteristic's notify on the shared stream
                 }
-                match cbor::decode::<cbor::AncsNotification>(&notif.value) {
+                let Some(complete) = chunks.feed(&notif.value) else {
+                    continue;  // mid-sequence fragment, or a dropped/malformed frame — chunk::Reassembler's own doc comment covers why this self-heals without a NACK
+                };
+                match cbor::decode::<cbor::AncsNotification>(&complete) {
                     Ok(payload) => {
                         eprintln!("[ORION-DEBUG] ancs_notif_watcher: decoded op={:?} u={} c={} a={:?} t={:?} -> emitting 'ancs-notification'",
                                   payload.o, payload.u, payload.c, payload.a, payload.t);
@@ -2050,8 +2137,20 @@ async fn run_sync(
     // genuinely completed, which is the one moment both are cheaply known:
     // the address doesn't change, but re-caching it here costs nothing and
     // avoids a separate cache-on-connect call site to keep in sync.
-    *state.cached_address.lock().await = Some(peripheral.address().to_string());
+    let address = peripheral.address().to_string();
+    let address_changed = state.cached_address.lock().await.as_deref() != Some(address.as_str());
+    *state.cached_address.lock().await = Some(address.clone());
     *state.last_synced.lock().await = Some(std::time::Instant::now());
+    // Write-through to disk only on an actual change — this runs on EVERY
+    // sync/reconnect, and the address never changes for a given bond, so
+    // after the first successful sync each session this is just an
+    // equality check, not a disk write (`BleState`'s own doc comment).
+    if address_changed {
+        if let Some(mut saved) = crate::store::load(app).await {
+            saved.address = Some(address);
+            let _ = crate::store::save(app, &saved).await;
+        }
+    }
     Ok(())
 }
 
@@ -2060,8 +2159,15 @@ async fn run_sync(
 /// three shortcut slot tokens (ble-protocol.md §6.4). Presence/weather are
 /// excluded from Ori's own read response — Orion is their source of truth.
 /// The frontend calls this on every `setConn('on')` transition
-/// (`readSlotsFromDevice()` in app.js), matching "read on (re)connect".
-pub async fn read_device_settings(state: &BleState) -> Result<cbor::DeviceSettingsRead, String> {
+/// (`readSlotsFromDevice()` in app.js), matching "read on (re)connect" —
+/// and again on a ~3 s poll while the Ori Info modal is open, for live
+/// signal bars (pc-app.md).
+///
+/// `serial_number`/`manufacture_date`, when present, are write-through
+/// cached (session + disk) the same way `run_sync` caches `address` — only
+/// on an actual change, so the modal's poll doesn't turn into a disk write
+/// every 3 s once the value is already known (`BleState`'s own doc comment).
+pub async fn read_device_settings(app: &AppHandle, state: &BleState) -> Result<cbor::DeviceSettingsRead, String> {
     let peripheral = state
         .peripheral
         .lock()
@@ -2070,7 +2176,36 @@ pub async fn read_device_settings(state: &BleState) -> Result<cbor::DeviceSettin
         .ok_or_else(|| "not connected".to_string())?;
     let chr = find_char(&peripheral, gatt::CHR_DEVICE_SETTINGS)?;
     let raw = peripheral.read(&chr).await.map_err(|e| e.to_string())?;
-    cbor::decode(&raw)
+    let settings: cbor::DeviceSettingsRead = cbor::decode(&raw)?;
+
+    let mut to_persist: Option<(Option<String>, Option<String>)> = None;
+    if let Some(sn) = &settings.serial_number {
+        let mut cached = state.cached_serial_number.lock().await;
+        if cached.as_deref() != Some(sn.as_str()) {
+            *cached = Some(sn.clone());
+            to_persist.get_or_insert((None, None)).0 = Some(sn.clone());
+        }
+    }
+    if let Some(mfg) = &settings.manufacture_date {
+        let mut cached = state.cached_manufacture_date.lock().await;
+        if cached.as_deref() != Some(mfg.as_str()) {
+            *cached = Some(mfg.clone());
+            to_persist.get_or_insert((None, None)).1 = Some(mfg.clone());
+        }
+    }
+    if let Some((sn, mfg)) = to_persist {
+        if let Some(mut saved) = crate::store::load(app).await {
+            if sn.is_some() {
+                saved.serial_number = sn;
+            }
+            if mfg.is_some() {
+                saved.manufacture_date = mfg;
+            }
+            let _ = crate::store::save(app, &saved).await;
+        }
+    }
+
+    Ok(settings)
 }
 
 async fn write_device_settings(peripheral: &Peripheral, settings: &cbor::DeviceSettingsWrite) -> Result<(), String> {

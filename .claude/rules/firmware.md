@@ -27,7 +27,7 @@ paths:
 - **Mode-toggle visibility**: show only when Orion is BLE-connected. On PC link drop: remove toggle + auto-revert to calendar. On reconnect: restore toggle (calendar mode — entering Controls is always the user's explicit choice)
 - **State machine**: priority-ordered left panel — `state-machine.md`
 - **Meeting list**: sorting, overlap display, live expiry — `meeting-list.md`
-- **NVS persistence**: profile, Time Off, backlight state, pairing bonds — survives power cycles. **Meeting list and local time are RAM-only** (deliberately not persisted) — re-synced from Orion on reconnect; see `meeting-list.md`
+- **NVS persistence**: profile, Time Off, backlight state, pairing bonds — survives power cycles. **Meeting list and local time are RAM-only** (deliberately not persisted) — re-synced from Orion on reconnect; see `meeting-list.md`. **Serial number + manufacture date live in a separate "factory" NVS partition**, read-only at runtime (`factory_info.h`) and untouched by `nvs::factory_reset()` — survives both a factory reset and a firmware update by construction; see `provisioning.md`.
 - **Backlight**: always ON — set by `backlight::init()` at boot via CH422G EXIO2; no runtime control
 - **Setup flow**: first-boot sequence, factory reset — `setup-flow.md`
 - **5-minute alert timer**: countdown modal before each meeting — `state-machine.md`

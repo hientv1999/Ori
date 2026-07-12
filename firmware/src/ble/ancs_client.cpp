@@ -22,6 +22,7 @@
 #include "ble/ancs_client.h"
 #include "ble/ble_manager.h"
 #include "ble/gatt_server.h"
+#include "ble/rssi_util.h"
 
 #include <Arduino.h>
 #include "ori_log.h"
@@ -340,19 +341,6 @@ static uint8_t  g_signal_bars = 0;
 // definition after iteration N's anim processing has fully returned.
 static bool g_ancs_list_refresh_pending = false;
 
-// Buckets a live RSSI reading (dBm, more negative = weaker) into the same
-// 0-4 bar scale the iPhone Info overlay and Orion's UI render. Thresholds are
-// a standard-ish RSSI-to-bars ladder — BLE has no calibrated "signal
-// strength" concept like cellular, so this is a reasonable approximation,
-// not a spec'd value.
-static uint8_t rssi_to_bars(int rssi) {
-    if (rssi >= -60) return 4;
-    if (rssi >= -70) return 3;
-    if (rssi >= -80) return 2;
-    if (rssi >= -90) return 1;
-    return 0;
-}
-
 static void read_phone_time(bool force = false) {
     if (!g_client) return;
     // On connect (force=false) only seed if the clock isn't valid yet — Orion,
@@ -567,20 +555,46 @@ static void perform_notification_action(uint32_t notif_uid, uint8_t action_id) {
 // already present), which would otherwise leave a just-updated notification
 // stuck wherever it first arrived. Entries with no known timestamp (clock not
 // yet synced, or the phone omitted Date) fall back to queue position.
+// One stacked status-bar group, as built by publish_queue() below — one per
+// distinct (icon token, title[, category for "unknown"]) combination seen in
+// the live queue.
+struct PublishSlot {
+    const char* token;
+    const char* title;        // group identity, with token (+ cat for "unknown")
+    uint32_t    uid;          // representative — most recent by real time
+    uint8_t     count;
+    uint8_t     cat;
+    time_t      sort_epoch;   // representative's recv_epoch (0 = unknown)
+    int         sort_idx;     // queue index — tiebreak / fallback for epoch 0
+};
+
+// Stable insertion sort of `slots[0..count)` oldest→newest by each group's
+// representative time (real recv_epoch when both sides have one, else queue
+// index) — `count` is small (≤ a handful of distinct apps in practice), so
+// insertion sort is plenty. Pulled out of publish_queue() purely for
+// readability/testability; same comparator, same in-place behavior.
+static void sort_groups_by_time(PublishSlot* slots, size_t count) {
+    for (size_t a = 1; a < count; ++a) {
+        PublishSlot key = slots[a];
+        size_t b = a;
+        while (b > 0) {
+            const PublishSlot& prev = slots[b - 1];
+            bool prev_after_key = (prev.sort_epoch > 0 && key.sort_epoch > 0)
+                                   ? (prev.sort_epoch > key.sort_epoch)
+                                   : (prev.sort_idx > key.sort_idx);
+            if (!prev_after_key) break;
+            slots[b] = slots[b - 1];
+            --b;
+        }
+        slots[b] = key;
+    }
+}
+
 static void publish_queue() {
     app_state::AncsConfig cfg = {};
     cfg.phone_connected = true;
 
-    struct Slot {
-        const char* token;
-        const char* title;        // group identity, with token (+ cat for "unknown")
-        uint32_t    uid;          // representative — most recent by real time
-        uint8_t     count;
-        uint8_t     cat;
-        time_t      sort_epoch;   // representative's recv_epoch (0 = unknown)
-        int         sort_idx;     // queue index — tiebreak / fallback for epoch 0
-    };
-    Slot slots[app_state::MAX_ANCS_NOTIFICATIONS] = {};
+    PublishSlot slots[app_state::MAX_ANCS_NOTIFICATIONS] = {};
     size_t slot_count = 0;
 
     for (int i = 0; i < (int)g_queue_count; ++i) {
@@ -594,7 +608,7 @@ static void publish_queue() {
         time_t      epoch      = app_state::ancs_recv_epoch(uid);
         const char* title      = app_state::ancs_title(uid);
 
-        Slot* slot = nullptr;
+        PublishSlot* slot = nullptr;
         for (size_t j = 0; j < slot_count; ++j) {
             if (strcmp(slots[j].token, tok) == 0 && (!is_unknown || slots[j].cat == cat) &&
                 strcmp(slots[j].title, title) == 0) {
@@ -617,22 +631,7 @@ static void publish_queue() {
         if (newer) { slot->uid = uid; slot->sort_epoch = epoch; slot->sort_idx = i; }
     }
 
-    // Stable insertion sort, oldest→newest by representative time (slot_count
-    // is small — ≤ a handful of distinct apps in practice).
-    for (size_t a = 1; a < slot_count; ++a) {
-        Slot key = slots[a];
-        size_t b = a;
-        while (b > 0) {
-            const Slot& prev = slots[b - 1];
-            bool prev_after_key = (prev.sort_epoch > 0 && key.sort_epoch > 0)
-                                   ? (prev.sort_epoch > key.sort_epoch)
-                                   : (prev.sort_idx > key.sort_idx);
-            if (!prev_after_key) break;
-            slots[b] = slots[b - 1];
-            --b;
-        }
-        slots[b] = key;
-    }
+    sort_groups_by_time(slots, slot_count);
 
     cfg.count = slot_count;
     for (size_t i = 0; i < slot_count; ++i) {
@@ -892,7 +891,7 @@ void poll(bool orion_connected) {
         uint32_t now = millis();
         if (s_last_rssi_poll_ms == 0 || (now - s_last_rssi_poll_ms) >= RSSI_POLL_INTERVAL_MS) {
             s_last_rssi_poll_ms = now;
-            uint8_t bars = rssi_to_bars(g_client->getRssi());
+            uint8_t bars = ble::rssi_to_bars(g_client->getRssi());
             if (bars != g_signal_bars) {
                 g_signal_bars = bars;
                 push_phone_stats();
@@ -1221,7 +1220,11 @@ void on_data_source(const uint8_t* data, uint16_t len) {
     time_t recv_epoch = parse_ancs_date(date, hhmm, sizeof(hhmm));
 
     // Drop glyphs the UI font can't render (emoji, CJK, …) before storing.
-    char ftitle[193] = {}, fsub[129] = {}, fbody[257] = {};
+    // fbody must match AncsDetailEntry::body[513] (app_state.cpp) — this is
+    // the buffer that actually feeds set_ancs_detail() below; a smaller size
+    // here would silently truncate before the larger persistent/wire caps
+    // ever got a chance to matter.
+    char ftitle[193] = {}, fsub[129] = {}, fbody[513] = {};
     char fpos[33] = {}, fneg[33] = {};
     ui::sanitize_text(title,     ftitle, sizeof(ftitle));
     ui::sanitize_text(subtitle,  fsub,   sizeof(fsub));
@@ -1305,7 +1308,9 @@ void request_attributes(uint32_t notif_uid) {
     cmd[n++] = 0x00;                        // AppIdentifier (no length)
     cmd[n++] = 0x01; cmd[n++] = 192; cmd[n++] = 0;  // Title
     cmd[n++] = 0x02; cmd[n++] = 128; cmd[n++] = 0;  // Subtitle
-    cmd[n++] = 0x03; cmd[n++] = 255; cmd[n++] = 1;  // Message (512 LE)
+    cmd[n++] = 0x03; cmd[n++] = 0;   cmd[n++] = 2;  // Message (512 LE) — was 255,1 (511):
+                                                     // fixed to actually match the comment/
+                                                     // downstream buffers, all sized for 512.
     cmd[n++] = 0x05;                        // Date (no length)
     cmd[n++] = 0x06; cmd[n++] = 32;  cmd[n++] = 0;  // PositiveActionLabel
     cmd[n++] = 0x07; cmd[n++] = 32;  cmd[n++] = 0;  // NegativeActionLabel

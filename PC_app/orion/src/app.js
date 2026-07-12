@@ -317,6 +317,10 @@ function setConn(s){
   // own doc comment); Disconnected keeps the row reachable, so there's
   // nothing to strand.
   if(s==='connecting'||s==='rec') dismissTransientScreen();
+  // Keep an already-open Ori Info modal's dot/state (and signal bars, which
+  // zero out once disconnected) in step with every connection-state change
+  // instead of waiting for the next ORI_INFO_POLL_MS tick.
+  if($('m-ori-info').classList.contains('show')) refreshOriInfoModal();
 }
 
 // Header's manual reconnect button — nudges the backend past its current
@@ -403,6 +407,9 @@ function setPhoneBondStatus(status){
   // pattern already used elsewhere for a language switch, see the
   // 'm-iphone-info' checks near the listen() handlers below.
   if($('m-iphone-info').classList.contains('show')) openIphoneInfoModal();
+  // Same treatment for the Ori Info modal's iPhone row — it shows the same
+  // bond name/paired state, just one line instead of the full stats card.
+  if($('m-ori-info').classList.contains('show')) refreshOriInfoModal();
 }
 
 // Lights up the first `level` (0-4) bars of a .sig-bars element — shared by
@@ -1109,33 +1116,123 @@ function callEnd(uid){
 
 // Ori device info / stats — tapping the header's device name + connection
 // state opens a read-only snapshot of everything Orion knows about this
-// specific Ori: identity (name, firmware, address) and its other bond
-// (iPhone/ANCS). get_ori_info serves cached values only (no live BLE read),
-// see its Rust doc comment — firmware version and address populate within
-// moments of the next connect regardless. No Signal/RSSI row: btleplug's
-// Windows backend only refreshes that from advertising packets, which stop
-// the moment Ori is connected, so it'd just show a stale pre-connect
-// reading — same "don't show what you can't verify" policy Ori itself
-// applies to presence/weather.
-async function openOriInfoModal(){
+// specific Ori: identity (name, firmware, address, serial number,
+// manufacture date), its signal, and its other bond (iPhone/ANCS).
+//
+// Live while open (mirrors the iPhone Info modal's own "live while open"
+// treatment, pc-app.md): a poll timer re-fetches every ORI_INFO_POLL_MS
+// while the modal is visible, plus push hooks off `setConn()`/
+// `setPhoneBondStatus()` (search their bodies for 'm-ori-info') so the
+// connection dot/state and iPhone row react immediately on a change instead
+// of waiting for the next tick.
+//
+// Two data sources, merged:
+//   - get_ori_info (Rust): no live BLE read. name/firmware/last-synced are
+//     session-only (repopulate within moments of the next connect
+//     regardless). address/serial_number/manufacture_date are DISK-
+//     persisted (store::SavedState, Rust side) — they never change for a
+//     given bond, so once learned they survive a disconnect AND an app
+//     restart, not just this session (see its own Rust doc comment).
+//   - read_device_settings (Rust, char 000E live read): serial_number ("s")
+//     and manufacture_date ("b") come from Ori's write-once "factory" NVS
+//     partition — Rust write-through caches these into the same persisted
+//     store the moment they're first read, so there's no JS-side caching
+//     needed here either, just "prefer the live value when we have one,
+//     else the persisted one." signal_bars ("r") is Ori's own live RSSI to
+//     Orion, sampled fresh on every read and bucketed 0-4 — the reverse of
+//     the iPhone Info modal's signal bars (there Ori is central and reads
+//     live; here Orion is central, and Windows' btleplug can't read RSSI of
+//     an already-connected peripheral — only from advertising, which stops
+//     once connected — so Ori reports its own reading back instead,
+//     ble-protocol.md §4/§6.4). Signal bars are NOT persisted anywhere —
+//     0 bars while disconnected, same "don't show what you can't verify"
+//     policy Ori itself applies to presence/weather.
+const ORI_INFO_POLL_MS=3000;
+let oriInfoPollTimer=null;
+
+async function refreshOriInfoModal(){
   const t=I18N[appLang].oriInfoModal;
-  const info=await invoke('get_ori_info').catch(()=>null);
-  if(!info) return;
+  const [info,settings]=await Promise.all([
+    invoke('get_ori_info').catch(()=>null),
+    invoke('read_device_settings').catch(()=>null),
+  ]);
+  if(!info) return false;
 
   $('oriInfoTitle').textContent=info.name||$('hName').textContent;
-  $('oriInfoState').textContent=$('hState').textContent;
-  $('oriInfoDot').className='p-dot '+(connState==='on'?'available':connState==='off'?'offline':'away');
+  // Dot/state/signal-bars are driven off ONE signal — whether this
+  // refresh's own live char-000E read just succeeded — not off `connState`
+  // (app.js's app-wide connection state machine, `setConn()`). connState is
+  // deliberately debounced (supervise_connection_loop's `settled_off` gate,
+  // commands.rs) so a brief drop doesn't flash the whole UI; this modal's
+  // live-read poll has no such debounce and can catch a dead link several
+  // seconds before connState does. Driving all three off `connState` alone
+  // used to show 0 bars (live, correct) next to "Connected" (stale) during
+  // that gap — mixing a live signal with a debounced one always risks that
+  // kind of contradiction, so all three now come from the same read.
+  const live = connState==='on' && settings!=null;
+  $('oriInfoDot').className='p-dot '+(live?'available':connState==='off'?'offline':'away');
+  $('oriInfoState').textContent = live ? I18N[appLang].main.connected
+    : connState==='connecting' ? I18N[appLang].main.connecting
+    : connState==='rec' ? I18N[appLang].main.syncing
+    : I18N[appLang].main.disconnected;
+  renderSigBars('oriInfoSigBars',live?(settings.r||0):0);
+  $('oriInfoSigBars').title=t.sigLbl;
 
-  $('oriInfoFwLbl').textContent=t.fwLbl;$('oriInfoFw').textContent=info.firmware_version||t.unknown;
+  // Firmware version is intentionally NOT persisted (unlike address/serial/
+  // manufacture date below) — it can change across an OTA update, so Rust's
+  // session cache is a "last known, only trustworthy while connected" value,
+  // not a permanent identity fact. Gate the display on `live` too: without
+  // this, a disconnect would keep showing the last-read version as if it
+  // were still confirmed current, the same stale-data problem the dot/state/
+  // bars fix above addressed.
+  $('oriInfoFwLbl').textContent=t.fwLbl;$('oriInfoFw').textContent=live?(info.firmware_version||t.unknown):t.unknown;
   $('oriInfoAddrLbl').textContent=t.addrLbl;$('oriInfoAddr').textContent=info.address||t.unknown;
+
+  // Prefer a fresh live read (settings.s/.b) when connected, otherwise fall
+  // back to get_ori_info's disk-persisted copy (store::SavedState — Rust
+  // side, survives an app restart) rather than a client-side JS cache: the
+  // two never actually disagree except on the very first read of a newly
+  // provisioned unit, and Rust is now the one source of truth for "the last
+  // known value," not this modal's own session.
+  $('oriInfoSnLbl').textContent=t.snLbl;$('oriInfoSn').textContent=(settings&&settings.s)||info.serial_number||t.unknown;
+  $('oriInfoMfgLbl').textContent=t.mfgLbl;$('oriInfoMfg').textContent=(settings&&settings.b)||info.manufacture_date||t.unknown;
+
   $('oriInfoPhoneLbl').textContent=t.phoneLbl;
-  $('oriInfoPhone').textContent=lastPhoneBondStatus.b?(lastPhoneBondStatus.n||I18N[appLang].unpairPhoneModal.fallbackName):t.notPaired;
+  // Connection state, not identity — the phone's actual name already has a
+  // home (header icon tooltip, iPhone Info modal title, Unpair modal). This
+  // row only answers "is there a bond, and is it live right now."
+  //
+  // Gated on `live` (Ori itself reachable), NOT just `lastPhoneBondStatus.b`:
+  // setConn() force-resets the cache to {b:false,...} on every non-'on'
+  // conn-state (main.js's own "don't show what can't be verified" fallback,
+  // same as the header phone icon hiding). Reading that reset `b:false` as
+  // "no iPhone ever bonded" once Ori disconnects would misreport a real,
+  // just-unverifiable bond as never having been set up. Only trust the cache
+  // to distinguish Not Setup / Connected / Disconnected while Ori itself is
+  // live; otherwise the honest answer is "don't know," same as every other
+  // field here that depends on Ori actually being reachable right now.
+  $('oriInfoPhone').textContent = !live ? t.unknown
+    : !lastPhoneBondStatus.b ? t.notSetup
+    : lastPhoneBondStatus.c ? I18N[appLang].main.connected : I18N[appLang].main.disconnected;
   $('oriInfoSyncLbl').textContent=t.syncLbl;
   const secs=info.last_synced_secs_ago;
   $('oriInfoSync').textContent = secs==null ? t.unknown : secs<60 ? t.justNow : t.minAgo.replace('{n}',Math.round(secs/60));
 
   $('oriInfoCloseBtn').textContent=I18N[appLang].pairfail.close;
+  return true;
+}
+
+async function openOriInfoModal(){
+  if(!(await refreshOriInfoModal())) return;
   showModal('m-ori-info');
+  // Guarded so a stray second open() call (shouldn't happen — the header
+  // trigger is a single click target) never stacks a duplicate interval.
+  if(!oriInfoPollTimer) oriInfoPollTimer=setInterval(refreshOriInfoModal,ORI_INFO_POLL_MS);
+}
+
+function closeOriInfoModal(){
+  if(oriInfoPollTimer){clearInterval(oriInfoPollTimer);oriInfoPollTimer=null;}
+  hideModal('m-ori-info');
 }
 
 let pfChanged=false,pfRemoved=false;
@@ -2144,11 +2241,11 @@ const I18N={
     connecting:{title:'Pairing with Ori…',sub:'Waiting for Ori to confirm…'},
     syncing:{title:'Setting up Ori…',progressLabel:'A busy day ahead…',doneLabel:'Ori is set up!'},
     pairfail:{title:'Couldn’t pair with Ori',body:'The passkey didn’t match, or the request timed out on Ori. Pick a device to try again.',close:'Close'},
-    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Address',phoneLbl:'iPhone',syncLbl:'Synced',
-      notPaired:'Not paired',justNow:'Just now',minAgo:'{n} min ago',unknown:'Unknown'},
-    iphoneInfoModal:{missedLbl:'Calls',unreadLbl:'Unread messages',sigLbl:'Signal',notifLbl:'Notifications'},
-    ancsList:{titles:{missed:'Calls',unread:'Messages',other:'Notifications'},
-      empty:{missed:'No calls',unread:'No messages',other:'No notifications'},
+    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Address',snLbl:'Serial Number',mfgLbl:'Manufactured',sigLbl:'Signal',phoneLbl:'iPhone',syncLbl:'Synced',
+      notSetup:'Not setup',justNow:'Just now',minAgo:'{n} min ago',unknown:'Unknown'},
+    iphoneInfoModal:{missedLbl:'Missed Calls',unreadLbl:'Unread Messages',sigLbl:'Signal',notifLbl:'Notifications'},
+    ancsList:{titles:{missed:'Missed Calls',unread:'Unread Messages',other:'Notifications'},
+      empty:{missed:'No missed calls',unread:'No unread messages',other:'No notifications'},
       silentBadge:'Silent',silentTitle:'Delivered silently',readAll:'Read all',
       dismissFallback:'Dismiss',closeFallback:'Close',messagesCount:'{n} messages',
       justNow:'Just now',minAgo:'{n} min ago',hourAgo:'{n}h ago',dayAgo:'{n}d ago'},
@@ -2156,7 +2253,7 @@ const I18N={
       answerFallback:'Answer',declineFallback:'Decline',unknownCaller:'Unknown caller',
       dismissRingingTitle:'Dismiss — call keeps ringing',hideActiveTitle:'Hide — call keeps going'},
     settings:{title:'Settings',general:'General',auto:'Run automatically',autoSub:'Launch at Windows startup',
-      calendar:'Calendar Source',language:'Language',about:'About',app:'Version',reset:'Reset'},
+      calendar:'Calendar Source',language:'Language',about:'About',app:'Software Version',reset:'Reset'},
     main:{connected:'Connected',connecting:'Connecting…',syncing:'Syncing…',disconnected:'Disconnected',timeOff:'Time Off',
       noTimeOffPlanned:'No Time Off planned',tapToSet:'Tap to set',notifFilterRow:'Notification Filter',
       clockFaceRow:'Clock Face',timeFormatRow:'Time Format',quickActionsRow:'Quick Actions',presenceAvailable:'Available',
@@ -2214,11 +2311,11 @@ const I18N={
     connecting:{title:'Đang ghép nối với Ori…',sub:'Đang chờ Ori xác nhận…'},
     syncing:{title:'Đang thiết lập Ori…',progressLabel:'Một ngày bận rộn đang chờ…',doneLabel:'Ori đã thiết lập xong!'},
     pairfail:{title:'Không thể ghép nối với Ori',body:'Mã ghép nối không khớp, hoặc yêu cầu đã hết thời gian chờ trên Ori. Hãy chọn một thiết bị để thử lại.',close:'Đóng'},
-    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Địa chỉ',phoneLbl:'iPhone',syncLbl:'Đồng bộ',
-      notPaired:'Chưa ghép nối',justNow:'Vừa xong',minAgo:'{n} phút trước',unknown:'Chưa rõ'},
-    iphoneInfoModal:{missedLbl:'Cuộc gọi',unreadLbl:'Tin chưa đọc',sigLbl:'Tín hiệu',notifLbl:'Thông báo'},
-    ancsList:{titles:{missed:'Cuộc gọi',unread:'Tin nhắn',other:'Thông báo'},
-      empty:{missed:'Không có cuộc gọi',unread:'Không có tin nhắn',other:'Không có thông báo'},
+    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Địa chỉ',snLbl:'Số sê-ri',mfgLbl:'Ngày sản xuất',sigLbl:'Tín hiệu',phoneLbl:'iPhone',syncLbl:'Đồng bộ',
+      notSetup:'Chưa thiết lập',justNow:'Vừa xong',minAgo:'{n} phút trước',unknown:'Chưa rõ'},
+    iphoneInfoModal:{missedLbl:'Cuộc gọi nhỡ',unreadLbl:'Tin nhắn chưa đọc',sigLbl:'Tín hiệu',notifLbl:'Thông báo'},
+    ancsList:{titles:{missed:'Cuộc gọi nhỡ',unread:'Tin nhắn chưa đọc',other:'Thông báo'},
+      empty:{missed:'Không có cuộc gọi nhỡ',unread:'Không có tin nhắn chưa đọc',other:'Không có thông báo'},
       silentBadge:'Im lặng',silentTitle:'Gửi ở chế độ im lặng',readAll:'Đọc tất cả',
       dismissFallback:'Bỏ qua',closeFallback:'Đóng',messagesCount:'{n} tin nhắn',
       justNow:'Vừa xong',minAgo:'{n} phút trước',hourAgo:'{n} giờ trước',dayAgo:'{n} ngày trước'},
@@ -2226,7 +2323,7 @@ const I18N={
       answerFallback:'Trả lời',declineFallback:'Từ chối',unknownCaller:'Không rõ số',
       dismissRingingTitle:'Bỏ qua — cuộc gọi vẫn đổ chuông',hideActiveTitle:'Ẩn — cuộc gọi vẫn tiếp tục'},
     settings:{title:'Cài đặt',general:'Chung',auto:'Tự động chạy',autoSub:'Khởi động cùng Windows',
-      calendar:'Nguồn lịch',language:'Ngôn ngữ',about:'Giới thiệu',app:'Phiên bản',reset:'Đặt lại'},
+      calendar:'Nguồn lịch',language:'Ngôn ngữ',about:'Giới thiệu',app:'Phiên bản phần mềm',reset:'Đặt lại'},
     main:{connected:'Đã kết nối',connecting:'Đang kết nối…',syncing:'Đang đồng bộ…',disconnected:'Đã ngắt kết nối',timeOff:'Nghỉ phép',
       noTimeOffPlanned:'Chưa có lịch nghỉ phép',tapToSet:'Nhấn để đặt',notifFilterRow:'Bộ lọc thông báo',
       clockFaceRow:'Mặt đồng hồ',timeFormatRow:'Định dạng giờ',quickActionsRow:'Thao tác nhanh',presenceAvailable:'Đang hoạt động',
@@ -2284,11 +2381,11 @@ const I18N={
     connecting:{title:'Emparejando con Ori…',sub:'Esperando confirmación de Ori…'},
     syncing:{title:'Configurando Ori…',progressLabel:'Un día ocupado por delante…',doneLabel:'¡Ori está listo!'},
     pairfail:{title:'No se pudo emparejar con Ori',body:'El código no coincidió, o la solicitud caducó en Ori. Elige un dispositivo para intentarlo de nuevo.',close:'Cerrar'},
-    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Dirección',phoneLbl:'iPhone',syncLbl:'Sincronizado',
-      notPaired:'No vinculado',justNow:'Ahora mismo',minAgo:'Hace {n} min',unknown:'Desconocido'},
-    iphoneInfoModal:{missedLbl:'Llamadas',unreadLbl:'Mensajes sin leer',sigLbl:'Señal',notifLbl:'Notificaciones'},
-    ancsList:{titles:{missed:'Llamadas',unread:'Mensajes',other:'Notificaciones'},
-      empty:{missed:'Sin llamadas',unread:'Sin mensajes',other:'Sin notificaciones'},
+    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Dirección',snLbl:'Número de serie',mfgLbl:'Fabricado',sigLbl:'Señal',phoneLbl:'iPhone',syncLbl:'Sincronizado',
+      notSetup:'Sin configurar',justNow:'Ahora mismo',minAgo:'Hace {n} min',unknown:'Desconocido'},
+    iphoneInfoModal:{missedLbl:'Llamadas perdidas',unreadLbl:'Mensajes sin leer',sigLbl:'Señal',notifLbl:'Notificaciones'},
+    ancsList:{titles:{missed:'Llamadas perdidas',unread:'Mensajes sin leer',other:'Notificaciones'},
+      empty:{missed:'Sin llamadas perdidas',unread:'Sin mensajes sin leer',other:'Sin notificaciones'},
       silentBadge:'Silencio',silentTitle:'Entregada en silencio',readAll:'Leer todo',
       dismissFallback:'Descartar',closeFallback:'Cerrar',messagesCount:'{n} mensajes',
       justNow:'Ahora mismo',minAgo:'Hace {n} min',hourAgo:'Hace {n} h',dayAgo:'Hace {n} d'},
@@ -2296,7 +2393,7 @@ const I18N={
       answerFallback:'Responder',declineFallback:'Rechazar',unknownCaller:'Número desconocido',
       dismissRingingTitle:'Descartar — la llamada sigue sonando',hideActiveTitle:'Ocultar — la llamada sigue en curso'},
     settings:{title:'Configuración',general:'General',auto:'Iniciar automáticamente',autoSub:'Abrir al iniciar Windows',
-      calendar:'Fuente de calendario',language:'Idioma',about:'Acerca de',app:'Versión',reset:'Restablecer'},
+      calendar:'Fuente de calendario',language:'Idioma',about:'Acerca de',app:'Versión del software',reset:'Restablecer'},
     main:{connected:'Conectado',connecting:'Conectando…',syncing:'Sincronizando…',disconnected:'Desconectado',timeOff:'Tiempo libre',
       noTimeOffPlanned:'Sin tiempo libre planeado',tapToSet:'Toca para configurar',notifFilterRow:'Filtro de notificaciones',
       clockFaceRow:'Esfera del reloj',timeFormatRow:'Formato de hora',quickActionsRow:'Acciones rápidas',presenceAvailable:'Disponible',
@@ -2354,11 +2451,11 @@ const I18N={
     connecting:{title:'Appairage avec Ori…',sub:"En attente de confirmation d'Ori…"},
     syncing:{title:"Configuration d'Ori…",progressLabel:'Une journée bien remplie vous attend…',doneLabel:'Ori est configuré !'},
     pairfail:{title:"Impossible d'appairer avec Ori",body:'Le code ne correspondait pas, ou la demande a expiré sur Ori. Choisissez un appareil pour réessayer.',close:'Fermer'},
-    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Adresse',phoneLbl:'iPhone',syncLbl:'Synchronisé',
-      notPaired:'Non associé',justNow:"À l'instant",minAgo:'Il y a {n} min',unknown:'Inconnu'},
-    iphoneInfoModal:{missedLbl:'Appels',unreadLbl:'Messages non lus',sigLbl:'Signal',notifLbl:'Notifications'},
-    ancsList:{titles:{missed:'Appels',unread:'Messages',other:'Notifications'},
-      empty:{missed:'Aucun appel',unread:'Aucun message',other:'Aucune notification'},
+    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Adresse',snLbl:'Numéro de série',mfgLbl:'Fabriqué',sigLbl:'Signal',phoneLbl:'iPhone',syncLbl:'Synchronisé',
+      notSetup:'Non configuré',justNow:"À l'instant",minAgo:'Il y a {n} min',unknown:'Inconnu'},
+    iphoneInfoModal:{missedLbl:'Appels manqués',unreadLbl:'Messages non lus',sigLbl:'Signal',notifLbl:'Notifications'},
+    ancsList:{titles:{missed:'Appels manqués',unread:'Messages non lus',other:'Notifications'},
+      empty:{missed:'Aucun appel manqué',unread:'Aucun message non lu',other:'Aucune notification'},
       silentBadge:'Silencieux',silentTitle:'Livrée en mode silencieux',readAll:'Tout lire',
       dismissFallback:'Ignorer',closeFallback:'Fermer',messagesCount:'{n} messages',
       justNow:"À l'instant",minAgo:'Il y a {n} min',hourAgo:'Il y a {n} h',dayAgo:'Il y a {n} j'},
@@ -2366,7 +2463,7 @@ const I18N={
       answerFallback:'Répondre',declineFallback:'Refuser',unknownCaller:'Numéro inconnu',
       dismissRingingTitle:"Ignorer — l'appel continue de sonner",hideActiveTitle:"Masquer — l'appel continue"},
     settings:{title:'Paramètres',general:'Général',auto:'Démarrage automatique',autoSub:'Lancer au démarrage de Windows',
-      calendar:'Source de calendrier',language:'Langue',about:'À propos',app:'Version',reset:'Réinitialiser'},
+      calendar:'Source de calendrier',language:'Langue',about:'À propos',app:'Version du logiciel',reset:'Réinitialiser'},
     main:{connected:'Connecté',connecting:'Connexion…',syncing:'Synchronisation…',disconnected:'Déconnecté',timeOff:'Congé',
       noTimeOffPlanned:'Aucun congé prévu',tapToSet:'Toucher pour définir',notifFilterRow:'Filtre de notifications',
       clockFaceRow:"Cadran de l'horloge",timeFormatRow:"Format de l'heure",quickActionsRow:'Actions rapides',presenceAvailable:'Disponible',
@@ -2413,6 +2510,11 @@ function setAppLang(code){
   if(!I18N[code]) return;
   appLang=code;
   applyI18n();
+  // Fire-and-forget — nothing here needs to block on the write landing, and
+  // a failure just means the next launch falls back to the last-persisted
+  // language (or 'en') rather than this one, same "not a big deal" severity
+  // as every other local-only preference in store::SavedState.
+  invoke('set_language',{code}).catch(e=>console.error('set_language failed:',e));
 }
 function applyI18n(){
   const t=I18N[appLang];
@@ -2580,6 +2682,10 @@ function applyI18n(){
   // language switch needs the same status→string logic setPhoneBondStatus
   // already has, not a copy of it. No-op while nothing has ever been bonded.
   if(lastPhoneBondStatus.b) setPhoneBondStatus(lastPhoneBondStatus);
+  // Ori Info modal's row labels (fw/address/serial/manufactured/phone/synced)
+  // are set imperatively in refreshOriInfoModal(), not static markup, so a
+  // language switch needs the same re-render while it's open.
+  if($('m-ori-info').classList.contains('show')) refreshOriInfoModal();
   $('fwTitle').textContent=t.fwModal.title;
   $('fwChangelog').innerHTML=t.fwModal.changelog.map(item=>`<li>${item}</li>`).join('');
   $('fwCancelBtn').textContent=t.common.cancel;
@@ -2928,6 +3034,11 @@ listen('orion-update-available',e=>{orionUpdateAvail=true;orionUpdateVersion=e.p
 listen('orion-update-progress',e=>ouApplyProgress(e.payload));
 
 invoke('get_initial_state').then(state=>{
+  // Applied directly (not via setAppLang, which also persists) — the value
+  // just came FROM disk, so writing it straight back on every single launch
+  // would be a pointless disk write. Guarded on I18N[...] existing in case
+  // a future build ever drops a locale that an older state.json still names.
+  if(state.language&&I18N[state.language]){appLang=state.language;applyI18n();}
   hydrateProfileCard(state.profile);
   hydrateTimeOffCard(state.time_off);
   // setConn() reveals #s-main (removes .pending-init) — see its own

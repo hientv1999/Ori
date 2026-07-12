@@ -1078,7 +1078,7 @@ function iphoneInfoHTML() {
   // presence/weather), but the icons themselves stay put for a stable,
   // consistent layout rather than swapping in a placeholder text block.
   // Tap-to-drill-down — clickable whenever connected, even at zero count
-  // (opens the empty state, e.g. "No calls", rather than being
+  // (opens the empty state, e.g. "No missed calls", rather than being
   // inert — a dimmed icon means "nothing here right now," not "you can't
   // check"). Opens the ANCS list modal for that one category (see
   // openAncsListModal below).
@@ -1102,8 +1102,8 @@ function iphoneInfoHTML() {
     sigBarsHTML(i.connected ? i.signal : 0) +
     '</div>' +
     '<div class="ip-stats">' +
-    stat('i-call', i.missed, 'Calls', 'missed') +
-    stat('i-message', i.unread, 'Unread messages', 'unread') +
+    stat('i-call', i.missed, 'Missed Calls', 'missed') +
+    stat('i-message', i.unread, 'Unread Messages', 'unread') +
     stat('i-bell', i.notifications, 'Notifications', 'other') +
     '</div>' +
     '<div class="actions">' +
@@ -1126,8 +1126,8 @@ function iphoneInfoHTML() {
 // §13), applied to Ori's own screen instead of relayed onward — a follow-up,
 // not part of this prototype pass.
 const ANCS_ICON_KIND = { missed: 'call', unread: 'message', other: 'bell' };
-const ANCS_LIST_TITLES = { missed: 'Calls', unread: 'Messages', other: 'Notifications' };
-const ANCS_LIST_EMPTY = { missed: 'No calls', unread: 'No messages', other: 'No notifications' };
+const ANCS_LIST_TITLES = { missed: 'Missed Calls', unread: 'Unread Messages', other: 'Notifications' };
+const ANCS_LIST_EMPTY = { missed: 'No missed calls', unread: 'No unread messages', other: 'No notifications' };
 
 // Two "Alex Chen" entries share the same app+title to demonstrate stacking —
 // grouped into one row/detail, same rule as the status bar's own same-title

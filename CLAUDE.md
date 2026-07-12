@@ -35,6 +35,7 @@ Ori/
 | BLE model (Orion PC + phone ANCS) | [.claude/rules/connectivity.md](.claude/rules/connectivity.md) |
 | **BLE GATT protocol — services, characteristics, payloads, sequences** | [.claude/rules/ble-protocol.md](.claude/rules/ble-protocol.md) |
 | **OTA firmware update UX and rules** | [.claude/rules/ota.md](.claude/rules/ota.md) |
+| **Mass-production identity (serial number, manufacture date) — storage, provisioning, BLE exposure** | [.claude/rules/provisioning.md](.claude/rules/provisioning.md) |
 | Touch gestures | [.claude/rules/gestures.md](.claude/rules/gestures.md) |
 | **Media mode UI (album-art transport + volume gestures, shortcuts)** | [.claude/rules/media-mode.md](.claude/rules/media-mode.md) |
 | First-time setup, factory reset, re-pair phone | [.claude/rules/setup-flow.md](.claude/rules/setup-flow.md) |

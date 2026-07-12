@@ -53,8 +53,8 @@ constexpr float    SWIPE_COMMIT_FRAC = 0.35f;  // fraction of row width that com
 constexpr uint32_t SWIPE_ANIM_MS     = 180;
 
 // Order matches ancs_client::ListBucket::MISSED/UNREAD/OTHER (0/1/2).
-const char* const BUCKET_TITLE[3] = { "Calls", "Messages", "Notifications" };
-const char* const BUCKET_EMPTY[3] = { "No calls", "No messages", "No notifications" };
+const char* const BUCKET_TITLE[3] = { "Missed Calls", "Unread Messages", "Notifications" };
+const char* const BUCKET_EMPTY[3] = { "No missed calls", "No unread messages", "No notifications" };
 
 // Shared per-modal state — freed on the scrim's LV_EVENT_DELETE.
 struct ListCtx {
@@ -263,13 +263,15 @@ lv_obj_t* make_row(lv_obj_t* parent, ListCtx* list, const ancs_client::ListGroup
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    // Icon circle — brand icon when known, else the category fallback,
-    // tinted via the app's own brand colour as the circle's background
-    // (widget_status_bar.cpp's make_ancs_tile pattern).
+    // Icon circle — brand icon when known, else the category fallback tinted
+    // via the app's own brand colour as the circle's background (matching
+    // widget_status_bar.cpp's make_ancs_tile pattern, which this previously
+    // didn't: the brand-colour background must stay TRANSPARENT whenever a
+    // real icon image is drawn — the icon PNGs have transparent margins
+    // around the glyph, so an opaque coloured background bleeds through as a
+    // ring around it. Only the no-image fallback gets the coloured fill).
     lv_obj_t* icon_wrap = lv_obj_create(row);
     lv_obj_set_size(icon_wrap, ROW_ICON_SIZE, ROW_ICON_SIZE);
-    lv_obj_set_style_bg_color(icon_wrap, theme::color(ancs_icons::color(g.icon_token)), 0);
-    lv_obj_set_style_bg_opa(icon_wrap, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(icon_wrap, 0, 0);
     lv_obj_set_style_pad_all(icon_wrap, 0, 0);
     lv_obj_set_style_radius(icon_wrap, LV_RADIUS_CIRCLE, 0);
@@ -280,10 +282,14 @@ lv_obj_t* make_row(lv_obj_t* parent, ListCtx* list, const ancs_client::ListGroup
     const lv_image_dsc_t* img = ancs_icons::image(g.icon_token);
     if (!img) img = ancs_icons::category_image(app_state::ancs_category(g.uid));
     if (img) {
+        lv_obj_set_style_bg_opa(icon_wrap, LV_OPA_TRANSP, 0);
         lv_obj_t* icon_img = lv_image_create(icon_wrap);
         lv_image_set_src(icon_img, img);
         lv_obj_center(icon_img);
         lv_obj_clear_flag(icon_img, LV_OBJ_FLAG_CLICKABLE);
+    } else {
+        lv_obj_set_style_bg_color(icon_wrap, theme::color(ancs_icons::color(g.icon_token)), 0);
+        lv_obj_set_style_bg_opa(icon_wrap, LV_OPA_COVER, 0);
     }
 
     // Count badge (top-right) / silent badge (top-left) — same 26px circle

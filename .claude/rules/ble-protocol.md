@@ -269,10 +269,33 @@ DeviceSettings = {             // Orion → Ori, write (response). All fields op
 }
 // Any field value outside its valid range → NACK_CBOR_DECODE via SyncControl notify.
 //
-// Read (Orion → Ori): returns all NVS-persisted fields —
-//   {"c": <clock_face>, "h": <time_format>, "f": <ancs_filter>, "1": <slot1>, "2": <slot2>, "3": <slot3>}.
+// Read (Orion → Ori): returns all NVS-persisted fields, plus three read-only
+// device-identity/link fields Ori adds and never accepts on a write (an
+// incoming write simply never looks for these keys — §4's "unknown keys
+// ignored" policy gives them read-only semantics for free, no extra
+// validation needed):
+//   {"c": <clock_face>, "h": <time_format>, "f": <ancs_filter>,
+//    "1": <slot1>, "2": <slot2>, "3": <slot3>,
+//    "s": <serial_number>, "b": <manufacture_date>, "r": <signal_bars>}
 // Presence and weather are not returned (both ephemeral; Orion is source of truth).
 // Orion reads on (re)connect to restore its settings UI without having to cache what it last wrote.
+//
+// "s"/"b"/"r" back Orion's Ori Info modal (pc-app.md) — piggybacked on this
+// characteristic rather than a dedicated one:
+//   "s": serial_number text, "b": manufacture_date text (ISO-8601
+//     "YYYY-MM-DD") — both read from Ori's separate write-once "factory" NVS
+//     partition (provisioning.md), NOT the "ori" namespace nvs::factory_reset()
+//     wipes. Empty string on an unprovisioned dev unit.
+//   "r": signal_bars, uint 0-4 — Ori's OWN link to Orion, sampled live and
+//     bucketed on every read (same 0-4 ladder as PhoneBondStatus's "s"
+//     field). This is the reverse direction of that field: there Ori is
+//     central for the iPhone link and can read its RSSI directly; here
+//     Orion is central for the Ori link, and Windows' btleplug can only read
+//     a peripheral's RSSI from advertising packets — which stop the moment
+//     Ori is connected — so Orion can't read its own link's RSSI locally.
+//     Ori can (ble_gap_conn_rssi works on either side of any of its active
+//     connections), so it reports its own reading back instead of Orion
+//     needing a workaround it fundamentally can't have on Windows.
 
 PhoneBondStatus = {            // Ori → Orion, notify + readable (CBOR)
   "b": bool,     // bonded.    true = iPhone NVS slot is occupied (a bond exists).
@@ -343,9 +366,19 @@ AncsNotification = {          // Ori → Orion, notify (char 0010) — see §13
   "c": uint,              // category. "add" only. AncsCategory, 0-12 (§13).
   "a": text,              // app. "add" only. Display name, e.g. "Gmail".
   "t": text,              // title. "add" only. Sender / notification title.
-  "b": text,              // body. "add" only. Message preview — short by design
-                          // (§10 cap); full content stays phone-only, same as
-                          // Ori's own on-device overlay's 3-line clip.
+  "b": text,              // body. "add" only. Message preview, capped at 512
+                          // UTF-8 bytes — matches Ori's own on-device storage
+                          // (§10), which itself matches the max ANCS is asked
+                          // for (ancs_client.cpp's request_attributes()) —
+                          // nothing left on the table between phone, Ori, and
+                          // Orion. Delivered chunked since that exceeds one
+                          // ATT notification (§5's "AncsNotification
+                          // chunking"). Ori's own on-device overlay has no
+                          // display line cap of its own (LV_LABEL_LONG_WRAP,
+                          // fully wraps whatever it's given); full content
+                          // beyond this cap (rare — ANCS itself won't offer
+                          // more than what was requested) is always available
+                          // by checking the phone.
   "e": uint,              // recv_epoch. "add" only. Unix epoch the notification
                           // arrived (0 = unknown) — Orion derives its own
                           // "X min ago" from this rather than a pre-formatted string.
@@ -427,6 +460,13 @@ Magic-routed — the 4-byte value determines the action:
 ```
 0xFA 0xC7 0x5E 0x5E    // Factory Reset  — wipe both bonds + NVS, reboot into first-boot setup
 0x55 0x4E 0x50 0x52    // Unpair Phone   — wipe iPhone bond only, show re-pair screen on Ori
+0x52 0x53 0x59 0x4E    // Resync ANCS ("RSYN") — replay the full ANCS relay state to Orion:
+                       //   AncsNotification{op:"clear"} + one {op:"add"} per currently-queued
+                       //   notification passing the filter (char 0010), plus the current
+                       //   AncsCallState (char 0011). Orion writes this once per (re)connect,
+                       //   after its notify pipeline is fully subscribed and draining — the
+                       //   PULL-based trigger that makes the §13 resync race-free by
+                       //   construction (see §13 "Resync on (re)connect").
 ```
 
 Any other value → `NACK_BAD_MAGIC` via SyncControl notify.
@@ -435,7 +475,11 @@ Any other value → `NACK_BAD_MAGIC` via SyncControl notify.
 
 ## 5. Chunking protocol
 
-Used by Profile Photo, Meeting List, Time Off Entry, and Media Album Art.
+Used by Profile Photo, Meeting List, Time Off Entry, and Media Album Art (all
+Orion→Ori writes). AncsNotification (Ori→Orion notify) also chunks — see
+"AncsNotification chunking" below — but as a deliberately simpler variant of
+this same frame format, not a full implementation of everything in this
+section (no NACK/retry, no windowed flow control).
 
 ### MTU strategy
 
@@ -483,6 +527,42 @@ it runs ahead of Ori so a fast burst can't overrun Ori's RX buffers:
 - Control/command characteristics (Time Sync, Sync Control, Factory Reset, Sync
   Manifest) stay **Write-with-response** — they are tiny (no speed benefit) and
   the ack/error code is wanted.
+
+### AncsNotification chunking (char 0010 — the one Ori→Orion direction)
+
+Superseded §13's original "No chunking" design (kept there historically as a
+now-outdated rationale — small fixed field caps sized to fit one ATT
+notification) once AncsNotification's field caps were raised to match Ori's
+own on-device storage (§10), which made single-fragment delivery impossible
+for a maxed-out `body`. `notify_chunked()` (`gatt_server.cpp`) sends every
+op on this characteristic — `"add"`, `"remove"`, `"clear"` alike — through
+this format, even though remove/clear always fit in one frame
+(`total_frags:1`): a single always-framed format means Orion's reassembler
+never has to guess whether a given notify is a bare CBOR payload or a chunk
+frame.
+
+Same frame format as above (seq_num/total_frags/payload_len, uint16 LE),
+frame size derived from the connection's actual negotiated MTU (same
+adaptive approach as `frag_size_for_mtu`), clamped to the same ~238-byte
+convention. Deliberately simpler than the write-direction protocol in two
+ways, both because this is a one-way relay with no equivalent of
+`SyncControl` to carry a NACK back to Ori, and no equivalent overrun risk:
+
+- **No NACK/retry.** A `remove`/`clear`/single-fragment `add` is tiny and
+  self-contained; a multi-fragment `add`'s fragments are sent back-to-back
+  from Ori's single main task (nothing else can interleave a notify on this
+  characteristic mid-sequence), and the BLE link layer itself acks/retransmits
+  every packet (no on-air loss). If Orion's reassembler ever sees a gap
+  (unexpected `seq_num`) or a `total_frags` mismatch mid-sequence, it just
+  discards the partial buffer and waits for the next `seq_num == 0` to
+  resync — the next queue mutation on Ori re-sends the notification anyway
+  (`ancs_client.cpp`'s existing add/remove/clear triggers), so a dropped
+  sequence self-heals on its own without an explicit retry request.
+- **No windowed flow control.** A handful of fragments (at most ~3-4 for a
+  maxed-out body) is nowhere near the burst sizes §5's `WINDOW` protects
+  against (built for a 512 KB Time Off photo or similar); back-to-back
+  `notify()` calls at this scale stay well within the BLE stack's mbuf pool
+  capacity.
 
 ---
 
@@ -682,18 +762,21 @@ There is no wire-level protocol version negotiation and no compatibility gate �
 | `DeviceSettings.weather_condition` | uint 0–6 |
 | `DeviceSettings.temperature` | int −40…140 (unit declared by `"u"` — see §4) |
 | `DeviceSettings.temperature_unit` | uint 0–1 |
+| `DeviceSettings.serial_number` | ≤ 32 chars (firmware `g_serial[32]`, `factory_info.cpp`) — read-only, provisioning.md |
+| `DeviceSettings.manufacture_date` | ≤ 16 chars, ISO-8601 "YYYY-MM-DD" (firmware `g_mfg[16]`) — read-only, provisioning.md |
+| `DeviceSettings.signal_bars` | uint 0–4 — read-only, live |
 | `PhoneBondStatus.name` | ≤ 63 UTF-8 bytes (firmware `g_phone_name[64]` minus null terminator) |
 | `PhoneBondStatus.missed_calls/unread_messages/total_notifications` | uint 0–255 (capped at `MAX_ANCS_NOTIFICATIONS` = 50 in practice) |
 | `PhoneBondStatus.signal_bars` | uint 0–4 |
 | Unpair Phone Command | exactly 4 bytes (0x55 0x4E 0x50 0x52) |
-| `AncsNotification.icon_token` | ≤ 24 UTF-8 bytes (longest known firmware token, `microsoft_authenticator`, is 23) |
-| `AncsNotification.app` | ≤ 24 UTF-8 bytes |
-| `AncsNotification.title` | ≤ 32 UTF-8 bytes, truncated on a UTF-8 boundary past that |
-| `AncsNotification.body` | ≤ 48 UTF-8 bytes, truncated past that — deliberately short; see §13 |
-| `AncsNotification.pos_label` / `neg_label` | ≤ 12 UTF-8 bytes each (real ANCS action labels are short standard strings) |
+| `AncsNotification.icon_token` | ≤ 31 UTF-8 bytes — matches Ori's own on-device storage (`app_state.cpp`'s `AncsDetailEntry::token[32]`), not a wire-specific cap; longest known firmware token, `microsoft_authenticator`, is 23 |
+| `AncsNotification.app` | ≤ 39 UTF-8 bytes — matches `AncsDetailEntry::display_name[40]` |
+| `AncsNotification.title` | ≤ 192 UTF-8 bytes, truncated on a UTF-8 boundary past that — matches `AncsDetailEntry::title[193]` |
+| `AncsNotification.body` | ≤ 512 UTF-8 bytes, truncated on a UTF-8 boundary past that — matches `AncsDetailEntry::body[513]`, which itself matches the 512-byte max Ori asks ANCS for (`ancs_client.cpp`'s `request_attributes()`, AttributeID 0x03). Nothing is lost between phone → Ori → Orion. Delivered chunked (§5's "AncsNotification chunking") since this alone exceeds one ATT notification |
+| `AncsNotification.pos_label` / `neg_label` | ≤ 32 UTF-8 bytes each — matches `AncsDetailEntry::pos_label[33]`/`neg_label[33]` (real ANCS action labels are short standard strings, so this is rarely approached in practice) |
 | `AncsNotification.category` | uint 0–12 |
 | `AncsCallState.state` | uint 0–2 |
-| `AncsCallState.icon_token` | ≤ 24 UTF-8 bytes (same vocabulary + cap as `AncsNotification.icon_token`) |
+| `AncsCallState.icon_token` | ≤ 24 UTF-8 bytes — char 0011 is NOT chunked (calls carry no body, so the single-fragment squeeze that motivated raising `AncsNotification`'s caps doesn't apply here), so this stays independently capped at the original tighter size, same vocabulary as `AncsNotification.icon_token` |
 | `AncsNotificationAction.action` | uint 0–1 |
 
 `AncsNotification`'s caps are sized so a worst-case `"add"` (every optional field at max length) still fits one unchunked 238-byte fragment — see §13's "No chunking" note. If real-world CBOR encoding of max-length content ever measures over budget, tighten these caps further rather than adding chunking to a third notify-only characteristic.
@@ -774,9 +857,9 @@ Every notification Ori tracks is gated by the **same** `ancs_filter` level (Devi
 
 Orion writes `AncsNotificationAction` only in direct response to a user tap (Answer / Decline / End call / Dismiss / Read all — one write per UID for a "Read all" on a stacked group, mirroring firmware's own `on_read()` loop in `modal_ancs_notification.cpp`). Ori performs the identical action an on-device tap would trigger — there is no separate "remote action" code path in `ancs_client`, just a second caller — including for a Negative (`"a":1`) the same **dismiss-vs-drop** choice the on-device swipe makes: `dismiss_notification()` (send the ANCS Negative) only when the notification has a negative action, else `drop_notification()` (local queue removal, no ANCS write). The **removal relay back to Orion is emitted from `queue_remove()` itself** — a single choke-point that fires `AncsNotification{op:"remove"}` (normal) or `AncsCallState{st:0}` (call) while the notification's category is still live — so it lands correctly no matter which path removed it (phone-side Removed event, local dismiss, or this Orion-relayed action). It must NOT be emitted from the phone's own Removed-event handler, which runs after a local dismiss has already dropped the category and would misfire. Orion does **not** update its own UI optimistically on write: it waits for the `AncsNotification{op:"remove"}` / `AncsCallState` transition the resulting ANCS event produces, same as every other state change in this protocol (§6 never assumes a write succeeded before the corresponding notify confirms it).
 
-### No chunking
+### Chunked, matching Ori's own storage
 
-`AncsNotification`'s field caps (§10) are sized so a worst-case `"add"` fits one unchunked 238-byte fragment at MTU 247 — simpler than extending §5's chunking (built for Orion→Ori writes) to a new Ori→Orion notify direction, and consistent with this protocol's existing "tiny, frequent payloads" design philosophy (§4). The trade-off is a short body preview, not the full notification text — matching the limit Ori's own on-device overlay already imposes (3-line clip); full content is always available by checking the phone.
+`AncsNotification`'s field caps (§10) match Ori's own on-device storage exactly (`app_state.cpp`'s `AncsDetailEntry`) rather than being squeezed to fit one ATT notification — Orion never shows less body text than Ori itself does for the same notification, and `body` specifically matches the 512-byte max Ori itself requests from ANCS (`ancs_client.cpp`'s `request_attributes()`) — nothing is lost at any of the three hops (phone → Ori → Orion). Since a maxed-out `body` (512 bytes) alone exceeds a single fragment, `"add"` is sent chunked (§5's "AncsNotification chunking" — reuses the same frame format as the write-direction chunking, in reverse, with no NACK/retry or windowed flow control since neither is needed at this scale). `"remove"`/`"clear"` are sent through the same always-framed path for consistency (as a single `total_frags:1` frame) even though they never need more than one — this way Orion's reassembler never has to guess whether a given notify is a bare CBOR payload or a chunk frame. Full content is still always available by checking the phone regardless — this is a generous cap, not an unlimited one, since the underlying notification could still be longer than the 512 bytes Ori explicitly asks ANCS for.
 
 ### Icon tokens
 
