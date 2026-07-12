@@ -152,10 +152,7 @@ void present_active_dialog(uint32_t uid) {
     lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(card, [](lv_event_t*) {}, LV_EVENT_CLICKED, nullptr);
 
-    lv_obj_t* sp_top = lv_obj_create(scroll_area);
-    ui::clear_container(sp_top);
-    lv_obj_set_size(sp_top, 0, 0);
-    lv_obj_set_flex_grow(sp_top, 1);
+    ui::make_flex_spacer(scroll_area);
 
     // Eyebrow.
     lv_obj_t* eyebrow = lv_label_create(scroll_area);
@@ -181,10 +178,7 @@ void present_active_dialog(uint32_t uid) {
     lv_obj_set_style_text_align(timer_lbl, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_top(timer_lbl, 10, 0);
 
-    lv_obj_t* sp_bot = lv_obj_create(scroll_area);
-    ui::clear_container(sp_bot);
-    lv_obj_set_size(sp_bot, 0, 0);
-    lv_obj_set_flex_grow(sp_bot, 1);
+    ui::make_flex_spacer(scroll_area);
 
     // End call = ANCS Negative action (hang up). Danger-styled like Decline.
     lv_obj_t* end_btn = ui::make_btn(actions, "End call", ui::BtnStyle::Danger,
@@ -229,10 +223,7 @@ void show(uint32_t uid) {
     lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(card, [](lv_event_t*) {}, LV_EVENT_CLICKED, nullptr);
 
-    lv_obj_t* sp_top = lv_obj_create(scroll_area);
-    ui::clear_container(sp_top);
-    lv_obj_set_size(sp_top, 0, 0);
-    lv_obj_set_flex_grow(sp_top, 1);
+    ui::make_flex_spacer(scroll_area);
 
     // Eyebrow.
     lv_obj_t* eyebrow = lv_label_create(scroll_area);
@@ -262,10 +253,7 @@ void show(uint32_t uid) {
         lv_obj_set_style_pad_top(app, 6, 0);
     }
 
-    lv_obj_t* sp_bot = lv_obj_create(scroll_area);
-    ui::clear_container(sp_bot);
-    lv_obj_set_size(sp_bot, 0, 0);
-    lv_obj_set_flex_grow(sp_bot, 1);
+    ui::make_flex_spacer(scroll_area);
 
     // Use iOS-provided action labels when available; fall back to generic text.
     const char* answer_label  = (n.pos_label && n.pos_label[0]) ? n.pos_label : "Answer";

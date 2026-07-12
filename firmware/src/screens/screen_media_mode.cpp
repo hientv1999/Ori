@@ -655,6 +655,26 @@ lv_obj_t* make_meta_block(lv_obj_t* parent, ArtState* s) {
     return meta;
 }
 
+// Sets one shortcut button's icon for `token` — shared by initial construction
+// (make_shortcuts_row) and update_shortcuts()'s live refresh after a Device
+// Settings write. Unrecognized tokens hide the whole button entirely
+// (media-mode.md); recognised ones centre the compiled-in icon image and
+// make sure the button is visible (a no-op on a freshly-created button,
+// which isn't hidden yet; on a live refresh it undoes a prior bad token's
+// hide).
+void apply_shortcut_icon(lv_obj_t* btn, const char* token) {
+    const lv_image_dsc_t* img = shortcut_icons::image(token);
+    if (img) {
+        lv_obj_clear_flag(btn, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_t* img_obj = lv_image_create(btn);
+        lv_image_set_src(img_obj, img);
+        lv_obj_center(img_obj);
+        lv_obj_clear_flag(img_obj, LV_OBJ_FLAG_CLICKABLE);
+    } else {
+        lv_obj_add_flag(btn, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 // User-assignable shortcut buttons — tap emits KeyboardCommand{op:"shortcut", arg:N}.
 lv_obj_t* make_shortcuts_row(lv_obj_t* parent, ArtState* s) {
     lv_obj_t* row = lv_obj_create(parent);
@@ -700,19 +720,10 @@ lv_obj_t* make_shortcuts_row(lv_obj_t* parent, ArtState* s) {
             gatt_server::notify_keyboard_command("shortcut", (uint32_t)slot);
         }, LV_EVENT_CLICKED, nullptr);
 
-        const char* token = slots[i].icon_token;
-        const lv_image_dsc_t* img = shortcut_icons::image(token);
-        if (img) {
-            lv_obj_t* img_obj = lv_image_create(btn);
-            lv_image_set_src(img_obj, img);
-            lv_obj_center(img_obj);
-            lv_obj_clear_flag(img_obj, LV_OBJ_FLAG_CLICKABLE);
-        } else {
-            // Unrecognized token (no compiled-in icon for it) — hide the slot
-            // entirely rather than showing a placeholder. Flex layout (CENTER
-            // main-axis) re-centers the remaining visible slots automatically.
-            lv_obj_add_flag(btn, LV_OBJ_FLAG_HIDDEN);
-        }
+        // Unrecognized token (no compiled-in icon for it) hides the slot
+        // entirely rather than showing a placeholder. Flex layout (CENTER
+        // main-axis) re-centers the remaining visible slots automatically.
+        apply_shortcut_icon(btn, slots[i].icon_token);
     }
     s->shortcuts_row = row;
     return row;
@@ -856,18 +867,7 @@ void update_shortcuts() {
         // Remove the existing icon/label child and recreate from the updated token.
         lv_obj_t* old_child = lv_obj_get_child(btn, 0);
         if (old_child) lv_obj_del(old_child);
-        const char* token = slots[i].icon_token;
-        const lv_image_dsc_t* img = shortcut_icons::image(token);
-        if (img) {
-            lv_obj_clear_flag(btn, LV_OBJ_FLAG_HIDDEN);  // a prior bad token may have hidden it
-            lv_obj_t* img_obj = lv_image_create(btn);
-            lv_image_set_src(img_obj, img);
-            lv_obj_center(img_obj);
-            lv_obj_clear_flag(img_obj, LV_OBJ_FLAG_CLICKABLE);
-        } else {
-            // Unrecognized token — hide the slot entirely (see make_shortcuts_row).
-            lv_obj_add_flag(btn, LV_OBJ_FLAG_HIDDEN);
-        }
+        apply_shortcut_icon(btn, slots[i].icon_token);
     }
 }
 

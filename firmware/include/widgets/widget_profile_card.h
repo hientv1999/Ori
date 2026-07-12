@@ -64,6 +64,13 @@ void set_default_presence(Presence p);
 // modal_profile to match the profile-card border colour.
 Presence get_default_presence();
 
+// Presence -> theme::COLOR_PRESENCE_* border/glow colour and -> display word
+// ("Available"/"Busy"/"Away"/"Offline"). Shared table/wording so the profile
+// card, modal_profile's own status row + photo ring, and anything else that
+// renders presence can't drift out of sync with each other.
+uint32_t presence_color(Presence p);
+const char* presence_label(Presence p);
+
 // Register a photo object (lv_obj_t circle) whose border colour should track
 // presence changes in real time. Intended for modal_profile — call on open,
 // unregister on the scrim's LV_EVENT_DELETE. Only one observer at a time.

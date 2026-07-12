@@ -105,8 +105,8 @@ void update_face(AnalogFaceState* af) {
     strftime(day, sizeof(day), "%A", &tm);
     strftime(mon, sizeof(mon), "%B",  &tm);
     // Uppercase: ESP32 strftime may not support %^A/%^B, so do it manually.
-    for (char* p = day; *p; ++p) if (*p >= 'a' && *p <= 'z') *p -= 32;
-    for (char* p = mon; *p; ++p) if (*p >= 'a' && *p <= 'z') *p -= 32;
+    ui::uppercase_ascii(day);
+    ui::uppercase_ascii(mon);
     // No AM/PM suffix — the analog dial has no digital time readout to pair it
     // with, so it just reads as a plain date. Year included (unlike the
     // digital face's date strip, which shares the same "%s, %s %d, %d" shape).

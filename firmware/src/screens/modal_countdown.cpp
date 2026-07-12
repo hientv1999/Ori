@@ -141,9 +141,7 @@ lv_obj_t* create(lv_obj_t* base_screen,
 
     lv_obj_t* close_btn = ui::make_btn(col, "Close", ui::BtnStyle::Tertiary,
                                        nullptr, nullptr, 12, 26, theme::font_meta());
-    lv_obj_add_event_cb(close_btn, [](lv_event_t* e) {
-        lv_obj_delete(static_cast<lv_obj_t*>(lv_event_get_user_data(e)));
-    }, LV_EVENT_CLICKED, scrim);
+    lv_obj_add_event_cb(close_btn, ui::close_scrim_cb, LV_EVENT_CLICKED, scrim);
 
     // Self-contained 1 s timer drives the ring and label on every tick.
     auto* s = new CountdownState();

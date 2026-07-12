@@ -103,6 +103,16 @@ lv_opa_t shadow_opa_for_presence(widget_profile_card::Presence p) {
     return p == widget_profile_card::Presence::Offline ? LV_OPA_TRANSP : LV_OPA_50;
 }
 
+// Applies the presence colour + glow to any presence-ring-shaped object —
+// shared by set_presence() (the live card's photo_ring) and
+// set_default_presence() (the modal_profile overlay's own ring, when open).
+void apply_presence_ring_style(lv_obj_t* ring, widget_profile_card::Presence p) {
+    if (!ring) return;
+    lv_obj_set_style_bg_color(ring, theme::color(color_for_presence(p)), LV_PART_MAIN);
+    lv_obj_set_style_shadow_color(ring, theme::color(color_for_presence(p)), LV_PART_MAIN);
+    lv_obj_set_style_shadow_opa(ring, shadow_opa_for_presence(p), LV_PART_MAIN);
+}
+
 // The name label's box is sized in whole lines (1 or 2) of font_time() so
 // long names that wrap to a second line get room for it. Without this, a
 // fixed 2-line box left a spare blank line above the job title whenever the
@@ -572,45 +582,21 @@ lv_obj_t* create(lv_obj_t* parent) {
 
 void set_presence(lv_obj_t* card, Presence p) {
     auto* s = static_cast<CardState*>(lv_obj_get_user_data(card));
-    if (!s || !s->photo_ring) return;
-    lv_obj_set_style_bg_color(s->photo_ring,
-        theme::color(color_for_presence(p)), LV_PART_MAIN);
-    lv_obj_set_style_shadow_color(s->photo_ring,
-        theme::color(color_for_presence(p)), LV_PART_MAIN);
-    lv_obj_set_style_shadow_opa(s->photo_ring, shadow_opa_for_presence(p), LV_PART_MAIN);
+    if (!s) return;
+    apply_presence_ring_style(s->photo_ring, p);
 }
 
 void set_default_presence(Presence p) {
     g_default_presence = p;
     if (g_active_card) set_presence(g_active_card, p);
-    if (g_modal_photo) {
-        lv_obj_set_style_bg_color(g_modal_photo,
-            theme::color(color_for_presence(p)), LV_PART_MAIN);
-        lv_obj_set_style_shadow_color(g_modal_photo,
-            theme::color(color_for_presence(p)), LV_PART_MAIN);
-        lv_obj_set_style_shadow_opa(g_modal_photo, shadow_opa_for_presence(p), LV_PART_MAIN);
-    }
+    apply_presence_ring_style(g_modal_photo, p);
     if (g_modal_labels.status_lbl) {
-        const char* status_str;
-        switch (p) {
-            case Presence::Available: status_str = "Available"; break;
-            case Presence::Busy:      status_str = "Busy";      break;
-            case Presence::Away:      status_str = "Away";      break;
-            default:                  status_str = "Offline";   break;
-        }
-        lv_label_set_text(g_modal_labels.status_lbl, status_str);
+        lv_label_set_text(g_modal_labels.status_lbl, presence_label(p));
         lv_obj_set_style_text_color(g_modal_labels.status_lbl,
             theme::color(color_for_presence(p)), LV_PART_MAIN);
     }
     // Presence dot beside the status word — track colour + glow with presence.
-    if (g_modal_labels.status_dot) {
-        lv_obj_set_style_bg_color(g_modal_labels.status_dot,
-            theme::color(color_for_presence(p)), LV_PART_MAIN);
-        lv_obj_set_style_shadow_color(g_modal_labels.status_dot,
-            theme::color(color_for_presence(p)), LV_PART_MAIN);
-        lv_obj_set_style_shadow_opa(g_modal_labels.status_dot,
-            shadow_opa_for_presence(p), LV_PART_MAIN);
-    }
+    apply_presence_ring_style(g_modal_labels.status_dot, p);
 }
 
 void register_modal_photo(lv_obj_t* photo_obj) { g_modal_photo = photo_obj; }
@@ -624,6 +610,17 @@ void unregister_modal_labels()                         { g_modal_labels = {}; }
 
 Presence get_default_presence() {
     return g_default_presence;
+}
+
+uint32_t presence_color(Presence p) { return color_for_presence(p); }
+
+const char* presence_label(Presence p) {
+    switch (p) {
+        case Presence::Available: return "Available";
+        case Presence::Busy:      return "Busy";
+        case Presence::Away:      return "Away";
+        default:                  return "Offline";
+    }
 }
 
 void set_weather(lv_obj_t* card, WeatherCondition condition, int temp_f,

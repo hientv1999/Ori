@@ -195,6 +195,31 @@ static void animate_tile_in(lv_obj_t* tile) {
     lv_anim_start(&b);
 }
 
+// Shared shell for the two 26 px corner badges make_ancs_tile() can draw on a
+// tile (stacked-count pill and silent-bell dot): fixed square size (so
+// LV_RADIUS_CIRCLE renders a true circle — a content-sized single-digit box
+// is taller than wide, which would turn into a pill, not a round badge), the
+// same black 2 px cutout border, no shadow/padding, non-scrollable and
+// non-clickable (so taps pass through to the tile), aligned to a tile
+// corner. Caller fills in the bg colour and the centred content (label or
+// icon) on the returned object.
+lv_obj_t* make_corner_badge(lv_obj_t* tile, lv_color_t bg_color, lv_align_t align) {
+    constexpr int BADGE_SIZE = 26;
+    lv_obj_t* badge = lv_obj_create(tile);
+    lv_obj_set_size(badge, BADGE_SIZE, BADGE_SIZE);
+    lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(badge, bg_color, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(badge, 2, LV_PART_MAIN);
+    lv_obj_set_style_border_color(badge, lv_color_black(), LV_PART_MAIN);
+    lv_obj_set_style_border_opa(badge, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(badge, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(badge, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(badge, static_cast<lv_obj_flag_t>(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+    lv_obj_align(badge, align, 0, 0);
+    return badge;
+}
+
 // ANCS icon tile. Uses a compiled-in raster asset when available (12 px radius,
 // matching the HTML prototype); falls back to a solid brand-colour circle.
 // `token` selects the icon; `uid` identifies the exact (most-recent) notification
@@ -276,22 +301,7 @@ lv_obj_t* make_ancs_tile(lv_obj_t* parent, const char* token, uint32_t uid, uint
         } else {
             buf[0] = static_cast<char>('0' + count); buf[1] = '\0';
         }
-        // Fixed square size so LV_RADIUS_CIRCLE renders a true circle — a
-        // content-sized box is taller than wide for a single digit, which
-        // LV_RADIUS_CIRCLE turns into a pill, not a round badge.
-        constexpr int BADGE_SIZE = 26;
-        lv_obj_t* badge = lv_obj_create(tile);
-        lv_obj_set_size(badge, BADGE_SIZE, BADGE_SIZE);
-        lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(badge, theme::color(theme::COLOR_DANGER), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, LV_PART_MAIN);
-        // Black border to set the badge apart from the icon behind it.
-        lv_obj_set_style_border_width(badge, 2, LV_PART_MAIN);
-        lv_obj_set_style_border_color(badge, lv_color_black(), LV_PART_MAIN);
-        lv_obj_set_style_border_opa(badge, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_shadow_width(badge, 0, LV_PART_MAIN);
-        lv_obj_set_style_pad_all(badge, 0, LV_PART_MAIN);
-        lv_obj_clear_flag(badge, static_cast<lv_obj_flag_t>(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+        lv_obj_t* badge = make_corner_badge(tile, theme::color(theme::COLOR_DANGER), LV_ALIGN_TOP_RIGHT);
 
         lv_obj_t* lbl = lv_label_create(badge);
         lv_label_set_text(lbl, buf);
@@ -299,8 +309,6 @@ lv_obj_t* make_ancs_tile(lv_obj_t* parent, const char* token, uint32_t uid, uint
         lv_obj_set_style_text_color(lbl, lv_color_black(), LV_PART_MAIN);
         lv_obj_clear_flag(lbl, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_center(lbl);
-
-        lv_obj_align(badge, LV_ALIGN_TOP_RIGHT, 0, 0);
     } else if (app_state::ancs_notification_by_uid(uid).silent) {
         // Silent indicator — small icon-only badge (bell-off glyph), top-left
         // corner. Same 26px circle + card-coloured cutout border and the same
@@ -310,22 +318,11 @@ lv_obj_t* make_ancs_tile(lv_obj_t* parent, const char* token, uint32_t uid, uint
         // stack as silent when only its representative notification is) —
         // top-left placement matches that list and modal_ancs_notification's
         // detail overlay, so the glyph means the same thing everywhere.
-        constexpr int BADGE_SIZE = 26;
-        lv_obj_t* badge = lv_obj_create(tile);
-        lv_obj_set_size(badge, BADGE_SIZE, BADGE_SIZE);
-        lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(badge, lv_color_hex(0x2A2A2A), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, LV_PART_MAIN);
         // Same black 2px border as the count badge above (this tile sits
         // directly on the pure-black screen background, so a plain black
         // border reads the same as the card-coloured "cutout" trick the
         // modal badges use on their dark-grey card background).
-        lv_obj_set_style_border_width(badge, 2, LV_PART_MAIN);
-        lv_obj_set_style_border_color(badge, lv_color_black(), LV_PART_MAIN);
-        lv_obj_set_style_border_opa(badge, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_shadow_width(badge, 0, LV_PART_MAIN);
-        lv_obj_set_style_pad_all(badge, 0, LV_PART_MAIN);
-        lv_obj_clear_flag(badge, static_cast<lv_obj_flag_t>(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
+        lv_obj_t* badge = make_corner_badge(tile, lv_color_hex(0x2A2A2A), LV_ALIGN_TOP_LEFT);
 
         lv_obj_t* icon = lv_image_create(badge);
         lv_image_set_src(icon, ancs_badge_icons::silent());
@@ -333,8 +330,6 @@ lv_obj_t* make_ancs_tile(lv_obj_t* parent, const char* token, uint32_t uid, uint
         lv_obj_center(icon);
         lv_obj_set_style_image_recolor(icon, theme::color(theme::COLOR_TEXT_TERTIARY), 0);
         lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
-
-        lv_obj_align(badge, LV_ALIGN_TOP_LEFT, 0, 0);
     }
 
     return tile;
@@ -461,29 +456,21 @@ lv_obj_t* make_headphones_glyph(lv_obj_t* parent, uint32_t color) {
     lv_obj_clear_flag(band, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_clear_flag(band, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Left ear cup.
-    lv_obj_t* l_cup = lv_obj_create(parent);
-    lv_obj_set_size(l_cup, 7, 11);
-    lv_obj_align(l_cup, LV_ALIGN_CENTER, -14, 7);
-    lv_obj_set_style_bg_color(l_cup, theme::color(color), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(l_cup, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_radius(l_cup, 3, LV_PART_MAIN);
-    lv_obj_set_style_border_width(l_cup, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(l_cup, 0, LV_PART_MAIN);
-    lv_obj_clear_flag(l_cup, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(l_cup, LV_OBJ_FLAG_SCROLLABLE);
-
-    // Right ear cup.
-    lv_obj_t* r_cup = lv_obj_create(parent);
-    lv_obj_set_size(r_cup, 7, 11);
-    lv_obj_align(r_cup, LV_ALIGN_CENTER, 14, 7);
-    lv_obj_set_style_bg_color(r_cup, theme::color(color), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(r_cup, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_radius(r_cup, 3, LV_PART_MAIN);
-    lv_obj_set_style_border_width(r_cup, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(r_cup, 0, LV_PART_MAIN);
-    lv_obj_clear_flag(r_cup, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_clear_flag(r_cup, LV_OBJ_FLAG_SCROLLABLE);
+    // Ear cups — identical 7x11 rounded rects, mirrored left/right of centre.
+    auto make_cup = [&](int16_t dx) {
+        lv_obj_t* cup = lv_obj_create(parent);
+        lv_obj_set_size(cup, 7, 11);
+        lv_obj_align(cup, LV_ALIGN_CENTER, dx, 7);
+        lv_obj_set_style_bg_color(cup, theme::color(color), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(cup, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_radius(cup, 3, LV_PART_MAIN);
+        lv_obj_set_style_border_width(cup, 0, LV_PART_MAIN);
+        lv_obj_set_style_pad_all(cup, 0, LV_PART_MAIN);
+        lv_obj_clear_flag(cup, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(cup, LV_OBJ_FLAG_SCROLLABLE);
+    };
+    make_cup(-14);  // left ear cup
+    make_cup(14);   // right ear cup
 
     return band;  // returns one of the children; caller does not need it
 }
@@ -576,10 +563,29 @@ lv_obj_t* make_calendar_glyph(lv_obj_t* parent, uint32_t color) {
     return glyph;
 }
 
-// Deferred callback for the phone-disconnect icon tap. Calling state-machine
+// Defer a callback by 1 ms via a one-shot timer. Calling state-machine
 // functions directly from within LVGL's event dispatch stack overflows the
 // loopTask stack (NVS flash write + full screen rebuild on top of the event
-// depth). Store the callback here and fire it from a 1 ms one-shot timer.
+// depth) — every tap handler below routes through this instead. `slot` is
+// the caller's own static storage (each tap source keeps its own, so two
+// taps arriving in the same 1 ms window can't clobber each other's pending
+// callback) and must outlive the timer, which it does since all slots are
+// static file-scope std::function objects.
+void defer_call(std::function<void()>* slot, std::function<void()> cb) {
+    *slot = std::move(cb);
+    lv_timer_t* t = lv_timer_create([](lv_timer_t* t) {
+        auto* slot = static_cast<std::function<void()>*>(lv_timer_get_user_data(t));
+        lv_timer_delete(t);
+        if (*slot) {
+            auto cb = std::move(*slot);
+            *slot = nullptr;
+            cb();
+        }
+    }, 1, slot);
+    lv_timer_set_repeat_count(t, 1);
+}
+
+// Deferred callback for the phone-disconnect icon tap — see defer_call().
 static std::function<void()> s_deferred_phone_cb;
 
 void on_phone_icon_tap(lv_event_t* e) {
@@ -598,23 +604,14 @@ void on_phone_icon_tap(lv_event_t* e) {
     bool bonded    = st->phone_bonded;
     bool connected = st->phone_connected;
     lv_obj_t* screen = lv_screen_active();
-    s_deferred_phone_cb = [bonded, connected, screen]() {
+    defer_call(&s_deferred_phone_cb, [bonded, connected, screen]() {
         if (bonded) {
             modal_iphone_info::create(screen, connected);
         } else {
             lv_obj_t* pairing = screen_setup::create(screen_setup::Step::PhonePairing, screen);
             lv_scr_load_anim(pairing, LV_SCR_LOAD_ANIM_NONE, 0, 0, /*auto_del=*/false);
         }
-    };
-    lv_timer_t* t = lv_timer_create([](lv_timer_t* t) {
-        lv_timer_delete(t);
-        if (s_deferred_phone_cb) {
-            auto cb = std::move(s_deferred_phone_cb);
-            s_deferred_phone_cb = nullptr;
-            cb();
-        }
-    }, 1, nullptr);
-    lv_timer_set_repeat_count(t, 1);
+    });
 }
 
 constexpr int16_t MODE_TOGGLE_SIZE = 60;
@@ -643,7 +640,7 @@ void rebuild_mode_toggle_glyph(lv_obj_t* btn, widget_status_bar::Mode mode) {
     }
 }
 
-// Deferred callbacks — same stack-overflow reason as s_deferred_phone_cb above.
+// Deferred callbacks — see defer_call() above.
 static std::function<void()> s_deferred_toggle_cb;
 static std::function<void()> s_deferred_time_tap_cb;
 
@@ -651,16 +648,7 @@ void on_mode_toggle_tap(lv_event_t* e) {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
     auto* state = static_cast<StatusBarState*>(lv_event_get_user_data(e));
     if (!state || !state->mode_cb) return;
-    s_deferred_toggle_cb = state->mode_cb;
-    lv_timer_t* t = lv_timer_create([](lv_timer_t* t) {
-        lv_timer_delete(t);
-        if (s_deferred_toggle_cb) {
-            auto cb = std::move(s_deferred_toggle_cb);
-            s_deferred_toggle_cb = nullptr;
-            cb();
-        }
-    }, 1, nullptr);
-    lv_timer_set_repeat_count(t, 1);
+    defer_call(&s_deferred_toggle_cb, state->mode_cb);
 }
 
 void on_time_tap(lv_event_t* e) {
@@ -676,16 +664,7 @@ void on_time_tap(lv_event_t* e) {
         return;
     }
     if (!state->time_tap_cb) return;
-    s_deferred_time_tap_cb = state->time_tap_cb;
-    lv_timer_t* t = lv_timer_create([](lv_timer_t* t) {
-        lv_timer_delete(t);
-        if (s_deferred_time_tap_cb) {
-            auto cb = std::move(s_deferred_time_tap_cb);
-            s_deferred_time_tap_cb = nullptr;
-            cb();
-        }
-    }, 1, nullptr);
-    lv_timer_set_repeat_count(t, 1);
+    defer_call(&s_deferred_time_tap_cb, state->time_tap_cb);
 }
 
 // Custom-duration press-and-hold for the date+time block only. The shared

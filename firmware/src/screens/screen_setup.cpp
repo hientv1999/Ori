@@ -271,6 +271,36 @@ lv_obj_t* make_ok_check(lv_obj_t* parent) {
     return root;
 }
 
+// Shared scrim+card shell for the passkey and Orioning-progress modals —
+// both are a 540 px wide, content-height card centred in a full-screen scrim
+// with the same card styling (bg/border/radius/padding/shadow) and a
+// vertical-flex, centre-aligned content flow. Only the scrim's tap-absorb
+// behaviour and the card's contents (heading + passkey digits vs. progress
+// ring) differ between the two callers.
+lv_obj_t* make_step_modal_card(lv_obj_t* screen, bool absorb_taps, lv_obj_t** out_scrim) {
+    lv_obj_t* scrim = ui::make_scrim(screen, absorb_taps);
+
+    lv_obj_t* card = lv_obj_create(scrim);
+    lv_obj_set_size(card, 540, LV_SIZE_CONTENT);
+    lv_obj_center(card);
+    lv_obj_set_style_bg_color(card, theme::color(theme::COLOR_CARD), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(card, theme::color(theme::COLOR_DIVIDER_STRONG), 0);
+    lv_obj_set_style_border_width(card, 1, 0);
+    lv_obj_set_style_radius(card, 18, 0);
+    lv_obj_set_style_pad_all(card, 36, 0);
+    lv_obj_set_style_shadow_color(card, theme::color(0x000000), 0);
+    lv_obj_set_style_shadow_width(card, 30, 0);
+    lv_obj_set_style_shadow_opa(card, LV_OPA_70, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(card,
+        LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    *out_scrim = scrim;
+    return card;
+}
+
 void on_start_clicked(lv_event_t* e);
 void on_next_clicked(lv_event_t* e);
 void on_skip_phone_clicked(lv_event_t* e);
@@ -665,24 +695,8 @@ lv_obj_t* show_passkey_modal(lv_obj_t* screen, uint32_t passkey) {
         if (ss) lv_timer_pause(ss->timer);
     }
 
-    lv_obj_t* scrim = ui::make_scrim(screen);
-
-    lv_obj_t* card = lv_obj_create(scrim);
-    lv_obj_set_size(card, 540, LV_SIZE_CONTENT);
-    lv_obj_center(card);
-    lv_obj_set_style_bg_color(card, theme::color(theme::COLOR_CARD), 0);
-    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(card, theme::color(theme::COLOR_DIVIDER_STRONG), 0);
-    lv_obj_set_style_border_width(card, 1, 0);
-    lv_obj_set_style_radius(card, 18, 0);
-    lv_obj_set_style_pad_all(card, 36, 0);
-    lv_obj_set_style_shadow_color(card, theme::color(0x000000), 0);
-    lv_obj_set_style_shadow_width(card, 30, 0);
-    lv_obj_set_style_shadow_opa(card, LV_OPA_70, 0);
-    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(card,
-        LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_t* scrim;
+    lv_obj_t* card = make_step_modal_card(screen, /*absorb_taps=*/true, &scrim);
 
     lv_obj_t* h = lv_label_create(card);
     lv_label_set_text(h, "Confirm on Orion");
@@ -736,24 +750,8 @@ lv_obj_t* show_orioning_modal(lv_obj_t* screen) {
     if (!s) return nullptr;
     if (s->orioning_modal) return s->orioning_modal;
 
-    lv_obj_t* scrim = ui::make_scrim(screen, /*absorb_taps=*/false);
-
-    lv_obj_t* card = lv_obj_create(scrim);
-    lv_obj_set_size(card, 540, LV_SIZE_CONTENT);
-    lv_obj_center(card);
-    lv_obj_set_style_bg_color(card, theme::color(theme::COLOR_CARD), 0);
-    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(card, theme::color(theme::COLOR_DIVIDER_STRONG), 0);
-    lv_obj_set_style_border_width(card, 1, 0);
-    lv_obj_set_style_radius(card, 18, 0);
-    lv_obj_set_style_pad_all(card, 36, 0);
-    lv_obj_set_style_shadow_color(card, theme::color(0x000000), 0);
-    lv_obj_set_style_shadow_width(card, 30, 0);
-    lv_obj_set_style_shadow_opa(card, LV_OPA_70, 0);
-    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(card,
-        LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_t* scrim;
+    lv_obj_t* card = make_step_modal_card(screen, /*absorb_taps=*/false, &scrim);
 
     lv_obj_t* heading = lv_label_create(card);
     lv_label_set_text(heading, "A busy day ahead\xe2\x80\xa6");

@@ -98,13 +98,7 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
     const char* p_phone = widget_profile_card::get_profile_phone();
 
     widget_profile_card::Presence pres = widget_profile_card::get_default_presence();
-    uint32_t pres_color;
-    switch (pres) {
-        case widget_profile_card::Presence::Available: pres_color = theme::COLOR_PRESENCE_AVAILABLE; break;
-        case widget_profile_card::Presence::Busy:       pres_color = theme::COLOR_PRESENCE_BUSY;      break;
-        case widget_profile_card::Presence::Away:       pres_color = theme::COLOR_PRESENCE_AWAY;      break;
-        default:                                        pres_color = theme::COLOR_PRESENCE_OFFLINE;   break;
-    }
+    uint32_t pres_color = widget_profile_card::presence_color(pres);
 
     // Independent screen — pure black background, no status bar.
     // Tap the profile photo to return to base_screen.
@@ -222,16 +216,7 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
     // Offline gets no glow — matches the photo ring's offline treatment.
     lv_obj_set_style_shadow_opa(status_dot,
         pres == widget_profile_card::Presence::Offline ? LV_OPA_TRANSP : LV_OPA_50, 0);
-    {
-        const char* status_str;
-        switch (pres) {
-            case widget_profile_card::Presence::Available: status_str = "Available"; break;
-            case widget_profile_card::Presence::Busy:      status_str = "Busy";      break;
-            case widget_profile_card::Presence::Away:      status_str = "Away";       break;
-            default:                                       status_str = "Offline";    break;
-        }
-        lv_label_set_text(status_lbl, status_str);
-    }
+    lv_label_set_text(status_lbl, widget_profile_card::presence_label(pres));
 
     // Email — envelope icon.
     lv_obj_t* email_lbl = add_row(draw_envelope, theme::COLOR_ACCENT,

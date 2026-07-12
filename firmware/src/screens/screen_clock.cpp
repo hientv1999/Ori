@@ -94,8 +94,8 @@ static void update_clock_labels(ClockFaceState* cf) {
     strftime(mon, sizeof(mon), "%B",  &tm);
     char date_buf[56];
     // Uppercase: ESP32 strftime may not support %^A/%^B, so do it manually.
-    for (char* p = day; *p; ++p) if (*p >= 'a' && *p <= 'z') *p -= 32;
-    for (char* p = mon; *p; ++p) if (*p >= 'a' && *p <= 'z') *p -= 32;
+    ui::uppercase_ascii(day);
+    ui::uppercase_ascii(mon);
     // No AM/PM suffix here anymore (it moved to ampm_lbl next to the time) —
     // the date strip is now the same width/format in both 12h and 24h, so it
     // stays centered under the clock in either mode.

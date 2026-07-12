@@ -152,6 +152,18 @@ lv_obj_t* make_brand_mark(lv_obj_t* parent) {
     return root;
 }
 
+void uppercase_ascii(char* s) {
+    for (; *s; ++s) if (*s >= 'a' && *s <= 'z') *s -= 32;
+}
+
+lv_obj_t* make_flex_spacer(lv_obj_t* parent) {
+    lv_obj_t* spacer = lv_obj_create(parent);
+    clear_container(spacer);
+    lv_obj_set_size(spacer, 0, 0);
+    lv_obj_set_flex_grow(spacer, 1);
+    return spacer;
+}
+
 lv_obj_t* make_panel_divider(lv_obj_t* parent) {
     lv_obj_t* div = lv_obj_create(parent);
     lv_obj_set_size(div, 5, lv_pct(100));
@@ -305,6 +317,10 @@ lv_obj_t* add_close_x(lv_obj_t* card, lv_event_cb_t cb, void* user) {
     return btn;
 }
 
+void close_scrim_cb(lv_event_t* e) {
+    lv_obj_delete(static_cast<lv_obj_t*>(lv_event_get_user_data(e)));
+}
+
 static void btn_glow_anim_cb(void* obj, int32_t v) {
     lv_obj_set_style_shadow_opa(static_cast<lv_obj_t*>(obj), (lv_opa_t)v, 0);
 }
@@ -394,6 +410,47 @@ lv_obj_t* make_btn(lv_obj_t* parent, const char* text,
         lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, user);
     }
     return btn;
+}
+
+lv_obj_t* make_confirm_modal(lv_obj_t* base_screen,
+                              const char* heading, const char* body,
+                              const char* danger_label, lv_event_cb_t danger_cb) {
+    ModalLayout layout = make_modal_layout(base_screen);
+    lv_obj_t* scrim       = layout.scrim;
+    lv_obj_t* scroll_area = layout.scroll_area;
+    lv_obj_t* actions     = layout.actions;
+
+    make_flex_spacer(scroll_area);
+
+    make_alert_glyph_circle(scroll_area);
+
+    lv_obj_t* h = lv_label_create(scroll_area);
+    lv_label_set_text(h, heading);
+    lv_obj_set_style_text_color(h, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
+    lv_obj_set_style_text_font(h, theme::font_h2(), 0);
+    lv_obj_set_style_text_align(h, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_pad_top(h, 18, 0);
+
+    lv_obj_t* b = lv_label_create(scroll_area);
+    lv_label_set_long_mode(b, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(b, body);
+    lv_obj_set_width(b, lv_pct(100));
+    lv_obj_set_style_text_color(b, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
+    lv_obj_set_style_text_font(b, theme::font_meta(), 0);
+    lv_obj_set_style_text_align(b, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_pad_top(b, 10, 0);
+
+    make_flex_spacer(scroll_area);
+
+    lv_obj_t* cancel = make_btn(actions, "Cancel", BtnStyle::Tertiary,
+                                nullptr, nullptr, 12, 26, theme::font_meta());
+    lv_obj_add_event_cb(cancel, close_scrim_cb, LV_EVENT_CLICKED, scrim);
+
+    lv_obj_t* danger = make_btn(actions, danger_label, BtnStyle::Danger,
+                                 nullptr, nullptr, 12, 26, theme::font_meta());
+    lv_obj_add_event_cb(danger, danger_cb, LV_EVENT_CLICKED, scrim);
+
+    return scrim;
 }
 
 } // namespace ui

@@ -216,6 +216,29 @@ void on_row_clicked(lv_event_t* e) {
     modal_ancs_notification::open_for_uid(rs->list->base_screen, rs->uid);
 }
 
+// Shared 26px corner badge shell for the count and silent-indicator badges
+// drawn on a row's icon (make_row, below) — same border-cutout trick (border
+// colour = card bg, faking a cutout against the icon behind it) and
+// IGNORE_LAYOUT (so it floats above icon_wrap's flex content instead of
+// becoming a flex child itself). Caller fills in the bg colour, corner, and
+// centred content (label or icon) on the returned object.
+lv_obj_t* make_row_badge(lv_obj_t* icon_wrap, lv_color_t bg_color, lv_align_t align) {
+    lv_obj_t* badge = lv_obj_create(icon_wrap);
+    lv_obj_set_size(badge, 26, 26);
+    lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(badge, bg_color, 0);
+    lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(badge, 3, 0);
+    lv_obj_set_style_border_color(badge, theme::color(theme::COLOR_CARD), 0);
+    lv_obj_set_style_border_opa(badge, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(badge, 0, 0);
+    lv_obj_clear_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(badge, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(badge, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_align(badge, align, 0, 0);
+    return badge;
+}
+
 // One row per notification GROUP — icon + title + latest preview, no
 // timestamp (shown only once the detail overlay is opened).
 lv_obj_t* make_row(lv_obj_t* parent, ListCtx* list, const ancs_client::ListGroup& g) {
@@ -273,21 +296,9 @@ lv_obj_t* make_row(lv_obj_t* parent, ListCtx* list, const ancs_client::ListGroup
         if (g.count > 9) { buf[0] = '9'; buf[1] = '+'; buf[2] = '\0'; }
         else             lv_snprintf(buf, sizeof(buf), "%u", (unsigned)g.count);
 
-        lv_obj_t* badge = lv_obj_create(icon_wrap);
-        lv_obj_set_size(badge, 26, 26);
-        lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(badge, theme::color(theme::COLOR_DANGER), 0);
-        lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
         // Border matches the card bg, faking a cutout — same trick
         // modal_iphone_info's make_stat_unit badge uses.
-        lv_obj_set_style_border_width(badge, 3, 0);
-        lv_obj_set_style_border_color(badge, theme::color(theme::COLOR_CARD), 0);
-        lv_obj_set_style_border_opa(badge, LV_OPA_COVER, 0);
-        lv_obj_set_style_pad_all(badge, 0, 0);
-        lv_obj_clear_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_clear_flag(badge, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_flag(badge, LV_OBJ_FLAG_IGNORE_LAYOUT);
-        lv_obj_align(badge, LV_ALIGN_TOP_RIGHT, 0, 0);
+        lv_obj_t* badge = make_row_badge(icon_wrap, theme::color(theme::COLOR_DANGER), LV_ALIGN_TOP_RIGHT);
 
         lv_obj_t* lbl = lv_label_create(badge);
         lv_label_set_text(lbl, buf);
@@ -306,21 +317,9 @@ lv_obj_t* make_row(lv_obj_t* parent, ListCtx* list, const ancs_client::ListGroup
         // top-right"), so the glyph means the same thing in the same corner
         // everywhere it appears. Never actually competes with the count
         // badge above for space since the two are mutually exclusive.
-        lv_obj_t* badge = lv_obj_create(icon_wrap);
-        lv_obj_set_size(badge, 26, 26);
-        lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_color(badge, lv_color_hex(0x2A2A2A), 0);
-        lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
         // Border matches the card bg, faking a cutout — same trick the count
         // badge above uses.
-        lv_obj_set_style_border_width(badge, 3, 0);
-        lv_obj_set_style_border_color(badge, theme::color(theme::COLOR_CARD), 0);
-        lv_obj_set_style_border_opa(badge, LV_OPA_COVER, 0);
-        lv_obj_set_style_pad_all(badge, 0, 0);
-        lv_obj_clear_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_clear_flag(badge, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_add_flag(badge, LV_OBJ_FLAG_IGNORE_LAYOUT);
-        lv_obj_align(badge, LV_ALIGN_TOP_LEFT, 0, 0);
+        lv_obj_t* badge = make_row_badge(icon_wrap, lv_color_hex(0x2A2A2A), LV_ALIGN_TOP_LEFT);
 
         lv_obj_t* icon = lv_image_create(badge);
         lv_image_set_src(icon, ancs_badge_icons::silent());

@@ -266,10 +266,7 @@ lv_obj_t* create(lv_obj_t* base_screen, uint32_t uid) {
     lv_obj_clear_flag(right_gap, LV_OBJ_FLAG_CLICKABLE);
 
     // Top spacer — centres content when it is shorter than scroll_area's height.
-    lv_obj_t* sa_spacer_top = lv_obj_create(scroll_area);
-    ui::clear_container(sa_spacer_top);
-    lv_obj_set_size(sa_spacer_top, 0, 0);
-    lv_obj_set_flex_grow(sa_spacer_top, 1);
+    ui::make_flex_spacer(scroll_area);
 
     // ── Shared subtitle — only when every stacked message has the same one.
     // Hoisted here, right under the title, so it isn't repeated per message. ──
@@ -342,10 +339,7 @@ lv_obj_t* create(lv_obj_t* base_screen, uint32_t uid) {
              theme::COLOR_TEXT_PRIMARY, 12, /*wrap=*/false);
 
     // Bottom spacer — mirrors top spacer to keep content vertically centred.
-    lv_obj_t* sa_spacer_bot = lv_obj_create(scroll_area);
-    ui::clear_container(sa_spacer_bot);
-    lv_obj_set_size(sa_spacer_bot, 0, 0);
-    lv_obj_set_flex_grow(sa_spacer_bot, 1);
+    ui::make_flex_spacer(scroll_area);
 
     // Buttons are created dynamically based on which ANCS actions are available
     // for the reference (newest) notification.

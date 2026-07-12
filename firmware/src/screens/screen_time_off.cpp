@@ -74,16 +74,7 @@ void build_gradient_bg(lv_obj_t* left, int16_t H) {
 // ── Detail modal ──────────────────────────────────────────────────────────────
 
 static void show_time_off_detail(lv_obj_t* screen) {
-    lv_obj_t* scrim = lv_obj_create(screen);
-    lv_obj_set_size(scrim, 800, 480);
-    lv_obj_set_pos(scrim, 0, 0);
-    lv_obj_set_style_bg_color(scrim, theme::color(theme::COLOR_SCRIM), 0);
-    lv_obj_set_style_bg_opa(scrim, theme::SCRIM_OPA, 0);
-    lv_obj_set_style_radius(scrim, 0, 0);
-    lv_obj_set_style_border_width(scrim, 0, 0);
-    lv_obj_set_style_pad_all(scrim, 0, 0);
-    lv_obj_clear_flag(scrim, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(scrim, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t* scrim = ui::make_scrim(screen);
 
     // Full-screen layout — matches modal_profile.cpp: content in flex_grow=1 area,
     // Close button pinned at fixed screen bottom (same Y as profile + ANCS overlays).
@@ -110,10 +101,7 @@ static void show_time_off_detail(lv_obj_t* screen) {
     lv_obj_set_flex_flow(scroll, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(scroll, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    lv_obj_t* spacer_top = lv_obj_create(scroll);
-    ui::clear_container(spacer_top);
-    lv_obj_set_size(spacer_top, 0, 0);
-    lv_obj_set_flex_grow(spacer_top, 1);
+    ui::make_flex_spacer(scroll);
 
     lv_obj_t* eyebrow = lv_label_create(scroll);
     lv_label_set_text_static(eyebrow, "ON TIME OFF");
@@ -142,10 +130,7 @@ static void show_time_off_detail(lv_obj_t* screen) {
     lv_obj_set_style_text_align(dates, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_top(dates, 8, 0);
 
-    lv_obj_t* spacer_bot = lv_obj_create(scroll);
-    ui::clear_container(spacer_bot);
-    lv_obj_set_size(spacer_bot, 0, 0);
-    lv_obj_set_flex_grow(spacer_bot, 1);
+    ui::make_flex_spacer(scroll);
 
     // 28 px gap — matches modal_profile.cpp.
     lv_obj_t* gap = lv_obj_create(box);
@@ -154,9 +139,7 @@ static void show_time_off_detail(lv_obj_t* screen) {
 
     lv_obj_t* close_btn = ui::make_btn(box, "Close", ui::BtnStyle::Tertiary,
                                        nullptr, nullptr, 12, 26, theme::font_meta());
-    lv_obj_add_event_cb(close_btn, [](lv_event_t* e) {
-        lv_obj_delete(static_cast<lv_obj_t*>(lv_event_get_user_data(e)));
-    }, LV_EVENT_CLICKED, scrim);
+    lv_obj_add_event_cb(close_btn, ui::close_scrim_cb, LV_EVENT_CLICKED, scrim);
 }
 
 // ── Date range formatter ──────────────────────────────────────────────────────

@@ -36,25 +36,26 @@ constexpr int16_t NAV_BTN_SIZE = 36;
 
 void render_into(lv_obj_t* left);
 
-void on_prev_month(lv_event_t*) {
-    if (--g_view_month < 0) { g_view_month = 11; --g_view_year; }
+// Shared step logic for the four nav callbacks below — dir is always ±1, so
+// exactly one of a function's two bound-checks can ever trigger per call
+// (g_view_month only ever leaves [0,11] by exactly 1 after a single step),
+// same as when each direction had its own hand-written branch.
+void nav_month(int dir) {
+    g_view_month += dir;
+    if (g_view_month < 0)  { g_view_month = 11; --g_view_year; }
+    if (g_view_month > 11) { g_view_month = 0;  ++g_view_year; }
     if (g_left_panel) render_into(g_left_panel);
 }
 
-void on_next_month(lv_event_t*) {
-    if (++g_view_month > 11) { g_view_month = 0; ++g_view_year; }
+void nav_year(int dir) {
+    g_view_year += dir;
     if (g_left_panel) render_into(g_left_panel);
 }
 
-void on_prev_year(lv_event_t*) {
-    --g_view_year;
-    if (g_left_panel) render_into(g_left_panel);
-}
-
-void on_next_year(lv_event_t*) {
-    ++g_view_year;
-    if (g_left_panel) render_into(g_left_panel);
-}
+void on_prev_month(lv_event_t*) { nav_month(-1); }
+void on_next_month(lv_event_t*) { nav_month(+1); }
+void on_prev_year(lv_event_t*)  { nav_year(-1); }
+void on_next_year(lv_event_t*)  { nav_year(+1); }
 
 // Shared square button shell for the header nav row (month/year chevrons).
 // Sized generously and spaced apart by the caller (see `nav`'s pad_column)

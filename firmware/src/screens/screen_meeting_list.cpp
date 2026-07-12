@@ -85,10 +85,7 @@ static void show_meeting_detail(lv_obj_t* screen, const app_state::Meeting& m) {
     lv_obj_set_flex_align(scroll_area, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     // Top spacer — centres content when it is shorter than the scroll area.
-    lv_obj_t* spacer_top = lv_obj_create(scroll_area);
-    ui::clear_container(spacer_top);
-    lv_obj_set_size(spacer_top, 0, 0);
-    lv_obj_set_flex_grow(spacer_top, 1);
+    ui::make_flex_spacer(scroll_area);
 
     const uint32_t state_col = meeting_state_color(m, theme::COLOR_TEXT_PRIMARY);
 
@@ -139,17 +136,12 @@ static void show_meeting_detail(lv_obj_t* screen, const app_state::Meeting& m) {
     lv_obj_set_style_pad_top(time_lbl, 12, 0);
 
     // Bottom spacer — mirrors top spacer.
-    lv_obj_t* spacer_bot = lv_obj_create(scroll_area);
-    ui::clear_container(spacer_bot);
-    lv_obj_set_size(spacer_bot, 0, 0);
-    lv_obj_set_flex_grow(spacer_bot, 1);
+    ui::make_flex_spacer(scroll_area);
 
     // Close button — direct child of box, pinned at the bottom of the screen.
     lv_obj_t* close_btn = ui::make_btn(box, "Close", ui::BtnStyle::Tertiary,
                                        nullptr, nullptr, 12, 26, theme::font_meta());
-    lv_obj_add_event_cb(close_btn, [](lv_event_t* e) {
-        lv_obj_delete(static_cast<lv_obj_t*>(lv_event_get_user_data(e)));
-    }, LV_EVENT_CLICKED, scrim);
+    lv_obj_add_event_cb(close_btn, ui::close_scrim_cb, LV_EVENT_CLICKED, scrim);
 }
 
 lv_obj_t* make_meeting_row(lv_obj_t* parent, const app_state::Meeting& m) {

@@ -241,16 +241,6 @@ static lv_obj_t* make_glyph_circle(lv_obj_t* parent, uint32_t bg, uint32_t borde
     return c;
 }
 
-static void add_line(lv_obj_t* parent, const lv_point_precise_t* pts,
-                     uint16_t n, uint32_t color) {
-    lv_obj_t* l = lv_line_create(parent);
-    lv_line_set_points(l, (lv_point_precise_t*)pts, n);
-    lv_obj_set_style_line_color(l, theme::color(color), 0);
-    lv_obj_set_style_line_width(l, 4, 0);
-    lv_obj_set_style_line_rounded(l, true, 0);
-    lv_obj_set_pos(l, 0, 0);
-}
-
 // Warning glyph — danger circle with a bold "!".
 static lv_obj_t* make_warn_glyph(lv_obj_t* parent) {
     lv_obj_t* c = make_glyph_circle(parent, theme::COLOR_DANGER_SOFT, theme::COLOR_DANGER);

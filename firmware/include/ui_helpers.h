@@ -47,6 +47,14 @@ inline void clear_container(lv_obj_t* obj) {
 lv_obj_t* make_screen_body(lv_obj_t* screen);
 lv_obj_t* make_panel_divider(lv_obj_t* parent);
 
+// Zero-size, flex_grow=1 spacer used in pairs (top + bottom) inside a
+// vertical-flex scroll area to vertically centre content shorter than the
+// area itself — the content sits between two equally-growing spacers.
+// Shared by every full-screen detail overlay (meeting detail, Time Off
+// detail, ANCS notification detail) and the alert-style confirm modals
+// (factory reset, unpair phone).
+lv_obj_t* make_flex_spacer(lv_obj_t* parent);
+
 // Full-screen (800x480, pinned at 0,0) scrim: COLOR_SCRIM bg at SCRIM_OPA, no
 // border/padding/radius, not scrollable. Shared by every modal/overlay that
 // dims the whole screen — countdown, setup passkey/Orioning, meeting detail,
@@ -75,11 +83,31 @@ lv_obj_t* make_btn(lv_obj_t* parent, const char* text,
                    int16_t pad_v = 14, int16_t pad_h = 28,
                    const lv_font_t* font = nullptr);
 
+// Shared "destructive confirmation" card — alert-glyph circle, heading, body
+// copy, and a Danger/Cancel button row (Danger on the left, since users
+// instinctively tap the right button, so the destructive action being on the
+// left reduces accidental presses). Used identically by the factory-reset
+// and unpair-phone modals. Cancel always just deletes the modal's scrim;
+// `danger_cb` receives the scrim as its user data (same convention), so it
+// can delete it itself once the destructive action is confirmed/deferred.
+// Returns the scrim.
+lv_obj_t* make_confirm_modal(lv_obj_t* base_screen,
+                              const char* heading, const char* body,
+                              const char* danger_label, lv_event_cb_t danger_cb);
+
 // Circular close affordance pinned to the top-right corner of a modal `card`.
 // The "X" is drawn from two crossing lines (no symbol-font dependency). Ignores
 // the card's flex layout. `cb` fires on tap (typically deletes the scrim).
 // Returns the button. Use instead of a bottom "Close" button on overlays.
 lv_obj_t* add_close_x(lv_obj_t* card, lv_event_cb_t cb = nullptr, void* user = nullptr);
+
+// Generic "close this modal" tap handler: deletes the lv_obj_t* passed as the
+// event's user data (almost always the modal's own scrim). Register directly
+// as an event callback (`lv_obj_add_event_cb(btn, ui::close_scrim_cb,
+// LV_EVENT_CLICKED, scrim)`) instead of writing a one-off lambda or named
+// wrapper at every plain Close/Cancel button — several modals did exactly
+// that independently before this was pulled out.
+void close_scrim_cb(lv_event_t* e);
 
 // Copy `in` to `out`, dropping every character the UI font (Hanken) can't
 // render — emoji, CJK, and any script outside the font's Latin repertoire —
@@ -90,5 +118,11 @@ lv_obj_t* add_close_x(lv_obj_t* card, lv_event_cb_t cb = nullptr, void* user = n
 // Apply at text ingress (BLE/ANCS handlers) so stored strings are render-clean.
 // Returns out.
 const char* sanitize_text(const char* in, char* out, size_t out_sz);
+
+// Uppercases an ASCII string in place (a-z -> A-Z only; bytes outside that
+// range are untouched). Used to uppercase strftime()'s "%A"/"%B" weekday and
+// month output — the ESP32 newlib strftime doesn't support GNU's %^A/%^B
+// uppercase modifiers, so both clock faces do it by hand.
+void uppercase_ascii(char* s);
 
 } // namespace ui

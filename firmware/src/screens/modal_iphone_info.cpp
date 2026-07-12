@@ -65,11 +65,6 @@
 
 namespace {
 
-void on_cancel(lv_event_t* e) {
-    lv_obj_t* scrim = static_cast<lv_obj_t*>(lv_event_get_user_data(e));
-    lv_obj_delete(scrim);
-}
-
 void on_unpair(lv_event_t* e) {
     lv_obj_t* scrim = static_cast<lv_obj_t*>(lv_event_get_user_data(e));
     lv_obj_t* base  = lv_obj_get_parent(scrim);  // scrim's parent is base_screen (make_scrim)
@@ -380,7 +375,7 @@ lv_obj_t* create(lv_obj_t* base_screen, bool connected) {
     // Cancel on the left, Unpair (danger) on the right.
     lv_obj_t* cancel = ui::make_btn(actions, "Cancel", ui::BtnStyle::Tertiary,
                                     nullptr, nullptr, 12, 26, theme::font_meta());
-    lv_obj_add_event_cb(cancel, on_cancel, LV_EVENT_CLICKED, scrim);
+    lv_obj_add_event_cb(cancel, ui::close_scrim_cb, LV_EVENT_CLICKED, scrim);
 
     lv_obj_t* unpair = ui::make_btn(actions, "Unpair", ui::BtnStyle::Danger,
                                     nullptr, nullptr, 12, 26, theme::font_meta());
