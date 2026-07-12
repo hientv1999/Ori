@@ -327,23 +327,29 @@ static void fail_in_ota(const char* code) {
     show_error_screen(code);
 }
 
-static void handle_begin(const uint8_t* payload, uint32_t len) {
-    // Reject a second BEGIN while a transfer is already in progress — never
-    // restart mid-flow. (No error screen: don't disrupt the active OTA.)
-    if (g_ota_state != OtaState::Idle) {
-        send_reject("busy");
-        return;
-    }
+// Fields parsed out of a BEGIN frame's CBOR payload — see parse_begin_frame().
+struct BeginFrame {
+    char     fw_version[32];
+    uint64_t total_size;
+    uint8_t  sha256[32];
+};
 
+// Parses and validates a BEGIN frame's CBOR payload: { fw_version, total_size,
+// sha256 }. On success, fills `out` and returns true. On failure, sends the
+// matching REJECT frame itself (distinguishing malformed CBOR — "cbor_decode" /
+// "not_map" — from a structurally valid map that's simply missing a required
+// field — "missing_fields") and returns false; the caller just checks the
+// return value and stops.
+static bool parse_begin_frame(const uint8_t* payload, uint32_t len, BeginFrame& out) {
     CborParser parser;
     CborValue  root, map_val;
     if (cbor_parser_init(payload, len, 0, &parser, &root) != CborNoError) {
         send_reject("cbor_decode");
-        return;
+        return false;
     }
     if (!cbor_value_is_map(&root)) {
         send_reject("not_map");
-        return;
+        return false;
     }
 
     char     recv_version[32] = {};
@@ -382,8 +388,26 @@ static void handle_begin(const uint8_t* payload, uint32_t len) {
     // handle_end). Without it there's nothing to verify the image against.
     if (!got_size || !got_sha || !got_version) {
         send_reject("missing_fields");
+        return false;
+    }
+
+    strncpy(out.fw_version, recv_version, sizeof(out.fw_version) - 1);
+    out.fw_version[sizeof(out.fw_version) - 1] = '\0';
+    out.total_size = total_size;
+    memcpy(out.sha256, sha256, 32);
+    return true;
+}
+
+static void handle_begin(const uint8_t* payload, uint32_t len) {
+    // Reject a second BEGIN while a transfer is already in progress — never
+    // restart mid-flow. (No error screen: don't disrupt the active OTA.)
+    if (g_ota_state != OtaState::Idle) {
+        send_reject("busy");
         return;
     }
+
+    BeginFrame begin;
+    if (!parse_begin_frame(payload, len, begin)) return;
 
     // No countdown guard: the OTA is user-initiated in Orion, so the user's
     // explicit intent overrides the 5-minute pre-meeting alert. Once accepted,
@@ -393,7 +417,7 @@ static void handle_begin(const uint8_t* payload, uint32_t len) {
     // These rejects ARE user-relevant — surface them on the Update-failed screen
     // (the wire still gets the REJECT frame so Orion knows too).
     const uint32_t OTA_SLOT_SIZE = 3 * 1024 * 1024;
-    if (total_size == 0 || total_size > OTA_SLOT_SIZE) {
+    if (begin.total_size == 0 || begin.total_size > OTA_SLOT_SIZE) {
         send_reject("too_large");
         show_error_screen("too_large");
         return;
@@ -407,15 +431,15 @@ static void handle_begin(const uint8_t* payload, uint32_t len) {
     // so the LCD keeps running and the progress bar stays live. Flash is written
     // in one burst at END (see do_commit).
     free_stage();
-    g_stage_buf = (uint8_t*)heap_caps_malloc((size_t)total_size, MALLOC_CAP_SPIRAM);
+    g_stage_buf = (uint8_t*)heap_caps_malloc((size_t)begin.total_size, MALLOC_CAP_SPIRAM);
     if (!g_stage_buf) {
-        LOG("[ota] PSRAM staging alloc failed (%u bytes)\n", (unsigned)total_size);
+        LOG("[ota] PSRAM staging alloc failed (%u bytes)\n", (unsigned)begin.total_size);
         send_reject("no_memory");
         show_error_screen("no_memory");
         return;
     }
 
-    g_total_size     = (uint32_t)total_size;
+    g_total_size     = (uint32_t)begin.total_size;
     g_received_bytes = 0;
     g_progress_step  = g_total_size / (100 / PROGRESS_INTERVAL_PCT);
     if (g_progress_step == 0) g_progress_step = 1;       // tiny image guard
@@ -424,8 +448,8 @@ static void handle_begin(const uint8_t* payload, uint32_t len) {
     if (g_progress_step > PROGRESS_MAX_BYTES) g_progress_step = PROGRESS_MAX_BYTES;
     g_next_progress  = g_progress_step;
     g_last_rx_ms     = millis();
-    memcpy(g_expected_sha256, sha256, 32);
-    strncpy(g_claimed_version, recv_version, sizeof(g_claimed_version) - 1);
+    memcpy(g_expected_sha256, begin.sha256, 32);
+    strncpy(g_claimed_version, begin.fw_version, sizeof(g_claimed_version) - 1);
     g_claimed_version[sizeof(g_claimed_version) - 1] = '\0';
 
     mbedtls_sha256_init(&g_sha256_ctx);
@@ -439,7 +463,7 @@ static void handle_begin(const uint8_t* payload, uint32_t len) {
 
     send_empty_response(OTA_OP_READY);
     LOG("[ota] BEGIN accepted: size=%u ver=%s\n",
-        (unsigned)total_size, recv_version);
+        (unsigned)begin.total_size, begin.fw_version);
 }
 
 // Bulk DATA handler — copies into the PSRAM staging buffer (no flash write, so

@@ -732,420 +732,416 @@ void init() {
                    g_ble_name.c_str(), (unsigned)g_passkey);
 }
 
-void poll() {
-    BleEvent ev;
-    while (eq_pop(ev)) {
-        switch (ev.type) {
+// ── poll() event handlers ───────────────────────────────────────────────────
+// One function per BleEventType, extracted verbatim from poll()'s switch
+// cases — same statements, same order, same globals touched, same
+// break/return/fallthrough behavior (none of these fall through). Splitting
+// for readability only; see each comment for the hardware-race context that
+// makes exact ordering matter.
 
-            case BleEventType::FactoryReset:
-                // Deferred from BLE callback — now safe to wipe NVS and restart.
-                factory_reset::execute();
-                break;
+static void handle_factory_reset() {
+    // Deferred from BLE callback — now safe to wipe NVS and restart.
+    factory_reset::execute();
+}
 
-            case BleEventType::PresenceUpdate: {
-                // Cache the value in state_machine so apply_widget_defaults()
-                // reflects it on future screen rebuilds instead of clobbering it
-                // back to a hardcoded value. set_presence() also updates the
-                // active card immediately.
-                state_machine::set_presence(static_cast<uint8_t>(ev.data.presence));
-                break;
-            }
+static void handle_presence_update(const BleEvent& ev) {
+    // Cache the value in state_machine so apply_widget_defaults()
+    // reflects it on future screen rebuilds instead of clobbering it
+    // back to a hardcoded value. set_presence() also updates the
+    // active card immediately.
+    state_machine::set_presence(static_cast<uint8_t>(ev.data.presence));
+}
 
-            case BleEventType::ClockFaceUpdate:
-                // set_clock_face() writes NVS and (if the Clock state is on
-                // screen) rebuilds it — both must run on the main task.
-                state_machine::set_clock_face(ev.data.clock_face);
-                break;
+static void handle_clock_face_update(const BleEvent& ev) {
+    // set_clock_face() writes NVS and (if the Clock state is on
+    // screen) rebuilds it — both must run on the main task.
+    state_machine::set_clock_face(ev.data.clock_face);
+}
 
-            case BleEventType::TimeFormatUpdate:
-                // set_time_format() writes NVS and rebuilds the on-screen clock /
-                // meeting list so times re-render immediately — main task only.
-                state_machine::set_time_format(ev.data.time_format);
-                break;
+static void handle_time_format_update(const BleEvent& ev) {
+    // set_time_format() writes NVS and rebuilds the on-screen clock /
+    // meeting list so times re-render immediately — main task only.
+    state_machine::set_time_format(ev.data.time_format);
+}
 
-            case BleEventType::WeatherUpdate:
-                // Cache in state_machine (mirrors PresenceUpdate) so
-                // apply_widget_defaults() reflects it on future screen
-                // rebuilds and the PC-link-down fallback can hide it.
-                state_machine::set_weather(ev.data.weather.condition, ev.data.weather.temp_f,
-                                            ev.data.weather.unit);
-                break;
+static void handle_weather_update(const BleEvent& ev) {
+    // Cache in state_machine (mirrors PresenceUpdate) so
+    // apply_widget_defaults() reflects it on future screen
+    // rebuilds and the PC-link-down fallback can hide it.
+    state_machine::set_weather(ev.data.weather.condition, ev.data.weather.temp_f,
+                                ev.data.weather.unit);
+}
 
-            case BleEventType::MediaMetaUpdated: {
-                // gatt_server::handle_media_metadata() already wrote the new
-                // title/artist/can_seek/playing/position into app_state (plain
-                // struct copies, safe from the NimBLE host task) but couldn't
-                // touch LVGL — defer that to here (main task only).
-                const auto& m = app_state::media();
-                screen_media_mode::update_meta(m.title, m.artist);
-                // Sync play/pause icon + paused-overlay with whatever the OS
-                // reported — this is the authoritative source of truth, so it
-                // overrides any local toggle the user made via tap.
-                screen_media_mode::update_playing(app_state::media_playing());
-                // Always call update_seek — it controls tl_overlay visibility
-                // and hides the bar when duration_s == 0 or can_seek is false.
-                screen_media_mode::update_seek(m.position_s, m.duration_s);
-                break;
-            }
+static void handle_media_meta_updated() {
+    // gatt_server::handle_media_metadata() already wrote the new
+    // title/artist/can_seek/playing/position into app_state (plain
+    // struct copies, safe from the NimBLE host task) but couldn't
+    // touch LVGL — defer that to here (main task only).
+    const auto& m = app_state::media();
+    screen_media_mode::update_meta(m.title, m.artist);
+    // Sync play/pause icon + paused-overlay with whatever the OS
+    // reported — this is the authoritative source of truth, so it
+    // overrides any local toggle the user made via tap.
+    screen_media_mode::update_playing(app_state::media_playing());
+    // Always call update_seek — it controls tl_overlay visibility
+    // and hides the bar when duration_s == 0 or can_seek is false.
+    screen_media_mode::update_seek(m.position_s, m.duration_s);
+}
 
-            case BleEventType::AlbumArt:
-                // Album art JPEG received — buf was allocated in PSRAM by
-                // chunked_transfer. set_album_art() decodes it (LVGL TJPGD)
-                // and displays it if the media screen is active; it always
-                // takes ownership and frees jpeg_buf internally either way.
-                if (ev.data.art.buf) {
-                    LOG("[ble] AlbumArt received %u bytes\n",
-                                   (unsigned)ev.data.art.len);
-                    screen_media_mode::set_album_art(ev.data.art.buf, ev.data.art.len);
-                }
-                break;
+static void handle_album_art(const BleEvent& ev) {
+    // Album art JPEG received — buf was allocated in PSRAM by
+    // chunked_transfer. set_album_art() decodes it (LVGL TJPGD)
+    // and displays it if the media screen is active; it always
+    // takes ownership and frees jpeg_buf internally either way.
+    if (ev.data.art.buf) {
+        LOG("[ble] AlbumArt received %u bytes\n",
+                       (unsigned)ev.data.art.len);
+        screen_media_mode::set_album_art(ev.data.art.buf, ev.data.art.len);
+    }
+}
 
-            case BleEventType::PhotoReceived:
-                // photo_cache::store() takes ownership of buf and frees it.
-                LOG("[ble] PhotoReceived: %u bytes\n", (unsigned)ev.data.art.len);
-                photo_cache::store(ev.data.art.buf, ev.data.art.len);
-                break;
+static void handle_photo_received(const BleEvent& ev) {
+    // photo_cache::store() takes ownership of buf and frees it.
+    LOG("[ble] PhotoReceived: %u bytes\n", (unsigned)ev.data.art.len);
+    photo_cache::store(ev.data.art.buf, ev.data.art.len);
+}
 
-            case BleEventType::TimeOffPhotoReceived:
-                // len == 0 means no destination photo set — store_time_off clears cache.
-                LOG("[ble] TimeOffPhotoReceived: %u bytes\n", (unsigned)ev.data.art.len);
-                photo_cache::store_time_off(ev.data.art.buf, ev.data.art.len);
-                // store_time_off() only updates the cache; the Time Off screen (if shown)
-                // was built earlier with the placeholder, so ask the state
-                // machine to rebuild it now that the real image is decoded.
-                state_machine::notify_time_off_image_changed();
-                break;
+static void handle_time_off_photo_received(const BleEvent& ev) {
+    // len == 0 means no destination photo set — store_time_off clears cache.
+    LOG("[ble] TimeOffPhotoReceived: %u bytes\n", (unsigned)ev.data.art.len);
+    photo_cache::store_time_off(ev.data.art.buf, ev.data.art.len);
+    // store_time_off() only updates the cache; the Time Off screen (if shown)
+    // was built earlier with the placeholder, so ask the state
+    // machine to rebuild it now that the real image is decoded.
+    state_machine::notify_time_off_image_changed();
+}
 
-            case BleEventType::PasskeyDisplay:
-                LOG("[ble] passkey display: %06u\n", (unsigned)ev.data.passkey);
-                screen_setup::show_passkey_modal(lv_scr_act(), ev.data.passkey);
-                break;
+static void handle_passkey_display(const BleEvent& ev) {
+    LOG("[ble] passkey display: %06u\n", (unsigned)ev.data.passkey);
+    screen_setup::show_passkey_modal(lv_scr_act(), ev.data.passkey);
+}
 
-            case BleEventType::AuthFailed:
-                // Hide the passkey modal — restores the Pairing base screen
-                // (BLE name + spinner) so the user can retry pairing.
-                screen_setup::hide_passkey_modal(lv_scr_act());
-                break;
+static void handle_auth_failed() {
+    // Hide the passkey modal — restores the Pairing base screen
+    // (BLE name + spinner) so the user can retry pairing.
+    screen_setup::hide_passkey_modal(lv_scr_act());
+}
 
-            case BleEventType::OrionConnected:
-                LOG("[ble:poll] Orion connected\n");
-                state_machine::set_pc_connected(true);
-                // Notify Device Status = RUNTIME_RECONNECTING per ble-protocol.md
-                // §6.2 — this is just the wire-protocol status Orion sees. The
-                // "Refreshing your day" overlay itself is NOT shown here: BLE
-                // connecting doesn't guarantee Orion (the app) is actually
-                // running in the background to ever send a BEGIN — showing the
-                // overlay now could leave it stuck with nothing to dismiss it.
-                // It's triggered instead by SyncBegin below, on the real
-                // SyncControl{BEGIN} frame.
-                gatt_server::set_device_status(0x11); // RUNTIME_RECONNECTING
-                // Read Presence Status from Orion (source of truth on reconnect).
-                // Orion will push it; until then show Offline.
-                widget_profile_card::set_default_presence(
-                    widget_profile_card::Presence::Offline);
-                // The ANCS relay resync (chars 0010/0011) does NOT happen
-                // here — this event fires on encryption complete, well before
-                // Orion has even started run_sync, let alone spawned the
-                // watcher tasks that subscribe to those two characteristics.
-                // A notify sent this early is silently dropped (not
-                // subscribed yet) and never arrives — confirmed as the actual
-                // cause of a resync that looked correct in code but never
-                // worked in practice. See BleEventType::AncsResubscribed /
-                // gatt_server.cpp's onSubscribe() for the fix: resync exactly
-                // when Orion's own CCCD write for that characteristic lands.
-                break;
+static void handle_orion_connected() {
+    LOG("[ble:poll] Orion connected\n");
+    state_machine::set_pc_connected(true);
+    // Notify Device Status = RUNTIME_RECONNECTING per ble-protocol.md
+    // §6.2 — this is just the wire-protocol status Orion sees. The
+    // "Refreshing your day" overlay itself is NOT shown here: BLE
+    // connecting doesn't guarantee Orion (the app) is actually
+    // running in the background to ever send a BEGIN — showing the
+    // overlay now could leave it stuck with nothing to dismiss it.
+    // It's triggered instead by SyncBegin below, on the real
+    // SyncControl{BEGIN} frame.
+    gatt_server::set_device_status(0x11); // RUNTIME_RECONNECTING
+    // Read Presence Status from Orion (source of truth on reconnect).
+    // Orion will push it; until then show Offline.
+    widget_profile_card::set_default_presence(
+        widget_profile_card::Presence::Offline);
+    // The ANCS relay resync (chars 0010/0011) does NOT happen
+    // here — this event fires on encryption complete, well before
+    // Orion has even started run_sync, let alone spawned the
+    // watcher tasks that subscribe to those two characteristics.
+    // A notify sent this early is silently dropped (not
+    // subscribed yet) and never arrives — confirmed as the actual
+    // cause of a resync that looked correct in code but never
+    // worked in practice. See BleEventType::AncsResubscribed /
+    // gatt_server.cpp's onSubscribe() for the fix: resync exactly
+    // when Orion's own CCCD write for that characteristic lands.
+}
 
-            case BleEventType::IphoneConnected:
-                LOG("[ble:poll] iPhone connected — starting ANCS\n");
-                ancs_client::on_iphone_connected(ev.data.conn_handle);
-                // Phone name is read synchronously inside on_iphone_connected().
-                gatt_server::notify_phone_bond_status(true, true, ancs_client::phone_name());
-                break;
+static void handle_iphone_connected(const BleEvent& ev) {
+    LOG("[ble:poll] iPhone connected — starting ANCS\n");
+    ancs_client::on_iphone_connected(ev.data.conn_handle);
+    // Phone name is read synchronously inside on_iphone_connected().
+    gatt_server::notify_phone_bond_status(true, true, ancs_client::phone_name());
+}
 
-            case BleEventType::OrionBonded:
-                LOG("[ble:poll] Orion bonded (provisional — awaiting handshake)\n");
-                g_orion_connected = true;
-                g_orion_conn      = ev.data.conn_handle;
-                state_machine::set_pc_connected(true);
-                gatt_server::set_device_status(0x01); // SETUP_BONDED_AWAITING_SYNC
-                // NOTE: bond is provisional — not persisted, and no resume bookmark
-                // yet. Both happen on OrionConfirmed (valid SyncControl{BEGIN}).
-                // Bonding complete — hide passkey modal, revealing the "Connect on
-                // Orion" base screen (BLE name + spinner). Stamp the time so the
-                // Orioning modal (on SyncBegin) lingers behind a guaranteed-visible
-                // beat of this screen.
-                screen_setup::hide_passkey_modal(lv_scr_act());
-                g_orion_bonded_ms  = millis();
-                g_orioning_pending = false;
-                break;
+static void handle_orion_bonded(const BleEvent& ev) {
+    LOG("[ble:poll] Orion bonded (provisional — awaiting handshake)\n");
+    g_orion_connected = true;
+    g_orion_conn      = ev.data.conn_handle;
+    state_machine::set_pc_connected(true);
+    gatt_server::set_device_status(0x01); // SETUP_BONDED_AWAITING_SYNC
+    // NOTE: bond is provisional — not persisted, and no resume bookmark
+    // yet. Both happen on OrionConfirmed (valid SyncControl{BEGIN}).
+    // Bonding complete — hide passkey modal, revealing the "Connect on
+    // Orion" base screen (BLE name + spinner). Stamp the time so the
+    // Orioning modal (on SyncBegin) lingers behind a guaranteed-visible
+    // beat of this screen.
+    screen_setup::hide_passkey_modal(lv_scr_act());
+    g_orion_bonded_ms  = millis();
+    g_orioning_pending = false;
+}
 
-            case BleEventType::OrionConfirmed:
-                if (g_orion_provisional) {
-                    LOG("[ble:poll] Orion confirmed — persisting bond\n");
-                    save_bond_addr(BOND_KEY_ORION, g_provisional_orion_addr);
-                    g_orion_provisional = false;
-                    // Now safe to set the "bonded, awaiting first sync" resume
-                    // bookmark (first boot only): a power cycle mid-Orioning
-                    // resumes on the Link-Orion screen, and Orion reconnects via
-                    // the now-persisted bond. Cleared at SyncEnd.
-                    if (nvs::is_first_boot()) {
-                        nvs::mark_orion_bonded();
-                    }
-                }
-                break;
-
-            case BleEventType::SyncBegin:
-                LOG("[ble:poll] sync begin (total=%u)\n", (unsigned)ev.data.total_bytes);
-                if (nvs::is_first_boot()) {
-                    // Setup only: defer the Orioning modal so the "Connect on
-                    // Orion" screen gets its guaranteed beat (poll() shows it
-                    // once CONNECT_ORION_MIN_MS has elapsed since bonding).
-                    g_orioning_pending = true;
-                } else if (ev.data.total_bytes > RECONNECT_OVERLAY_MIN_BYTES) {
-                    // Runtime: this is the actual SyncControl{BEGIN} frame —
-                    // the real start of a sync, as opposed to merely a BLE
-                    // connection (Orion's background service might not even
-                    // be running yet). Show the "Refreshing your day" overlay
-                    // now, but only for syncs big enough to actually be worth
-                    // it — Time Sync alone (Device Settings is outside BEGIN/END
-                    // and doesn't count toward total, §6.3) runs well under
-                    // this, and was deliberately built to be invisible (no
-                    // blackout, no rebuild). Any sync that also carries
-                    // Profile/Photo/Meetings/Time Off is comfortably larger.
-                    state_machine::on_reconnect_begin();
-                }
-                break;
-
-            case BleEventType::SyncCommit:
-                LOG("[ble:poll] sync commit — applying staged data\n");
-                gatt_server::run_staged_commit();
-                break;
-
-            case BleEventType::SyncEnd:
-                LOG("[ble:poll] sync end\n");
-                g_orioning_pending = false;  // don't pop the modal after we advance
-                if (nvs::is_first_boot()) {
-                    // Persist "at phone pairing step" before advancing the UI so
-                    // a power cycle between now and setup completion resumes here.
-                    nvs::mark_orion_synced();
-                    // Complete the progress ring before advancing.
-                    screen_setup::update_orioning_progress(lv_scr_act(), 100);
-                    screen_setup::hide_orioning_modal(lv_scr_act());
-                    screen_setup::set_step(lv_scr_act(), screen_setup::Step::PhonePairing);
-                } else {
-                    state_machine::on_reconnect_end();
-                }
-                break;
-
-            case BleEventType::OrioningProgress:
-                // Only one of these two is ever the live screen at a time — the
-                // other no-ops safely (update_orioning_progress checks for a
-                // SetupState* user_data; set_progress checks its own module-level
-                // ring pointer, cleared on screen delete).
-                screen_setup::update_orioning_progress(lv_scr_act(), ev.data.pct);
-                screen_reconnect_syncing::set_progress(ev.data.pct);
-                break;
-
-            case BleEventType::IphoneBonded: {
-                LOG("[ble:poll] iPhone bonded\n");
-                // Capture BEFORE dismiss_phone_pairing() below — on first-boot
-                // setup it synchronously builds the Complete screen, whose
-                // build_complete() calls nvs::mark_setup_complete() immediately,
-                // flipping is_first_boot() to false right then. Checking after
-                // that call would always see false and never fire this fix.
-                bool was_first_boot = nvs::is_first_boot();
-                // Persist the iPhone bond slot here, on the main task. The host
-                // task already updated the RAM cache in on_iphone_bonded(); this
-                // commits it to NVS off the host-task stack.
-                save_bond_addr(BOND_KEY_IPHONE, ev.peer_addr);
-                g_iphone_connected = true;
-                g_iphone_conn      = ev.data.conn_handle;
-                state_machine::set_phone_connected(true);
-                // Start ANCS on the fresh-bond connection too. Without this,
-                // NS/DS were only subscribed on a bonded RECONNECT — after the
-                // very first pairing no notifications arrived until the iPhone
-                // dropped and re-connected. Idempotent if already subscribed.
-                ancs_client::on_iphone_connected(ev.data.conn_handle);
-                // Phone name is read synchronously inside on_iphone_connected().
-                gatt_server::notify_phone_bond_status(true, true, ancs_client::phone_name());
-                restart_advertising();
-                // Pairing done → leave the phone-pairing screen: hides the
-                // passkey modal, then first-boot setup advances to the Setup
-                // Complete screen while a runtime re-pair returns to the screen
-                // that launched it. Without this a successful runtime re-pair
-                // left the passkey modal stuck on screen forever (and first-boot
-                // only advanced via the Skip button).
-                screen_setup::dismiss_phone_pairing(lv_scr_act());
-
-                // iOS quirk: it doesn't reliably flush the ANCS notification
-                // backlog (the "PreExisting" replay) on the SAME connection
-                // where the bond was just created — only on connections after
-                // that (a power-cycle reconnect proves the firmware-side
-                // backlog handling above already works correctly). This is
-                // iOS-side, not a first-boot-specific condition — ANY fresh
-                // bond (first-boot setup Step 4 OR a later runtime re-pair)
-                // leaves ANCS icons empty until the device reconnects at least
-                // once (confirmed on hardware: a runtime re-pair without this
-                // fix never loads ANCS icons). Force that "after the first"
-                // condition: drop this fresh bond after NS/DS subscribe, then
-                // let the existing bonded-disconnect → restart_advertising() →
-                // iOS auto-reconnect path bring it straight back.
-                g_ancs_backlog_reconnect_pending = true;
-                g_ancs_backlog_reconnect_conn    = ev.data.conn_handle;
-
-                if (was_first_boot) {
-                    // Deferred to AFTER the Setup Complete screen hands off to
-                    // runtime (state_machine::poll()'s g_setup_complete_pending
-                    // drain calls run_pending_ancs_backlog_reconnect()) rather
-                    // than fired here on a short fixed timer. ANCS backlog
-                    // processing — per-notification parsing plus icon-registry
-                    // lookups across up to 48 apps — is comparatively heavy, and
-                    // running it while Setup Complete's checkmark-ring/countdown-
-                    // bar animations are live competes with LVGL for the same
-                    // core. Trade-off: the phone icon may briefly show
-                    // disconnected/reconnecting on the runtime status bar
-                    // (Setup's status bar is hidden, so this used to be invisible).
-                } else {
-                    // Runtime re-pair: dismiss_phone_pairing() above already
-                    // returned straight to the screen that launched the re-pair —
-                    // no animation-heavy hand-off screen to wait for — so fire
-                    // immediately instead of deferring to state_machine::poll()'s
-                    // first-boot-only drain point.
-                    run_pending_ancs_backlog_reconnect();
-                }
-                break;
-            }
-
-            case BleEventType::OrionDisconnected:
-                LOG("[ble:poll] Orion disconnected\n");
-                state_machine::set_pc_connected(false);
-                // A provisional (unconfirmed) peer that drops was never Orion —
-                // clear the handshake state so the timeout path doesn't fire on a
-                // stale handle. Nothing was persisted, so there's nothing to undo.
-                g_orion_provisional = false;
-                g_orioning_pending  = false;  // cancel any pending Orioning modal
-                // A CONFIRMED bond (BEGIN was received, orion_addr persisted at
-                // OrionConfirmed) that drops before its first sync ever reaches
-                // SyncEnd is a different, worse case than the provisional one
-                // above: the bond IS persisted, and nothing else in this file
-                // ever reverts it — left alone, Ori is stuck advertising
-                // RUNTIME forever with no way back short of a factory reset
-                // (see nvs::clear_orion_bonded()'s doc comment). Scoped to
-                // first-boot's still-outstanding first sync only
-                // (is_awaiting_sync() only ever holds there), so an
-                // established bond's routine periodic reconnects/re-syncs at
-                // runtime are never affected by this.
-                if (nvs::is_first_boot() && nvs::is_awaiting_sync()) {
-                    revert_unconfirmed_orion_bond();
-                }
-                // Force presence to Offline immediately (never show stale presence).
-                widget_profile_card::set_default_presence(
-                    widget_profile_card::Presence::Offline);
-                gatt_server::set_device_status(0xF0); // ERROR_GENERIC until reconnect
-                // Discard any in-progress sync staging — link dropped before END.
-                gatt_server::abort_sync_stage();
-                break;
-
-            case BleEventType::IphoneDisconnected: {
-                LOG("[ble:poll] iPhone disconnected\n");
-                // Disconnected before the deferred backlog-flush reconnect fired
-                // (e.g. phone walked out of range during the Setup Complete
-                // linger) — drop the pending request rather than act on a
-                // conn_handle that's now stale (and could be reused by a later,
-                // unrelated connection).
-                g_ancs_backlog_reconnect_pending = false;
-                ancs_client::on_iphone_disconnected();
-                // If an unpair is waiting on this disconnect, delete the bond +
-                // clear NVS now that the link is down (safe — see wipe_iphone_bond).
-                bool wipe_was_pending = g_iphone_wipe_pending;
-                finish_pending_iphone_wipe();
-                // If the wipe just completed, the bond is gone (bonded=false).
-                // A plain disconnect (e.g. phone out of range) keeps the bond.
-                gatt_server::notify_phone_bond_status(!wipe_was_pending, false, "");
-                break;
-            }
-
-            case BleEventType::UnpairPhone:
-                LOG("[ble:poll] remote iPhone unpair command\n");
-                // Delegate to the same path the UI uses: state_machine::on_unpair_phone()
-                // sets g_unpair_phone_pending → state_machine::poll() calls wipe_iphone_bond().
-                state_machine::on_unpair_phone();
-                break;
-
-            case BleEventType::AncsFilterUpdate:
-                LOG("[ble:poll] ANCS filter -> %u\n", (unsigned)ev.data.ancs_filter);
-                ancs_client::set_filter(ev.data.ancs_filter);
-                nvs::set_notif_filter(ev.data.ancs_filter);
-                break;
-
-            case BleEventType::ShortcutUpdate: {
-                LOG("[ble:poll] shortcut update\n");
-                screen_media_mode::update_shortcuts();
-                const app_state::ShortcutSlot* s = app_state::shortcuts();
-                nvs::set_shortcut_slots(s[0].icon_token, s[1].icon_token, s[2].icon_token);
-                break;
-            }
-
-            case BleEventType::AncsAction: {
-                uint32_t uid    = ev.data.ancs_action.uid;
-                uint8_t  action = ev.data.ancs_action.action;
-                // "Is it still live" is checked here (main task) rather than in
-                // the NimBLE host-task write handler — ancs_client's queue is
-                // only ever touched from the main task (ancs_client::poll()),
-                // so this is the one safe place to read it.
-                if (!ancs_client::is_queued(uid)) {
-                    LOG("[ble:poll] AncsNotificationAction: uid=%u not live -> NACK\n",
-                        (unsigned)uid);
-                    gatt_server::nack_sync_control("NACK_CBOR_DECODE");
-                } else if (action == 0) {
-                    LOG("[ble:poll] AncsNotificationAction: answer uid=%u\n", (unsigned)uid);
-                    ancs_client::answer_notification(uid);
-                } else {
-                    // Negative action. Mirror Ori's own on-device swipe
-                    // (modal_ancs_list.cpp's commit_row_delete): only send the
-                    // ANCS Negative when the notification actually HAS one;
-                    // otherwise just drop it from Ori's queue locally.
-                    // Sending PerformNotificationAction(Negative) for a
-                    // notification with no negative action is a no-op the
-                    // phone can (and on some iOS versions does) answer by
-                    // re-asserting the notification via a Modified/Added
-                    // event — which re-queues it on Ori and bounces the
-                    // PhoneBondStatus count right back up, so an Orion swipe
-                    // looks like it "didn't reduce the count." drop_notification
-                    // never touches the phone, so nothing re-asserts it.
-                    bool has_neg = app_state::ancs_notification_by_uid(uid).has_neg_action;
-                    if (has_neg) {
-                        LOG("[ble:poll] AncsNotificationAction: dismiss uid=%u\n", (unsigned)uid);
-                        ancs_client::dismiss_notification(uid);
-                    } else {
-                        LOG("[ble:poll] AncsNotificationAction: drop (no neg action) uid=%u\n",
-                            (unsigned)uid);
-                        ancs_client::drop_notification(uid);
-                    }
-                }
-                break;
-            }
-
-            case BleEventType::AncsResubscribed:
-                // Orion just (re)subscribed to char 0010 or 0011 — the first
-                // moment a notify is guaranteed to actually reach it, unlike
-                // OrionConnected (fires before run_sync even starts). See
-                // gatt_server.cpp's onSubscribe() and ancs_client.h's
-                // resync_orion_relay()/resync_orion_call_state() doc comments.
-                if (ev.data.ancs_resubscribed_call_state) {
-                    LOG("[ble:poll] Orion subscribed to char 0011 — resyncing call state\n");
-                    ancs_client::resync_orion_call_state();
-                } else {
-                    LOG("[ble:poll] Orion subscribed to char 0010 — resyncing ANCS mirror\n");
-                    ancs_client::resync_orion_relay();
-                }
-                break;
-
-            default:
-                break;
+static void handle_orion_confirmed() {
+    if (g_orion_provisional) {
+        LOG("[ble:poll] Orion confirmed — persisting bond\n");
+        save_bond_addr(BOND_KEY_ORION, g_provisional_orion_addr);
+        g_orion_provisional = false;
+        // Now safe to set the "bonded, awaiting first sync" resume
+        // bookmark (first boot only): a power cycle mid-Orioning
+        // resumes on the Link-Orion screen, and Orion reconnects via
+        // the now-persisted bond. Cleared at SyncEnd.
+        if (nvs::is_first_boot()) {
+            nvs::mark_orion_bonded();
         }
     }
+}
 
+static void handle_sync_begin(const BleEvent& ev) {
+    LOG("[ble:poll] sync begin (total=%u)\n", (unsigned)ev.data.total_bytes);
+    if (nvs::is_first_boot()) {
+        // Setup only: defer the Orioning modal so the "Connect on
+        // Orion" screen gets its guaranteed beat (poll() shows it
+        // once CONNECT_ORION_MIN_MS has elapsed since bonding).
+        g_orioning_pending = true;
+    } else if (ev.data.total_bytes > RECONNECT_OVERLAY_MIN_BYTES) {
+        // Runtime: this is the actual SyncControl{BEGIN} frame —
+        // the real start of a sync, as opposed to merely a BLE
+        // connection (Orion's background service might not even
+        // be running yet). Show the "Refreshing your day" overlay
+        // now, but only for syncs big enough to actually be worth
+        // it — Time Sync alone (Device Settings is outside BEGIN/END
+        // and doesn't count toward total, §6.3) runs well under
+        // this, and was deliberately built to be invisible (no
+        // blackout, no rebuild). Any sync that also carries
+        // Profile/Photo/Meetings/Time Off is comfortably larger.
+        state_machine::on_reconnect_begin();
+    }
+}
+
+static void handle_sync_commit() {
+    LOG("[ble:poll] sync commit — applying staged data\n");
+    gatt_server::run_staged_commit();
+}
+
+static void handle_sync_end() {
+    LOG("[ble:poll] sync end\n");
+    g_orioning_pending = false;  // don't pop the modal after we advance
+    if (nvs::is_first_boot()) {
+        // Persist "at phone pairing step" before advancing the UI so
+        // a power cycle between now and setup completion resumes here.
+        nvs::mark_orion_synced();
+        // Complete the progress ring before advancing.
+        screen_setup::update_orioning_progress(lv_scr_act(), 100);
+        screen_setup::hide_orioning_modal(lv_scr_act());
+        screen_setup::set_step(lv_scr_act(), screen_setup::Step::PhonePairing);
+    } else {
+        state_machine::on_reconnect_end();
+    }
+}
+
+static void handle_orioning_progress(const BleEvent& ev) {
+    // Only one of these two is ever the live screen at a time — the
+    // other no-ops safely (update_orioning_progress checks for a
+    // SetupState* user_data; set_progress checks its own module-level
+    // ring pointer, cleared on screen delete).
+    screen_setup::update_orioning_progress(lv_scr_act(), ev.data.pct);
+    screen_reconnect_syncing::set_progress(ev.data.pct);
+}
+
+static void handle_iphone_bonded(const BleEvent& ev) {
+    LOG("[ble:poll] iPhone bonded\n");
+    // Capture BEFORE dismiss_phone_pairing() below — on first-boot
+    // setup it synchronously builds the Complete screen, whose
+    // build_complete() calls nvs::mark_setup_complete() immediately,
+    // flipping is_first_boot() to false right then. Checking after
+    // that call would always see false and never fire this fix.
+    bool was_first_boot = nvs::is_first_boot();
+    // Persist the iPhone bond slot here, on the main task. The host
+    // task already updated the RAM cache in on_iphone_bonded(); this
+    // commits it to NVS off the host-task stack.
+    save_bond_addr(BOND_KEY_IPHONE, ev.peer_addr);
+    g_iphone_connected = true;
+    g_iphone_conn      = ev.data.conn_handle;
+    state_machine::set_phone_connected(true);
+    // Start ANCS on the fresh-bond connection too. Without this,
+    // NS/DS were only subscribed on a bonded RECONNECT — after the
+    // very first pairing no notifications arrived until the iPhone
+    // dropped and re-connected. Idempotent if already subscribed.
+    ancs_client::on_iphone_connected(ev.data.conn_handle);
+    // Phone name is read synchronously inside on_iphone_connected().
+    gatt_server::notify_phone_bond_status(true, true, ancs_client::phone_name());
+    restart_advertising();
+    // Pairing done → leave the phone-pairing screen: hides the
+    // passkey modal, then first-boot setup advances to the Setup
+    // Complete screen while a runtime re-pair returns to the screen
+    // that launched it. Without this a successful runtime re-pair
+    // left the passkey modal stuck on screen forever (and first-boot
+    // only advanced via the Skip button).
+    screen_setup::dismiss_phone_pairing(lv_scr_act());
+
+    // iOS quirk: it doesn't reliably flush the ANCS notification
+    // backlog (the "PreExisting" replay) on the SAME connection
+    // where the bond was just created — only on connections after
+    // that (a power-cycle reconnect proves the firmware-side
+    // backlog handling above already works correctly). This is
+    // iOS-side, not a first-boot-specific condition — ANY fresh
+    // bond (first-boot setup Step 4 OR a later runtime re-pair)
+    // leaves ANCS icons empty until the device reconnects at least
+    // once (confirmed on hardware: a runtime re-pair without this
+    // fix never loads ANCS icons). Force that "after the first"
+    // condition: drop this fresh bond after NS/DS subscribe, then
+    // let the existing bonded-disconnect → restart_advertising() →
+    // iOS auto-reconnect path bring it straight back.
+    g_ancs_backlog_reconnect_pending = true;
+    g_ancs_backlog_reconnect_conn    = ev.data.conn_handle;
+
+    if (was_first_boot) {
+        // Deferred to AFTER the Setup Complete screen hands off to
+        // runtime (state_machine::poll()'s g_setup_complete_pending
+        // drain calls run_pending_ancs_backlog_reconnect()) rather
+        // than fired here on a short fixed timer. ANCS backlog
+        // processing — per-notification parsing plus icon-registry
+        // lookups across up to 48 apps — is comparatively heavy, and
+        // running it while Setup Complete's checkmark-ring/countdown-
+        // bar animations are live competes with LVGL for the same
+        // core. Trade-off: the phone icon may briefly show
+        // disconnected/reconnecting on the runtime status bar
+        // (Setup's status bar is hidden, so this used to be invisible).
+    } else {
+        // Runtime re-pair: dismiss_phone_pairing() above already
+        // returned straight to the screen that launched the re-pair —
+        // no animation-heavy hand-off screen to wait for — so fire
+        // immediately instead of deferring to state_machine::poll()'s
+        // first-boot-only drain point.
+        run_pending_ancs_backlog_reconnect();
+    }
+}
+
+static void handle_orion_disconnected() {
+    LOG("[ble:poll] Orion disconnected\n");
+    state_machine::set_pc_connected(false);
+    // A provisional (unconfirmed) peer that drops was never Orion —
+    // clear the handshake state so the timeout path doesn't fire on a
+    // stale handle. Nothing was persisted, so there's nothing to undo.
+    g_orion_provisional = false;
+    g_orioning_pending  = false;  // cancel any pending Orioning modal
+    // A CONFIRMED bond (BEGIN was received, orion_addr persisted at
+    // OrionConfirmed) that drops before its first sync ever reaches
+    // SyncEnd is a different, worse case than the provisional one
+    // above: the bond IS persisted, and nothing else in this file
+    // ever reverts it — left alone, Ori is stuck advertising
+    // RUNTIME forever with no way back short of a factory reset
+    // (see nvs::clear_orion_bonded()'s doc comment). Scoped to
+    // first-boot's still-outstanding first sync only
+    // (is_awaiting_sync() only ever holds there), so an
+    // established bond's routine periodic reconnects/re-syncs at
+    // runtime are never affected by this.
+    if (nvs::is_first_boot() && nvs::is_awaiting_sync()) {
+        revert_unconfirmed_orion_bond();
+    }
+    // Force presence to Offline immediately (never show stale presence).
+    widget_profile_card::set_default_presence(
+        widget_profile_card::Presence::Offline);
+    gatt_server::set_device_status(0xF0); // ERROR_GENERIC until reconnect
+    // Discard any in-progress sync staging — link dropped before END.
+    gatt_server::abort_sync_stage();
+}
+
+static void handle_iphone_disconnected() {
+    LOG("[ble:poll] iPhone disconnected\n");
+    // Disconnected before the deferred backlog-flush reconnect fired
+    // (e.g. phone walked out of range during the Setup Complete
+    // linger) — drop the pending request rather than act on a
+    // conn_handle that's now stale (and could be reused by a later,
+    // unrelated connection).
+    g_ancs_backlog_reconnect_pending = false;
+    ancs_client::on_iphone_disconnected();
+    // If an unpair is waiting on this disconnect, delete the bond +
+    // clear NVS now that the link is down (safe — see wipe_iphone_bond).
+    bool wipe_was_pending = g_iphone_wipe_pending;
+    finish_pending_iphone_wipe();
+    // If the wipe just completed, the bond is gone (bonded=false).
+    // A plain disconnect (e.g. phone out of range) keeps the bond.
+    gatt_server::notify_phone_bond_status(!wipe_was_pending, false, "");
+}
+
+static void handle_unpair_phone() {
+    LOG("[ble:poll] remote iPhone unpair command\n");
+    // Delegate to the same path the UI uses: state_machine::on_unpair_phone()
+    // sets g_unpair_phone_pending → state_machine::poll() calls wipe_iphone_bond().
+    state_machine::on_unpair_phone();
+}
+
+static void handle_ancs_filter_update(const BleEvent& ev) {
+    LOG("[ble:poll] ANCS filter -> %u\n", (unsigned)ev.data.ancs_filter);
+    ancs_client::set_filter(ev.data.ancs_filter);
+    nvs::set_notif_filter(ev.data.ancs_filter);
+}
+
+static void handle_shortcut_update() {
+    LOG("[ble:poll] shortcut update\n");
+    screen_media_mode::update_shortcuts();
+    const app_state::ShortcutSlot* s = app_state::shortcuts();
+    nvs::set_shortcut_slots(s[0].icon_token, s[1].icon_token, s[2].icon_token);
+}
+
+static void handle_ancs_action(const BleEvent& ev) {
+    uint32_t uid    = ev.data.ancs_action.uid;
+    uint8_t  action = ev.data.ancs_action.action;
+    // "Is it still live" is checked here (main task) rather than in
+    // the NimBLE host-task write handler — ancs_client's queue is
+    // only ever touched from the main task (ancs_client::poll()),
+    // so this is the one safe place to read it.
+    if (!ancs_client::is_queued(uid)) {
+        LOG("[ble:poll] AncsNotificationAction: uid=%u not live -> NACK\n",
+            (unsigned)uid);
+        gatt_server::nack_sync_control("NACK_CBOR_DECODE");
+    } else if (action == 0) {
+        LOG("[ble:poll] AncsNotificationAction: answer uid=%u\n", (unsigned)uid);
+        ancs_client::answer_notification(uid);
+    } else {
+        // Negative action. Mirror Ori's own on-device swipe
+        // (modal_ancs_list.cpp's commit_row_delete): only send the
+        // ANCS Negative when the notification actually HAS one;
+        // otherwise just drop it from Ori's queue locally.
+        // Sending PerformNotificationAction(Negative) for a
+        // notification with no negative action is a no-op the
+        // phone can (and on some iOS versions does) answer by
+        // re-asserting the notification via a Modified/Added
+        // event — which re-queues it on Ori and bounces the
+        // PhoneBondStatus count right back up, so an Orion swipe
+        // looks like it "didn't reduce the count." drop_notification
+        // never touches the phone, so nothing re-asserts it.
+        bool has_neg = app_state::ancs_notification_by_uid(uid).has_neg_action;
+        if (has_neg) {
+            LOG("[ble:poll] AncsNotificationAction: dismiss uid=%u\n", (unsigned)uid);
+            ancs_client::dismiss_notification(uid);
+        } else {
+            LOG("[ble:poll] AncsNotificationAction: drop (no neg action) uid=%u\n",
+                (unsigned)uid);
+            ancs_client::drop_notification(uid);
+        }
+    }
+}
+
+static void handle_ancs_resubscribed(const BleEvent& ev) {
+    // Orion just (re)subscribed to char 0010 or 0011 — the first
+    // moment a notify is guaranteed to actually reach it, unlike
+    // OrionConnected (fires before run_sync even starts). See
+    // gatt_server.cpp's onSubscribe() and ancs_client.h's
+    // resync_orion_relay()/resync_orion_call_state() doc comments.
+    if (ev.data.ancs_resubscribed_call_state) {
+        LOG("[ble:poll] Orion subscribed to char 0011 — resyncing call state\n");
+        ancs_client::resync_orion_call_state();
+    } else {
+        LOG("[ble:poll] Orion subscribed to char 0010 — resyncing ANCS mirror\n");
+        ancs_client::resync_orion_relay();
+    }
+}
+
+// ── poll() trailing deferred/timeout checks ─────────────────────────────────
+// Independent, unrelated checks that run once per poll() after the event
+// queue drains — extracted verbatim, in the exact same order as before.
+
+static void check_orioning_modal_deferred_show() {
     // Deferred Orioning modal: SyncControl{BEGIN} arrived, but hold the modal
     // back until the "Connect on Orion" screen has been visible for at least
     // CONNECT_ORION_MIN_MS since bonding (see g_orioning_pending). is_first_boot
@@ -1155,7 +1151,9 @@ void poll() {
         g_orioning_pending = false;
         screen_setup::show_orioning_modal(lv_scr_act());
     }
+}
 
+static void check_orion_handshake_timeout() {
     // Orion handshake timeout: a peer bonded (passkey OK) but never sent a valid
     // SyncControl{BEGIN} — it isn't Orion. Drop it (disconnect + delete its LTK
     // bond) so it's never saved as the Orion slot, and keep advertising for the
@@ -1172,7 +1170,9 @@ void poll() {
         // onDisconnect() (fired by the disconnect above) resets connection state
         // and restarts advertising for the real Orion.
     }
+}
 
+static void check_unknown_peer_timeout() {
     // Unknown-peer connect timeout: a peer connected but never even started
     // pairing (onPassKeyDisplay never fired) — see UNKNOWN_PEER_BOND_TIMEOUT_MS's
     // doc comment. Disconnect it; onDisconnect() already unconditionally
@@ -1188,7 +1188,9 @@ void poll() {
             server->disconnect(g_unknown_peer_conn);
         }
     }
+}
 
+static void check_deferred_factory_reset() {
     // Factory-reset deferred restart (from remote BLE factory-reset command
     // or from the local long-press path if it posted to the event queue).
     //
@@ -1210,12 +1212,16 @@ void poll() {
         LOG("[ble] executing deferred factory reset\n");
         factory_reset::execute();
     }
+}
 
+static void drain_ancs_notifications() {
     // Drain ANCS notifications captured by the host-task notify callbacks. Done
     // here (main task) so the attribute-request CP write and the status-bar
     // LVGL refresh run off the host task — see ancs_client::poll().
     ancs_client::poll(g_orion_connected);
+}
 
+static void check_chunk_reassembly_timeouts() {
     // Chunk-reassembly stall check (ble-protocol.md §5, NACK_CHUNK_TIMEOUT) —
     // gated to ~1 Hz since the 10 s timeout doesn't need finer resolution and
     // poll() itself runs every main-loop iteration.
@@ -1225,6 +1231,132 @@ void poll() {
         s_last_chunk_poll_ms = now_ms;
         gatt_server::poll_chunk_timeouts();
     }
+}
+
+void poll() {
+    BleEvent ev;
+    while (eq_pop(ev)) {
+        switch (ev.type) {
+
+            case BleEventType::FactoryReset:
+                handle_factory_reset();
+                break;
+
+            case BleEventType::PresenceUpdate:
+                handle_presence_update(ev);
+                break;
+
+            case BleEventType::ClockFaceUpdate:
+                handle_clock_face_update(ev);
+                break;
+
+            case BleEventType::TimeFormatUpdate:
+                handle_time_format_update(ev);
+                break;
+
+            case BleEventType::WeatherUpdate:
+                handle_weather_update(ev);
+                break;
+
+            case BleEventType::MediaMetaUpdated:
+                handle_media_meta_updated();
+                break;
+
+            case BleEventType::AlbumArt:
+                handle_album_art(ev);
+                break;
+
+            case BleEventType::PhotoReceived:
+                handle_photo_received(ev);
+                break;
+
+            case BleEventType::TimeOffPhotoReceived:
+                handle_time_off_photo_received(ev);
+                break;
+
+            case BleEventType::PasskeyDisplay:
+                handle_passkey_display(ev);
+                break;
+
+            case BleEventType::AuthFailed:
+                handle_auth_failed();
+                break;
+
+            case BleEventType::OrionConnected:
+                handle_orion_connected();
+                break;
+
+            case BleEventType::IphoneConnected:
+                handle_iphone_connected(ev);
+                break;
+
+            case BleEventType::OrionBonded:
+                handle_orion_bonded(ev);
+                break;
+
+            case BleEventType::OrionConfirmed:
+                handle_orion_confirmed();
+                break;
+
+            case BleEventType::SyncBegin:
+                handle_sync_begin(ev);
+                break;
+
+            case BleEventType::SyncCommit:
+                handle_sync_commit();
+                break;
+
+            case BleEventType::SyncEnd:
+                handle_sync_end();
+                break;
+
+            case BleEventType::OrioningProgress:
+                handle_orioning_progress(ev);
+                break;
+
+            case BleEventType::IphoneBonded:
+                handle_iphone_bonded(ev);
+                break;
+
+            case BleEventType::OrionDisconnected:
+                handle_orion_disconnected();
+                break;
+
+            case BleEventType::IphoneDisconnected:
+                handle_iphone_disconnected();
+                break;
+
+            case BleEventType::UnpairPhone:
+                handle_unpair_phone();
+                break;
+
+            case BleEventType::AncsFilterUpdate:
+                handle_ancs_filter_update(ev);
+                break;
+
+            case BleEventType::ShortcutUpdate:
+                handle_shortcut_update();
+                break;
+
+            case BleEventType::AncsAction:
+                handle_ancs_action(ev);
+                break;
+
+            case BleEventType::AncsResubscribed:
+                handle_ancs_resubscribed(ev);
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    check_orioning_modal_deferred_show();
+    check_orion_handshake_timeout();
+    check_unknown_peer_timeout();
+    check_deferred_factory_reset();
+    drain_ancs_notifications();
+    check_chunk_reassembly_timeouts();
 }
 
 void quiesce_for_commit() {
