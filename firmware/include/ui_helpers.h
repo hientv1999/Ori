@@ -95,6 +95,22 @@ lv_obj_t* make_confirm_modal(lv_obj_t* base_screen,
                               const char* heading, const char* body,
                               const char* danger_label, lv_event_cb_t danger_cb);
 
+// Small circular badge overlaid on a corner of `parent` — the ANCS
+// notification-count/silent indicator shape shared by the status bar, the
+// iPhone Info modal, and the ANCS drill-down list. Handles only the common
+// "chrome": full-circle radius, bg/border fill, scrollable/clickable off,
+// and IGNORE_LAYOUT + corner alignment (so it overlays instead of
+// participating in `parent`'s own layout, matching add_close_x() above).
+// `border_color` is typically either the parent's own background colour (a
+// "cutout" look against a card) or plain black (on a pure-black background,
+// which reads the same way). Caller still sets size and adds content
+// (a label or icon, centred) — those genuinely vary per use (fixed 26px
+// circle vs. a wider count pill), so they're left to the caller rather than
+// baked in here.
+lv_obj_t* make_corner_badge(lv_obj_t* parent, lv_color_t bg_color,
+                             lv_color_t border_color, int32_t border_width,
+                             lv_align_t align, int16_t x_ofs = 0, int16_t y_ofs = 0);
+
 // Circular close affordance pinned to the top-right corner of a modal `card`.
 // The "X" is drawn from two crossing lines (no symbol-font dependency). Ignores
 // the card's flex layout. `cb` fires on tap (typically deletes the scrim).
@@ -108,6 +124,18 @@ lv_obj_t* add_close_x(lv_obj_t* card, lv_event_cb_t cb = nullptr, void* user = n
 // wrapper at every plain Close/Cancel button — several modals did exactly
 // that independently before this was pulled out.
 void close_scrim_cb(lv_event_t* e);
+
+// Generic lv_anim exec callbacks: set the target object's overall style
+// opacity / horizontal translation from the animation's current value.
+// lv_anim_set_exec_cb() requires a plain function pointer (no lambda
+// captures), so every fade/slide animation used to define its OWN
+// identically-bodied callback at each call site; these two cover that
+// need everywhere. Sharing one function across different target objects is
+// safe — lv_anim_delete(var, exec_cb) matches on the (var, exec_cb) pair, so
+// animations on different `var`s never cross-cancel just because they share
+// an exec_cb.
+void anim_set_opa_cb(void* obj, int32_t v);
+void anim_set_translate_x_cb(void* obj, int32_t v);
 
 // Copy `in` to `out`, dropping every character the UI font (Hanken) can't
 // render — emoji, CJK, and any script outside the font's Latin repertoire —

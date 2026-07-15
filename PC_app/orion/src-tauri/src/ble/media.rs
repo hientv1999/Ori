@@ -23,6 +23,24 @@
 // macOS bridge (private `MediaRemote` framework) is out of scope — that
 // build hasn't started (memory.md).
 
+/// Which class of GSMTC change woke `media_bridge`'s now-playing branch —
+/// lets the caller (`central.rs`'s `check_and_push_now_playing`) decide
+/// whether it's worth re-checking album art at all. Only `Properties` can
+/// ever carry a thumbnail change: `MediaPropertiesChanged` bundles title/
+/// artist/album/thumbnail together with no way to tell which sub-field
+/// actually moved (so a genuine art-only update — a thumbnail arriving in a
+/// second wave after the initial title/artist, or a stream rotating art
+/// while its title/artist stay static — still shows up here), whereas
+/// `PlaybackInfoChanged`/`TimelinePropertiesChanged` are play-state/position
+/// only and never include artwork per the GSMTC API's own scope. A new
+/// current session (`CurrentSessionChanged`) is also tagged `Properties` —
+/// a different app/track entirely must recheck everything, art included.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NowPlayingChange {
+    Properties,
+    PlaybackOrTimeline,
+}
+
 #[cfg(target_os = "windows")]
 mod imp {
     use windows::Foundation::TypedEventHandler;
@@ -31,9 +49,17 @@ mod imp {
         GlobalSystemMediaTransportControlsSessionManager, GlobalSystemMediaTransportControlsSessionPlaybackStatus,
         MediaPropertiesChangedEventArgs, PlaybackInfoChangedEventArgs, TimelinePropertiesChangedEventArgs,
     };
+    use windows::core::implement;
     use windows::Storage::Streams::DataReader;
-    use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
-    use windows::Win32::Media::Audio::{eCapture, eConsole, eRender, EDataFlow, IMMDeviceEnumerator, MMDeviceEnumerator};
+    use windows::Win32::Foundation::PROPERTYKEY;
+    use windows::Win32::Media::Audio::Endpoints::{
+        IAudioEndpointVolume, IAudioEndpointVolumeCallback, IAudioEndpointVolumeCallback_Impl,
+    };
+    use windows::Win32::Media::Audio::{
+        eCapture, eConsole, eRender, EDataFlow, ERole, DEVICE_STATE, AUDIO_VOLUME_NOTIFICATION_DATA, IMMDeviceEnumerator,
+        IMMNotificationClient, IMMNotificationClient_Impl, MMDeviceEnumerator,
+    };
+    use windows::core::PCWSTR;
     use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED};
     use windows::Win32::System::Shutdown::LockWorkStation;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -196,8 +222,8 @@ mod imp {
     /// than the endpoint it returns) is safe: it doesn't go stale when the
     /// user changes their default output/input device, and it saves a
     /// `CoCreateInstance` (COM class-factory lookup + object creation) on
-    /// every single volume read — which `media_bridge`'s poll loop does
-    /// every `MEDIA_POLL_INTERVAL` for the whole life of a connected session.
+    /// every single volume read — which `media_bridge`'s fallback poll does
+    /// every `VOLUME_POLL_INTERVAL` for the whole life of a connected session.
     ///
     /// Cached per-thread (not in a shared global): windows-rs deliberately
     /// doesn't implement `Send`/`Sync` for this Win32 COM wrapper (unlike
@@ -278,6 +304,153 @@ mod imp {
         }
     }
 
+    /// Fires `OnNotify` on every master-volume-level or mute change on the
+    /// render endpoint it's registered against — WASAPI's own push
+    /// notification, replacing `media_bridge`'s old fixed-interval poll.
+    /// Just pings `tx`; the receiver re-fetches the actual level/mute state
+    /// via `get_master_volume_percent`/`is_master_muted`, same as every
+    /// other "ping, then re-fetch full state" pattern in this file
+    /// (`watch_now_playing`).
+    #[implement(IAudioEndpointVolumeCallback)]
+    struct VolumeCallback {
+        tx: tokio::sync::mpsc::UnboundedSender<()>,
+    }
+
+    impl IAudioEndpointVolumeCallback_Impl for VolumeCallback_Impl {
+        fn OnNotify(&self, _pnotify: *mut AUDIO_VOLUME_NOTIFICATION_DATA) -> windows_core::Result<()> {
+            let _ = self.tx.send(());
+            Ok(())
+        }
+    }
+
+    /// Registers `VolumeCallback` on whichever render endpoint is currently
+    /// default. `None` (not an error) if there's currently no volume-capable
+    /// render endpoint — `run_volume_watcher_blocking`'s loop just keeps
+    /// waiting for the next device-change ping rather than giving up
+    /// entirely.
+    fn register_volume_callback(tx: &tokio::sync::mpsc::UnboundedSender<()>) -> Option<(IAudioEndpointVolume, IAudioEndpointVolumeCallback)> {
+        let vol = endpoint_volume(eRender).ok()?;
+        let callback: IAudioEndpointVolumeCallback = VolumeCallback { tx: tx.clone() }.into();
+        unsafe { vol.RegisterControlChangeNotify(&callback) }.ok()?;
+        Some((vol, callback))
+    }
+
+    enum VolumeWatcherMsg {
+        DeviceChanged,
+        Stop,
+    }
+
+    /// `IAudioEndpointVolumeCallback` is registered against ONE specific
+    /// render endpoint, not "whatever's default" — unlike the poll it
+    /// replaces, which re-resolved the default endpoint fresh on every
+    /// single tick via `endpoint_volume(eRender)`, a one-time registration
+    /// would silently go stale the moment the user's default output device
+    /// changes (e.g. plugging in headphones). This client re-registers
+    /// `VolumeCallback` onto the new endpoint whenever
+    /// `OnDefaultDeviceChanged` reports the render/console role changed,
+    /// preserving that same "always tracks whatever's current" behavior.
+    #[implement(IMMNotificationClient)]
+    struct DefaultDeviceListener {
+        tx: std::sync::mpsc::Sender<VolumeWatcherMsg>,
+    }
+
+    impl IMMNotificationClient_Impl for DefaultDeviceListener_Impl {
+        fn OnDeviceStateChanged(&self, _id: &PCWSTR, _state: DEVICE_STATE) -> windows_core::Result<()> {
+            Ok(())
+        }
+        fn OnDeviceAdded(&self, _id: &PCWSTR) -> windows_core::Result<()> {
+            Ok(())
+        }
+        fn OnDeviceRemoved(&self, _id: &PCWSTR) -> windows_core::Result<()> {
+            Ok(())
+        }
+        fn OnDefaultDeviceChanged(&self, flow: EDataFlow, role: ERole, _id: &PCWSTR) -> windows_core::Result<()> {
+            if flow == eRender && role == eConsole {
+                let _ = self.tx.send(VolumeWatcherMsg::DeviceChanged);
+            }
+            Ok(())
+        }
+        fn OnPropertyValueChanged(&self, _id: &PCWSTR, _key: &PROPERTYKEY) -> windows_core::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Runs entirely on one of tokio's blocking-pool threads, never as a
+    /// normal async task — same reasoning as
+    /// `pairing::pair_with_passkey_blocking`'s module-level comment: the
+    /// WASAPI/MMDevice COM objects involved here (`IAudioEndpointVolume`,
+    /// `IMMDeviceEnumerator`, the callback objects themselves) aren't
+    /// `Send`, so they can't survive across a normal async task's `.await`
+    /// suspension points. A `spawn_blocking` closure runs to completion on
+    /// one fixed OS thread, so holding them as plain local variables across
+    /// this function's own *synchronous* blocking `Receiver::recv()` wait is
+    /// fine — no `Send` bound applies to anything that never crosses an
+    /// actual `.await`.
+    ///
+    /// Runs until a `Stop` message arrives (sent by `VolumeWatcher::drop`),
+    /// then unregisters both the volume callback and the device-change
+    /// listener before returning.
+    fn run_volume_watcher_blocking(
+        push_tx: tokio::sync::mpsc::UnboundedSender<()>,
+        msg_tx: std::sync::mpsc::Sender<VolumeWatcherMsg>,
+        msg_rx: std::sync::mpsc::Receiver<VolumeWatcherMsg>,
+    ) {
+        ensure_com();
+        let Ok(enumerator) = device_enumerator() else { return };
+
+        let listener: IMMNotificationClient = DefaultDeviceListener { tx: msg_tx }.into();
+        let _ = unsafe { enumerator.RegisterEndpointNotificationCallback(&listener) };
+
+        let mut current = register_volume_callback(&push_tx);
+
+        // Exits on `Ok(Stop)` or `Err` (sender dropped) alike — neither
+        // matches `Ok(DeviceChanged)`, so both simply end the loop.
+        while let Ok(VolumeWatcherMsg::DeviceChanged) = msg_rx.recv() {
+            if let Some((vol, callback)) = current.take() {
+                let _ = unsafe { vol.UnregisterControlChangeNotify(&callback) };
+            }
+            current = register_volume_callback(&push_tx);
+            // The switch itself may be a real volume change (a different
+            // device, likely a different level) — let media_bridge's own
+            // diff decide whether it's worth pushing rather than assuming
+            // here.
+            let _ = push_tx.send(());
+        }
+
+        if let Some((vol, callback)) = current.take() {
+            let _ = unsafe { vol.UnregisterControlChangeNotify(&callback) };
+        }
+        let _ = unsafe { enumerator.UnregisterEndpointNotificationCallback(&listener) };
+    }
+
+    /// Keeps the volume-change watcher alive for as long as `media_bridge`
+    /// holds this — signals `run_volume_watcher_blocking`'s loop to
+    /// unregister and exit when dropped (connection ended). `stop_tx` is the
+    /// only thing this struct holds — a plain `std::sync::mpsc::Sender`,
+    /// safe to hold across `.await` points unlike the COM objects it
+    /// controls on the other end.
+    pub struct VolumeWatcher {
+        stop_tx: std::sync::mpsc::Sender<VolumeWatcherMsg>,
+    }
+
+    impl Drop for VolumeWatcher {
+        fn drop(&mut self) {
+            let _ = self.stop_tx.send(VolumeWatcherMsg::Stop);
+        }
+    }
+
+    /// Bridges WASAPI's own volume/mute-change and default-render-device-
+    /// change notifications into pings on `tx`, so `media_bridge`'s loop can
+    /// react to a real OS-level volume change instead of polling
+    /// `get_master_volume_percent()` on a fixed timer — same idea as
+    /// `watch_now_playing` for GSMTC now-playing changes.
+    pub async fn watch_volume(tx: tokio::sync::mpsc::UnboundedSender<()>) -> Result<VolumeWatcher, String> {
+        let (msg_tx, msg_rx) = std::sync::mpsc::channel::<VolumeWatcherMsg>();
+        let stop_tx = msg_tx.clone();
+        tokio::task::spawn_blocking(move || run_volume_watcher_blocking(tx, msg_tx, msg_rx));
+        Ok(VolumeWatcher { stop_tx })
+    }
+
     pub struct NowPlaying {
         pub title: String,
         pub artist: String,
@@ -289,8 +462,9 @@ mod imp {
 
     /// `RequestAsync()` is a broker round-trip, not a cheap getter — reused
     /// across calls instead of being re-awaited from scratch by every one of
-    /// `now_playing`/`seek`/`now_playing_thumbnail`, since `media_bridge`'s
-    /// poll loop calls `now_playing()` every `MEDIA_POLL_INTERVAL` for the
+    /// `now_playing`/`seek`/`now_playing_thumbnail`, since `media_bridge` calls
+    /// `now_playing()` on every GSMTC-pushed change and, as a fallback when
+    /// that watcher isn't active, every `VOLUME_POLL_INTERVAL` too — for the
     /// whole life of a connected session. The manager is a registry object —
     /// `GetCurrentSession()` always reflects whichever app is current right
     /// now, so caching the manager itself doesn't risk serving a stale
@@ -408,18 +582,22 @@ mod imp {
     }
 
     /// Registers `session.MediaPropertiesChanged`/`PlaybackInfoChanged`/
-    /// `TimelinePropertiesChanged` on `session`, each pinging `tx` (a
-    /// zero-payload signal — the receiver just re-fetches full state via
-    /// `now_playing()`, same as it would on a poll tick). Called both for
-    /// the session that's current when watching starts and, from
+    /// `TimelinePropertiesChanged` on `session`, each pinging `tx` tagged
+    /// with the matching `NowPlayingChange` — the receiver re-fetches full
+    /// state via `now_playing()` either way, but only re-checks album art on
+    /// a `Properties` ping (see that enum's doc comment for why). Called
+    /// both for the session that's current when watching starts and, from
     /// `watch_now_playing`'s own `CurrentSessionChanged` handler, for
     /// whichever session becomes current later — each session needs its own
     /// subscriptions, they aren't inherited from the manager.
-    fn subscribe_session_events(session: &GlobalSystemMediaTransportControlsSession, tx: &tokio::sync::mpsc::UnboundedSender<()>) {
+    fn subscribe_session_events(
+        session: &GlobalSystemMediaTransportControlsSession,
+        tx: &tokio::sync::mpsc::UnboundedSender<super::NowPlayingChange>,
+    ) {
         let tx1 = tx.clone();
         let media_props_handler = TypedEventHandler::<GlobalSystemMediaTransportControlsSession, MediaPropertiesChangedEventArgs>::new(
             move |_, _| {
-                let _ = tx1.send(());
+                let _ = tx1.send(super::NowPlayingChange::Properties);
                 Ok(())
             },
         );
@@ -428,7 +606,7 @@ mod imp {
         let tx2 = tx.clone();
         let playback_info_handler = TypedEventHandler::<GlobalSystemMediaTransportControlsSession, PlaybackInfoChangedEventArgs>::new(
             move |_, _| {
-                let _ = tx2.send(());
+                let _ = tx2.send(super::NowPlayingChange::PlaybackOrTimeline);
                 Ok(())
             },
         );
@@ -437,7 +615,7 @@ mod imp {
         let tx3 = tx.clone();
         let timeline_handler = TypedEventHandler::<GlobalSystemMediaTransportControlsSession, TimelinePropertiesChangedEventArgs>::new(
             move |_, _| {
-                let _ = tx3.send(());
+                let _ = tx3.send(super::NowPlayingChange::PlaybackOrTimeline);
                 Ok(())
             },
         );
@@ -486,7 +664,7 @@ mod imp {
     /// changes reuse the same session), bounded by how often the user
     /// changes which app is playing, not by elapsed time — a small, bounded
     /// cost against the continuous per-tick cost it replaces.
-    pub async fn watch_now_playing(tx: tokio::sync::mpsc::UnboundedSender<()>) -> Result<NowPlayingWatcher, String> {
+    pub async fn watch_now_playing(tx: tokio::sync::mpsc::UnboundedSender<super::NowPlayingChange>) -> Result<NowPlayingWatcher, String> {
         let mgr = session_manager().await?;
 
         if let Ok(session) = mgr.GetCurrentSession() {
@@ -500,7 +678,10 @@ mod imp {
                 if let Ok(session) = mgr_for_handler.GetCurrentSession() {
                     subscribe_session_events(&session, &tx_for_handler);
                 }
-                let _ = tx_for_handler.send(());
+                // A new current session is a different app/track entirely —
+                // tagged Properties so the receiver rechecks art too, not
+                // just metadata.
+                let _ = tx_for_handler.send(super::NowPlayingChange::Properties);
                 Ok(())
             },
         );
@@ -541,6 +722,10 @@ mod imp {
     pub fn toggle_mic_mute() -> Result<bool, String> {
         Err("media bridge not implemented on this platform yet".into())
     }
+    pub struct VolumeWatcher;
+    pub async fn watch_volume(_tx: tokio::sync::mpsc::UnboundedSender<()>) -> Result<VolumeWatcher, String> {
+        Err("media bridge not implemented on this platform yet".into())
+    }
     pub struct NowPlaying {
         pub title: String,
         pub artist: String,
@@ -559,7 +744,7 @@ mod imp {
         Ok(Vec::new())
     }
     pub struct NowPlayingWatcher;
-    pub async fn watch_now_playing(_tx: tokio::sync::mpsc::UnboundedSender<()>) -> Result<NowPlayingWatcher, String> {
+    pub async fn watch_now_playing(_tx: tokio::sync::mpsc::UnboundedSender<super::NowPlayingChange>) -> Result<NowPlayingWatcher, String> {
         Err("media bridge not implemented on this platform yet".into())
     }
 }

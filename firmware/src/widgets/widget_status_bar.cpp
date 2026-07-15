@@ -16,6 +16,7 @@
 #include "screens/screen_setup.h" // for screen_setup::create
 #include "theme.h"
 #include "time_format.h"
+#include "ui_helpers.h"
 
 // Status bar: 800 x 84 px, full panel width, anchored top.
 //
@@ -39,7 +40,7 @@ constexpr int16_t PAD_X         = 12;
 constexpr int16_t ICON_SIZE     = 60;
 constexpr int16_t ICON_GAP      = 14;
 constexpr int16_t PHONE_SIZE    = 64;
-constexpr int16_t DATETIME_GAP  = 12;
+constexpr int16_t DATETIME_GAP  = 6;  // was 12 — reduced 50% (time<->sep<->date gap)
 
 // Format current local time into the display strings. Fills time_buf (the
 // "H:MM" portion, always at font_time() size), ampm_buf (the "AM"/"PM"
@@ -195,31 +196,6 @@ static void animate_tile_in(lv_obj_t* tile) {
     lv_anim_start(&b);
 }
 
-// Shared shell for the two 26 px corner badges make_ancs_tile() can draw on a
-// tile (stacked-count pill and silent-bell dot): fixed square size (so
-// LV_RADIUS_CIRCLE renders a true circle — a content-sized single-digit box
-// is taller than wide, which would turn into a pill, not a round badge), the
-// same black 2 px cutout border, no shadow/padding, non-scrollable and
-// non-clickable (so taps pass through to the tile), aligned to a tile
-// corner. Caller fills in the bg colour and the centred content (label or
-// icon) on the returned object.
-lv_obj_t* make_corner_badge(lv_obj_t* tile, lv_color_t bg_color, lv_align_t align) {
-    constexpr int BADGE_SIZE = 26;
-    lv_obj_t* badge = lv_obj_create(tile);
-    lv_obj_set_size(badge, BADGE_SIZE, BADGE_SIZE);
-    lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(badge, bg_color, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_border_width(badge, 2, LV_PART_MAIN);
-    lv_obj_set_style_border_color(badge, lv_color_black(), LV_PART_MAIN);
-    lv_obj_set_style_border_opa(badge, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_shadow_width(badge, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(badge, 0, LV_PART_MAIN);
-    lv_obj_clear_flag(badge, static_cast<lv_obj_flag_t>(LV_OBJ_FLAG_SCROLLABLE | LV_OBJ_FLAG_CLICKABLE));
-    lv_obj_align(badge, align, 0, 0);
-    return badge;
-}
-
 // ANCS icon tile. Uses a compiled-in raster asset when available (12 px radius,
 // matching the HTML prototype); falls back to a solid brand-colour circle.
 // `token` selects the icon; `uid` identifies the exact (most-recent) notification
@@ -301,7 +277,9 @@ lv_obj_t* make_ancs_tile(lv_obj_t* parent, const char* token, uint32_t uid, uint
         } else {
             buf[0] = static_cast<char>('0' + count); buf[1] = '\0';
         }
-        lv_obj_t* badge = make_corner_badge(tile, theme::color(theme::COLOR_DANGER), LV_ALIGN_TOP_RIGHT);
+        lv_obj_t* badge = ui::make_corner_badge(tile, theme::color(theme::COLOR_DANGER),
+                                                 lv_color_black(), 2, LV_ALIGN_TOP_RIGHT);
+        lv_obj_set_size(badge, 26, 26);
 
         lv_obj_t* lbl = lv_label_create(badge);
         lv_label_set_text(lbl, buf);
@@ -322,7 +300,9 @@ lv_obj_t* make_ancs_tile(lv_obj_t* parent, const char* token, uint32_t uid, uint
         // directly on the pure-black screen background, so a plain black
         // border reads the same as the card-coloured "cutout" trick the
         // modal badges use on their dark-grey card background).
-        lv_obj_t* badge = make_corner_badge(tile, lv_color_hex(0x2A2A2A), LV_ALIGN_TOP_LEFT);
+        lv_obj_t* badge = ui::make_corner_badge(tile, lv_color_hex(0x2A2A2A),
+                                                 lv_color_black(), 2, LV_ALIGN_TOP_LEFT);
+        lv_obj_set_size(badge, 26, 26);
 
         lv_obj_t* icon = lv_image_create(badge);
         lv_image_set_src(icon, ancs_badge_icons::silent());
@@ -794,10 +774,26 @@ static void make_datetime_block(lv_obj_t* bar, StatusBarState* state) {
     lv_obj_add_event_cb(state->datetime_row, on_time_press_start, LV_EVENT_PRESSED, state);
     lv_obj_add_event_cb(state->datetime_row, on_time_press_end, LV_EVENT_RELEASED, state);
     lv_obj_add_event_cb(state->datetime_row, on_time_press_end, LV_EVENT_PRESS_LOST, state);
+    // Pulled OUT of bar's own flex track (below) and pinned with a plain
+    // align instead — see the flag/align pair just after make_spacer() for
+    // why: this block's width changes (12-hour's AM/PM suffix, a longer
+    // localized date string) must never move the right cluster (ANCS row /
+    // phone icon / mode-toggle) by even one pixel. Relying on bar's
+    // flex-grow spacer to silently absorb that width change is correct in
+    // principle, but only as strong as "nothing ever eats into the spacer's
+    // slack" — this removes the dependency entirely: with datetime_row out
+    // of the track, the spacer's width is a function of the right cluster
+    // alone, so the right cluster's position can no longer depend on
+    // datetime_row's width by construction, not by arithmetic that happens
+    // to work out.
+    lv_obj_add_flag(state->datetime_row, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_align(state->datetime_row, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_set_flex_flow(state->datetime_row, LV_FLEX_FLOW_ROW);
     // Cross-axis CENTER so the 30 px time and 22 px sep/date are vertically
     // centered to each other; the row as a whole is then centered in the
-    // 84 px bar by the parent's LV_FLEX_ALIGN_CENTER.
+    // 84 px bar by the LV_ALIGN_LEFT_MID above (this is now this object's
+    // OWN internal flex, for its time/sep/date children — unrelated to how
+    // bar positions datetime_row itself, which the align call above owns).
     lv_obj_set_flex_align(state->datetime_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(state->datetime_row, DATETIME_GAP, 0);
 
@@ -840,6 +836,15 @@ static void make_datetime_block(lv_obj_t* bar, StatusBarState* state) {
 }
 
 // ===== Spacer (flex-grow) =====
+// The first FLEX-PARTICIPATING child of bar now that datetime_row opts out
+// via LV_OBJ_FLAG_IGNORE_LAYOUT (make_datetime_block's doc comment) — it
+// grows to fill the entire content box from bar's left content edge up to
+// wherever the right cluster (ancs_row/phone_icon/mode_toggle) starts, so
+// that cluster's position is a pure function of ITS OWN width, never
+// datetime_row's. datetime_row is drawn underneath this transparent,
+// non-clickable spacer with no visual or touch effect (taps outside the
+// actual date/time text already fell through to this spacer before this
+// change, same as now).
 static void make_spacer(lv_obj_t* bar) {
     lv_obj_t* spacer = lv_obj_create(bar);
     lv_obj_set_flex_grow(spacer, 1);
@@ -1053,10 +1058,11 @@ void refresh(lv_obj_t* bar) {
 
     // Rebuild ANCS row from current config. Gate on the bar's own
     // phone_connected field — the authoritative BLE link state set by
-    // set_all_phone_connected() — NOT cfg.phone_connected, which only goes
-    // true once a notification is queued. (Driving the icon from cfg caused
-    // the phone icon to read "disconnected" in the window between iPhone
-    // connect and the first notification, so a tap wiped a live bond.)
+    // set_all_phone_connected() — NOT anything derived from the ANCS queue
+    // itself, which only reflects state once a notification is queued.
+    // (Driving the icon from queue state caused the phone icon to read
+    // "disconnected" in the window between iPhone connect and the first
+    // notification, so a tap wiped a live bond.)
     const auto& cfg = app_state::ancs_config();
     lv_obj_clean(s->ancs_row);
     size_t visible_tiles = 0;
@@ -1078,8 +1084,8 @@ void refresh(lv_obj_t* bar) {
     }
     // Size the ANCS row to exactly its tile count so the bar's flex
     // doesn't overshoot and push the mode-toggle off the right edge.
-    // (LV_SIZE_CONTENT does not re-expand the row after lv_obj_delete_children()
-    // in LVGL 8, so we compute the width explicitly.)
+    // (LV_SIZE_CONTENT does not re-expand the row after lv_obj_delete_children(),
+    // so we compute the width explicitly.)
     int ancs_w = (visible_tiles == 0)
                  ? 0
                  : (int)visible_tiles * ICON_SIZE + ((int)visible_tiles - 1) * ICON_GAP;

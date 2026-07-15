@@ -290,6 +290,20 @@ body{font-family:var(--fn);overflow:hidden;user-select:none;}
 .sig-bars span:nth-child(4){height:100%;}
 .sig-bars span.active{background:var(--success);}
 
+/* Device model subtitle, right under the phone's (user-set) name — e.g.
+   "iPhone 17 Pro Max". Hidden entirely when unavailable, not a placeholder. */
+.ip-type{font-size:13px;color:var(--t2);margin:-2px 0 4px;}
+.ip-type:empty{display:none;}
+
+/* Battery icon, to the right of the signal bars — outline+nub in the same
+   neutral stroke as the RSSI bars' resting color; the fill rect's color is
+   set in JS (var(--success) normally, var(--danger) at/below 20%). Sized so
+   the svg's display height matches .sig-bars' own height (20px); body is an
+   18:10 battery proportion (viewBox 0 0 24 14), not a near-square. */
+.ip-batt{display:flex;align-items:center;gap:6px;}
+.ip-batt svg{width:34px;height:20px;color:var(--t2);}
+.ip-batt span{font-size:15px;color:var(--t2);font-variant-numeric:tabular-nums;}
+
 /* ── ANCS drill-down list (tap a call/message/notifications icon in the
    iPhone Info modal) and its per-row detail modal. Orion-only — Ori itself
    has no equivalent screen; the iPhone Info icons there are informational. ── */

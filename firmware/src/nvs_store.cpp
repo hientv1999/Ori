@@ -19,6 +19,7 @@ constexpr const char* k_notif_filter = "notif_filt";  // uint8: 0=Disabled 1=Cal
 constexpr const char* k_slot1        = "sc_1";         // string: shortcut slot 1 token
 constexpr const char* k_slot2        = "sc_2";         // string: shortcut slot 2 token
 constexpr const char* k_slot3        = "sc_3";         // string: shortcut slot 3 token
+constexpr const char* k_seek_step    = "seek_step";   // uint8: double-tap seek step, seconds
 constexpr const char* k_ota_ack      = "ota_ack";     // string: post-update version
 
 Preferences prefs;
@@ -183,6 +184,16 @@ uint8_t get_notif_filter() {
 
 void set_notif_filter(uint8_t level) {
     set_uchar(k_notif_filter, level, "notif_filter");
+}
+
+// ── Double-tap seek step (seconds) ──────────────────────────────────────────
+
+uint8_t get_seek_step_s() {
+    return get_uchar(k_seek_step, 10);  // default: 10 s
+}
+
+void set_seek_step_s(uint8_t seconds) {
+    set_uchar(k_seek_step, seconds, "seek_step_s");
 }
 
 // ── Shortcut slot tokens ───────────────────────────────────────────────────

@@ -80,6 +80,20 @@ pub struct SavedState {
     pub serial_number: Option<String>,
     #[serde(default)]
     pub manufacture_date: Option<String>,
+    // iPhone's resolved marketing model name (e.g. "iPhone 17 Pro Max",
+    // ble-protocol.md's PhoneBondStatus "d") — same "never changes for a
+    // given bond" reasoning as serial_number/manufacture_date above, so it
+    // gets the same write-through-to-disk treatment (central.rs's
+    // `phone_bond_watcher`) rather than living only in the session's
+    // `lastPhoneBondStatus` cache, which used to get blanked on every Orion
+    // disconnect even though the iPhone itself hadn't gone anywhere. Cleared
+    // alongside address/serial_number/manufacture_date on Factory Reset /
+    // Clear All / `give_up_on_bond` (Ori's OWN bond ending also drops its
+    // iPhone bond, ble-protocol.md §2) — and additionally on a standalone
+    // `unpair_phone` (commands.rs), since that ends the iPhone's bond without
+    // touching Ori's own identity fields.
+    #[serde(default)]
+    pub phone_device_type: Option<String>,
     // UI language ("en"/"vi"/"es"/"fr", app.js's I18N keys) — an Orion app
     // preference, not anything about the Ori pairing relationship, so unlike
     // `address`/`serial_number`/`manufacture_date` above it is NOT cleared by
@@ -107,6 +121,7 @@ impl Default for SavedState {
             address: None,
             serial_number: None,
             manufacture_date: None,
+            phone_device_type: None,
             language: None,
         }
     }

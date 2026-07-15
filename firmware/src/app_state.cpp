@@ -92,6 +92,11 @@ static ShortcutSlot k_shortcuts[SHORTCUT_COUNT] = {
     { k_slot_tokens[2] },
 };
 
+// Double-tap seek step (seconds) — restored from NVS in init(), updated by
+// set_seek_step_s() (called from ble_manager.cpp's handle_seek_step_update()
+// on the main task, alongside the nvs::set_seek_step_s() persist call).
+static uint8_t k_seek_step_s = 10;
+
 // Wall-clock time of the last successful BLE sync (SyncControl END).
 // Zero until the first sync completes.
 time_t g_last_sync_epoch = 0;
@@ -122,6 +127,9 @@ void init() {
     // (before Orion writes them) returns the last-saved assignment.
     nvs::get_shortcut_slots(k_slot_tokens[0], k_slot_tokens[1], k_slot_tokens[2],
                             sizeof(k_slot_tokens[0]));
+
+    // Same restore-before-first-write reasoning for the seek step.
+    k_seek_step_s = nvs::get_seek_step_s();
 }
 
 const char* ble_name() {
@@ -446,6 +454,12 @@ void set_shortcuts(const char* s1, const char* s2, const char* s3) {
     strncpy(k_slot_tokens[0], s1 ? s1 : "", sizeof(k_slot_tokens[0]) - 1);
     strncpy(k_slot_tokens[1], s2 ? s2 : "", sizeof(k_slot_tokens[1]) - 1);
     strncpy(k_slot_tokens[2], s3 ? s3 : "", sizeof(k_slot_tokens[2]) - 1);
+}
+
+uint8_t seek_step_s() { return k_seek_step_s; }
+
+void set_seek_step_s(uint8_t seconds) {
+    k_seek_step_s = seconds;
 }
 
 } // namespace app_state

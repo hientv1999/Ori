@@ -261,6 +261,20 @@ body{font-family:var(--fn);background:radial-gradient(ellipse at 20% 15%,rgba(12
 .sig-bars span:nth-child(4){height:100%;}
 .sig-bars span.active{background:var(--success);}
 
+/* Device model subtitle beneath the iPhone Info modal's title. */
+.ip-type{font-size:13px;color:var(--t2);margin:-2px 0 4px;}
+.ip-type:empty{display:none;}
+
+/* Battery icon, to the right of the signal bars — outline+nub in the same
+   neutral stroke as the RSSI bars' resting color; the fill rect's color is
+   set in JS (var(--success) normally, var(--danger) at/below 20%). Sized so
+   the svg's display height matches .sig-bars' own height (20px) — a tightly
+   cropped viewBox (glyph fills its box, not a small icon floating in a
+   generic 24x24 grid) so bumping the CSS size actually reads bigger. */
+.ip-batt{display:flex;align-items:center;gap:6px;}
+.ip-batt svg{width:34px;height:20px;color:var(--t2);}
+.ip-batt span{font-size:15px;color:var(--t2);font-variant-numeric:tabular-nums;}
+
 /* ── ANCS drill-down list (tap a call/message/notifications icon in the
    iPhone Info modal) and its per-row detail modal. Orion-only — Ori itself
    has no equivalent screen; the iPhone Info icons there are informational. ── */

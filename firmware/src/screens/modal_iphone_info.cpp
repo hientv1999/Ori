@@ -21,7 +21,9 @@
 //
 // Layout (top to bottom, inside make_modal_layout's scroll_area):
 //   name (phone_name())
-//   status dot + Connected/Disconnected  ···  signal bars
+//   device type subtitle (phone_device_type(), e.g. "iPhone 15 Pro" — hidden
+//     entirely when unavailable, not a placeholder)
+//   status dot + Connected/Disconnected  ···  signal bars · battery icon
 //   [call icon+badge] [message icon+badge] [bell icon+badge] — no per-icon
 //     tile background/border (removed per design feedback: "Can you just
 //     put 3 icons on same row without each of their block?")
@@ -41,21 +43,25 @@
 //     its own doc comment) — a stale count that contradicts the filter the
 //     user just picked, or omits a notification that just arrived, would
 //     look like a bug.
-//   - Connection dot, status label, phone name, and stat-badge clickability
-//     refresh on every iPhone connect/disconnect (modal_iphone_info::
-//     set_connected(), called from state_machine::set_phone_connected() —
-//     the same single choke-point widget_status_bar's own phone icon
-//     already trusts as authoritative). The title always reflects whichever
-//     iPhone is CURRENTLY connected — re-read fresh from
-//     ancs_client::phone_name() on every change, not cached from open.
-//     (Out of scope: the never-bonded case doesn't reach this modal at all —
-//     tapping the status-bar phone icon routes to the re-pair screen
-//     instead, per gestures.md.)
-//   - Signal bars refresh on every RSSI sample (modal_iphone_info::
-//     set_signal_bars(), called from ancs_client::poll()'s periodic RSSI
-//     poll) — previously only pushed to Orion, never to this modal, so the
-//     bars could sit stale for the RSSI_POLL_INTERVAL_MS lifetime of the
-//     modal being open.
+//   - Connection dot, status label, phone name/model, battery, signal bars,
+//     and stat-badge clickability all refresh on every iPhone connect/
+//     disconnect (modal_iphone_info::set_connected(), called from
+//     state_machine::set_phone_connected() — the same single choke-point
+//     widget_status_bar's own phone icon already trusts as authoritative).
+//     Name/model re-read fresh from ancs_client::phone_name()/
+//     phone_device_type() on every change but are NOT forced to a
+//     disconnected placeholder — ancs_client keeps the last-known value
+//     across a runtime disconnect (only an actual unpair clears it). Battery
+//     and signal bars ARE forced to their unverified state (0 / all-grey) on
+//     disconnect, since those are live link stats with nothing to show once
+//     the link is down. (Out of scope: the never-bonded case doesn't reach
+//     this modal at all — tapping the status-bar phone icon routes to the
+//     re-pair screen instead, per gestures.md.)
+//   - Signal bars also refresh on every RSSI sample while connected
+//     (modal_iphone_info::set_signal_bars(), called from ancs_client::
+//     poll()'s periodic RSSI poll) — previously only pushed to Orion, never
+//     to this modal, so the bars could sit stale for the
+//     RSSI_POLL_INTERVAL_MS lifetime of the modal being open.
 //
 // Tap a stat tile (while connected and its count is non-zero) to drill into
 // that bucket's live notifications on-device — modal_ancs_list, opened in
@@ -175,26 +181,19 @@ lv_obj_t* make_stat_unit(lv_obj_t* parent, const lv_image_dsc_t* icon_dsc,
     lv_obj_set_style_image_recolor(icon, theme::color(icon_color), 0);
     lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
 
-    lv_obj_t* badge = lv_obj_create(wrap);
+    // ui::make_corner_badge handles the shared "chrome" (circle shape,
+    // bg/border fill, IGNORE_LAYOUT + corner alignment — same technique as
+    // ui::add_close_x's corner-pinned X button); this badge's own count-pill
+    // sizing (content-width, min-width, side padding) is set below since it
+    // varies from the fixed 26px circles elsewhere (status bar, ANCS list).
+    lv_obj_t* badge = ui::make_corner_badge(wrap, theme::color(theme::COLOR_DANGER),
+                                             theme::color(theme::COLOR_CARD), 4,
+                                             LV_ALIGN_TOP_RIGHT, 14, -11);
     lv_obj_set_height(badge, 36);
     lv_obj_set_width(badge, LV_SIZE_CONTENT);
     lv_obj_set_style_min_width(badge, 36, 0);
     lv_obj_set_style_pad_left(badge, 8, 0);
     lv_obj_set_style_pad_right(badge, 8, 0);
-    lv_obj_set_style_pad_top(badge, 0, 0);
-    lv_obj_set_style_pad_bottom(badge, 0, 0);
-    lv_obj_set_style_bg_color(badge, theme::color(theme::COLOR_DANGER), 0);
-    lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(badge, theme::color(theme::COLOR_CARD), 0);
-    lv_obj_set_style_border_width(badge, 4, 0);
-    lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, 0);
-    lv_obj_clear_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(badge, LV_OBJ_FLAG_CLICKABLE);
-    // IGNORE_LAYOUT + align pins the badge to wrap's top-right corner
-    // regardless of wrap having no flex layout of its own (same technique as
-    // ui::add_close_x's corner-pinned X button).
-    lv_obj_add_flag(badge, LV_OBJ_FLAG_IGNORE_LAYOUT);
-    lv_obj_align(badge, LV_ALIGN_TOP_RIGHT, 14, -11);
 
     char buf[5];
     if (count > 99) snprintf(buf, sizeof(buf), "99+");
@@ -222,14 +221,106 @@ struct ActiveInfo {
     lv_obj_t* base_screen;
     lv_obj_t* stats_row;
     lv_obj_t* name_lbl;
+    lv_obj_t* type_lbl;    // device model subtitle beneath name_lbl
     lv_obj_t* dot;
     lv_obj_t* status_lbl;
     lv_obj_t* sig_bars[4];
+    lv_obj_t* battery_fill;    // fill rect inside the battery outline — width tracks level%
+    lv_obj_t* battery_pct_lbl; // "NN%" text beside the battery icon
     bool      connected;  // cached — needed by populate_stats_row() when
                            // refresh_active() rebuilds badges for a reason
                            // OTHER than a connection change (filter/queue)
 };
 ActiveInfo* g_active = nullptr;
+
+// Battery icon geometry — a plain LVGL-primitives outline (body rect + nub),
+// same "no bitmap asset needed" approach as the weather icons
+// (screen-layout.md), since it's simple shapes and the fill needs to resize
+// live from set_battery_level() same as a progress bar would. Body is an
+// 18:10 (1.8:1) proportion — an actual battery silhouette, not a near-square
+// — sized so its height reads next to the 33px-tall sig_bars (bar_h[3]
+// above) the same way the UI-prototype reference design does.
+constexpr int16_t BATT_BODY_W = 43;
+constexpr int16_t BATT_BODY_H = 24;
+constexpr int16_t BATT_NUB_W  = 6;
+constexpr int16_t BATT_NUB_H  = 9;
+constexpr int16_t BATT_BORDER = 4;
+constexpr int16_t BATT_GLYPH_GAP = 1;  // body→nub — nearly flush, a real battery's nub touches its body
+constexpr uint8_t  BATT_LOW_THRESHOLD = 20;  // % at/below which the fill reads COLOR_DANGER
+
+uint32_t battery_fill_color(uint8_t level) {
+    return level <= BATT_LOW_THRESHOLD ? theme::COLOR_DANGER : theme::COLOR_PRESENCE_AVAILABLE;
+}
+
+// Builds [outline+fill icon] [percentage label] as one row, returns the row.
+// Populates info->battery_fill/battery_pct_lbl for later live updates
+// (set_battery_level()). `level` is 0-100; 0 while disconnected, same "don't
+// show what can't be verified" convention as everywhere else in this modal —
+// the fill just reads empty in that case, no special-cased placeholder.
+lv_obj_t* make_battery_icon(lv_obj_t* parent, ActiveInfo* info, uint8_t level) {
+    lv_obj_t* row = lv_obj_create(parent);
+    ui::clear_container(row);
+    lv_obj_set_size(row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(row, 8, 0);
+
+    // Body+nub live in their own tight sub-row (BATT_GLYPH_GAP apart) so the
+    // nub reads as flush against the body — the outer row's wider gap only
+    // separates the whole glyph from the percentage label.
+    lv_obj_t* glyph = lv_obj_create(row);
+    ui::clear_container(glyph);
+    lv_obj_set_size(glyph, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(glyph, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(glyph, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(glyph, BATT_GLYPH_GAP, 0);
+
+    // Body outline (border only, transparent fill) + nub, matching the
+    // classic battery glyph silhouette.
+    lv_obj_t* body = lv_obj_create(glyph);
+    ui::clear_container(body);
+    lv_obj_set_size(body, BATT_BODY_W, BATT_BODY_H);
+    lv_obj_set_style_radius(body, 4, 0);
+    lv_obj_set_style_border_width(body, BATT_BORDER, 0);
+    lv_obj_set_style_border_color(body, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
+    lv_obj_set_style_bg_opa(body, LV_OPA_TRANSP, 0);
+    // 1px padding beyond the border itself — without it the fill (which
+    // already stops at the border via LVGL's own content-area inset, see
+    // below) reads as touching the border with no breathing room at all.
+    lv_obj_set_style_pad_all(body, 1, 0);
+
+    // LVGL insets a child's content area by the parent's border width AND
+    // padding automatically (border isn't just decoration drawn over
+    // children, same as CSS box-sizing:border-box) — lv_pct(level) sizing
+    // this fill against `body` already keeps it clear of both, no manual
+    // x-inset needed.
+    lv_obj_t* fill = lv_obj_create(body);
+    ui::clear_container(fill);
+    lv_obj_set_height(fill, lv_pct(100));
+    lv_obj_set_width(fill, lv_pct(level));
+    lv_obj_align(fill, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_radius(fill, 2, 0);
+    lv_obj_set_style_bg_color(fill, theme::color(battery_fill_color(level)), 0);
+    lv_obj_set_style_bg_opa(fill, LV_OPA_COVER, 0);
+    info->battery_fill = fill;
+
+    lv_obj_t* nub = lv_obj_create(glyph);
+    ui::clear_container(nub);
+    lv_obj_set_size(nub, BATT_NUB_W, BATT_NUB_H);
+    lv_obj_set_style_radius(nub, 1, 0);
+    lv_obj_set_style_bg_color(nub, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
+    lv_obj_set_style_bg_opa(nub, LV_OPA_COVER, 0);
+
+    lv_obj_t* pct = lv_label_create(row);
+    char buf[8];
+    lv_snprintf(buf, sizeof(buf), "%u%%", (unsigned)level);
+    lv_label_set_text(pct, buf);
+    lv_obj_set_style_text_color(pct, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
+    lv_obj_set_style_text_font(pct, theme::font_meta(), 0);
+    info->battery_pct_lbl = pct;
+
+    return row;
+}
 
 // Rebuildable body of stats_row — shared by create() (first build) and
 // modal_iphone_info::refresh_active() (rebuild in place after a filter
@@ -276,6 +367,7 @@ lv_obj_t* create(lv_obj_t* base_screen, bool connected) {
 
     const ancs_client::PhoneStats stats = ancs_client::phone_stats();
     const char* pname = ancs_client::phone_name();
+    const char* ptype = ancs_client::phone_device_type();
 
     auto* info = new ActiveInfo();
     info->scrim       = scrim;
@@ -289,8 +381,22 @@ lv_obj_t* create(lv_obj_t* base_screen, bool connected) {
     lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
     info->name_lbl = name;
 
-    // Status row: dot + Connected/Disconnected on the left, signal bars on
-    // the right — same combined row as the approved prototype design.
+    // Device model subtitle — e.g. "iPhone 15 Pro" beneath the phone's own
+    // (user-set) name. Empty/hidden when unavailable (not connected, or the
+    // model read failed) rather than showing a placeholder — same
+    // "don't show what can't be verified" policy as everywhere else here.
+    lv_obj_t* type_lbl = lv_label_create(scroll_area);
+    lv_label_set_text(type_lbl, ptype ? ptype : "");
+    lv_obj_set_style_text_color(type_lbl, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
+    lv_obj_set_style_text_font(type_lbl, theme::font_meta(), 0);
+    lv_obj_set_style_text_align(type_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_pad_top(type_lbl, 2, 0);
+    if (!ptype || !ptype[0]) lv_obj_add_flag(type_lbl, LV_OBJ_FLAG_HIDDEN);
+    info->type_lbl = type_lbl;
+
+    // Status row: dot + Connected/Disconnected on the left, signal bars +
+    // battery on the right — same combined row as the approved prototype
+    // design, with the battery icon added as a second right-side item.
     lv_obj_t* status_row = lv_obj_create(scroll_area);
     ui::clear_container(status_row);
     lv_obj_set_width(status_row, lv_pct(100));
@@ -321,9 +427,19 @@ lv_obj_t* create(lv_obj_t* base_screen, bool connected) {
     info->dot        = dot;
     info->status_lbl = status_lbl;
 
+    // Right side of status_row: signal bars + battery icon grouped together
+    // so the row's own SPACE_BETWEEN still puts [dot+label] on the far left
+    // and this whole [bars][battery] pair on the far right.
+    lv_obj_t* right_group = lv_obj_create(status_row);
+    ui::clear_container(right_group);
+    lv_obj_set_size(right_group, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(right_group, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(right_group, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(right_group, 16, 0);
+
     // 8x33 bars, 5px gap — 1.5x the original size per feedback ("I also want
     // 1.5x [the RSSI bar's] size"), matching .sig-bars in the approved design.
-    lv_obj_t* sig = lv_obj_create(status_row);
+    lv_obj_t* sig = lv_obj_create(right_group);
     ui::clear_container(sig);
     lv_obj_set_size(sig, LV_SIZE_CONTENT, 33);
     lv_obj_set_flex_flow(sig, LV_FLEX_FLOW_ROW);
@@ -340,6 +456,9 @@ lv_obj_t* create(lv_obj_t* base_screen, bool connected) {
         lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
         info->sig_bars[i] = bar;
     }
+
+    // Battery icon — to the right of the signal bars, per design.
+    make_battery_icon(right_group, info, connected ? stats.battery : 0);
 
     // Stat row: call / message / bell icons, each with an overlapping count
     // badge — no per-icon tile block (removed per design feedback), centred
@@ -399,11 +518,31 @@ void set_connected(bool connected) {
     lv_label_set_text(g_active->status_lbl, connected ? "Connected" : "Disconnected");
 
     // Title always reflects whichever iPhone is CURRENTLY connected — re-read
-    // fresh rather than trusting whatever was cached at open. On disconnect
-    // ancs_client clears its cached name to "", so this correctly falls back
-    // to the generic "iPhone" label until (if) it reconnects.
+    // fresh rather than trusting whatever was cached at open. ancs_client
+    // deliberately keeps showing the last-known name/model across a runtime
+    // disconnect (only a genuine unpair clears it, ancs_client.h's
+    // clear_phone_identity()), so this still reads correctly while
+    // disconnected — it only falls back to "iPhone" once actually unpaired.
     const char* pname = ancs_client::phone_name();
     lv_label_set_text(g_active->name_lbl, (pname && pname[0]) ? pname : "iPhone");
+
+    // Same treatment for the device-type subtitle — re-read fresh; only
+    // hidden when there's truly never been a value (unpaired, or the very
+    // first connection hasn't completed its model read yet), not just because
+    // the link is currently down.
+    const char* ptype = ancs_client::phone_device_type();
+    if (ptype && ptype[0]) {
+        lv_label_set_text(g_active->type_lbl, ptype);
+        lv_obj_clear_flag(g_active->type_lbl, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(g_active->type_lbl, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    // Battery and signal bars DO read as unverified while disconnected (0 /
+    // all-grey) — unlike name/model, these are live link stats with nothing
+    // meaningful to show once the link is down.
+    set_battery_level(connected ? ancs_client::phone_stats().battery : 0);
+    set_signal_bars(connected ? ancs_client::phone_stats().signal_bars : 0);
 
     // Rebuild the stat badges too — their clickability is baked in at
     // construction (make_stat_unit's CLICKABLE flag + event registration),
@@ -419,6 +558,17 @@ void set_signal_bars(uint8_t bars) {
         lv_obj_set_style_bg_color(g_active->sig_bars[i], theme::color(
             i < bars ? theme::COLOR_PRESENCE_AVAILABLE : theme::COLOR_DIVIDER_STRONG), 0);
     }
+}
+
+void set_battery_level(uint8_t level) {
+    if (!g_active) return;  // no instance currently open
+    if (level > 100) level = 100;
+    lv_obj_set_width(g_active->battery_fill, lv_pct(level));
+    lv_obj_set_style_bg_color(g_active->battery_fill,
+        theme::color(battery_fill_color(level)), 0);
+    char buf[8];
+    lv_snprintf(buf, sizeof(buf), "%u%%", (unsigned)level);
+    lv_label_set_text(g_active->battery_pct_lbl, buf);
 }
 
 } // namespace modal_iphone_info

@@ -188,15 +188,6 @@ void save_epoch(uint32_t epoch_utc) {
     }
 }
 
-uint32_t load_epoch() {
-    uint32_t v = 0;
-    if (prefs.begin(NS, /*readOnly=*/true)) {
-        v = prefs.getUInt(K_EPOCH, 0);
-        prefs.end();
-    }
-    return v;
-}
-
 // ── Time Off metadata ─────────────────────────────────────────────────────────
 
 void prime_time_off_cache() {

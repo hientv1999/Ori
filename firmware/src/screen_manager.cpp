@@ -7,7 +7,6 @@
 
 #include "factory_reset.h"
 #include "app_state.h"
-#include "nvs_store.h"
 #include "ota_receiver.h"
 #include "state_machine.h"
 #include "time_format.h"
@@ -19,7 +18,6 @@
 #include "screens/screen_clock.h"
 #include "screens/screen_clock_analog.h"
 #include "screens/screen_media_mode.h"
-#include "screens/screen_meeting_list.h"
 #include "screens/screen_no_meetings.h"
 #include "screens/screen_ota_updating.h"
 #include "screens/screen_time_off.h"

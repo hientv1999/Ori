@@ -20,8 +20,10 @@
 // Icons only — notification content displayed only on user tap via modal.
 
 #include "ble/ancs_client.h"
+#include "ble/ancs_bundle_map.h"
 #include "ble/ble_manager.h"
 #include "ble/gatt_server.h"
+#include "ble/iphone_model_map.h"
 #include "ble/rssi_util.h"
 
 #include <Arduino.h>
@@ -49,81 +51,19 @@
 #define ANCS_CP_UUID  "69D1D8F3-45E1-49A8-9821-9BBDFDAAD9D9"
 #define ANCS_DS_UUID  "22EAC6E9-24D6-4BB5-BE44-B36ACE7C7BFB"
 
-// ── Bundle ID → icon token mapping ───────────────────────────────────────
-
-struct BundleMap {
-    const char* bundle_id;
-    const char* token;
-    const char* name;     // human-readable app name for the detail modal
-};
-
-static const BundleMap k_bundle_map[] = {
-    { "com.google.Gmail",               "gmail",       "Gmail"       },
-    { "com.facebook.Messenger",         "messenger",   "Messenger"   },
-    { "com.burbn.instagram",            "instagram",   "Instagram"   },
-    { "com.facebook.Facebook",          "facebook",    "Facebook"    },
-    { "net.whatsapp.WhatsApp",          "whatsapp",    "WhatsApp"    },
-    { "com.tinyspeck.chatlyio",         "slack",       "Slack"       },
-    { "com.atebits.Tweetie2",           "twitter",     "X"           },
-    { "com.microsoft.skype.teams",      "teams",       "Teams"       },
-    { "com.apple.MobileSMS",            "sms",         "Messages"    },
-    { "com.apple.mobilephone",          "phone",       "Phone"       },
-    { "com.hammerandchisel.discord",    "discord",     "Discord"     },
-    { "ph.telegra.Telegraph",           "telegram",    "Telegram"    },
-    { "com.google.ios.youtube",         "youtube",       "YouTube"       },
-    { "com.google.ios.youtubemusic",    "youtube_music", "YouTube Music" },
-    { "com.zhiliaoapp.musically",       "tiktok",      "TikTok"      },
-    { "com.ss.iphone.ugc.Ame",          "tiktok",      "TikTok"      },
-    { "com.spotify.client",             "spotify",     "Spotify"     },
-    { "com.tencent.xin",                "wechat",      "WeChat"      },
-    { "jp.naver.line",                  "line",        "LINE"        },
-    { "us.zoom.videomeetings",          "zoom",        "Zoom"        },
-    { "com.microsoft.office.outlook",   "outlook",     "Outlook"     },
-    { "com.toyopagroup.picaboo",        "snapchat",    "Snapchat"    },
-    { "com.google.hangouts.meet",       "google_meet", "Google Meet" },
-    { "com.apple.facetime",             "facetime",    "FaceTime"    },
-    { "com.linkedin.LinkedIn",          "linkedin",    "LinkedIn"    },
-    { "com.reddit.Reddit",              "reddit",      "Reddit"      },
-    { "com.burbn.barcelona",            "threads",     "Threads"     },
-    { "tv.twitch.mobile.watchlive",     "twitch",      "Twitch"      },
-    { "com.ubercab.UberClient",         "uber",        "Uber"        },
-    { "com.apple.Music",                "apple_music", "Apple Music" },
-    { "com.amazon.Amazon",              "amazon",      "Amazon"      },
-    { "com.viber",                      "viber",       "Viber"       },
-    { "com.anthropic.claude",           "claude",      "Claude"      },
-    { "com.openai.chat",                "chatgpt",     "ChatGPT"     },
-    { "com.google.Maps",                "google_map",    "Google Maps"   },
-    { "com.google.photos",              "google_photos", "Google Photos" },
-    { "com.apple.Health",               "health",        "Health"        },
-    { "com.apple.mobilecal",            "apple_calendar",          "Calendar"               },
-    { "com.apple.findmy",               "apple_findmy",            "Find My"                },
-    { "com.apple.mobilemail",           "apple_mail",              "Mail"                   },
-    { "com.apple.Maps",                 "apple_maps",              "Maps"                   },
-    { "com.apple.reminders",            "apple_reminders",         "Reminders"              },
-    { "com.apple.Passbook",             "apple_wallet",            "Wallet"                 },
-    { "com.github.stormbreaker.prod",   "github",                  "GitHub"                 },
-    { "com.google.authenticator",       "google_authenticator",    "Google Authenticator"   },
-    { "com.azure.authenticator",        "microsoft_authenticator", "Microsoft Authenticator"},
-    { "notion.id",                      "notion",                  "Notion"                 },
-    { "com.venmo.Venmo",                "venmo",                   "Venmo"                  },
-    { "com.skype.skype",                "skype",                   "Skype"                  },
-    { "com.paypal.PPClient",            "paypal",                  "PayPal"                 },
-};
-static const size_t k_bundle_map_count =
-    sizeof(k_bundle_map) / sizeof(k_bundle_map[0]);
-
-static const BundleMap* lookup_bundle(const char* bundle_id) {
-    if (!bundle_id || !bundle_id[0]) return nullptr;
-    for (size_t i = 0; i < k_bundle_map_count; ++i) {
-        if (strcmp(k_bundle_map[i].bundle_id, bundle_id) == 0) return &k_bundle_map[i];
-    }
-    return nullptr;
-}
-
-static const char* resolve_token(const char* bundle_id) {
-    const BundleMap* b = lookup_bundle(bundle_id);
-    return b ? b->token : nullptr;
-}
+// Pacing between queued items in resync_orion_relay()'s replay burst (below)
+// — NOT needed for a single AncsNotification's own back-to-back fragments
+// (ble-protocol.md §5 already covers that case: a lone notification's few
+// fragments stay well within the mbuf pool). Confirmed on hardware: a resync
+// with 10 queued notifications (several up to 8 fragments each) fired with
+// zero pacing filled NimBLE's outgoing mbuf pool within the first couple of
+// items — largely while the connection was still mid-MTU-negotiation — most
+// fragments then failed and Orion tore down the link (BLE_HS_HCI_ERR 0x13).
+// This yield gives the NimBLE host task a window to actually flush its TX
+// queue between items. 15 ms is the same backoff granularity as
+// gatt_server.cpp's notify_with_retry() — both are just "give the host task
+// a scheduling slice," not tuned against a measured drain rate.
+static constexpr uint32_t ANCS_RESYNC_ITEM_PACING_MS = 15;
 
 // Parse an ANCS Date attribute ("yyyyMMdd'T'HHmmSS", e.g. "20140110T114000").
 // Returns the Unix epoch (interpreting the wall-clock time as device-local),
@@ -287,6 +227,53 @@ static void read_phone_name() {
     LOG("[ancs] phone name: '%s'\n", g_phone_name);
 }
 
+// ── Connected phone model (Device Information Service) ──────────────────
+
+char g_phone_device_type[32] = {};
+
+// Model Number String (0x2A24) returns Apple's internal hardware identifier
+// (e.g. "iPhone18,2"), not a marketing name — iphone_model::resolve()
+// (ble/iphone_model_map.h) maps it to what the iPhone Info modal actually
+// wants to show (e.g. "iPhone 17 Pro Max").
+
+// Read the iPhone's model (service 0x180A / Model Number String 0x2A24) over
+// the encrypted link — same standard-GATT-service-to-bonded-peers pattern as
+// GAP Device Name and Current Time above. Read once per connection; static
+// for the life of the link, so no periodic re-read like battery/RSSI.
+// The characteristic returns a raw hardware identifier (e.g. "iPhone18,2"),
+// resolved via iphone_model::resolve() to a marketing name ("iPhone 17 Pro
+// Max") for display — falling back to the raw identifier itself if
+// unrecognized (a model newer than this firmware's table).
+static void read_phone_device_type() {
+    g_phone_device_type[0] = '\0';
+    if (!g_client) return;
+
+    NimBLERemoteService* dis = g_client->getService(NimBLEUUID((uint16_t)0x180A));
+    if (!dis) {
+        LOG("[ancs] iPhone has no Device Information Service\n");
+        return;
+    }
+    NimBLERemoteCharacteristic* model_chr =
+        dis->getCharacteristic(NimBLEUUID((uint16_t)0x2A24));
+    if (!model_chr || !model_chr->canRead()) {
+        LOG("[ancs] Model Number String characteristic not readable\n");
+        return;
+    }
+
+    NimBLEAttValue val = model_chr->readValue();
+    char raw_id[32] = {};
+    size_t n = val.size();
+    if (n >= sizeof(raw_id)) n = sizeof(raw_id) - 1;
+    memcpy(raw_id, val.data(), n);
+    raw_id[n] = '\0';
+
+    const char* resolved = iphone_model::resolve(raw_id);
+    const char* display  = resolved ? resolved : raw_id;
+    strncpy(g_phone_device_type, display, sizeof(g_phone_device_type) - 1);
+    g_phone_device_type[sizeof(g_phone_device_type) - 1] = '\0';
+    LOG("[ancs] phone device type: raw='%s' -> '%s'\n", raw_id, g_phone_device_type);
+}
+
 // ── iPhone time (Current Time Service) — SECONDARY/backup clock source ─────
 //
 // Orion is PRIMARY (Time Sync gives real UTC + IANA tz). iOS also exposes the
@@ -310,6 +297,75 @@ static uint32_t s_last_cts_ms = 0; // millis() of last successful CTS read
 constexpr uint32_t RSSI_POLL_INTERVAL_MS = 5000; // 5 s
 static uint32_t s_last_rssi_poll_ms = 0;
 static uint8_t  g_signal_bars = 0;
+
+// ── iPhone battery level (Battery Service) ───────────────────────────────
+// Battery Level (0x180F / 0x2A19) — Read + Notify. An initial synchronous
+// read seeds the starting value on connect (subscribing alone wouldn't give
+// us the CURRENT level until the phone next reports a change); after that,
+// notify-driven — no periodic re-read.
+static uint8_t g_phone_battery = 0;
+
+// The NimBLE notify callback runs on the host task — not safe to touch LVGL
+// or call gatt_server's notify (itself fine on the host task, but bundled
+// with the LVGL touch in the same call site below) from there directly, same
+// reasoning as the NS/DS notify callbacks. It only stashes the new byte;
+// poll() drains it on the main task. volatile: written from the host task,
+// read from the main task, no other synchronization between them (same
+// pattern already relied on elsewhere for single-scalar cross-task flags).
+static volatile bool    s_battery_notify_pending = false;
+static volatile uint8_t s_battery_notify_value    = 0;
+
+// Synchronous GATT read, same pattern as read_phone_name()/read_phone_device_type().
+// Leaves g_phone_battery unchanged (rather than zeroing) on a failed read —
+// a transient read failure shouldn't flash the UI to 0% when the last-known
+// level is still a reasonable value to keep showing.
+static void read_phone_battery() {
+    if (!g_client) return;
+
+    NimBLERemoteService* batt = g_client->getService(NimBLEUUID((uint16_t)0x180F));
+    if (!batt) {
+        LOG("[ancs] iPhone has no Battery Service\n");
+        return;
+    }
+    NimBLERemoteCharacteristic* level_chr =
+        batt->getCharacteristic(NimBLEUUID((uint16_t)0x2A19));
+    if (!level_chr || !level_chr->canRead()) {
+        LOG("[ancs] Battery Level characteristic not readable\n");
+        return;
+    }
+
+    NimBLEAttValue val = level_chr->readValue();
+    if (val.size() < 1) return;
+    uint8_t level = val.data()[0];
+    if (level > 100) level = 100;
+    g_phone_battery = level;
+    LOG("[ancs] phone battery: %u%%\n", (unsigned)g_phone_battery);
+}
+
+// Forward declared — defined in the notify-callback block near notify_ns_cb/
+// notify_ds_cb below (host-task context, same file section for all three).
+static void notify_battery_cb(NimBLERemoteCharacteristic* c,
+                               uint8_t* data, size_t len, bool is_notify);
+
+// Subscribes to Battery Level notifications so future changes push instead
+// of requiring a re-read. Called once per connection, right after the
+// initial read_phone_battery(). A phone whose Battery Service doesn't
+// support notify (rare — it's a standard optional property) just keeps
+// whatever read_phone_battery() got at connect time.
+static void subscribe_phone_battery() {
+    if (!g_client) return;
+
+    NimBLERemoteService* batt = g_client->getService(NimBLEUUID((uint16_t)0x180F));
+    if (!batt) return;
+    NimBLERemoteCharacteristic* level_chr =
+        batt->getCharacteristic(NimBLEUUID((uint16_t)0x2A19));
+    if (!level_chr || !level_chr->canNotify()) {
+        LOG("[ancs] Battery Level characteristic cannot notify\n");
+        return;
+    }
+    bool ok = level_chr->subscribe(true, notify_battery_cb);
+    LOG("[ancs] subscribe Battery Level: %s\n", ok ? "ok" : "FAILED");
+}
 
 // ── Deferred ANCS UI refresh ─────────────────────────────────────────────
 // Set by queue_add()/queue_remove() (any live change to who's in the queue —
@@ -568,31 +624,38 @@ struct PublishSlot {
     int         sort_idx;     // queue index — tiebreak / fallback for epoch 0
 };
 
-// Stable insertion sort of `slots[0..count)` oldest→newest by each group's
-// representative time (real recv_epoch when both sides have one, else queue
-// index) — `count` is small (≤ a handful of distinct apps in practice), so
-// insertion sort is plenty. Pulled out of publish_queue() purely for
-// readability/testability; same comparator, same in-place behavior.
-static void sort_groups_by_time(PublishSlot* slots, size_t count) {
+// Stable insertion sort of `arr[0..count)`, shared by publish_queue()'s
+// oldest→newest group ordering and list_bucket_groups()'s newest→first
+// ordering below — both built the identical algorithm by hand (`count` is
+// small, a handful of distinct apps/groups in practice, so insertion sort is
+// plenty) over a different element type and comparator direction.
+// `should_shift(prev, key)` returns true when `prev` (the element just
+// before `key`'s insertion point) must move right to let `key` sort before
+// it — i.e. the same role `prev_after_key`/`prev_is_older` played inline.
+template <typename T, typename ShouldShift>
+static void insertion_sort_stable(T* arr, size_t count, ShouldShift should_shift) {
     for (size_t a = 1; a < count; ++a) {
-        PublishSlot key = slots[a];
+        T key = arr[a];
         size_t b = a;
-        while (b > 0) {
-            const PublishSlot& prev = slots[b - 1];
-            bool prev_after_key = (prev.sort_epoch > 0 && key.sort_epoch > 0)
-                                   ? (prev.sort_epoch > key.sort_epoch)
-                                   : (prev.sort_idx > key.sort_idx);
-            if (!prev_after_key) break;
-            slots[b] = slots[b - 1];
+        while (b > 0 && should_shift(arr[b - 1], key)) {
+            arr[b] = arr[b - 1];
             --b;
         }
-        slots[b] = key;
+        arr[b] = key;
     }
+}
+
+// Orders slots oldest→newest by each group's representative time (real
+// recv_epoch when both sides have one, else queue index).
+static void sort_groups_by_time(PublishSlot* slots, size_t count) {
+    insertion_sort_stable(slots, count, [](const PublishSlot& prev, const PublishSlot& key) {
+        return (prev.sort_epoch > 0 && key.sort_epoch > 0) ? (prev.sort_epoch > key.sort_epoch)
+                                                            : (prev.sort_idx > key.sort_idx);
+    });
 }
 
 static void publish_queue() {
     app_state::AncsConfig cfg = {};
-    cfg.phone_connected = true;
 
     PublishSlot slots[app_state::MAX_ANCS_NOTIFICATIONS] = {};
     size_t slot_count = 0;
@@ -686,7 +749,7 @@ static void count_filtered_stats(uint8_t& missed, uint8_t& unread, uint8_t& othe
 static void push_phone_stats() {
     uint8_t missed, unread, other;
     count_filtered_stats(missed, unread, other);
-    gatt_server::notify_phone_stats(missed, unread, other, g_signal_bars);
+    gatt_server::notify_phone_stats(missed, unread, other, g_signal_bars, g_phone_battery);
 }
 
 // ── ANCS relay to Orion (chars 0010/0011, ble-protocol.md §13) ────────────
@@ -784,6 +847,15 @@ static void queue_add(uint32_t uid, const char* token) {
             evicted_cat != app_state::AncsCategory::ACTIVE_CALL) {
             gatt_server::notify_ancs_remove(evicted_uid);
         }
+        // Drop the stored detail too, mirroring queue_remove() — leaving it
+        // orphaned the queue and detail store disagree: list_bucket_groups()
+        // counts group members from the DETAIL store (ancs_collect_same_title)
+        // even when they have no queue entry, while the tile badges count from
+        // the QUEUE (count_filtered_stats) — so past 50 live notifications a
+        // drill-down row's stacked count could exceed the badge it sits
+        // behind, breaking the "badge always matches the list it opens"
+        // invariant (connectivity.md §2).
+        app_state::remove_ancs_detail(evicted_uid);
         memmove(&g_queue[0], &g_queue[1],
                 (app_state::MAX_ANCS_NOTIFICATIONS - 1) * sizeof(ancs_client::QueueEntry));
         g_queue_count = app_state::MAX_ANCS_NOTIFICATIONS - 1;
@@ -857,6 +929,14 @@ static void queue_remove(uint32_t uid) {
 // NS callback (notification events)
 // ─────────────────────────────────────────────────────────────────────────
 
+// OTA-transfer suspension (ancs_client.h's suspend_for_ota/resume_from_ota_
+// suspend doc comments). Both flags are written on the main task (via
+// ble_manager::set_ota_transfer_quiet) and read on the NimBLE host task
+// (notify_ns_cb/notify_ds_cb) — volatile, same single-scalar cross-task
+// pattern as s_battery_notify_pending above.
+static volatile bool g_ota_suspended      = false;
+static volatile bool g_ota_dropped_events = false;
+
 // Forward declare
 static void notify_ns_cb(NimBLERemoteCharacteristic* c,
                           uint8_t* data, size_t len, bool is_notify);
@@ -873,6 +953,14 @@ void init() {
 }
 
 void poll(bool orion_connected) {
+    // OTA download in progress — skip everything (ota.md "Behaviour"). The
+    // CTS read and getRssi() are blocking GATT/HCI round-trips, and the NS/DS
+    // drain below is the heaviest BLE-triggered work in the system; none of
+    // it may compete with the USB CDC RX path. The NS/DS callbacks are
+    // already dropping events at the source while suspended, so there's
+    // nothing accumulating that this drain is falling behind on.
+    if (g_ota_suspended) return;
+
     // Periodic iPhone CTS re-read — corrects clock drift when Orion is absent.
     // Only runs when the iPhone is connected and Orion is not; Orion's own
     // Time Sync (every 10 min) takes priority when it is connected.
@@ -900,6 +988,20 @@ void poll(bool orion_connected) {
                 // sat stale for up to its whole time on screen otherwise.
                 modal_iphone_info::set_signal_bars(g_signal_bars);
             }
+        }
+    }
+
+    // Drain a pending Battery Level notify (see s_battery_notify_pending's
+    // doc comment) — the host-task callback only stashed the byte; the
+    // LVGL touch and gatt_server notify happen here on the main task.
+    if (s_battery_notify_pending) {
+        s_battery_notify_pending = false;
+        uint8_t level = s_battery_notify_value;
+        if (level != g_phone_battery) {
+            g_phone_battery = level;
+            LOG("[ancs] phone battery (notify): %u%%\n", (unsigned)g_phone_battery);
+            push_phone_stats();
+            modal_iphone_info::set_battery_level(g_phone_battery);
         }
     }
 
@@ -1002,6 +1104,13 @@ void on_iphone_connected(uint16_t conn_handle) {
     // Fetch the phone's device name for display (unpair modal).
     read_phone_name();
 
+    // Fetch the phone's model + initial battery level for the iPhone Info
+    // modal / Orion's mirror, then subscribe so later changes push instead
+    // of requiring a re-read.
+    read_phone_device_type();
+    read_phone_battery();
+    subscribe_phone_battery();
+
     // Seed the clock from the iPhone if Orion hasn't (secondary time source).
     read_phone_time();
 
@@ -1025,15 +1134,18 @@ void on_iphone_disconnected() {
     g_ns_char       = nullptr;
     g_cp_char       = nullptr;
     g_ds_char       = nullptr;
-    g_phone_name[0] = '\0';
+    // g_phone_name/g_phone_device_type are deliberately left alone here — see
+    // clear_phone_identity()'s doc comment (ancs_client.h) for why a plain
+    // disconnect keeps showing the last-known name/model instead of blanking it.
     s_last_cts_ms   = 0;
     s_last_rssi_poll_ms = 0;
     g_signal_bars   = 0;
+    g_phone_battery = 0;
+    s_battery_notify_pending = false;
 
     // Clear queue and update status bar.
     g_queue_count = 0;
     app_state::AncsConfig cfg = {};
-    cfg.phone_connected = false;
     cfg.count = 0;
     app_state::set_ancs_config(cfg);
     widget_status_bar::refresh_active();
@@ -1048,6 +1160,11 @@ void on_iphone_disconnected() {
     modal_ancs_list::refresh_active();
 
     state_machine::set_phone_connected(false);
+}
+
+void clear_phone_identity() {
+    g_phone_name[0] = '\0';
+    g_phone_device_type[0] = '\0';
 }
 
 void on_notification_source(const uint8_t* data, uint16_t len) {
@@ -1203,7 +1320,7 @@ static void process_notification_attributes(uint32_t resp_uid, const char* app_i
     // Resolve icon token + human-readable app name. Built-in map first (instant),
     // then the GetAppAttributes cache; if still unknown, fire a one-off fetch —
     // its async reply back-fills the name for this and future notifications.
-    const BundleMap* bm = lookup_bundle(app_id);
+    const ancs_bundle_map::Entry* bm = ancs_bundle_map::lookup(app_id);
     const char* token        = bm ? bm->token : "unknown";
     const char* display_name = bm ? bm->name  : appname_cache_lookup(app_id);
     if (!display_name) request_app_attributes(app_id);
@@ -1389,6 +1506,10 @@ const char* phone_name() {
     return g_phone_name;
 }
 
+const char* phone_device_type() {
+    return g_phone_device_type;
+}
+
 PhoneStats phone_stats() {
     PhoneStats s = {};
     if (!g_client) return s;  // disconnected — all-zero, nothing to verify
@@ -1397,6 +1518,7 @@ PhoneStats phone_stats() {
     // match the drill-down list a tap on the tile opens.
     count_filtered_stats(s.missed, s.unread, s.total);
     s.signal_bars = g_signal_bars;
+    s.battery = g_phone_battery;
     return s;
 }
 
@@ -1497,20 +1619,10 @@ size_t list_bucket_groups(uint8_t bucket, ListGroup* out, size_t max) {
     // arrival-index as the fallback/tiebreak), sorted in the opposite
     // direction: publish_queue builds oldest→newest (status bar renders
     // rightmost = newest); this list wants newest first.
-    for (size_t a = 1; a < group_count; ++a) {
-        Group key = groups[a];
-        size_t b = a;
-        while (b > 0) {
-            const Group& prev = groups[b - 1];
-            bool prev_is_older = (prev.sort_epoch > 0 && key.sort_epoch > 0)
-                                     ? (prev.sort_epoch < key.sort_epoch)
-                                     : (prev.sort_idx < key.sort_idx);
-            if (!prev_is_older) break;
-            groups[b] = groups[b - 1];
-            --b;
-        }
-        groups[b] = key;
-    }
+    insertion_sort_stable(groups, group_count, [](const Group& prev, const Group& key) {
+        return (prev.sort_epoch > 0 && key.sort_epoch > 0) ? (prev.sort_epoch < key.sort_epoch)
+                                                            : (prev.sort_idx < key.sort_idx);
+    });
 
     size_t out_n = group_count < max ? group_count : max;
     for (size_t i = 0; i < out_n; ++i) {
@@ -1558,6 +1670,12 @@ void resync_orion_relay() {
     gatt_server::notify_ancs_clear();
     for (size_t i = 0; i < g_queue_count; ++i) {
         relay_ancs_add(g_queue[i].uid, g_queue[i].icon_token);
+        // Pace the burst — see ANCS_RESYNC_ITEM_PACING_MS above. Only needed
+        // between items, not between one item's own fragments (that stays a
+        // tight synchronous loop inside notify_chunked(), per §5).
+        if (i + 1 < g_queue_count) {
+            vTaskDelay(pdMS_TO_TICKS(ANCS_RESYNC_ITEM_PACING_MS));
+        }
     }
 }
 
@@ -1621,8 +1739,24 @@ void set_filter(uint8_t level) {
     modal_ancs_list::refresh_active();
 }
 
-uint8_t get_filter() {
-    return g_filter;
+// ── OTA-transfer suspension ────────────────────────────────────────────────
+// See ancs_client.h's doc comments. Called via ble_manager::
+// set_ota_transfer_quiet() — ota_receiver never calls these directly.
+
+void suspend_for_ota() {
+    g_ota_suspended      = true;
+    g_ota_dropped_events = false;
+    LOG("[ancs] suspended for OTA transfer\n");
+}
+
+bool resume_from_ota_suspend() {
+    if (!g_ota_suspended) return false;  // never suspended (pre-accept reject)
+    g_ota_suspended = false;
+    bool dropped = g_ota_dropped_events;
+    g_ota_dropped_events = false;
+    LOG("[ancs] resumed from OTA suspend (%s events dropped)\n",
+        dropped ? "some" : "no");
+    return dropped;
 }
 
 bool is_queued(uint32_t uid) {
@@ -1641,14 +1775,35 @@ namespace {
 // Host-task context: ONLY copy the bytes into the ring. The actual work
 // (blocking CP write, LVGL refresh) is done later by ancs_client::poll() on
 // the main task — see the NS/DS deferral queue comment above.
+//
+// While an OTA download is streaming (g_ota_suspended), events are DROPPED at
+// this source rather than rung — deferring them instead would risk ring
+// overflow across a 10-30 s transfer, and any half-completed NS→CP→DS
+// exchange state is wiped by the forced reconnect that
+// resume_from_ota_suspend()'s caller triggers whenever anything was dropped
+// (iOS replays the full backlog on that next connection), so dropping is
+// lossless end-to-end.
 static void notify_ns_cb(NimBLERemoteCharacteristic* /*c*/,
                           uint8_t* data, size_t len, bool /*is_notify*/) {
+    if (g_ota_suspended) { g_ota_dropped_events = true; return; }
     ns_push(data, len);
 }
 
 static void notify_ds_cb(NimBLERemoteCharacteristic* /*c*/,
                           uint8_t* data, size_t len, bool /*is_notify*/) {
+    if (g_ota_suspended) { g_ota_dropped_events = true; return; }
     ds_push(data, len);
+}
+
+// Host-task context, same reasoning as notify_ns_cb/notify_ds_cb above —
+// just stash the byte, poll() does the LVGL/gatt_server touch on the main task.
+static void notify_battery_cb(NimBLERemoteCharacteristic* /*c*/,
+                               uint8_t* data, size_t len, bool /*is_notify*/) {
+    if (len < 1) return;
+    uint8_t level = data[0];
+    if (level > 100) level = 100;
+    s_battery_notify_value   = level;
+    s_battery_notify_pending = true;
 }
 
 } // namespace

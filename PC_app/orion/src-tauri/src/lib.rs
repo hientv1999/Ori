@@ -258,7 +258,6 @@ pub fn run() {
             commands::get_autostart_enabled,
             commands::set_autostart_enabled,
             commands::set_language,
-            commands::debug_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

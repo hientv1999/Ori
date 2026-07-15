@@ -63,14 +63,6 @@ bool is_active();
 // before is_active() flips true.
 bool is_busy();
 
-// Update the OTA progress ring (0..100%). Called internally from poll()
-// when a PROGRESS frame is assembled; also callable externally for testing.
-void set_progress(uint8_t pct);
-
-// Returns the current firmware version string (semver, e.g. "1.0.0").
-// Used by gatt_server to fill the Firmware Revision String characteristic.
-const char* firmware_version();
-
 // "Close" on the Update failed screen: drops the failed transfer and returns to
 // runtime. (The install has no user gate — after the download it auto-advances
 // to the Installing frame and commits after a short linger.)

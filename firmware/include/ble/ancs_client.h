@@ -39,7 +39,42 @@ void poll(bool orion_connected);
 void on_iphone_connected(uint16_t conn_handle);
 
 // Called when iPhone disconnects — clears queue, notifies state machine.
+// Deliberately does NOT clear the cached phone_name()/phone_device_type() —
+// see clear_phone_identity() below for why and where those actually get wiped.
 void on_iphone_disconnected();
+
+// Wipes the cached phone_name()/phone_device_type() — called only when the
+// iPhone BOND itself is deleted (ble_manager::finish_iphone_bond_wipe(), the
+// single choke-point both the local Unpair button and a remote Orion unpair
+// command funnel through), never on a plain disconnect. A device's name/model
+// doesn't change for a given bond, so on_iphone_disconnected() intentionally
+// keeps showing the last-known value across a runtime disconnect (same "don't
+// blank what's still true" treatment Orion gives its own cached copy of
+// device_type, ble-protocol.md's PhoneBondStatus.d) — only a genuine unpair
+// (or the factory reset that implicitly reboots and drops it anyway) should
+// clear it.
+void clear_phone_identity();
+
+// ── OTA-transfer suspension (ota.md "Behaviour") ───────────────────────────
+// While a USB CDC firmware download is streaming into PSRAM, ANCS processing
+// is suspended at the source: the NS/DS notify callbacks drop incoming events
+// instead of ringing them (per-notification attribute fetches + icon lookups
+// across the 48-app registry are the heaviest BLE-triggered work in the
+// system — firmware.md — and must not compete with the USB RX path), and
+// poll() skips its whole body (CTS read, RSSI HCI round-trip, NS/DS drain).
+// suspend_for_ota() is called from ota_receiver's accepted-BEGIN path via
+// ble_manager::set_ota_transfer_quiet(true).
+void suspend_for_ota();
+
+// Lifts the suspension (failure-resume path — a successful commit reboots
+// instead). Returns true if any NS/DS event was actually dropped while
+// suspended: iOS never re-sends missed events on the same connection, so the
+// caller (ble_manager::set_ota_transfer_quiet(false)) force-drops the iPhone
+// link in that case — the bonded auto-reconnect replays the full backlog
+// (the same "PreExisting replay on the NEXT connection" behavior every fresh
+// bond already relies on, setup-flow.md). Returns false when nothing was
+// missed, so the common quick-failure case skips the reconnect entirely.
+bool resume_from_ota_suspend();
 
 // Called from NimBLE notification callback with raw NS data (8 bytes).
 void on_notification_source(const uint8_t* data, uint16_t len);
@@ -76,9 +111,18 @@ struct QueueEntry {
 // The connected iPhone's device name (GAP Device Name characteristic,
 // 0x1800/0x2A00 — e.g. "Xander's iPhone"). Read once per connection over
 // the encrypted link; iOS only reveals the personalised name to bonded
-// peers. Returns "" when not connected or the read failed. RAM only —
-// cleared on disconnect.
+// peers. RAM only, but survives a runtime disconnect — keeps showing the
+// last-known value (rather than "") until the bond is actually unpaired
+// (clear_phone_identity() above), same reasoning Orion applies to its own
+// cached device_type. Empty "" only before the very first successful read
+// of a fresh bond, or after an unpair.
 const char* phone_name();
+
+// The connected iPhone's model (Device Information Service, 0x180A / Model
+// Number String 0x2A24 — e.g. "iPhone 15 Pro"). Read once per connection,
+// same encrypted-link/bonded-peers treatment, and the same disconnect-
+// survives-until-unpair caching, as phone_name() above.
+const char* phone_device_type();
 
 // Snapshot of the iPhone's live notification stats + link signal, for the
 // on-device iPhone Info/Stats overlay (modal_iphone_info) and the Phone Bond
@@ -94,6 +138,9 @@ const char* phone_name();
 //                 missed call isn't double-counted under this one too)
 //   signal_bars — 0-4, bucketed from the live connection RSSI
 //                 (ble_gap_conn_rssi via NimBLEClient::getRssi())
+//   battery     — 0-100 (%), from the Battery Service (0x180F / Battery
+//                 Level 0x2A19). Read once on connect, then notify-driven
+//                 (subscribe_phone_battery() in the .cpp) — no polling.
 // The three counts are FILTER-GATED — only notifications passing the current
 // ancs_filter count — and exclude ringing/active calls (those have their own
 // live call UI, never a badge or list row). Same single counting rule as
@@ -105,6 +152,7 @@ struct PhoneStats {
     uint8_t unread;
     uint8_t total;
     uint8_t signal_bars;
+    uint8_t battery;   // 0-100 (%); 0 while disconnected or unread
 };
 PhoneStats phone_stats();
 
@@ -159,11 +207,10 @@ size_t list_bucket_groups(uint8_t bucket, ListGroup* out, size_t max);
 // set_filter() is called from ble_manager::poll() after Orion writes Device Settings (char 000E);
 // the value is also persisted to NVS (nvs::set_notif_filter) by that poll handler.
 // set_filter() immediately calls publish_queue() to refresh the status bar.
-void    set_filter(uint8_t level);
-uint8_t get_filter();
+void set_filter(uint8_t level);
 
 // Full clear-and-repopulate of Orion's ANCS mirror (char 0010) from the
-// current queue, filtered through get_filter() the same way a live
+// current queue, filtered through the current filter level the same way a live
 // relay_ancs_add() call would be. Called from set_filter() (the filtered SET
 // changed) and from ble_manager's BleEventType::AncsResubscribed handler,
 // fired by gatt_server.cpp's onSubscribe() the moment Orion's own CCCD write

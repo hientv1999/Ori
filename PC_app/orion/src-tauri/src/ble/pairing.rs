@@ -151,22 +151,13 @@ pub async fn pair_with_passkey(bluetooth_address: u64, pin_rx: Receiver<PairingI
 /// entirely: without this, the next pairing attempt would silently try to
 /// reuse an LTK Ori no longer has, and every encrypted write would fail with
 /// no passkey prompt ever appearing.
+/// Shared tail of both blocking unpair paths below, once each has its own
+/// `DeviceInformationPairing` handle (found by address or by name) — a no-op
+/// if nothing's actually bonded, otherwise runs `UnpairAsync` to completion
+/// and maps its result status to `Ok`/`Err`.
 #[cfg(target_os = "windows")]
-fn unpair_device_blocking(bluetooth_address: u64) -> Result<(), String> {
-    use windows::Devices::Bluetooth::BluetoothLEDevice;
+fn unpair_pairing_blocking(pairing: &windows::Devices::Enumeration::DeviceInformationPairing) -> Result<(), String> {
     use windows::Devices::Enumeration::DeviceUnpairingResultStatus;
-    use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
-
-    unsafe {
-        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-    }
-
-    let device = BluetoothLEDevice::FromBluetoothAddressAsync(bluetooth_address)
-        .map_err(|e| format!("FromBluetoothAddressAsync: {e}"))?
-        .join() // windows-future 0.3: `.get()` -> `.join()`, same blocking-wait semantics
-        .map_err(|e| format!("FromBluetoothAddressAsync: {e}"))?;
-    let info = device.DeviceInformation().map_err(|e| format!("DeviceInformation: {e}"))?;
-    let pairing = info.Pairing().map_err(|e| format!("Pairing: {e}"))?;
 
     if !pairing.IsPaired().unwrap_or(false) {
         return Ok(()); // Nothing bonded — already in the state we want.
@@ -183,6 +174,24 @@ fn unpair_device_blocking(bluetooth_address: u64) -> Result<(), String> {
     } else {
         Err(format!("unpair rejected (status {})", status.0))
     }
+}
+
+#[cfg(target_os = "windows")]
+fn unpair_device_blocking(bluetooth_address: u64) -> Result<(), String> {
+    use windows::Devices::Bluetooth::BluetoothLEDevice;
+    use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
+
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    }
+
+    let device = BluetoothLEDevice::FromBluetoothAddressAsync(bluetooth_address)
+        .map_err(|e| format!("FromBluetoothAddressAsync: {e}"))?
+        .join() // windows-future 0.3: `.get()` -> `.join()`, same blocking-wait semantics
+        .map_err(|e| format!("FromBluetoothAddressAsync: {e}"))?;
+    let info = device.DeviceInformation().map_err(|e| format!("DeviceInformation: {e}"))?;
+    let pairing = info.Pairing().map_err(|e| format!("Pairing: {e}"))?;
+    unpair_pairing_blocking(&pairing)
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -217,7 +226,7 @@ pub async fn unpair_device(bluetooth_address: u64) -> Result<(), String> {
 #[cfg(target_os = "windows")]
 fn unpair_device_by_name_blocking(name: &str) -> Result<(), String> {
     use windows::Devices::Bluetooth::BluetoothLEDevice;
-    use windows::Devices::Enumeration::{DeviceInformation, DeviceUnpairingResultStatus};
+    use windows::Devices::Enumeration::DeviceInformation;
     use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
     unsafe {
@@ -239,20 +248,7 @@ fn unpair_device_by_name_blocking(name: &str) -> Result<(), String> {
             continue;
         }
         let pairing = info.Pairing().map_err(|e| format!("Pairing: {e}"))?;
-        if !pairing.IsPaired().unwrap_or(false) {
-            return Ok(());
-        }
-        let result = pairing
-            .UnpairAsync()
-            .map_err(|e| format!("UnpairAsync: {e}"))?
-            .join() // windows-future 0.3: `.get()` -> `.join()`, same blocking-wait semantics
-            .map_err(|e| format!("UnpairAsync: {e}"))?;
-        let status = result.Status().map_err(|e| format!("Status: {e}"))?;
-        return if status == DeviceUnpairingResultStatus::Unpaired || status == DeviceUnpairingResultStatus::AlreadyUnpaired {
-            Ok(())
-        } else {
-            Err(format!("unpair rejected (status {})", status.0))
-        };
+        return unpair_pairing_blocking(&pairing);
     }
     Ok(()) // Nothing currently paired matches this name — nothing to unpair.
 }

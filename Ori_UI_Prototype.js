@@ -313,7 +313,7 @@ const SCREENS = {
   },
   'kbd-mode': {
     label: 'Primary state', title: 'Media mode (BLE bridge)',
-    desc: 'Touch surface acts as a secondary controller for the paired PC — large album art (tap = play/pause, swipe ↔ = prev/next, swipe ↕ = volume with momentary HUD), now-playing title + artist, three user-assignable shortcut buttons (default mock: mute audio, mute mic, screen capture). All commands travel as custom BLE messages to Orion which bridges to OS APIs. Tap the toggle in the status bar to switch back to calendar mode.',
+    desc: 'Touch surface acts as a secondary controller for the paired PC — large album art (touch reveals a dark scrim + progress bar + circular play/pause button, YouTube-style; double-tap the left/right half to seek ±10s; swipe ↔ = prev/next; swipe ↕ = volume with momentary HUD), now-playing title + artist, three user-assignable shortcut buttons (default mock: mute audio, mute mic, screen capture). All commands travel as custom BLE messages to Orion which bridges to OS APIs. Tap the toggle in the status bar to switch back to calendar mode.',
     statusBar: { ancsApps: ['gmail', 'messenger', 'instagram'], phoneConnected: true },
     mode: 'media',
     leftRender: () => mediaModeHTML(),
@@ -1064,11 +1064,39 @@ function unpairPhoneHTML() {
 // message apps under Social/Other, etc.). All mock in the prototype. "Unpair"
 // proceeds to the existing Unpair confirmation so the destructive action still
 // takes a deliberate second tap.
-const IPHONE_INFO = { name: "Hien Van's iPhone", connected: true, missed: 2, unread: 5, notifications: 7, signal: 4 };
+const IPHONE_INFO = { name: "Hien Van's iPhone", deviceType: 'iPhone 17 Pro Max', connected: true, missed: 2, unread: 5, notifications: 7, signal: 4, battery: 68 };
 function sigBarsHTML(level) {
   let s = '<span class="sig-bars">';
   for (let i = 0; i < 4; i++) s += '<span class="' + (i < level ? 'active' : '') + '"></span>';
   return s + '</span>';
+}
+// Battery icon — outline + nub (plain shapes, matching the firmware's
+// LVGL-primitives approach, no bitmap asset) with a fill rect scaled to
+// level%, green normally / red at or below BATT_LOW_THRESHOLD (mirrors
+// modal_iphone_info.cpp's BATT_LOW_THRESHOLD). level=0 while disconnected —
+// same "don't show what can't be verified" policy as the signal bars.
+const BATT_LOW_THRESHOLD = 20;
+function battIconHTML(level) {
+  const pct = Math.max(0, Math.min(100, level));
+  const fillColor = pct <= BATT_LOW_THRESHOLD ? 'var(--danger)' : 'var(--presence-available)';
+  // viewBox is tightly cropped to the glyph's own bounding box (not a
+  // generic 24x24 icon grid) so the CSS display size (.ip-batt svg, matched
+  // to the 33px-tall RSSI bars) actually fills — the shape itself IS the box,
+  // not a small glyph floating in a mostly-empty square. Body is an 18:10
+  // (1.8:1) rect — an actual battery proportion, not the near-square 17:12
+  // of an earlier pass. Fill sits inset a symmetric 1.25 units from the
+  // body's inner edge on every side (clears the body's rx=2.5 corner
+  // rounding at max fill — a tighter inset made the fill's squarer rx=1
+  // corners visibly poke past the body's rounder ones).
+  const fillW = (14 * pct / 100).toFixed(1);
+  return '<span class="ip-batt">' +
+    '<svg viewBox="0 0 24 14" fill="none">' +
+    '<rect x="1" y="2" width="18" height="10" rx="2.5" stroke="currentColor" stroke-width="1.5"/>' +
+    '<rect x="20" y="5" width="2.5" height="4" rx="1" fill="currentColor"/>' +
+    '<rect x="3" y="4" width="' + fillW + '" height="6" rx="1" fill="' + fillColor + '"/>' +
+    '</svg>' +
+    '<span>' + pct + '%</span>' +
+    '</span>';
 }
 function iphoneInfoHTML() {
   const i = IPHONE_INFO;
@@ -1096,10 +1124,14 @@ function iphoneInfoHTML() {
   };
   return '<div class="ip-card" onclick="event.stopPropagation()">' +
     '<h3>' + escapeHtml(i.name) + '</h3>' +
+    (i.connected && i.deviceType ? '<div class="ip-type">' + escapeHtml(i.deviceType) + '</div>' : '') +
     '<div class="ip-status">' +
     '<div class="ip-status-left"><span class="dot ' + (i.connected ? 'on' : 'off') + '"></span>' +
     (i.connected ? 'Connected' : 'Disconnected') + '</div>' +
+    '<div class="ip-status-right">' +
     sigBarsHTML(i.connected ? i.signal : 0) +
+    battIconHTML(i.connected ? i.battery : 0) +
+    '</div>' +
     '</div>' +
     '<div class="ip-stats">' +
     stat('i-call', i.missed, 'Missed Calls', 'missed') +
@@ -1465,7 +1497,9 @@ function mediaModeHTML() {
   const m = MOCK_MEDIA;
   const hasMedia = !!(m.title && m.title.trim());
   const artClasses = ['kbd-art-wrap'];
-  if (!kbdPlaying) artClasses.push('paused');
+  // Controls always start hidden (full-brightness art, no overlay) — there
+  // is no permanently-visible state, whether playing or paused. Only touch
+  // (or a play/pause button tap) reveals them.
   if (!hasMedia) artClasses.push('empty');
   const shortcuts = KBD_SHORTCUTS.map(s =>
     '<button class="s-btn">' +
@@ -1475,15 +1509,21 @@ function mediaModeHTML() {
 
   return '<div class="kbd-mode">' +
     // Album art — the dominant interaction surface.
-    //   tap          → play/pause
+    //   touch        → reveal the scrim + progress bar + play/pause button
+    //   tap button   → play/pause (the only way to toggle)
+    //   double-tap left/right half → seek backward/forward
     //   horiz swipe  → prev/next track
     //   vert swipe   → volume (with momentary HUD)
     '<div class="' + artClasses.join(' ') + '" id="kbd-art-wrap">' +
     '<div class="kbd-art"></div>' +
-    // Persistent paused-state overlay (visible while paused)
-    '<div class="kbd-art-overlay"><svg viewBox="0 0 24 24"><use href="#i-play"/></svg></div>' +
-    // Transient flash overlay (animates on tap)
-    '<div class="kbd-art-flash"><svg viewBox="0 0 24 24" id="kbd-art-flash-icon"><use href="#i-play"/></svg></div>' +
+    // Double-tap seek-flash — dims the tapped half + "±Ns" label, shown
+    // transiently by showSeekFlash().
+    '<div class="kbd-seek-flash" id="kbd-seek-flash"><span id="kbd-seek-flash-label"></span></div>' +
+    // Circular touch-revealed play/pause button — the ONLY way to toggle
+    // playback now. Hidden together with the rest of the controls.
+    '<div class="kbd-playpause-btn" id="kbd-playpause-btn">' +
+    '<svg viewBox="0 0 24 24" id="kbd-playpause-icon"><use href="#i-' + (kbdPlaying ? 'pause' : 'play') + '"/></svg>' +
+    '</div>' +
     // Volume HUD — visible only during a vertical-swipe gesture
     '<div class="kbd-art-hud" id="kbd-art-hud">' +
     '<div class="hud-pct" id="hud-pct">' + v + '%</div>' +
@@ -1491,6 +1531,8 @@ function mediaModeHTML() {
     '</div>' +
     // Timeline bar — only rendered when the app supports seeking (can_seek).
     // Absent or false → scrubber hidden entirely; no dead affordance.
+    // Shown/hidden (CSS) together with the rest of the controls — see
+    // ".kbd-art-wrap.controls-visible .kbd-timeline" — never on its own.
     (hasMedia && m.can_seek ? (function () {
       const pct = kbdDuration > 0 ? (kbdPosition / kbdDuration * 100).toFixed(1) : 0;
       return '<div class="kbd-timeline">' +
@@ -1516,18 +1558,143 @@ function mediaModeHTML() {
     '</div>';
 }
 
+// Touch-revealed controls (scrim + progress bar + circular play/pause
+// button) — hidden by default, auto-hidden again after
+// KBD_CONTROLS_AUTO_HIDE_MS idle UNCONDITIONALLY — whether playing or
+// paused, there is no permanently-visible state (mirrors firmware's
+// reveal_controls() in screen_media_mode.cpp). Called whenever an
+// interaction is confirmed to warrant revealing: a swipe (immediately, once
+// classified) or a plain tap resolved by armPendingTapResolve() as a lone
+// tap on previously-hidden controls. NOT called for every touch — see
+// bindAlbumArtGestures()'s onDown/onUp.
+const KBD_CONTROLS_AUTO_HIDE_MS = 5000;
+const KBD_DOUBLE_TAP_MS = 400;
+let kbdControlsHideTimer = null;
+// Deferred tap resolution — see armPendingTapResolve().
+let kbdPendingTapTimer = null;
+
+function revealControls(wrap) {
+  if (!wrap) return;
+  // Any fresh interaction (a new touch, a double-tap's seek, a button tap)
+  // supersedes an earlier tap's not-yet-fired reveal/dismiss decision.
+  if (kbdPendingTapTimer) { clearTimeout(kbdPendingTapTimer); kbdPendingTapTimer = null; }
+  wrap.classList.add('controls-visible');
+  if (kbdControlsHideTimer) { clearTimeout(kbdControlsHideTimer); kbdControlsHideTimer = null; }
+  kbdControlsHideTimer = setTimeout(() => {
+    wrap.classList.remove('controls-visible');
+    kbdControlsHideTimer = null;
+  }, KBD_CONTROLS_AUTO_HIDE_MS);
+}
+
+// Dismisses the controls immediately, skipping the 5 s countdown. Mirrors
+// firmware's fade_out_controls() — called once armPendingTapResolve()'s
+// deferral window closes and resolves as a dismissal.
+function dismissControlsNow(wrap) {
+  if (!wrap) return;
+  wrap.classList.remove('controls-visible');
+  if (kbdControlsHideTimer) { clearTimeout(kbdControlsHideTimer); kbdControlsHideTimer = null; }
+}
+
+// A plain tap on the art is ambiguous until KBD_DOUBLE_TAP_MS has passed
+// with no follow-up tap in the same half — it might be a lone tap (which
+// should reveal-if-hidden or dismiss-if-visible), or the first half of a
+// double-tap-to-seek (which must do NEITHER: a seek must never reveal
+// controls that started hidden, nor dismiss ones that were already
+// visible). So a plain tap is never resolved immediately — this arms a
+// one-shot timer instead, which on firing reveals or dismisses based on
+// `wasVisibleBefore` (captured at the tap's press, before anything the tap
+// itself might do). A following double-tap's second press calls
+// revealControls(), which cancels this before it ever fires — see
+// applyDoubleTapSeek()'s non-reveal branch for why that doesn't just call
+// revealControls() unconditionally.
+function armPendingTapResolve(wrap, wasVisibleBefore) {
+  if (kbdPendingTapTimer) clearTimeout(kbdPendingTapTimer);
+  kbdPendingTapTimer = setTimeout(() => {
+    kbdPendingTapTimer = null;
+    if (wasVisibleBefore) dismissControlsNow(wrap);
+    else revealControls(wrap);
+  }, KBD_DOUBLE_TAP_MS);
+}
+
+// Circular play/pause button's tap handler — the ONLY way to LOCALLY toggle
+// playback (media-mode.md); a plain tap elsewhere on the art only
+// reveals/extends or dismisses the controls (see bindAlbumArtGestures()'s
+// onUp). Tapping the button is itself a deliberate touch interaction, so it
+// reveals/extends the controls same as any other touch — unlike an
+// externally-driven (Orion) play/pause change, which the prototype has no
+// separate simulated path for, but which per media-mode.md must NOT reveal
+// or hide the controls, only update the icon.
 function togglePlayPause() {
   kbdPlaying = !kbdPlaying;
   const wrap = document.getElementById('kbd-art-wrap');
   if (!wrap) return;
-  wrap.classList.toggle('paused', !kbdPlaying);
-  const flashIcon = document.getElementById('kbd-art-flash-icon');
-  if (flashIcon) {
-    flashIcon.innerHTML = '<use href="#i-' + (kbdPlaying ? 'play' : 'pause') + '"/>';
+  const icon = document.getElementById('kbd-playpause-icon');
+  if (icon) icon.innerHTML = '<use href="#i-' + (kbdPlaying ? 'pause' : 'play') + '"/>';
+  revealControls(wrap);
+}
+
+// Circular button's own event wiring — stops the press from ALSO starting
+// a wrap-level drag/tap (same stopPropagation pattern bindSeekBar() already
+// uses for the timeline bar), then toggles play/pause on a plain click.
+function bindPlayPauseButton() {
+  const btn = document.getElementById('kbd-playpause-btn');
+  if (!btn) return;
+  function stop(e) { e.stopPropagation(); }
+  btn.addEventListener('mousedown', stop);
+  btn.addEventListener('touchstart', stop, { passive: true });
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    togglePlayPause();
+  });
+}
+
+// YouTube-style double-tap feedback: briefly dims the tapped half and shows
+// "±Ns", then fades out. Mirrors screen_media_mode.cpp's show_seek_flash().
+function showSeekFlash(half, stepS) {
+  const flash = document.getElementById('kbd-seek-flash');
+  const label = document.getElementById('kbd-seek-flash-label');
+  if (!flash) return;
+  if (flash._hideTimer) clearTimeout(flash._hideTimer);
+  flash.classList.remove('left', 'right', 'show');
+  void flash.offsetWidth; // restart the CSS transition
+  flash.classList.add(half, 'show');
+  if (label) label.textContent = (half === 'left' ? '-' : '+') + stepS + 's';
+  // Hold at full opacity briefly (mirrors SEEK_FLASH_HOLD_MS), then let the
+  // ".kbd-seek-flash" base rule's own transition fade it out over ~450 ms
+  // (SEEK_FLASH_FADE_MS) once ".show" (which suppresses the transition) is
+  // removed.
+  flash._hideTimer = setTimeout(() => flash.classList.remove('show'), 150);
+}
+
+// Double-tap-to-seek — jumps the current track backward/forward by the
+// (Orion-configurable, default 10s) seek step. No-op when nothing seekable
+// is playing. Mirrors screen_media_mode.cpp's apply_double_tap_seek() —
+// including its non-reveal rule: this must NOT reveal the button/progress
+// bar if they started hidden (only extend their countdown if they were
+// ALREADY visible). The seek-flash itself always shows regardless, since
+// it's feedback for the seek action, not part of the button/bar controls.
+const KBD_SEEK_STEP_S = 10;
+
+function applyDoubleTapSeek(wrap, half) {
+  const m = MOCK_MEDIA;
+  if (!m.can_seek || kbdDuration <= 0) return;
+  const dir = half === 'left' ? -1 : 1;
+  kbdPosition = Math.max(0, Math.min(kbdDuration, kbdPosition + dir * KBD_SEEK_STEP_S));
+  const pct = kbdDuration > 0 ? (kbdPosition / kbdDuration * 100) : 0;
+  const fill = wrap.querySelector('.kbd-timeline-fill');
+  const cur = wrap.querySelector('.kbd-timeline-times span:first-child');
+  if (fill) fill.style.width = pct.toFixed(1) + '%';
+  if (cur) cur.textContent = fmtTime(kbdPosition);
+  showSeekFlash(half, KBD_SEEK_STEP_S);
+  if (wrap.classList.contains('controls-visible')) {
+    revealControls(wrap);
+  } else if (kbdPendingTapTimer) {
+    // Cancel any pending resolution armed by this pair's first tap — a
+    // double-tap-seek must not reveal what it left hidden.
+    clearTimeout(kbdPendingTapTimer);
+    kbdPendingTapTimer = null;
   }
-  wrap.classList.remove('flash');
-  void wrap.offsetWidth; // restart the CSS animation
-  wrap.classList.add('flash');
+  // Real device: emit KeyboardCommand{op:"seek", arg:kbdPosition}
 }
 
 function onMediaPress(el) {
@@ -1539,10 +1706,26 @@ function onMediaPress(el) {
   );
 }
 
-// Album-art gesture handler — three orthogonal gestures on the same surface:
-//   tap         (|dx|<20 AND |dy|<20)        → play/pause
-//   horizontal  (|dx|>50 AND |dx|>|dy|)      → prev / next
-//   vertical    (|dy|>25 AND |dy|>|dx|)      → volume up / down + show HUD
+// Album-art gesture handler — orthogonal gestures on the same surface:
+//   tap                    → deferred (armPendingTapResolve()): reveals the
+//                            touch-controls (scrim + progress bar +
+//                            play/pause button) if they started hidden, or
+//                            dismisses them if they were already showing —
+//                            resolved only after KBD_DOUBLE_TAP_MS with no
+//                            follow-up tap in the same half
+//   double-tap left/right  (within 400 ms, same half) → seek ∓/± 10s;
+//                            never reveals the controls if they started
+//                            hidden (see applyDoubleTapSeek())
+//   horizontal  (|dx|>50 AND |dx|>|dy|)      → prev / next; deliberately
+//                            leaves the touch-controls exactly as they
+//                            were, neither revealing nor dismissing them
+//   vertical    (|dy|>25 AND |dy|>|dx|)      → volume up / down + show HUD;
+//                            same — only the (separate) volume HUD is
+//                            affected, never the touch-controls
+//
+// The circular play/pause button (bindPlayPauseButton()) sits on top of this
+// surface and captures its own taps — it's the only way to toggle playback
+// now, mirroring screen_media_mode.cpp.
 //
 // During a vertical drag the HUD overlay fades in and the volume tracks the
 // swipe distance: ~200 px of vertical travel = full 0..100 range. On release
@@ -1558,6 +1741,13 @@ function bindAlbumArtGestures() {
   let startX = 0, startY = 0, startVolume = 0;
   let tracking = false, verticalEngaged = false;
   let hudFadeTimer = null;
+  let lastTapTime = 0, lastTapHalf = null;
+  // Captured at the start of each press — the ambient state BEFORE this
+  // touch does anything. Passed to armPendingTapResolve() so a plain tap
+  // that isn't (yet) part of a double-tap resolves correctly once its
+  // deferral window closes: reveal if this was false (controls started
+  // hidden), dismiss if this was true (controls were already showing).
+  let controlsWasVisibleBeforePress = false;
 
   function getXY(e) {
     if (e.touches && e.touches[0]) return { x: e.touches[0].clientX, y: e.touches[0].clientY };
@@ -1587,6 +1777,14 @@ function bindAlbumArtGestures() {
     const p = getXY(e);
     startX = p.x; startY = p.y; startVolume = kbdVolume;
     tracking = true; verticalEngaged = false;
+    // Captured here (the ambient state BEFORE this touch does anything) for
+    // armPendingTapResolve() to resolve a plain tap against. Deliberately
+    // does NOT reveal here — a plain tap is ambiguous (it might be the first
+    // half of a double-tap-to-seek, which must never reveal controls that
+    // started hidden) until onUp resolves it. A swipe (horizontal or
+    // vertical) never reveals OR dismisses the controls at all — it leaves
+    // them exactly as they were; only its own volume HUD is affected.
+    controlsWasVisibleBeforePress = wrap.classList.contains('controls-visible');
   }
   function onMove(e) {
     if (!tracking) return;
@@ -1595,6 +1793,9 @@ function bindAlbumArtGestures() {
     const dy = p.y - startY;
     if (!verticalEngaged && Math.abs(dy) > V_SWIPE_ENGAGE && Math.abs(dy) > Math.abs(dx)) {
       verticalEngaged = true;
+      // Only the volume HUD shows — a vertical swipe deliberately leaves the
+      // touch-revealed controls (scrim/button/bar) exactly as they were,
+      // neither revealing nor dismissing them (media-mode.md).
       hudShow();
     }
     if (verticalEngaged) {
@@ -1617,13 +1818,38 @@ function bindAlbumArtGestures() {
       return;
     }
     if (absDx < TAP_MAX && absDy < TAP_MAX) {
-      togglePlayPause();
+      // A tap that reaches this handler at all means it missed both the
+      // circular play/pause button and the progress bar (each captures its
+      // own taps directly — bindPlayPauseButton()/bindSeekBar()). What's
+      // left for a plain tap on the art itself: double-tap-to-seek on the
+      // left/right half, or — for a lone (non-double) tap landing on
+      // controls that were ALREADY showing — a deferred dismissal (below).
+      const rect = wrap.getBoundingClientRect();
+      const half = (p.x - rect.left) < rect.width / 2 ? 'left' : 'right';
+      const now = Date.now();
+      if (half === lastTapHalf && (now - lastTapTime) < KBD_DOUBLE_TAP_MS) {
+        lastTapHalf = null; // consumed — next tap starts a fresh pair
+        // applyDoubleTapSeek() cancels any pending resolution armed by this
+        // pair's first tap itself — the seek wins outright, never a
+        // flicker beforehand.
+        applyDoubleTapSeek(wrap, half);
+      } else {
+        lastTapTime = now;
+        lastTapHalf = half;
+        // This tap is NOT (yet) a double-tap — but it might still become
+        // the first half of one. Don't resolve it right away (that would
+        // visibly flash a reveal/dismiss a moment before the seek fires) —
+        // arm a deferred resolution instead (see armPendingTapResolve()).
+        armPendingTapResolve(wrap, controlsWasVisibleBeforePress);
+      }
     } else if (absDx > H_SWIPE_MIN && absDx > absDy) {
       const dir = dx > 0 ? 'right' : 'left';
       wrap.classList.remove('swipe-left', 'swipe-right');
       void wrap.offsetWidth;
       wrap.classList.add('swipe-' + dir);
       setTimeout(() => wrap.classList.remove('swipe-' + dir), 180);
+      // Deliberately leaves the touch-revealed controls exactly as they
+      // were — neither revealing nor dismissing them (media-mode.md).
     }
   }
   function onCancel() {
@@ -1679,12 +1905,18 @@ function bindSeekBar() {
     seeking = true;
     timeline.classList.add('seeking');
     applySeek(clientX(e));
+    // Touching the bar counts as interacting with the controls — extend
+    // their auto-hide countdown (screen_media_mode.cpp's on_seek_gesture()).
+    revealControls(document.getElementById('kbd-art-wrap'));
     e.stopPropagation(); // prevent art-gesture handler from also starting
     if (e.cancelable) e.preventDefault();
   }
   function onMove(e) {
     if (!seeking) return;
     applySeek(clientX(e));
+    // Keep resetting the idle countdown on every move so a drag longer than
+    // KBD_CONTROLS_AUTO_HIDE_MS can't get hidden out from under the drag.
+    revealControls(document.getElementById('kbd-art-wrap'));
     if (e.cancelable) e.preventDefault();
   }
   function onUp(e) {
@@ -2009,6 +2241,7 @@ function setScreen(id) {
     left.innerHTML = cfg.leftRender ? cfg.leftRender() : '';
     if (cfg.mode === 'media') {
       bindAlbumArtGestures();
+      bindPlayPauseButton();
       bindSeekBar();
     }
     if (id === 'calendar') bindCalendarNav();

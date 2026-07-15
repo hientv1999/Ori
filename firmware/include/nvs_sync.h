@@ -25,7 +25,12 @@
 //   "p_titl" — string: profile title (≤64 bytes)
 //   "p_email"— string: profile email (≤128 bytes, optional)
 //   "p_phone"— string: profile phone (≤32 bytes, optional)
-//   "epoch"  — uint32: last synced UTC epoch (for displaying SYNCED pill)
+//   "epoch"  — uint32: last synced UTC epoch, written on every sync END but
+//              not currently read back by anything — the "SYNCED · X min
+//              ago" pill is driven by the RAM-only app_state::set_last_sync_time()/
+//              synced_pill_text() instead (a persisted epoch can't be trusted
+//              across a power cycle anyway, since local time itself isn't
+//              restored from flash — meeting-list.md)
 
 namespace nvs_sync {
 
@@ -48,9 +53,8 @@ bool load_profile(char* out_name,  size_t name_sz,
                   char* out_email, size_t email_sz,
                   char* out_phone, size_t phone_sz);
 
-// Last synced epoch (for the "SYNCED · X min ago" pill).
-void  save_epoch(uint32_t epoch_utc);
-uint32_t load_epoch();
+// Last synced epoch. See the "epoch" key note above — write-only today.
+void save_epoch(uint32_t epoch_utc);
 
 // Time Off metadata (start/end epoch + destination string).
 // Returns true if a valid Time Off entry exists (start != 0).

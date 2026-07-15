@@ -95,6 +95,15 @@ const ShortcutSlot* shortcuts();   // returns array of 3
 void set_shortcuts(const char* s1, const char* s2, const char* s3);
 constexpr size_t SHORTCUT_COUNT = 3;
 
+// Double-tap seek step, in seconds (1-60) — how far double-tapping the
+// left/right third of the album art seeks backward/forward (media-mode.md).
+// RAM cache mirrors the shortcuts pattern above; NVS persistence
+// (nvs::get/set_seek_step_s()) is owned by the BLE Device Settings "k"
+// handler (ble_manager.cpp's handle_seek_step_update()), not here. Restored
+// from NVS in init(). Default 10 s.
+uint8_t seek_step_s();
+void    set_seek_step_s(uint8_t seconds);
+
 // ANCS icon set + phone connectivity.
 //
 // MAX_ANCS_NOTIFICATIONS — internal queue depth. The ANCS handler tracks
@@ -133,7 +142,6 @@ struct AncsConfig {
     uint32_t    uids  [MAX_ANCS_NOTIFICATIONS];  // most-recent UID per slot (parallel)
     uint8_t     counts[MAX_ANCS_NOTIFICATIONS];  // stacked notification count per slot
     size_t      count;                            // live slots (≤ MAX_ANCS_NOTIFICATIONS)
-    bool        phone_connected;
 };
 
 const AncsConfig& ancs_config();

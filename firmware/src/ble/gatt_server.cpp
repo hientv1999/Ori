@@ -47,11 +47,15 @@ void ble_post_ancs_filter_event(uint8_t level);
 void ble_post_weather_event(uint8_t condition, int16_t temp_f, uint8_t unit);
 void ble_post_shortcut_update_event();
 void ble_post_media_meta_event();
+void ble_post_seek_step_event(uint8_t seconds);
+void ble_post_host_volume_event(uint8_t level, bool show_toast);
+void ble_post_album_art_started_event();
+void ble_post_album_art_progress_event(uint8_t pct);
 void ble_post_album_art_event(uint8_t* buf, size_t len);
 void ble_post_photo_event(uint8_t* buf, size_t len);
 void ble_post_sync_begin_event(uint32_t total_bytes);
 void ble_post_sync_commit_event();
-void ble_post_sync_end_event(bool unused);
+void ble_post_sync_end_event();
 void ble_post_orioning_progress(uint8_t pct);
 void ble_post_time_off_photo_event(uint8_t* buf, size_t len);
 void ble_post_ancs_action_event(uint32_t uid, uint8_t action);
@@ -88,9 +92,6 @@ void ble_post_ancs_resubscribed_event(bool call_state);
 // Base: 6F726900-XXXX-4F72-9F00-000000000000
 #define CHAR_UUID(n) \
     "6F726900-" #n "-4F72-9F00-000000000000"
-
-// ANCS service UUID (for advertising / discovery)
-#define ANCS_UUID "7905F431-B5CE-4E99-A40F-4B1E122D00D0"
 
 // Device Status bytes -------------------------------------------------------
 #define DS_SETUP_WAITING_PAIRING       0x00
@@ -136,7 +137,7 @@ NimBLECharacteristic* c_ancs_call    = nullptr; // 0011
 NimBLECharacteristic* c_ancs_action  = nullptr; // 0012
 
 // Last-encoded Phone Bond Status fields. The characteristic carries all
-// seven fields in one CBOR blob, but bond/connection-state changes
+// nine fields in one CBOR blob, but bond/connection-state changes
 // (notify_phone_bond_status) and ANCS-driven stats changes (notify_phone_stats)
 // arrive from different call sites at different times — each needs to
 // re-encode the fields it doesn't own from these cached values rather than
@@ -144,10 +145,12 @@ NimBLECharacteristic* c_ancs_action  = nullptr; // 0012
 bool    g_phone_bonded        = false;
 bool    g_phone_connected     = false;
 char    g_phone_name_cache[64] = {};
+char    g_phone_device_type_cache[32] = {};
 uint8_t g_phone_missed        = 0;
 uint8_t g_phone_unread        = 0;
 uint8_t g_phone_total         = 0;
 uint8_t g_phone_signal        = 0;
+uint8_t g_phone_battery       = 0;
 
 // Meeting list is RAM-only (not persisted to NVS — see state_machine). Its
 // delta-sync hash therefore also lives in RAM only: a power cycle drops the
@@ -163,6 +166,11 @@ chunked_transfer::Context g_photo_ctx;
 chunked_transfer::Context g_meetings_ctx;
 chunked_transfer::Context g_time_off_ctx;
 chunked_transfer::Context g_art_ctx;
+// Debounce for the album-art loading ring's percentage — only post a
+// progress event when the integer percent actually changes (same pattern as
+// stage_add_bytes()'s g_stage.last_pct_sent below). 0xFF (never a valid
+// percent) on seq==0 so the first fragment's percent always posts once.
+uint8_t g_art_last_pct_sent = 0xFF;
 
 // -- Sync sequence tracking ------------------------------------------------
 uint32_t g_sync_seq = 0;
@@ -237,6 +245,35 @@ static bool cbor_open_map(const uint8_t* data, size_t len,
     if (!cbor_value_is_map(&root)) return false;
     cbor_value_enter_container(&root, &map_val);
     return true;
+}
+
+// Iterates a CBOR map's key/value pairs — the identical hand-rolled
+// "while (!cbor_value_at_end(...))" key-extraction loop that used to be
+// duplicated across every characteristic's CBOR parser below. For each
+// entry, copies the key into a `KeyBufSize`-byte local buffer and calls
+// `handler(key, val)` with `val` positioned on the corresponding value;
+// the handler inspects/reads the value (cbor_value_is_*/cbor_value_get_*)
+// but must NOT advance `val` itself — this loop advances once per entry,
+// both before calling the handler (past a non-string "key" — malformed
+// input a compliant peer never sends) and after the handler returns
+// (past the value, to the next key).
+template <size_t KeyBufSize = 16, typename Handler>
+static void for_each_cbor_key(CborValue& map_val, Handler&& handler) {
+    while (!cbor_value_at_end(&map_val)) {
+        char key[KeyBufSize] = {};
+        size_t key_len = sizeof(key) - 1;
+        if (cbor_value_is_text_string(&map_val)) {
+            cbor_value_copy_text_string(&map_val, key, &key_len, &map_val);
+        } else {
+            cbor_value_advance(&map_val);
+            continue;
+        }
+        if (cbor_value_at_end(&map_val)) break;
+
+        handler(key, map_val);
+
+        if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
+    }
 }
 
 // -- SHA-256 of a CBOR blob (deterministic, for hash-manifest delta) --------
@@ -320,6 +357,7 @@ struct DeviceSettingsWrite {
     bool    has_weather_cond = false; uint8_t weather_cond_val = 0;
     bool    has_weather_temp = false; int16_t weather_temp_val = 0;
     bool    has_weather_unit = false; uint8_t weather_unit_val = 0;
+    bool    has_seek_step = false; uint8_t seek_step_val = 0;
 };
 // Decodes+validates the Device Settings CBOR map into `out`. Returns false
 // if the payload isn't a map, or any present field fails its range check —
@@ -327,7 +365,7 @@ struct DeviceSettingsWrite {
 static bool parse_device_settings(const uint8_t* data, uint16_t len, DeviceSettingsWrite& out);
 // Applies whichever fields were present, in the same fixed order the
 // original inline handler used (presence, shortcuts, clock face, time
-// format, ANCS filter, weather) — independent of wire order.
+// format, ANCS filter, weather, seek step) — independent of wire order.
 static void apply_device_settings(const DeviceSettingsWrite& w);
 
 // Free any owned staging buffers and zero the struct.
@@ -341,9 +379,32 @@ static void stage_reset() {
 
 // Begin a new staging session (called on SyncControl{BEGIN}).
 static void stage_begin(uint32_t total_bytes) {
+    // Preserve a Time Sync that arrived moments BEFORE this BEGIN: §6.2's
+    // reconnect sequence long documented Time Sync ahead of BEGIN, and
+    // handle_time_sync() stages unconditionally — without this carry-over, a
+    // sender following that order had its clock silently wiped by the session
+    // reset (never applied; on a cold boot that means no clock at all, hidden
+    // status-bar time, dead meeting logic). Both current senders (Orion's
+    // run_sync, mock_orion_ble.py) write it after BEGIN, where it stages
+    // normally — this only rescues the documented-order case. Accuracy is
+    // identical either way: even an in-session Time Sync sits staged until
+    // END's commit. Gated on !active — a BEGIN that interrupts a LIVE session
+    // is a restart, and wiping that session's staged time with the rest of
+    // its data remains correct.
+    bool     carry_time  = g_stage.have_time && !g_stage.active;
+    uint64_t carry_epoch = g_stage.epoch_utc;
+    char     carry_tz[sizeof(g_stage.tz)];
+    memcpy(carry_tz, g_stage.tz, sizeof(carry_tz));
+
     stage_reset();
     g_stage.active      = true;
     g_stage.total_bytes = total_bytes;
+
+    if (carry_time) {
+        g_stage.have_time = true;
+        g_stage.epoch_utc = carry_epoch;
+        memcpy(g_stage.tz, carry_tz, sizeof(g_stage.tz));
+    }
 }
 
 // Account for `n` newly received application-payload bytes (written into the
@@ -427,25 +488,30 @@ static void stage_commit() {
 }
 
 // Encode PhoneBondStatus CBOR:
-//   { "b": bonded, "c": connected, "n": name,
+//   { "b": bonded, "c": connected, "n": name, "d": device_type,
 //     "m": missed_calls, "u": unread_messages, "t": total_notifications,
-//     "s": signal_bars (0-4) }
-// Stats/signal are always encoded as 0 when connected==false — a disconnected
-// iPhone leaves nothing left to verify (same "don't show a stale reading"
-// policy as presence/weather, ble-protocol.md §6.4).
+//     "s": signal_bars (0-4), "l": battery_level (0-100) }
+// Stats/signal/battery are always encoded as 0 when connected==false — a
+// disconnected iPhone leaves nothing left to verify (same "don't show a
+// stale reading" policy as presence/weather, ble-protocol.md §6.4).
+// device_type follows name's own treatment (empty string, not zeroed to a
+// sentinel) since it's a string field read once per connection, same as name.
 static size_t encode_phone_status(uint8_t* buf, size_t buf_sz,
                                    bool bonded, bool connected, const char* name,
+                                   const char* device_type,
                                    uint8_t missed, uint8_t unread, uint8_t total,
-                                   uint8_t signal_bars) {
+                                   uint8_t signal_bars, uint8_t battery_level) {
     CborEncoder enc, map;
     cbor_encoder_init(&enc, buf, buf_sz, 0);
-    cbor_encoder_create_map(&enc, &map, 7);
+    cbor_encoder_create_map(&enc, &map, 9);
     cbor_encode_text_stringz(&map, "b");
     cbor_encode_boolean(&map, bonded);
     cbor_encode_text_stringz(&map, "c");
     cbor_encode_boolean(&map, connected);
     cbor_encode_text_stringz(&map, "n");
     cbor_encode_text_stringz(&map, name ? name : "");
+    cbor_encode_text_stringz(&map, "d");
+    cbor_encode_text_stringz(&map, connected && device_type ? device_type : "");
     cbor_encode_text_stringz(&map, "m");
     cbor_encode_uint(&map, connected ? missed : 0);
     cbor_encode_text_stringz(&map, "u");
@@ -454,6 +520,8 @@ static size_t encode_phone_status(uint8_t* buf, size_t buf_sz,
     cbor_encode_uint(&map, connected ? total : 0);
     cbor_encode_text_stringz(&map, "s");
     cbor_encode_uint(&map, connected ? signal_bars : 0);
+    cbor_encode_text_stringz(&map, "l");
+    cbor_encode_uint(&map, connected ? battery_level : 0);
     cbor_encoder_close_container(&enc, &map);
     return cbor_encoder_get_buffer_size(&enc, buf);
 }
@@ -679,6 +747,39 @@ public:
         }
     }
 
+    // Notifies Device Settings (char 000E) whenever Ori's own live
+    // signal_bars ("r") to Orion changes — mirrors ancs_client.cpp's
+    // identical RSSI-poll-and-notify-on-change pattern for the iPhone link
+    // (Phone Bond Status "s"). This is what lets Orion's Ori Info modal show
+    // live signal bars without polling a BLE read on its own side
+    // (ble-protocol.md §4/§6.4, pc-app.md). Public (unlike
+    // read_orion_signal_bars()/handle_device_settings_read() below) since
+    // gatt_server::poll_orion_signal_bars() calls it on s_char_cb from
+    // outside this class. Internally gated to a 5 s interval — call
+    // unconditionally, every ble_manager::poll() tick.
+    void poll_orion_signal_bars() {
+        if (!c_dev_settings || !ble_manager::is_orion_connected()) {
+            // Nothing to track (or verify) while disconnected — reset the
+            // sentinel so the next connection's first poll always fires,
+            // same "don't carry a stale reading across a reconnect" rule
+            // Phone Bond Status's own signal cache follows on an iPhone
+            // disconnect.
+            g_last_notified_orion_signal_bars = 0xFF;
+            return;
+        }
+        constexpr uint32_t POLL_INTERVAL_MS = 5000;
+        static uint32_t s_last_poll_ms = 0;
+        uint32_t now_ms = (uint32_t)millis();
+        if (now_ms - s_last_poll_ms < POLL_INTERVAL_MS) return;
+        s_last_poll_ms = now_ms;
+
+        uint8_t bars = read_orion_signal_bars();
+        if (bars == g_last_notified_orion_signal_bars) return;
+        g_last_notified_orion_signal_bars = bars;
+        handle_device_settings_read(c_dev_settings);
+        c_dev_settings->notify();
+    }
+
 private:
 
     // -- Time Sync (char 0002) -----------------------------------------------
@@ -699,23 +800,14 @@ private:
         char     tz[64]    = {};
 
         cbor_value_enter_container(&root, &map_val);
-        while (!cbor_value_at_end(&map_val)) {
-            char key[32] = {};
-            size_t key_len = sizeof(key) - 1;
-            if (cbor_value_is_text_string(&map_val)) {
-                cbor_value_copy_text_string(&map_val, key, &key_len, &map_val);
-            } else {
-                cbor_value_advance(&map_val);
-            }
-
-            if (strcmp(key, "u") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
-                cbor_value_get_uint64(&map_val, &epoch_utc);
-            } else if (strcmp(key, "z") == 0 && cbor_value_is_text_string(&map_val)) {
+        for_each_cbor_key<32>(map_val, [&](const char* key, CborValue& val) {
+            if (strcmp(key, "u") == 0 && cbor_value_is_unsigned_integer(&val)) {
+                cbor_value_get_uint64(&val, &epoch_utc);
+            } else if (strcmp(key, "z") == 0 && cbor_value_is_text_string(&val)) {
                 size_t tz_len = sizeof(tz) - 1;
-                cbor_value_copy_text_string(&map_val, tz, &tz_len, nullptr);
+                cbor_value_copy_text_string(&val, tz, &tz_len, nullptr);
             }
-            if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
-        }
+        });
 
         if (epoch_utc > 0) {
             g_stage.have_time = true;
@@ -786,24 +878,16 @@ private:
         uint64_t seq    = 0;
         uint64_t total  = 0;
 
-        while (!cbor_value_at_end(&map_val)) {
-            char key[16] = {};
-            size_t key_len = sizeof(key) - 1;
-            if (cbor_value_is_text_string(&map_val)) {
-                cbor_value_copy_text_string(&map_val, key, &key_len, &map_val);
-            } else { cbor_value_advance(&map_val); continue; }
-            if (cbor_value_at_end(&map_val)) break;
-
-            if (strcmp(key, "o") == 0 && cbor_value_is_text_string(&map_val)) {
+        for_each_cbor_key(map_val, [&](const char* key, CborValue& val) {
+            if (strcmp(key, "o") == 0 && cbor_value_is_text_string(&val)) {
                 size_t sz = sizeof(op) - 1;
-                cbor_value_copy_text_string(&map_val, op, &sz, nullptr);
-            } else if (strcmp(key, "s") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
-                cbor_value_get_uint64(&map_val, &seq);
-            } else if (strcmp(key, "t") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
-                cbor_value_get_uint64(&map_val, &total);
+                cbor_value_copy_text_string(&val, op, &sz, nullptr);
+            } else if (strcmp(key, "s") == 0 && cbor_value_is_unsigned_integer(&val)) {
+                cbor_value_get_uint64(&val, &seq);
+            } else if (strcmp(key, "t") == 0 && cbor_value_is_unsigned_integer(&val)) {
+                cbor_value_get_uint64(&val, &total);
             }
-            if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
-        }
+        });
 
         LOG("[gatt] SyncControl op=%s seq=%u total=%u\n", op, (unsigned)seq, (unsigned)total);
 
@@ -897,32 +981,23 @@ private:
         bool    got_profile  = false, got_photo    = false;
         bool    got_meetings = false, got_time_off = false;
 
-        while (!cbor_value_at_end(&map_val)) {
-            char key[20] = {};
-            size_t key_len = sizeof(key) - 1;
-            if (cbor_value_is_text_string(&map_val)) {
-                cbor_value_copy_text_string(&map_val, key, &key_len, &map_val);
-            } else { cbor_value_advance(&map_val); continue; }
-            if (cbor_value_at_end(&map_val)) break;
-
-            if (cbor_value_is_byte_string(&map_val)) {
-                size_t sz = 32;
-                if (strcmp(key, "p") == 0) {
-                    cbor_value_copy_byte_string(&map_val, recv_profile, &sz, nullptr);
-                    got_profile = (sz == 32);
-                } else if (strcmp(key, "h") == 0) {
-                    cbor_value_copy_byte_string(&map_val, recv_photo, &sz, nullptr);
-                    got_photo = (sz == 32);
-                } else if (strcmp(key, "m") == 0) {
-                    cbor_value_copy_byte_string(&map_val, recv_meetings, &sz, nullptr);
-                    got_meetings = (sz == 32);
-                } else if (strcmp(key, "t") == 0) {
-                    cbor_value_copy_byte_string(&map_val, recv_time_off, &sz, nullptr);
-                    got_time_off = (sz == 32);
-                }
+        for_each_cbor_key<20>(map_val, [&](const char* key, CborValue& val) {
+            if (!cbor_value_is_byte_string(&val)) return;
+            size_t sz = 32;
+            if (strcmp(key, "p") == 0) {
+                cbor_value_copy_byte_string(&val, recv_profile, &sz, nullptr);
+                got_profile = (sz == 32);
+            } else if (strcmp(key, "h") == 0) {
+                cbor_value_copy_byte_string(&val, recv_photo, &sz, nullptr);
+                got_photo = (sz == 32);
+            } else if (strcmp(key, "m") == 0) {
+                cbor_value_copy_byte_string(&val, recv_meetings, &sz, nullptr);
+                got_meetings = (sz == 32);
+            } else if (strcmp(key, "t") == 0) {
+                cbor_value_copy_byte_string(&val, recv_time_off, &sz, nullptr);
+                got_time_off = (sz == 32);
             }
-            if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
-        }
+        });
 
         // Compare against stored hashes.
         uint8_t stored[32];
@@ -968,21 +1043,13 @@ private:
         uint64_t level = g_volume_level;
         bool     mute  = g_muted;
 
-        while (!cbor_value_at_end(&map_val)) {
-            char key[16] = {};
-            size_t key_len = sizeof(key) - 1;
-            if (cbor_value_is_text_string(&map_val)) {
-                cbor_value_copy_text_string(&map_val, key, &key_len, &map_val);
-            } else { cbor_value_advance(&map_val); continue; }
-            if (cbor_value_at_end(&map_val)) break;
-
-            if (strcmp(key, "l") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
-                cbor_value_get_uint64(&map_val, &level);
-            } else if (strcmp(key, "m") == 0 && cbor_value_is_boolean(&map_val)) {
-                cbor_value_get_boolean(&map_val, &mute);
+        for_each_cbor_key(map_val, [&](const char* key, CborValue& val) {
+            if (strcmp(key, "l") == 0 && cbor_value_is_unsigned_integer(&val)) {
+                cbor_value_get_uint64(&val, &level);
+            } else if (strcmp(key, "m") == 0 && cbor_value_is_boolean(&val)) {
+                cbor_value_get_boolean(&val, &mute);
             }
-            if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
-        }
+        });
         uint8_t new_level = (uint8_t)(level > 100 ? 100 : level);
 
         // Drag-wins override: ignore incoming pushes during/shortly after a
@@ -1009,10 +1076,23 @@ private:
         g_volume_level = new_level;
         g_muted        = mute;
 
-        // Update app_state so the media mode screen reflects it.
+        // Update app_state so the media mode screen reflects it. The LVGL
+        // touch itself (fill height/label, and — for a genuine external
+        // change — surfacing the HUD if it isn't already showing) has to
+        // happen on the main task, deferred via event, same reasoning as
+        // every other characteristic here.
         app_state::set_media_volume((int)g_volume_level);
         LOG("[gatt] HostVolume: level=%u mute=%d\n",
                        (unsigned)g_volume_level, (int)g_muted);
+
+        // Only surface the HUD as a "volume changed externally" toast when
+        // this ISN'T our own swipe's echo — a swipe already showed (and hid)
+        // the HUD locally around the gesture itself; re-flashing it right
+        // after would be redundant. is_own_echo is only meaningful while
+        // in_override_window (outside that window every accepted push is by
+        // definition external — nothing local to have echoed).
+        bool show_toast = !(in_override_window && is_own_echo);
+        ble_post_host_volume_event(g_volume_level, show_toast);
     }
 
     void handle_host_volume_read(NimBLECharacteristic* c) {
@@ -1047,33 +1127,25 @@ private:
         uint64_t duration_s  = 0;
         bool     has_seek    = false;
 
-        while (!cbor_value_at_end(&map_val)) {
-            char key[16] = {};
-            size_t key_len = sizeof(key) - 1;
-            if (cbor_value_is_text_string(&map_val)) {
-                cbor_value_copy_text_string(&map_val, key, &key_len, &map_val);
-            } else { cbor_value_advance(&map_val); continue; }
-            if (cbor_value_at_end(&map_val)) break;
-
-            if (strcmp(key, "t") == 0 && cbor_value_is_text_string(&map_val)) {
+        for_each_cbor_key(map_val, [&](const char* key, CborValue& val) {
+            if (strcmp(key, "t") == 0 && cbor_value_is_text_string(&val)) {
                 size_t sz = sizeof(title) - 1;
-                cbor_value_copy_text_string(&map_val, title, &sz, nullptr);
-            } else if (strcmp(key, "a") == 0 && cbor_value_is_text_string(&map_val)) {
+                cbor_value_copy_text_string(&val, title, &sz, nullptr);
+            } else if (strcmp(key, "a") == 0 && cbor_value_is_text_string(&val)) {
                 size_t sz = sizeof(artist) - 1;
-                cbor_value_copy_text_string(&map_val, artist, &sz, nullptr);
-            } else if (strcmp(key, "c") == 0 && cbor_value_is_boolean(&map_val)) {
-                cbor_value_get_boolean(&map_val, &can_seek);
-            } else if (strcmp(key, "p") == 0 && cbor_value_is_boolean(&map_val)) {
-                cbor_value_get_boolean(&map_val, &playing);
+                cbor_value_copy_text_string(&val, artist, &sz, nullptr);
+            } else if (strcmp(key, "c") == 0 && cbor_value_is_boolean(&val)) {
+                cbor_value_get_boolean(&val, &can_seek);
+            } else if (strcmp(key, "p") == 0 && cbor_value_is_boolean(&val)) {
+                cbor_value_get_boolean(&val, &playing);
                 has_playing = true;
-            } else if (strcmp(key, "o") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
-                cbor_value_get_uint64(&map_val, &position_s);
+            } else if (strcmp(key, "o") == 0 && cbor_value_is_unsigned_integer(&val)) {
+                cbor_value_get_uint64(&val, &position_s);
                 has_seek = true;
-            } else if (strcmp(key, "d") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
-                cbor_value_get_uint64(&map_val, &duration_s);
+            } else if (strcmp(key, "d") == 0 && cbor_value_is_unsigned_integer(&val)) {
+                cbor_value_get_uint64(&val, &duration_s);
             }
-            if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
-        }
+        });
 
         LOG("[gatt] MediaMetadata: title='%s' artist='%s' can_seek=%d playing=%d%s\n",
                        title, artist, (int)can_seek,
@@ -1085,6 +1157,22 @@ private:
         char fartist[97] = {};
         ui::sanitize_text(title,  ftitle,  sizeof(ftitle));
         ui::sanitize_text(artist, fartist, sizeof(fartist));
+        // A genuine track change (title actually differs — mirrors
+        // screen_media_mode.cpp's own update_meta() rule so a play/pause
+        // resend of the SAME title doesn't trip this) invalidates whatever
+        // Media Album Art transfer is still reassembling for the PREVIOUS
+        // track. Without this, g_art_ctx was only ever reset on a full BLE
+        // disconnect — a superseded transfer that Orion doesn't manage to
+        // abort before it finishes (small art, ~15-30 KB, can complete in
+        // well under a second) would still reach on_complete and decode/
+        // display the stale old artwork, overwriting the new track's title
+        // that already switched moments earlier. Resetting here means any
+        // trailing fragments from the old transfer are simply out-of-sync
+        // and dropped (chunked_transfer's existing gap-handling), and the
+        // new transfer's own seq==0 starts clean.
+        if (strcmp(ftitle, app_state::media().title) != 0) {
+            chunked_transfer::reset(&g_art_ctx);
+        }
         app_state::set_media_meta(ftitle, fartist, can_seek);
         if (has_playing) app_state::set_media_playing(playing);
         // "o" without "d" is meaningless — require both to be present and
@@ -1105,6 +1193,10 @@ private:
             g_art_ctx.on_complete = [](uint8_t* buf, size_t n, const char* nack) {
                 if (nack) {
                     LOG("[gatt] AlbumArt NACK: %s\n", nack);
+                    // Tell the media screen to hide the loading ring — no art
+                    // is coming for this attempt (buf=nullptr is the existing
+                    // "nothing to show" convention for this event).
+                    ble_post_album_art_event(nullptr, 0);
                     return;
                 }
                 // JPEG decoded via LVGL's TJPGD decoder.
@@ -1112,14 +1204,36 @@ private:
                 // signal the media mode screen to reload.
                 ble_post_album_art_event(buf, n);
             };
+            // Fires after every fragment. seq==0 (the first fragment of a new
+            // transfer) is the earliest point we know Orion has actually
+            // started sending art, as opposed to showing a loading indicator
+            // the instant Controls mode opens (before any data is guaranteed
+            // to be coming) — that's when the ring appears. Every fragment
+            // also updates the ring's live percentage from seq/total,
+            // debounced to one post per integer percent change (same
+            // approach as stage_add_bytes()'s sync-progress ring).
+            g_art_ctx.on_fragment = [](uint16_t seq, uint16_t total, uint16_t /*plen*/) {
+                if (seq == 0) {
+                    g_art_last_pct_sent = 0xFF;
+                    ble_post_album_art_started_event();
+                }
+                if (total == 0) return;
+                uint8_t pct = (uint8_t)(((uint32_t)(seq + 1) * 100u) / total);
+                if (pct > 99) pct = 99;  // 100% is reserved for on_complete
+                if (pct != g_art_last_pct_sent) {
+                    g_art_last_pct_sent = pct;
+                    ble_post_album_art_progress_event(pct);
+                }
+            };
         }
         chunked_transfer::feed(&g_art_ctx, data, len);
     }
 
     // -- Device Settings read ----------------------------------------------------
     // Returns all NVS-persisted fields: "c" (clock_face), "h" (time_format),
-    // "f" (ancs_filter), and "1"/"2"/"3" (shortcut slot tokens). Presence and
-    // weather are not returned — ephemeral, Orion is the source of truth.
+    // "f" (ancs_filter), "1"/"2"/"3" (shortcut slot tokens), and "k"
+    // (seek_step_s). Presence and weather are not returned — ephemeral,
+    // Orion is the source of truth.
     // Also returns three read-only fields, never accepted on a write:
     // "s" (serial_number)/"b" (manufacture_date), from the separate
     // write-once "factory" NVS partition, and "r" (signal_bars), Ori's own
@@ -1140,11 +1254,18 @@ private:
         return ble::rssi_to_bars(rssi);
     }
 
+    // Last signal_bars value actually notified via poll_orion_signal_bars()
+    // below — 0xFF (never a valid 0-4 bucket) is the "haven't notified yet
+    // this connection" sentinel, so the very first poll after a connect
+    // always fires once even if the real bucket happens to be 0. Mirrors
+    // ancs_client.cpp's identical g_signal_bars cache for the iPhone link.
+    uint8_t g_last_notified_orion_signal_bars = 0xFF;
+
     void handle_device_settings_read(NimBLECharacteristic* c) {
         CborEncoder enc, map;
         uint8_t buf[192];
         cbor_encoder_init(&enc, buf, sizeof(buf), 0);
-        cbor_encoder_create_map(&enc, &map, 9);
+        cbor_encoder_create_map(&enc, &map, 10);
         cbor_encode_text_stringz(&map, "c");
         cbor_encode_uint(&map, (uint64_t)nvs::get_clock_face());
         cbor_encode_text_stringz(&map, "h");
@@ -1158,6 +1279,8 @@ private:
         cbor_encode_text_stringz(&map, slots[1].icon_token ? slots[1].icon_token : "");
         cbor_encode_text_stringz(&map, "3");
         cbor_encode_text_stringz(&map, slots[2].icon_token ? slots[2].icon_token : "");
+        cbor_encode_text_stringz(&map, "k");
+        cbor_encode_uint(&map, (uint64_t)app_state::seek_step_s());
         // Read-only device-identity/link fields — "s"/"b" come from the
         // write-once "factory" NVS partition (factory_info.h, never touched
         // by nvs::factory_reset()); "r" is sampled live above. None of the
@@ -1177,7 +1300,8 @@ private:
 
     // -- Device Settings (char 000E) — CBOR map, partial-update ---------------
     // Merges Presence Status, Shortcut Config, Clock Face, Time Format, ANCS
-    // Filter, and Weather into one characteristic. All fields are optional; absent
+    // Filter, Weather, and the double-tap Seek Step into one characteristic.
+    // All fields are optional; absent
     // keys leave state unchanged. All present fields are validated before any are
     // applied (atomic).
     // Applied immediately, outside the BEGIN/END staging pipeline — same treatment
@@ -1216,22 +1340,15 @@ private:
         uint64_t uid_v = 0, action_v = 0;
 
         if (cbor_open_map(data, len, parser, root, map_val)) {
-            while (!cbor_value_at_end(&map_val)) {
-                char key[4] = {}; size_t key_len = sizeof(key) - 1;
-                if (cbor_value_is_text_string(&map_val)) {
-                    cbor_value_copy_text_string(&map_val, key, &key_len, &map_val);
-                } else { cbor_value_advance(&map_val); continue; }
-                if (cbor_value_at_end(&map_val)) break;
-
-                if (strcmp(key, "u") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
-                    cbor_value_get_uint64(&map_val, &uid_v);
+            for_each_cbor_key<4>(map_val, [&](const char* key, CborValue& val) {
+                if (strcmp(key, "u") == 0 && cbor_value_is_unsigned_integer(&val)) {
+                    cbor_value_get_uint64(&val, &uid_v);
                     has_uid = true;
-                } else if (strcmp(key, "a") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
-                    cbor_value_get_uint64(&map_val, &action_v);
+                } else if (strcmp(key, "a") == 0 && cbor_value_is_unsigned_integer(&val)) {
+                    cbor_value_get_uint64(&val, &action_v);
                     has_action = true;
                 }
-                if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
-            }
+            });
         }
 
         if (!has_uid || !has_action || action_v > 1) {
@@ -1261,57 +1378,61 @@ static bool parse_device_settings(const uint8_t* data, uint16_t len, DeviceSetti
     CborParser parser; CborValue root, map_val;
     if (!cbor_open_map(data, len, parser, root, map_val)) return false;
 
-    while (!cbor_value_at_end(&map_val)) {
-        char key[4] = {}; size_t key_len = sizeof(key) - 1;
-        if (cbor_value_is_text_string(&map_val)) {
-            cbor_value_copy_text_string(&map_val, key, &key_len, &map_val);
-        } else { cbor_value_advance(&map_val); continue; }
-        if (cbor_value_at_end(&map_val)) break;
-
-        if (strcmp(key, "p") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
-            uint64_t v; cbor_value_get_uint64(&map_val, &v);
-            if (v > 3) return false;
+    // `valid` (not an early `return false` from inside the loop) because the
+    // generic for_each_cbor_key() handler is void-returning — every field
+    // already written into `out` before an invalid one is found stays
+    // harmless either way, since the caller discards `out` entirely whenever
+    // this returns false.
+    bool valid = true;
+    for_each_cbor_key<4>(map_val, [&](const char* key, CborValue& val) {
+        if (!valid) return;  // a prior field already failed validation
+        if (strcmp(key, "p") == 0 && cbor_value_is_unsigned_integer(&val)) {
+            uint64_t v; cbor_value_get_uint64(&val, &v);
+            if (v > 3) { valid = false; return; }
             out.presence_val = (uint8_t)v; out.has_presence = true;
-        } else if (strcmp(key, "1") == 0 && cbor_value_is_text_string(&map_val)) {
+        } else if (strcmp(key, "1") == 0 && cbor_value_is_text_string(&val)) {
             size_t sz = sizeof(out.slot1) - 1;
-            cbor_value_copy_text_string(&map_val, out.slot1, &sz, nullptr);
+            cbor_value_copy_text_string(&val, out.slot1, &sz, nullptr);
             out.has_slots = true;
-        } else if (strcmp(key, "2") == 0 && cbor_value_is_text_string(&map_val)) {
+        } else if (strcmp(key, "2") == 0 && cbor_value_is_text_string(&val)) {
             size_t sz = sizeof(out.slot2) - 1;
-            cbor_value_copy_text_string(&map_val, out.slot2, &sz, nullptr);
+            cbor_value_copy_text_string(&val, out.slot2, &sz, nullptr);
             out.has_slots = true;
-        } else if (strcmp(key, "3") == 0 && cbor_value_is_text_string(&map_val)) {
+        } else if (strcmp(key, "3") == 0 && cbor_value_is_text_string(&val)) {
             size_t sz = sizeof(out.slot3) - 1;
-            cbor_value_copy_text_string(&map_val, out.slot3, &sz, nullptr);
+            cbor_value_copy_text_string(&val, out.slot3, &sz, nullptr);
             out.has_slots = true;
-        } else if (strcmp(key, "c") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
-            uint64_t v; cbor_value_get_uint64(&map_val, &v);
-            if (v > 1) return false;
+        } else if (strcmp(key, "c") == 0 && cbor_value_is_unsigned_integer(&val)) {
+            uint64_t v; cbor_value_get_uint64(&val, &v);
+            if (v > 1) { valid = false; return; }
             out.clock_val = (uint8_t)v; out.has_clock = true;
-        } else if (strcmp(key, "h") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
-            uint64_t v; cbor_value_get_uint64(&map_val, &v);
-            if (v > 1) return false;
+        } else if (strcmp(key, "h") == 0 && cbor_value_is_unsigned_integer(&val)) {
+            uint64_t v; cbor_value_get_uint64(&val, &v);
+            if (v > 1) { valid = false; return; }
             out.timefmt_val = (uint8_t)v; out.has_timefmt = true;
-        } else if (strcmp(key, "f") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
-            uint64_t v; cbor_value_get_uint64(&map_val, &v);
-            if (v > 3) return false;
+        } else if (strcmp(key, "f") == 0 && cbor_value_is_unsigned_integer(&val)) {
+            uint64_t v; cbor_value_get_uint64(&val, &v);
+            if (v > 3) { valid = false; return; }
             out.filter_val = (uint8_t)v; out.has_filter = true;
-        } else if (strcmp(key, "w") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
-            uint64_t v; cbor_value_get_uint64(&map_val, &v);
-            if (v > 6) return false;
+        } else if (strcmp(key, "w") == 0 && cbor_value_is_unsigned_integer(&val)) {
+            uint64_t v; cbor_value_get_uint64(&val, &v);
+            if (v > 6) { valid = false; return; }
             out.weather_cond_val = (uint8_t)v; out.has_weather_cond = true;
-        } else if (strcmp(key, "d") == 0 && cbor_value_is_integer(&map_val)) {
-            int64_t v; cbor_value_get_int64(&map_val, &v);
-            if (v < -40 || v > 140) return false;
+        } else if (strcmp(key, "d") == 0 && cbor_value_is_integer(&val)) {
+            int64_t v; cbor_value_get_int64(&val, &v);
+            if (v < -40 || v > 140) { valid = false; return; }
             out.weather_temp_val = (int16_t)v; out.has_weather_temp = true;
-        } else if (strcmp(key, "u") == 0 && cbor_value_is_unsigned_integer(&map_val)) {
-            uint64_t v; cbor_value_get_uint64(&map_val, &v);
-            if (v > 1) return false;
+        } else if (strcmp(key, "u") == 0 && cbor_value_is_unsigned_integer(&val)) {
+            uint64_t v; cbor_value_get_uint64(&val, &v);
+            if (v > 1) { valid = false; return; }
             out.weather_unit_val = (uint8_t)v; out.has_weather_unit = true;
+        } else if (strcmp(key, "k") == 0 && cbor_value_is_unsigned_integer(&val)) {
+            uint64_t v; cbor_value_get_uint64(&val, &v);
+            if (v < 1 || v > 60) { valid = false; return; }
+            out.seek_step_val = (uint8_t)v; out.has_seek_step = true;
         }
-        if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
-    }
-    return true;
+    });
+    return valid;
 }
 
 static void apply_device_settings(const DeviceSettingsWrite& w) {
@@ -1361,6 +1482,13 @@ static void apply_device_settings(const DeviceSettingsWrite& w) {
         LOG("[gatt] DeviceSettings: weather partial write ignored (w=%d d=%d u=%d)\n",
             (int)w.has_weather_cond, (int)w.has_weather_temp, (int)w.has_weather_unit);
     }
+    if (w.has_seek_step) {
+        // app_state write deferred to main task via event, same as shortcuts —
+        // NVS write + app_state::set_seek_step_s() both belong on the main
+        // task (see handle_seek_step_update() in ble_manager.cpp).
+        ble_post_seek_step_event(w.seek_step_val);
+        LOG("[gatt] DeviceSettings: seek_step_s=%u\n", (unsigned)w.seek_step_val);
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -1404,30 +1532,21 @@ static void apply_profile_cbor(const uint8_t* data, size_t len) {
     char email[129]= {};
     char phone[33] = {};
 
-    while (!cbor_value_at_end(&map_val)) {
-        char key[16] = {};
-        size_t key_len = sizeof(key) - 1;
-        if (cbor_value_is_text_string(&map_val)) {
-            cbor_value_copy_text_string(&map_val, key, &key_len, &map_val);
-        } else { cbor_value_advance(&map_val); continue; }
-
-        if (cbor_value_at_end(&map_val)) break;
-
-        if (strcmp(key, "n") == 0 && cbor_value_is_text_string(&map_val)) {
+    for_each_cbor_key(map_val, [&](const char* key, CborValue& val) {
+        if (strcmp(key, "n") == 0 && cbor_value_is_text_string(&val)) {
             size_t sz = sizeof(name) - 1;
-            cbor_value_copy_text_string(&map_val, name, &sz, nullptr);
-        } else if (strcmp(key, "t") == 0 && cbor_value_is_text_string(&map_val)) {
+            cbor_value_copy_text_string(&val, name, &sz, nullptr);
+        } else if (strcmp(key, "t") == 0 && cbor_value_is_text_string(&val)) {
             size_t sz = sizeof(title) - 1;
-            cbor_value_copy_text_string(&map_val, title, &sz, nullptr);
-        } else if (strcmp(key, "e") == 0 && cbor_value_is_text_string(&map_val)) {
+            cbor_value_copy_text_string(&val, title, &sz, nullptr);
+        } else if (strcmp(key, "e") == 0 && cbor_value_is_text_string(&val)) {
             size_t sz = sizeof(email) - 1;
-            cbor_value_copy_text_string(&map_val, email, &sz, nullptr);
-        } else if (strcmp(key, "p") == 0 && cbor_value_is_text_string(&map_val)) {
+            cbor_value_copy_text_string(&val, email, &sz, nullptr);
+        } else if (strcmp(key, "p") == 0 && cbor_value_is_text_string(&val)) {
             size_t sz = sizeof(phone) - 1;
-            cbor_value_copy_text_string(&map_val, phone, &sz, nullptr);
+            cbor_value_copy_text_string(&val, phone, &sz, nullptr);
         }
-        if (!cbor_value_at_end(&map_val)) cbor_value_advance(&map_val);
-    }
+    });
 
     // Drop glyphs the UI font can't render (emoji, CJK, …) from the visible
     // fields. The manifest hash below is computed over the RAW CBOR bytes, so
@@ -1489,37 +1608,28 @@ static void apply_time_off_cbor(uint8_t* buf, size_t n) {
     size_t     img_len   = 0;
 
     if (cbor_open_map(buf, n, parser, root, map_val)) {
-        while (!cbor_value_at_end(&map_val)) {
-            char key[16] = {};
-            size_t ksz = sizeof(key) - 1;
-            if (!cbor_value_is_text_string(&map_val)) {
-                cbor_value_advance(&map_val);
-                continue;
-            }
-            cbor_value_copy_text_string(&map_val, key, &ksz, &map_val);
-            if (cbor_value_at_end(&map_val)) break;
-
+        for_each_cbor_key(map_val, [&](const char* key, CborValue& val) {
             if (strcmp(key, "s") == 0 &&
-                cbor_value_is_unsigned_integer(&map_val)) {
+                cbor_value_is_unsigned_integer(&val)) {
                 uint64_t v = 0;
-                cbor_value_get_uint64(&map_val, &v);
+                cbor_value_get_uint64(&val, &v);
                 time_off_start = (uint32_t)v;
 
             } else if (strcmp(key, "e") == 0 &&
-                       cbor_value_is_unsigned_integer(&map_val)) {
+                       cbor_value_is_unsigned_integer(&val)) {
                 uint64_t v = 0;
-                cbor_value_get_uint64(&map_val, &v);
+                cbor_value_get_uint64(&val, &v);
                 time_off_end = (uint32_t)v;
 
             } else if (strcmp(key, "d") == 0 &&
-                       cbor_value_is_text_string(&map_val)) {
+                       cbor_value_is_text_string(&val)) {
                 size_t dsz = sizeof(dest) - 1;
-                cbor_value_copy_text_string(&map_val, dest, &dsz, nullptr);
+                cbor_value_copy_text_string(&val, dest, &dsz, nullptr);
 
             } else if (strcmp(key, "m") == 0 &&
-                       cbor_value_is_byte_string(&map_val)) {
+                       cbor_value_is_byte_string(&val)) {
                 size_t raw_len = 0;
-                cbor_value_get_string_length(&map_val, &raw_len);
+                cbor_value_get_string_length(&val, &raw_len);
                 if (raw_len > 0 && raw_len <= 512 * 1024) {
                     img_buf = static_cast<uint8_t*>(
                         heap_caps_malloc(raw_len,
@@ -1529,15 +1639,12 @@ static void apply_time_off_cbor(uint8_t* buf, size_t n) {
                     if (img_buf) {
                         img_len = raw_len;
                         cbor_value_copy_byte_string(
-                            &map_val, img_buf, &img_len, nullptr);
+                            &val, img_buf, &img_len, nullptr);
                     }
                 }
                 // raw_len == 0 ? no image set; img_buf stays nullptr
             }
-
-            if (!cbor_value_at_end(&map_val))
-                cbor_value_advance(&map_val);
-        }
+        });
     }
 
     heap_caps_free(buf); // free staged CBOR blob
@@ -1685,11 +1792,17 @@ void init() {
         NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_AUTHEN);
     c_album_art->setCallbacks(&s_char_cb);
 
-    // 000E Device Settings — Read + Write, MITM-authenticated.
+    // 000E Device Settings — Read + Write + Notify, MITM-authenticated.
+    // Notify added 2026-07-13 (ble-protocol.md §4/§6.4) so Orion's Ori Info
+    // modal can show live signal_bars ("r") without polling a BLE read —
+    // see gatt_server::poll_orion_signal_bars(). Base READ was already
+    // present, satisfying the WinRT notify-delivery requirement (firmware.md
+    // — "every NOTIFY characteristic must ALSO declare NIMBLE_PROPERTY::READ").
     c_dev_settings = svc->createCharacteristic(
         "6F726900-000E-4F72-9F00-000000000000",
         NIMBLE_PROPERTY::READ  | NIMBLE_PROPERTY::READ_AUTHEN |
-        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_AUTHEN);
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_AUTHEN |
+        NIMBLE_PROPERTY::NOTIFY);
     c_dev_settings->setCallbacks(&s_char_cb);
 
     // 000F Phone Bond Status — Read + Notify, MITM-authenticated.
@@ -1701,7 +1814,7 @@ void init() {
     {
         // Seed with "not bonded, not connected" — updated by notify_phone_bond_status().
         uint8_t buf[64];
-        size_t  n = encode_phone_status(buf, sizeof(buf), false, false, "", 0, 0, 0, 0);
+        size_t  n = encode_phone_status(buf, sizeof(buf), false, false, "", "", 0, 0, 0, 0, 0);
         c_phone_status->setValue(buf, n);
     }
 
@@ -1788,46 +1901,62 @@ void notify_keyboard_command(const char* op, uint32_t arg) {
     LOG("[gatt] KeyboardCommand: op=%s arg=%u\n", op, (unsigned)arg);
 }
 
-void notify_phone_bond_status(bool bonded, bool connected, const char* name) {
+void notify_phone_bond_status(bool bonded, bool connected, const char* name,
+                               const char* device_type, uint8_t battery_level) {
     if (!c_phone_status) return;
     g_phone_bonded    = bonded;
     g_phone_connected = connected;
     strncpy(g_phone_name_cache, name ? name : "", sizeof(g_phone_name_cache) - 1);
     g_phone_name_cache[sizeof(g_phone_name_cache) - 1] = '\0';
+    strncpy(g_phone_device_type_cache, device_type ? device_type : "",
+            sizeof(g_phone_device_type_cache) - 1);
+    g_phone_device_type_cache[sizeof(g_phone_device_type_cache) - 1] = '\0';
     if (!connected) {
-        // Nothing left to verify once the link drops — zero the stats/signal
-        // cache too so a stale reading never lingers into the next connect
-        // (ancs_client re-populates real values once ANCS resubscribes).
-        g_phone_missed = g_phone_unread = g_phone_total = g_phone_signal = 0;
+        // Nothing left to verify once the link drops — zero the stats/signal/
+        // battery cache too so a stale reading never lingers into the next
+        // connect (ancs_client re-populates real values once ANCS resubscribes).
+        g_phone_missed = g_phone_unread = g_phone_total = g_phone_signal = g_phone_battery = 0;
+    } else {
+        // Fresh (re)connect: trust the caller's just-read battery level over
+        // this characteristic's own cache, which the branch above zeroed on
+        // the prior disconnect.
+        g_phone_battery = battery_level;
     }
-    uint8_t buf[160];
-    size_t  n = encode_phone_status(buf, sizeof(buf), bonded, connected, name,
-                                     g_phone_missed, g_phone_unread, g_phone_total, g_phone_signal);
+    uint8_t buf[192];
+    size_t  n = encode_phone_status(buf, sizeof(buf), bonded, connected, name, device_type,
+                                     g_phone_missed, g_phone_unread, g_phone_total,
+                                     g_phone_signal, g_phone_battery);
     c_phone_status->setValue(buf, n);
     c_phone_status->notify(buf, n);
-    LOG("[gatt] PhoneBondStatus: bonded=%d connected=%d name='%s'\n",
-        (int)bonded, (int)connected, name ? name : "");
+    LOG("[gatt] PhoneBondStatus: bonded=%d connected=%d name='%s' type='%s'\n",
+        (int)bonded, (int)connected, name ? name : "", device_type ? device_type : "");
 }
 
-void notify_phone_stats(uint8_t missed, uint8_t unread, uint8_t total, uint8_t signal_bars) {
+void notify_phone_stats(uint8_t missed, uint8_t unread, uint8_t total,
+                         uint8_t signal_bars, uint8_t battery_level) {
     // Nothing to relay while disconnected — notify_phone_bond_status() already
     // zeroed and pushed the cache when the link dropped.
     if (!c_phone_status || !g_phone_connected) return;
     if (missed == g_phone_missed && unread == g_phone_unread &&
-        total == g_phone_total && signal_bars == g_phone_signal) {
+        total == g_phone_total && signal_bars == g_phone_signal &&
+        battery_level == g_phone_battery) {
         return;  // no real change — avoid spamming a notify per ANCS event
     }
-    g_phone_missed = missed;
-    g_phone_unread = unread;
-    g_phone_total  = total;
-    g_phone_signal = signal_bars;
-    uint8_t buf[160];
-    size_t  n = encode_phone_status(buf, sizeof(buf), g_phone_bonded, g_phone_connected, g_phone_name_cache,
-                                     g_phone_missed, g_phone_unread, g_phone_total, g_phone_signal);
+    g_phone_missed  = missed;
+    g_phone_unread  = unread;
+    g_phone_total   = total;
+    g_phone_signal  = signal_bars;
+    g_phone_battery = battery_level;
+    uint8_t buf[192];
+    size_t  n = encode_phone_status(buf, sizeof(buf), g_phone_bonded, g_phone_connected,
+                                     g_phone_name_cache, g_phone_device_type_cache,
+                                     g_phone_missed, g_phone_unread, g_phone_total,
+                                     g_phone_signal, g_phone_battery);
     c_phone_status->setValue(buf, n);
     c_phone_status->notify(buf, n);
-    LOG("[gatt] PhoneBondStatus stats: missed=%u unread=%u total=%u signal=%u\n",
-        (unsigned)missed, (unsigned)unread, (unsigned)total, (unsigned)signal_bars);
+    LOG("[gatt] PhoneBondStatus stats: missed=%u unread=%u total=%u signal=%u battery=%u\n",
+        (unsigned)missed, (unsigned)unread, (unsigned)total, (unsigned)signal_bars,
+        (unsigned)battery_level);
 }
 
 // -- ANCS relay to Orion (chars 0010-0012, ble-protocol.md §13) ------------
@@ -1858,6 +1987,40 @@ void notify_phone_stats(uint8_t missed, uint8_t unread, uint8_t total, uint8_t s
 // characteristic mid-sequence — Orion's reassembler only ever has one
 // fragment sequence in flight at a time, never interleaved across two
 // different notifications.
+
+// Bounded retry-with-backoff for a single notify() call, scoped to the
+// transient "outgoing mbuf pool momentarily full" case — NOT a general
+// reliability mechanism and NOT a change to §5's "no NACK/retry" protocol
+// design for a single notification (that reasoning is still correct: a lone
+// AncsNotification's few fragments comfortably fit the pool). The one case
+// that DOES overrun the pool is ancs_client.cpp's resync_orion_relay()
+// stacking many queued notifications' worth of fragments back-to-back right
+// at reconnect — a real hardware log showed 10 queued notifications (several
+// up to 8 fragments each) flooding the link while still mid-MTU-negotiation,
+// most fragments failing and Orion eventually tearing down the connection
+// (BLE_HS_HCI_ERR 0x13, "Remote User Terminated Connection"). The primary fix
+// for that is pacing the resync loop itself (ancs_client.cpp); this retry is
+// defense in depth for whatever transient overrun still slips through.
+//
+// NimBLECharacteristic::notify() only returns bool — the actual ble_hs rc
+// (e.g. BLE_HS_ENOMEM) is logged inside NimBLE's own sendValue() under its
+// own log tag and never surfaced to the caller, so we can't branch on
+// ENOMEM specifically. In practice, on an already-subscribed/encrypted
+// characteristic the near-only realistic failure mode IS the mbuf pool
+// being transiently full, so retrying on any notify() failure here is the
+// closest available proxy.
+static constexpr int      ANCS_NOTIFY_MAX_RETRIES        = 3;
+static constexpr uint32_t ANCS_NOTIFY_RETRY_BACKOFF_MS    = 15;
+
+static bool notify_with_retry(NimBLECharacteristic* c, const uint8_t* frame, size_t len) {
+    bool ok = c->notify(frame, len);
+    for (int attempt = 0; !ok && attempt < ANCS_NOTIFY_MAX_RETRIES; ++attempt) {
+        vTaskDelay(pdMS_TO_TICKS(ANCS_NOTIFY_RETRY_BACKOFF_MS));
+        ok = c->notify(frame, len);
+    }
+    return ok;
+}
+
 static void notify_chunked(NimBLECharacteristic* c, const uint8_t* payload, size_t payload_len) {
     if (!c) return;
     uint16_t mtu = ble_att_mtu(ble_manager::orion_conn_handle());
@@ -1878,9 +2041,9 @@ static void notify_chunked(NimBLECharacteristic* c, const uint8_t* payload, size
         frame[4] = (uint8_t)(this_len & 0xFF);
         frame[5] = (uint8_t)((this_len >> 8) & 0xFF);
         memcpy(frame + 6, payload + offset, this_len);
-        if (!c->notify(frame, 6 + this_len)) {
-            LOG("[gatt] notify_chunked: frame %u/%u FAILED (mbuf pool exhausted?)\n",
-                (unsigned)(seq + 1), (unsigned)total_frags);
+        if (!notify_with_retry(c, frame, 6 + this_len)) {
+            LOG("[gatt] notify_chunked: frame %u/%u FAILED after %d retries (mbuf pool exhausted?)\n",
+                (unsigned)(seq + 1), (unsigned)total_frags, ANCS_NOTIFY_MAX_RETRIES);
         }
     }
 }
@@ -1977,6 +2140,17 @@ void poll_chunk_timeouts() {
     chunked_transfer::poll_timeouts(ctxs, 4);
 }
 
+// Notifies Device Settings (char 000E) whenever Ori's own live signal_bars
+// ("r") to Orion changes (ble-protocol.md §4/§6.4, pc-app.md) — the actual
+// work lives on OriCharacteristicCallbacks::poll_orion_signal_bars() (public
+// member, near onSubscribe() above), since it needs read_orion_signal_bars()/
+// handle_device_settings_read()/the last-notified cache, all private members
+// of that class. This is just the public forwarding entry point
+// ble_manager::poll() calls every tick.
+void poll_orion_signal_bars() {
+    s_char_cb.poll_orion_signal_bars();
+}
+
 // Called from ble_manager::poll() (main task) in response to
 // SyncControl{op:"END"}. Applies all staged items to NVS/UI in one burst,
 // then transitions Device Status and signals SyncEnd for the UI advance.
@@ -2006,7 +2180,7 @@ void run_staged_commit() {
                           ? DS_SETUP_SYNC_COMPLETE
                           : DS_RUNTIME_READY;
     set_device_status(new_status);
-    ble_post_sync_end_event(false);
+    ble_post_sync_end_event();
 }
 
 } // namespace gatt_server

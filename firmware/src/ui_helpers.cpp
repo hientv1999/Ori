@@ -11,6 +11,17 @@ namespace ui {
 
 namespace {
 
+// Floor for make_modal_layout()'s card's AND actions' ext_draw_size (see the
+// LV_EVENT_REFR_EXT_DRAW_SIZE handlers there) — must cover the largest
+// breathing-glow bleed any modal action button (make_btn, Primary/Danger
+// style) can produce, with headroom to spare. actions is the tighter of the
+// two in practice: it has no shadow of its own, so its auto-computed
+// ext_draw_size is 0 — OVERFLOW_VISIBLE with no override extends its clip by
+// nothing, and it was clipping button glow against its own 8-10px padding
+// regardless of the flag. card's own shadow gives it some natural slack, but
+// not reliably enough (see make_modal_layout()'s comment on card).
+constexpr int32_t MODAL_GLOW_CLIP_MARGIN = 40;
+
 // Decode one UTF-8 codepoint at `s`. Sets *adv to its byte length (1..4).
 // Invalid lead/continuation bytes → adv=1, returns 0 (caller drops it).
 static uint32_t utf8_next(const uint8_t* s, size_t* adv) {
@@ -231,6 +242,24 @@ ModalLayout make_modal_layout(lv_obj_t* base_screen, lv_coord_t card_w, lv_coord
     lv_obj_set_style_pad_top(layout.card, 16, 0);
     lv_obj_set_style_pad_bottom(layout.card, 16, 0);
     lv_obj_clear_flag(layout.card, LV_OBJ_FLAG_SCROLLABLE);
+    // LV_OBJ_FLAG_OVERFLOW_VISIBLE does NOT disable card's clipping outright —
+    // per lv_refr.c's lv_obj_redraw(), an OVERFLOW_VISIBLE object's clip
+    // contribution is still a FINITE box: its own coords inflated by
+    // lv_obj_get_ext_draw_size(card), which the default class handler derives
+    // from CARD'S OWN shadow/outline styles (here: shadow_width 30, spread 0
+    // → ~16 px) — nothing to do with how far a CHILD button's glow bleeds.
+    // A Danger/Primary button's breathing glow (make_btn) extends ~24-30 px
+    // beyond its own box, so card's self-derived ~16 px allowance still
+    // clipped it on real hardware even with this flag set. Fix: register our
+    // own LV_EVENT_REFR_EXT_DRAW_SIZE handler that reports a bigger floor;
+    // lv_event_set_ext_draw_size() MAXes with the default shadow-based value
+    // rather than replacing it, so this only ever grows card's effective clip
+    // box — it never shrinks or otherwise changes card's own visible shadow.
+    lv_obj_add_flag(layout.card, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+    lv_obj_add_event_cb(layout.card, [](lv_event_t* e) {
+        lv_event_set_ext_draw_size(e, MODAL_GLOW_CLIP_MARGIN);
+    }, LV_EVENT_REFR_EXT_DRAW_SIZE, nullptr);
+    lv_obj_refresh_ext_draw_size(layout.card);
     lv_obj_set_flex_flow(layout.card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(layout.card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -250,34 +279,58 @@ ModalLayout make_modal_layout(lv_obj_t* base_screen, lv_coord_t card_w, lv_coord
     lv_obj_set_size(layout.actions, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_style_bg_opa(layout.actions, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(layout.actions, 0, 0);
-    // actions is LV_SIZE_CONTENT, so its own padding sets the box size the
-    // buttons get clipped to. Each button's breathing glow extends
-    // shadow_width/2 + shadow_spread = font_h/2 + font_h/4 beyond its border
-    // box (make_btn) — for font_meta (line_height 32) that's 24 px. 8 px of
-    // padding clipped the outer buttons' glow on the left/right; 26 px gives
-    // it room on every side. LV_OBJ_FLAG_OVERFLOW_VISIBLE is kept as a
-    // backstop (same fix as the brand-mark glow bleed in screen_setup.cpp)
-    // but the padding is what actually guarantees the box is big enough.
+    // actions is LV_SIZE_CONTENT, so its own padding sets buttons' distance
+    // from its box edge; each button's breathing glow (make_btn) extends
+    // roughly shadow_width/2 + shadow_spread beyond its border box (~24 px
+    // for font_meta). This padding no longer has to be sized to exactly fit
+    // the glow — see the ext-draw-size override below, which is what
+    // actually guarantees actions' children aren't clipped. Values below are
+    // for visual spacing only.
     lv_obj_set_style_pad_left(layout.actions, 26, 0);
     lv_obj_set_style_pad_right(layout.actions, 26, 0);
-    // Bottom is tighter than left/right — card's own 16px bottom padding adds
-    // back to the same ~26px total glow margin (10 + 16), so this also moves
-    // the button row down 16px and hands that height to scroll_area's
-    // flex_grow, since actions' box (and therefore its position, anchored
-    // right after scroll_area) shrinks by exactly that much.
+    // Bottom is tighter than left/right — card's own 16px bottom padding
+    // hands the difference back to scroll_area's flex_grow.
     lv_obj_set_style_pad_bottom(layout.actions, 10, 0);
-    // Top is tighter than the other three sides — it borders scroll_area, not
-    // a card edge, so there's less glow-clipping risk to guard against (only
-    // a 24px glow extends upward into already-empty space above the buttons).
+    // Top is tighter than the other three sides — it borders scroll_area,
+    // not a card edge.
     lv_obj_set_style_pad_top(layout.actions, 8, 0);
     lv_obj_set_style_pad_column(layout.actions, 16, 0);
     lv_obj_clear_flag(layout.actions, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(layout.actions, LV_OBJ_FLAG_CLICKABLE);
+    // actions has no shadow/outline of its own, so lv_obj_get_ext_draw_size()
+    // for it is 0 by default — OVERFLOW_VISIBLE alone extends its clip
+    // contribution by nothing, and it was clipping button glow against its
+    // own tight box (8-10px padding) regardless of the flag. Same
+    // MAX-combining custom-ext-draw-size fix as card above, applied to the
+    // object that turned out to be the actual bottleneck.
     lv_obj_add_flag(layout.actions, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+    lv_obj_add_event_cb(layout.actions, [](lv_event_t* e) {
+        lv_event_set_ext_draw_size(e, MODAL_GLOW_CLIP_MARGIN);
+    }, LV_EVENT_REFR_EXT_DRAW_SIZE, nullptr);
+    lv_obj_refresh_ext_draw_size(layout.actions);
     lv_obj_set_flex_flow(layout.actions, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(layout.actions, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     return layout;
+}
+
+lv_obj_t* make_corner_badge(lv_obj_t* parent, lv_color_t bg_color,
+                             lv_color_t border_color, int32_t border_width,
+                             lv_align_t align, int16_t x_ofs, int16_t y_ofs) {
+    lv_obj_t* badge = lv_obj_create(parent);
+    lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(badge, bg_color, 0);
+    lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(badge, border_color, 0);
+    lv_obj_set_style_border_width(badge, border_width, 0);
+    lv_obj_set_style_border_opa(badge, LV_OPA_COVER, 0);
+    lv_obj_set_style_shadow_width(badge, 0, 0);
+    lv_obj_set_style_pad_all(badge, 0, 0);
+    lv_obj_clear_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(badge, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(badge, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_align(badge, align, x_ofs, y_ofs);
+    return badge;
 }
 
 lv_obj_t* add_close_x(lv_obj_t* card, lv_event_cb_t cb, void* user) {
@@ -319,6 +372,14 @@ lv_obj_t* add_close_x(lv_obj_t* card, lv_event_cb_t cb, void* user) {
 
 void close_scrim_cb(lv_event_t* e) {
     lv_obj_delete(static_cast<lv_obj_t*>(lv_event_get_user_data(e)));
+}
+
+void anim_set_opa_cb(void* obj, int32_t v) {
+    lv_obj_set_style_opa(static_cast<lv_obj_t*>(obj), (lv_opa_t)v, 0);
+}
+
+void anim_set_translate_x_cb(void* obj, int32_t v) {
+    lv_obj_set_style_translate_x(static_cast<lv_obj_t*>(obj), (int16_t)v, 0);
 }
 
 static void btn_glow_anim_cb(void* obj, int32_t v) {

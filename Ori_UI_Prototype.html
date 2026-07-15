@@ -1139,6 +1139,15 @@
       color: var(--text-1);
     }
 
+    /* Device model subtitle — e.g. "iPhone 17 Pro Max" — right under the
+       phone's (user-set) name. Absent entirely when unavailable (JS omits
+       the element), not shown as a placeholder. */
+    .ip-card .ip-type {
+      margin-top: -4px;
+      font-size: 24px;
+      color: var(--text-2);
+    }
+
     .ip-card .ip-status {
       margin-top: 8px;
       display: flex;
@@ -1152,6 +1161,36 @@
       display: flex;
       align-items: center;
       gap: 9px;
+    }
+
+    /* Groups signal bars + battery icon as one right-side unit so
+       .ip-status's space-between still puts dot+label on the far left and
+       this whole pair on the far right. */
+    .ip-card .ip-status-right {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+    }
+
+    /* Battery icon — outline+nub in the same neutral stroke as the signal
+       bars' resting color; the fill rect's color is set inline per-render
+       (var(--presence-available) normally, var(--danger) at/below 20%),
+       mirroring modal_iphone_info.cpp's plain-LVGL-primitives battery glyph. */
+    .ip-batt {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--text-2);
+    }
+
+    .ip-batt svg {
+      width: 57px;
+      height: 33px;
+    }
+
+    .ip-batt span {
+      font-size: 24px;
+      font-variant-numeric: tabular-nums;
     }
 
     .ip-card .ip-status .dot {
@@ -2174,77 +2213,111 @@
         radial-gradient(circle at 28% 22%, rgba(255, 255, 255, 0.18) 0%, transparent 45%),
         linear-gradient(135deg, #2c1a4c 0%, #6e2456 32%, #c44b3d 65%, #f5b042 100%);
       box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.10);
-      transition: transform 0.18s ease-out, filter 0.18s ease-out;
+      transition: transform 0.18s ease-out, filter 0.18s ease-out, opacity 0.18s ease-out;
       position: relative;
       overflow: hidden;
     }
 
-    .kbd-art-wrap.paused .kbd-art {
-      filter: brightness(0.55) saturate(0.6);
+    /* Touch-revealed controls (scrim + progress bar + play/pause button) —
+   dims the art to 40% opacity, YouTube-style. Shown on any touch or a
+   play/pause button tap (revealControls()); ALWAYS auto-hides after 5s
+   idle, whether playing or paused — no permanently-visible state. A plain
+   tap elsewhere while already visible dismisses (skipping the 5s wait) once
+   it's clear this isn't the first half of a double-tap — see
+   dismissControlsNow() and bindAlbumArtGestures()'s pendingDismissTimer.
+   The scrim itself snaps back to full brightness instantly on dismiss —
+   only the button + progress bar fade (below). Mirrors
+   screen_media_mode.cpp's CONTROLS_DIM_OPA/apply_controls_visual(). */
+    .kbd-art-wrap.controls-visible .kbd-art {
+      opacity: 0.4;
     }
 
     .kbd-art-wrap.swiping-vert .kbd-art {
       filter: brightness(0.5);
     }
 
-    .kbd-art-wrap .kbd-art-overlay {
+    /* Circular touch-revealed play/pause button — a dark translucent
+   "background chip" behind the icon, same treatment as YouTube's own
+   control (media-mode.md). Hidden together with the scrim + progress bar;
+   tapping it is the ONLY way to toggle playback now — see
+   bindPlayPauseButton()/togglePlayPause(). Reveal is instant (no
+   transition on the ".controls-visible" rule below); dismissal fades over
+   0.4s ease-in — the same treatment as ".kbd-timeline" below, so the
+   button doesn't look inconsistent next to the progress bar. */
+    .kbd-art-wrap .kbd-playpause-btn {
       position: absolute;
-      inset: 0;
+      left: 50%;
+      top: 50%;
+      width: 92px;
+      height: 92px;
+      margin: -46px 0 0 -46px;
+      border-radius: 50%;
+      background: rgba(0, 0, 0, 0.5);
       display: flex;
       align-items: center;
       justify-content: center;
-      pointer-events: none;
       opacity: 0;
-      transition: opacity 0.18s;
+      pointer-events: none;
+      transition: opacity 0.4s ease-in;
+      cursor: pointer;
     }
 
-    .kbd-art-wrap.paused .kbd-art-overlay {
+    .kbd-art-wrap.controls-visible .kbd-playpause-btn {
       opacity: 1;
+      pointer-events: auto;
+      transition: none;
     }
 
-    .kbd-art-wrap .kbd-art-overlay svg {
-      width: 64px;
-      height: 64px;
-      color: rgba(255, 255, 255, 0.92);
+    .kbd-art-wrap .kbd-playpause-btn:active {
+      opacity: 0.7;
+      transition: opacity 0.1s;
+    }
+
+    .kbd-art-wrap .kbd-playpause-btn svg {
+      width: 40px;
+      height: 40px;
+      color: white;
       filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.5));
     }
 
-    .kbd-art-wrap .kbd-art-flash {
+    /* Double-tap seek-flash — dims the tapped half + "±Ns" label, shown
+   transiently by showSeekFlash() (media-mode.md). Mirrors
+   screen_media_mode.cpp's show_seek_flash(): shown instantly (".show"
+   suppresses the transition), held briefly, then faded out over ~450ms by
+   this rule's own opacity transition once ".show" is removed. */
+    .kbd-art-wrap .kbd-seek-flash {
       position: absolute;
-      inset: 0;
+      top: 0;
+      bottom: 0;
+      width: 50%;
       display: flex;
       align-items: center;
       justify-content: center;
       pointer-events: none;
       opacity: 0;
+      transition: opacity 0.45s ease-in;
     }
 
-    .kbd-art-wrap .kbd-art-flash svg {
-      width: 72px;
-      height: 72px;
-      color: rgba(255, 255, 255, 0.95);
-      filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.5));
+    .kbd-art-wrap .kbd-seek-flash.left {
+      left: 0;
+      background: linear-gradient(to right, rgba(0, 0, 0, 0.8), transparent);
     }
 
-    .kbd-art-wrap.flash .kbd-art-flash {
-      animation: artFlash 0.55s ease-out forwards;
+    .kbd-art-wrap .kbd-seek-flash.right {
+      right: 0;
+      background: linear-gradient(to left, rgba(0, 0, 0, 0.8), transparent);
     }
 
-    @keyframes artFlash {
-      0% {
-        opacity: 0;
-        transform: scale(0.7);
-      }
+    .kbd-art-wrap .kbd-seek-flash.show {
+      opacity: 1;
+      transition: none;
+    }
 
-      30% {
-        opacity: 1;
-        transform: scale(1);
-      }
-
-      100% {
-        opacity: 0;
-        transform: scale(1.2);
-      }
+    .kbd-art-wrap .kbd-seek-flash span {
+      color: white;
+      font-size: 26px;
+      font-weight: 600;
+      text-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
     }
 
     .kbd-art-wrap.swipe-left .kbd-art {
@@ -2320,6 +2393,12 @@
       justify-content: center;
     }
 
+    /* Hidden by default — shown together with the rest of the touch-revealed
+   controls (scrim + play/pause button), never on its own. See
+   ".kbd-art-wrap.controls-visible .kbd-timeline" below and
+   screen_media_mode.cpp's apply_timeline_visibility(). Reveal is instant;
+   dismissal fades over 0.4s ease-in — same duration as the play/pause
+   button, so the two never look inconsistent with each other. */
     .kbd-timeline {
       position: absolute;
       bottom: 0;
@@ -2334,6 +2413,15 @@
       box-sizing: border-box;
       cursor: ew-resize;
       user-select: none;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.4s ease-in;
+    }
+
+    .kbd-art-wrap.controls-visible .kbd-timeline {
+      opacity: 1;
+      pointer-events: auto;
+      transition: none;
     }
 
     .kbd-timeline-bar {

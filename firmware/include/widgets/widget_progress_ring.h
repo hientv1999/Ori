@@ -20,10 +20,6 @@ namespace widget_progress_ring {
 lv_obj_t* create(lv_obj_t* parent, uint16_t size_px,
 				 int16_t x_offset = 0, int16_t y_offset = 0);
 
-// Indeterminate mode: a fixed-length arc head rotates continuously. Used for
-// pre-progress "we're working" states.
-void set_indeterminate(lv_obj_t* ring, bool on);
-
 // Determinate mode: progress goes from 0..100 clockwise from 12 o'clock.
 void set_value(lv_obj_t* ring, uint8_t percent);
 

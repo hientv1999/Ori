@@ -80,4 +80,14 @@ windows = { version = "0.62", features = [
 # `.await` on WinRT async calls, `media.rs`/`pairing.rs`) doesn't silently
 # depend on `windows`'s default feature set never changing again.
 windows-future = { version = "0.3", features = ["std"] }
+# Needed explicitly (not just transitively via `windows`) because the
+# `#[implement]` macro (`media.rs`'s `VolumeCallback`/`DefaultDeviceListener`
+# — the WASAPI volume-change and default-device-change COM callbacks) emits
+# generated code that references `windows_core::` paths directly, which only
+# resolve if `windows_core` is itself a crate this compilation unit depends
+# on — a plain `use windows::core::...` re-export isn't enough for code the
+# macro itself writes. Version pinned to match `windows` 0.62's own
+# windows-core generation (0.62.x) for the same one-copy reasoning as
+# windows-future above.
+windows-core = "0.62"
 

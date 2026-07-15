@@ -86,13 +86,6 @@ void show_empty_state(ListCtx* list) {
     lv_obj_set_style_pad_top(lbl, 48, 0);
 }
 
-void row_translate_cb(void* obj, int32_t v) {
-    lv_obj_set_style_translate_x(static_cast<lv_obj_t*>(obj), (int16_t)v, 0);
-}
-void row_opa_cb(void* obj, int32_t v) {
-    lv_obj_set_style_opa(static_cast<lv_obj_t*>(obj), (lv_opa_t)v, 0);
-}
-
 // Resolves the row's full stacked-group uid set and clears every one of them
 // (ANCS negative action where available, local drop otherwise — identical
 // per-uid choice to modal_ancs_notification.cpp's on_read()), then deletes
@@ -184,7 +177,7 @@ void on_row_gesture(lv_event_t* e) {
 
         lv_anim_t tr; lv_anim_init(&tr);
         lv_anim_set_var(&tr, row);
-        lv_anim_set_exec_cb(&tr, row_translate_cb);
+        lv_anim_set_exec_cb(&tr, ui::anim_set_translate_x_cb);
         lv_anim_set_values(&tr, rs->dx, committed ? -rs->width : 0);
         lv_anim_set_duration(&tr, SWIPE_ANIM_MS);
         lv_anim_set_path_cb(&tr, lv_anim_path_ease_out);
@@ -192,7 +185,7 @@ void on_row_gesture(lv_event_t* e) {
 
         lv_anim_t op; lv_anim_init(&op);
         lv_anim_set_var(&op, row);
-        lv_anim_set_exec_cb(&op, row_opa_cb);
+        lv_anim_set_exec_cb(&op, ui::anim_set_opa_cb);
         lv_anim_set_values(&op, lv_obj_get_style_opa(row, LV_PART_MAIN),
                            committed ? LV_OPA_TRANSP : LV_OPA_COVER);
         lv_anim_set_duration(&op, SWIPE_ANIM_MS);
@@ -216,28 +209,6 @@ void on_row_clicked(lv_event_t* e) {
     modal_ancs_notification::open_for_uid(rs->list->base_screen, rs->uid);
 }
 
-// Shared 26px corner badge shell for the count and silent-indicator badges
-// drawn on a row's icon (make_row, below) — same border-cutout trick (border
-// colour = card bg, faking a cutout against the icon behind it) and
-// IGNORE_LAYOUT (so it floats above icon_wrap's flex content instead of
-// becoming a flex child itself). Caller fills in the bg colour, corner, and
-// centred content (label or icon) on the returned object.
-lv_obj_t* make_row_badge(lv_obj_t* icon_wrap, lv_color_t bg_color, lv_align_t align) {
-    lv_obj_t* badge = lv_obj_create(icon_wrap);
-    lv_obj_set_size(badge, 26, 26);
-    lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(badge, bg_color, 0);
-    lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(badge, 3, 0);
-    lv_obj_set_style_border_color(badge, theme::color(theme::COLOR_CARD), 0);
-    lv_obj_set_style_border_opa(badge, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_all(badge, 0, 0);
-    lv_obj_clear_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(badge, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_flag(badge, LV_OBJ_FLAG_IGNORE_LAYOUT);
-    lv_obj_align(badge, align, 0, 0);
-    return badge;
-}
 
 // One row per notification GROUP — icon + title + latest preview, no
 // timestamp (shown only once the detail overlay is opened).
@@ -304,7 +275,9 @@ lv_obj_t* make_row(lv_obj_t* parent, ListCtx* list, const ancs_client::ListGroup
 
         // Border matches the card bg, faking a cutout — same trick
         // modal_iphone_info's make_stat_unit badge uses.
-        lv_obj_t* badge = make_row_badge(icon_wrap, theme::color(theme::COLOR_DANGER), LV_ALIGN_TOP_RIGHT);
+        lv_obj_t* badge = ui::make_corner_badge(icon_wrap, theme::color(theme::COLOR_DANGER),
+                                                 theme::color(theme::COLOR_CARD), 3, LV_ALIGN_TOP_RIGHT);
+        lv_obj_set_size(badge, 26, 26);
 
         lv_obj_t* lbl = lv_label_create(badge);
         lv_label_set_text(lbl, buf);
@@ -325,7 +298,9 @@ lv_obj_t* make_row(lv_obj_t* parent, ListCtx* list, const ancs_client::ListGroup
         // badge above for space since the two are mutually exclusive.
         // Border matches the card bg, faking a cutout — same trick the count
         // badge above uses.
-        lv_obj_t* badge = make_row_badge(icon_wrap, lv_color_hex(0x2A2A2A), LV_ALIGN_TOP_LEFT);
+        lv_obj_t* badge = ui::make_corner_badge(icon_wrap, lv_color_hex(0x2A2A2A),
+                                                 theme::color(theme::COLOR_CARD), 3, LV_ALIGN_TOP_LEFT);
+        lv_obj_set_size(badge, 26, 26);
 
         lv_obj_t* icon = lv_image_create(badge);
         lv_image_set_src(icon, ancs_badge_icons::silent());
@@ -382,7 +357,7 @@ lv_obj_t* make_row(lv_obj_t* parent, ListCtx* list, const ancs_client::ListGroup
 
 // Weak reference to the currently-open list (nullptr if none is open) — same
 // weak-ref-refresh technique as widget_status_bar::g_active_bar /
-// modal_iphone_info::g_active_stats_row. Lets ancs_client push a live
+// modal_iphone_info::g_active. Lets ancs_client push a live
 // rebuild when the underlying queue or filter changes while this list is on
 // screen (see modal_ancs_list.h's interaction spec). Cleared on the scrim's
 // own LV_EVENT_DELETE. `ListCtx` already carries everything a rebuild needs

@@ -31,6 +31,16 @@ int g_view_month = -1; // 0-based (0 = January)
 // Nav button callbacks rebuild into this; cleared on screen delete.
 lv_obj_t* g_left_panel = nullptr;
 
+// Cache of "today" as a noon-normalized time_t, keyed by (year, month, day).
+// render_into() reruns on every month/year nav tap and refresh_today(), but
+// the mktime() needed to place today's cell in the grid only ever changes
+// once every 24h — recompute it only when the wall-clock day actually rolls
+// over instead of on every render.
+int g_cached_today_year  = -1;
+int g_cached_today_month = -1;
+int g_cached_today_day   = -1;
+time_t g_cached_today_tt = 0;
+
 constexpr int16_t BADGE_SIZE = 44; // sized so a 6-week month's rows stay >= the badge (no clipping)
 constexpr int16_t NAV_BTN_SIZE = 36;
 
@@ -173,6 +183,19 @@ void render_into(lv_obj_t* left) {
     int today_month = now_tm.tm_mon;
     int today_day   = now_tm.tm_mday;
 
+    if (today_year != g_cached_today_year || today_month != g_cached_today_month ||
+        today_day != g_cached_today_day) {
+        struct tm today_noon = {};
+        today_noon.tm_year = today_year - 1900;
+        today_noon.tm_mon  = today_month;
+        today_noon.tm_mday = today_day;
+        today_noon.tm_hour = 12;
+        g_cached_today_tt     = mktime(&today_noon);
+        g_cached_today_year   = today_year;
+        g_cached_today_month  = today_month;
+        g_cached_today_day    = today_day;
+    }
+
     // ===== Header: "Month YYYY" + prev/next chevrons =====
     lv_obj_t* header = lv_obj_create(left);
     lv_obj_set_size(header, lv_pct(100), LV_SIZE_CONTENT);
@@ -256,13 +279,7 @@ void render_into(lv_obj_t* left) {
     cell0_tm.tm_mday -= first_dow;      // back up to the grid's first (Monday) cell
     cell0_tm.tm_hour = 12;
     time_t cell0_tt = mktime(&cell0_tm);
-    struct tm today_noon = {};
-    today_noon.tm_year = today_year - 1900;
-    today_noon.tm_mon  = today_month;
-    today_noon.tm_mday = today_day;
-    today_noon.tm_hour = 12;
-    time_t today_tt = mktime(&today_noon);
-    long day_index = (long)((today_tt - cell0_tt + 43200) / 86400);  // +half day → nearest
+    long day_index = (long)((g_cached_today_tt - cell0_tt + 43200) / 86400);  // +half day → nearest
     int  today_cell = (day_index >= 0 && day_index < total_day_cells) ? (int)day_index : -1;
     int  today_row  = (today_cell >= 0) ? today_cell / 7 : -1;
     // Bright tier when today's own month is on screen; fainter when today is

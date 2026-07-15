@@ -52,6 +52,20 @@ void poll();
 // Preserves bonds (they live in NVS and are reloaded on boot).
 void quiesce_for_commit();
 
+// OTA download-phase quiet mode (ota.md "Behaviour") — the reversible little
+// sibling of quiesce_for_commit(). quiet=true (accepted BEGIN): stops
+// advertising for the whole download (no reconnect ceremony — the heaviest
+// BLE burst in the system — can start mid-stream; restart_advertising()
+// no-ops for the duration) and suspends ANCS processing at the source
+// (ancs_client::suspend_for_ota()). Already-connected peers keep their links,
+// inert behind gatt_server's set_ota_active NACK gate. quiet=false
+// (failure-resume): lifts both, re-arms advertising, and — only if ANCS
+// events were actually dropped while suspended — force-drops the iPhone link
+// so the bonded auto-reconnect replays the missed backlog. No-op when never
+// suppressed (pre-accept rejects). A successful commit never calls this —
+// quiesce_for_commit() + reboot supersedes it.
+void set_ota_transfer_quiet(bool quiet);
+
 // ── Advertising state machine ──────────────────────────────────────────────
 
 // Restart advertising according to the current bond state.
@@ -92,7 +106,6 @@ void wipe_iphone_bond();
 // ── Runtime state queries ──────────────────────────────────────────────────
 
 bool is_orion_connected();
-bool is_iphone_connected();
 
 // Returns the NimBLE conn_handle for the Orion connection, or
 // BLE_HS_CONN_HANDLE_NONE if not connected.

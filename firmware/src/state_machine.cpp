@@ -15,9 +15,7 @@
 #include "nvs_sync.h"
 #include <cbor.h>
 #include "screens/modal_countdown.h"
-#include "screens/modal_factory_reset.h"
 #include "screens/modal_iphone_info.h"
-#include "screens/modal_unpair_phone.h"
 #include "screens/screen_calendar.h"
 #include "screens/screen_clock.h"
 #include "screens/screen_clock_analog.h"
@@ -125,9 +123,6 @@ lv_obj_t* g_runtime_left   = nullptr;
 // (as opposed to the full-screen fallback used when there's no live calendar
 // screen to overlay). Decides which teardown path on_reconnect_end() takes.
 bool g_reconnect_overlay_mode = false;
-
-// Countdown modal's parent screen (needed to overlay it on the right base).
-lv_obj_t* g_countdown_base = nullptr;
 
 // Reference to the periodic tick timer created in state_machine::init().
 lv_timer_t* g_tick_timer = nullptr;
@@ -394,8 +389,7 @@ lv_obj_t* build_reconnect_screen() {
 }
 
 // Fire a countdown modal on top of the appropriate base screen.
-// The base screen is created fresh (or reused if it's already the current one)
-// and stored in g_countdown_base so we don't destroy it when the modal fires.
+// The base screen is created fresh (or reused if it's already the current one).
 void fire_countdown(const char* title, const char* organizer, const char* location, int diff_s) {
     // Build the base screen that sits under the modal.
     lv_obj_t* base = nullptr;
@@ -410,7 +404,6 @@ void fire_countdown(const char* title, const char* organizer, const char* locati
         }
     }
 
-    g_countdown_base = base;
     load_screen(base);
     modal_countdown::create(base, title, organizer, location, diff_s);
     g_state = AppState::COUNTDOWN;
@@ -488,6 +481,19 @@ static bool check_day_rollover(bool clock_now, struct tm* out_lt) {
         have_lt = true;
         int day_key = (out_lt->tm_year + 1900) * 1000 + out_lt->tm_yday;  // unique per calendar day
         if (s_last_day_key != -1 && day_key != s_last_day_key) {
+            // New calendar day — clear the per-minute-of-day alert bitmap.
+            // Without this the flags lived until reboot, so on this always-on
+            // device a recurring meeting (same HH:MM as one that alerted
+            // yesterday) NEVER fired its 5-minute countdown again after day
+            // one. Keyed by minute-of-day, the bitmap is only meaningful
+            // within a single day by construction. No double-fire risk at the
+            // boundary: check_countdown()'s window math is same-day-relative
+            // (start_s - now_s), so a meeting that alerted late yesterday
+            // can't re-enter its window after midnight. A clock JUMP (Orion
+            // correcting a badly seeded date) lands here too — also correct:
+            // the alert history belonged to a day we were never really in.
+            memset(g_alerted_mins, 0, sizeof(g_alerted_mins));
+            LOG("[sm] day rollover — alert flags cleared\n");
             if (g_state == AppState::CALENDAR_VIEW) {
                 screen_calendar::refresh_today();
             } else if (g_state != AppState::CLOCK) {

@@ -14,8 +14,10 @@
 | Tap an ANCS status-bar icon | Opens that notification's detail overlay (title + body, Close only) — or, for a still-ringing/active call, the Answer/Decline/End call dialog instead | Every runtime state |
 | **Tap mode-toggle button** (rightmost status-bar element) | Cycle calendar ↔ Controls mode | Runtime only — hidden when Orion offline, during setup, and during OTA |
 | Tap Close button on countdown modal | Dismiss countdown | Countdown modal only |
-| **Tap album art** (movement < 20 px in both axes) | `KeyboardCommand{op:"play_pause"}` | Controls mode — see `media-mode.md` |
-| **Swipe right on album art** (|dx| > 50 px, |dx| > |dy|) | `KeyboardCommand{op:"next"}` | Controls mode |
-| **Swipe left on album art** | `KeyboardCommand{op:"prev"}` | Controls mode |
-| **Vertical swipe on album art** (|dy| > 25 px, |dy| > |dx|; ~400 px = full 0..100) | `KeyboardCommand{op:"vol_set", arg:N}` on release + momentary volume HUD | Controls mode |
+| **Tap album art** (movement < 20 px in both axes, not on the button/progress bar) | Toggles the touch-revealed controls (scrim + progress bar + circular play/pause button): reveals if hidden, dismisses if shown — resolved only after `DOUBLE_TAP_MS` (400 ms) with no follow-up tap in the same half, so it isn't mistaken for half of a double-tap | Controls mode — see `media-mode.md` |
+| **Tap the circular play/pause button** (centred on the art) | `KeyboardCommand{op:"play_pause"}` — the only way to toggle playback locally | Controls mode — see `media-mode.md` |
+| **Double-tap left/right half of album art** (two taps in the same half within 400 ms) | `KeyboardCommand{op:"seek", arg:position_s}` — jumps backward (left half) or forward (right half) by the configured seek step (default 10 s, Orion-configurable); never changes the button/progress bar's visibility | Controls mode — see `media-mode.md` |
+| **Swipe right on album art** (|dx| > 50 px, |dx| > |dy|) | `KeyboardCommand{op:"next"}` — never changes the button/progress bar's visibility | Controls mode |
+| **Swipe left on album art** | `KeyboardCommand{op:"prev"}` — same non-interference | Controls mode |
+| **Vertical swipe on album art** (|dy| > 25 px, |dy| > |dx|; ~400 px = full 0..100) | `KeyboardCommand{op:"vol_set", arg:N}` on release + momentary volume HUD — only the (separate) volume HUD is affected, never the button/progress bar | Controls mode |
 | Tap shortcut button (1/2/3) | `KeyboardCommand{op:"shortcut", arg:1|2|3}` — Orion runs configured action | Controls mode |

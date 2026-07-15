@@ -11,10 +11,10 @@
 // 5-minute pre-meeting countdown modal.
 //
 // Visual reference: prototype `.modal-scrim` + `.countdown` block. A blurred
-// scrim isn't representable on LVGL 8 RGB565 without a custom shader, so we
-// fall back to a heavy opacity dimming (LV_OPA_80 of COLOR_SCRIM) — visually
-// close to the prototype's backdrop-filter at the read distance of a desk
-// display. The ring + content stay sharp on top.
+// scrim isn't representable in LVGL's RGB565 rendering without a custom
+// shader, so we fall back to a heavy opacity dimming (LV_OPA_80 of
+// COLOR_SCRIM) — visually close to the prototype's backdrop-filter at the
+// read distance of a desk display. The ring + content stay sharp on top.
 //
 // Dismissed via the Close button only — no tap-to-dismiss.
 

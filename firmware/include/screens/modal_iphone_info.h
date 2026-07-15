@@ -54,4 +54,9 @@ void set_connected(bool connected);
 // Called from ancs_client::poll()'s periodic RSSI poll.
 void set_signal_bars(uint8_t bars);
 
+// Updates the battery icon fill + percentage label in place (no full
+// rebuild — mirrors set_signal_bars() above). No-op if no instance is open.
+// Called from ancs_client::poll()'s periodic battery poll.
+void set_battery_level(uint8_t level);
+
 } // namespace modal_iphone_info

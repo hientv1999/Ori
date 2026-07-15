@@ -152,9 +152,6 @@
 #define ORI_LCD_PCLK_HZ          12000000   // 12 MHz pixel clock (most stable on this panel)
 #endif
 
-#ifndef ORI_LCD_BOUNCE_BUF_PX
-#define ORI_LCD_BOUNCE_BUF_PX    0
-#endif
 #ifndef ORI_LCD_HSYNC_POLARITY
 #define ORI_LCD_HSYNC_POLARITY   0          // 0 = active low
 #endif

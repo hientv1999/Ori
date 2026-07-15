@@ -38,7 +38,7 @@ Both screens share the same wordmark + title + description + primary-button stac
 | Description | `font_meta` (Montserrat 22 px), secondary colour, max-width 620 px, wraps freely |
 | Description → button gap | 24 px spacer |
 | Primary button (Start / Next) | `pad_v 36 px`, `pad_h 54 px`, 20 px weight 600, uppercase, letter-spacing 2.5 px, accent fill, border-radius 999 px (full pill) |
-| Step dots | Fixed at `DOT_ROW_Y = 440` px |
+| Step dots | Fixed at `DOT_ROW_Y = 456` px |
 
 ### Passkey modal (Step 2)
 

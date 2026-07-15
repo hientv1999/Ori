@@ -60,6 +60,12 @@ void abort_sync_stage();
 // that stalled. Call once per second from ble_manager::poll().
 void poll_chunk_timeouts();
 
+// Notifies Device Settings (char 000E) whenever Ori's own live signal_bars
+// ("r") to Orion changes — mirrors the iPhone-link RSSI poll behind Phone
+// Bond Status's "s" field. Internally gated to a 5 s interval; call
+// unconditionally, every tick, from ble_manager::poll().
+void poll_orion_signal_bars();
+
 // Apply all staged sync data to NVS/UI in one burst (§6.0), then transition
 // Device Status and signal SyncEnd. Must run on the main task — call only
 // from ble_manager::poll() in response to a deferred SyncCommit event.
@@ -72,17 +78,29 @@ void run_staged_commit();
 // connected: the BLE link to the iPhone is currently up.
 // name: GAP Device Name read from the iPhone (e.g. "Xander's iPhone"), or ""
 //       if the phone is not connected or the read failed. Encrypted (READ_ENC).
-void notify_phone_bond_status(bool bonded, bool connected, const char* name);
+// device_type: Device Information Service model string (e.g. "iPhone 15 Pro"),
+//       or "" if not connected, not exposed, or the read failed.
+// battery_level: 0-100%, whatever ancs_client's own g_phone_battery holds at
+//       this instant (ancs_client::phone_stats().battery) — read_phone_battery()
+//       already ran synchronously inside on_iphone_connected() before this is
+//       called, so a fresh connect/reconnect carries the real level instead of
+//       this characteristic's OWN stale cache (zeroed by the previous
+//       disconnect, only refreshed otherwise by the next battery notify or
+//       ANCS queue event — which could be a while after reconnect).
+void notify_phone_bond_status(bool bonded, bool connected, const char* name,
+                               const char* device_type, uint8_t battery_level);
 
 // Push updated iPhone ANCS stats (missed calls, unread messages, and all
-// other active notifications — the three counts are mutually exclusive) and
-// signal strength (0-4 bars, from live connection RSSI) to Orion via the
-// same Phone Bond Status characteristic — called from
-// ancs_client whenever the notification queue changes or the periodic RSSI
-// poll detects a change. Re-encodes using the bonded/connected/name last set
-// by notify_phone_bond_status(); a no-op while disconnected (nothing to
-// relay) or when none of the four values actually changed.
-void notify_phone_stats(uint8_t missed, uint8_t unread, uint8_t total, uint8_t signal_bars);
+// other active notifications — the three counts are mutually exclusive),
+// signal strength (0-4 bars, from live connection RSSI), and battery level
+// (0-100%, from the Battery Service) to Orion via the same Phone Bond Status
+// characteristic — called from ancs_client whenever the notification queue
+// changes or the periodic RSSI/battery poll detects a change. Re-encodes
+// using the bonded/connected/name/device_type last set by
+// notify_phone_bond_status(); a no-op while disconnected (nothing to relay)
+// or when none of the five values actually changed.
+void notify_phone_stats(uint8_t missed, uint8_t unread, uint8_t total,
+                         uint8_t signal_bars, uint8_t battery_level);
 
 // ── ANCS relay to Orion (chars 0010-0012, ble-protocol.md §13) ────────────
 // Owned by ancs_client, which calls these whenever a relayed notification's

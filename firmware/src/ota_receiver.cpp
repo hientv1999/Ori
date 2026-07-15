@@ -91,10 +91,6 @@ static const uint32_t COMMIT_LINGER_MS    = 3500;
 // Serial.read() call overhead; a chunk never spans more than one sector flush.
 static const uint32_t RX_CHUNK = 1024;
 
-// Firmware version — single source of truth in include/fw_version.h, shared
-// with gatt_server's Firmware Revision String characteristic.
-static const char k_fw_version[] = ORI_FW_VERSION;
-
 // Embedded firmware-version marker. Compiled into every Ori image so the OTA
 // receiver can read the *incoming* image's own version straight from the staged
 // binary (authoritative) instead of trusting the fw_version string Orion sends
@@ -312,6 +308,11 @@ static void btn_dismiss_cb(lv_event_t*) { ota_receiver::dismiss_error(); }
 static void show_error_screen(const char* code) {
     free_stage();
     gatt_server::set_ota_active(false);
+    // Lift OTA quiet mode: re-arm advertising, resume ANCS processing, and —
+    // if any ANCS event was dropped during the download — force the iPhone
+    // reconnect that replays them. Safe no-op for pre-accept rejects
+    // (too_large / no_memory), where quiet mode was never entered.
+    ble_manager::set_ota_transfer_quiet(false);
     g_ota_state = OtaState::Failed;
     g_parse     = ParseState::WaitMagic0;
     while (Serial.available() > 0) Serial.read();   // drop any in-flight bytes
@@ -459,6 +460,11 @@ static void handle_begin(const uint8_t* payload, uint32_t len) {
     g_ota_state   = OtaState::AwaitingData;
 
     gatt_server::set_ota_active(true);   // NACK BLE data writes for the duration
+    // Stop advertising + suspend ANCS processing for the whole download — no
+    // reconnect ceremony or notification storm can compete with the USB CDC
+    // RX path (ble_manager.h's set_ota_transfer_quiet doc comment). Reversed
+    // by show_error_screen() on any failure; a successful commit reboots.
+    ble_manager::set_ota_transfer_quiet(true);
     state_machine::on_ota_begin();       // full-screen OTA takeover (Updating)
 
     send_empty_response(OTA_OP_READY);
@@ -742,13 +748,6 @@ void poll() {
 bool is_active() { return g_ota_state != OtaState::Idle; }
 
 bool is_busy() { return g_parse != ParseState::WaitMagic0; }
-
-void set_progress(uint8_t pct) {
-    if (pct > 100) pct = 100;
-    screen_ota_updating::set_progress(pct);
-}
-
-const char* firmware_version() { return k_fw_version; }
 
 // "Close" tapped on the Update failed screen → drop everything, resume runtime.
 void dismiss_error() {

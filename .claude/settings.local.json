@@ -16,7 +16,9 @@
       "Bash(find /c/Users/hient/.platformio/packages -name \"NimBLEServer.h\" 2>/dev/null | head -3)",
       "PowerShell(cd \"f:\\\\OneDrive\\\\Desktop\\\\GREEN_SMART_HOME\\\\My_Invention\\\\Ori\\\\firmware\"; & \"C:\\\\Users\\\\hient\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run 2>&1 | Where-Object { $_ -match \"error:|warning: \" } | Select-Object -First 50)",
       "Bash(xargs grep -l \"ble_gap_conn_desc\")",
-      "PowerShell(cd \"f:\\\\OneDrive\\\\Desktop\\\\GREEN_SMART_HOME\\\\My_Invention\\\\Ori\\\\firmware\"; & \"C:\\\\Users\\\\hient\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run 2>&1 | Where-Object { $_ -match \"error:\" } | Select-Object -First 30)"
+      "PowerShell(cd \"f:\\\\OneDrive\\\\Desktop\\\\GREEN_SMART_HOME\\\\My_Invention\\\\Ori\\\\firmware\"; & \"C:\\\\Users\\\\hient\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run 2>&1 | Where-Object { $_ -match \"error:\" } | Select-Object -First 30)",
+      "Bash(cargo check *)",
+      "PowerShell(Get-ChildItem \"$env:USERPROFILE\\\\.cargo\\\\registry\\\\src\" -Directory -ErrorAction SilentlyContinue | Select-Object -First 5 -ExpandProperty FullName)"
     ]
   }
 }

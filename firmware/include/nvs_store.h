@@ -11,6 +11,7 @@
 //   "time_fmt"    — uint8: 0=24-hour, 1=12-hour (immediate write, infrequent)
 //   "notif_filt"  — uint8: ANCS filter level 0-3
 //   "sc_1/2/3"    — string: shortcut slot token (≤19 chars + null)
+//   "seek_step"   — uint8: double-tap seek step, seconds (1-60, default 10)
 //
 // Profile, photo, and meeting/Time Off hashes live in the "ori" namespace too,
 // under keys owned by nvs_sync.h.
@@ -70,6 +71,13 @@ void    set_time_format(uint8_t fmt);
 // survives power cycles without Orion needing to resend it on every reconnect.
 uint8_t get_notif_filter();
 void    set_notif_filter(uint8_t level);
+
+// Double-tap seek step, in seconds (1-60). Default 10. Set by Orion via
+// Device Settings (char 000E, key "k"); persisted so it survives power
+// cycles. See media-mode.md — double-tap left/right third of the album art
+// seeks backward/forward by this many seconds.
+uint8_t get_seek_step_s();
+void    set_seek_step_s(uint8_t seconds);
 
 // Shortcut slot tokens — NVS-persisted (≤19 chars each) so Orion can read them
 // back on (re)connect via the Device Settings characteristic. get_shortcut_slots()

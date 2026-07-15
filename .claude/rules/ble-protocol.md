@@ -111,7 +111,7 @@ Each characteristic UUID replaces bytes 4–5 of the base with the offset below.
 | 11 | **Host Volume State** | `000B` | Read, Write (response) | Orion → Ori (+ Orion reads) | Yes |
 | 12 | **Media Metadata** | `000C` | Write, Notify | Orion → Ori | Yes |
 | 13 | **Media Album Art** | `000D` | Write (no response) | Orion → Ori (chunked) | Yes |
-| 14 | **Device Settings** | `000E` | Read, Write (response) | Orion → Ori (+ Orion reads) | Yes |
+| 14 | **Device Settings** | `000E` | Read, Write (response), Notify | Orion → Ori (+ Orion reads/subscribes) | Yes |
 | 15 | **Phone Bond Status** | `000F` | Read, Notify | Ori → Orion (notify) | Yes |
 | 16 | **ANCS Notification** | `0010` | Read, Notify | Ori → Orion (notify) | Yes |
 | 17 | **ANCS Call State** | `0011` | Read, Notify | Ori → Orion (notify) | Yes |
@@ -119,7 +119,7 @@ Each characteristic UUID replaces bytes 4–5 of the base with the offset below.
 
 Reads/writes on encrypted characteristics over an unencrypted link return `INSUFFICIENT_AUTHENTICATION`. Chars 16–18 are covered in full in §13.
 
-**Every notify characteristic MUST also declare base `Read`** (chars 1, 10, 15, 16, 17 all do), even though Orion only ever subscribes to 10/16/17. Hard Windows requirement: WinRT's GATT stack silently drops `ValueChanged` for a Notify-only characteristic — `subscribe()`/CCCD-write still report success, so the failure is invisible. Found 2026-07-11 when chars 10/16/17 (originally Notify+MITM only) had every notification silently dropped by WinRT before reaching Orion. Fix: add `Read` (kept MITM-gated via `READ_AUTHEN`). Never remove `Read` from a notify characteristic to "tighten" it.
+**Every notify characteristic MUST also declare base `Read`** (chars 1, 10, 14, 15, 16, 17 all do), even though Orion only ever subscribes to 10/14/16/17. Hard Windows requirement: WinRT's GATT stack silently drops `ValueChanged` for a Notify-only characteristic — `subscribe()`/CCCD-write still report success, so the failure is invisible. Found 2026-07-11 when chars 10/16/17 (originally Notify+MITM only) had every notification silently dropped by WinRT before reaching Orion. Fix: add `Read` (kept MITM-gated via `READ_AUTHEN`). Never remove `Read` from a notify characteristic to "tighten" it. Char 14 (Device Settings) gained `Notify` on 2026-07-13, already satisfying this rule since it already declared base `Read`.
 
 ### 3.1 Device Information Service (BLE SIG standard — separate from Ori Sync Service)
 
@@ -247,12 +247,15 @@ DeviceSettings = {          // Orion → Ori, write (response). Fields optional;
                  // 5=Snow 6=Fog. Ephemeral; always sent together with "d"+"u".
   "d": int,      // temperature. Whole degrees in the unit "u" declares — Ori renders the raw
                  // integer verbatim, never converts. Signed (sub-zero). Ephemeral, with "w"+"u".
-  "u": uint      // temperature_unit. 0=Fahrenheit 1=Celsius. Ephemeral; a write with only
+  "u": uint,     // temperature_unit. 0=Fahrenheit 1=Celsius. Ephemeral; a write with only
                  // some of "w"/"d"/"u" present is ignored — always send all three together.
+  "k": uint      // seek_step_s. Double-tap-left/right-third-of-album-art seek step, in
+                 // seconds (1-60, default 10). NVS-persisted, write-only-on-change,
+                 // read back on (re)connect — media-mode.md.
 }
 // Out-of-range field value → NACK_CBOR_DECODE via SyncControl notify.
 //
-// Read (Orion → Ori): returns all NVS-persisted fields ("c","h","f","1","2","3") plus three
+// Read (Orion → Ori): returns all NVS-persisted fields ("c","h","f","1","2","3","k") plus three
 // read-only identity/link fields (an incoming write simply never looks for these keys —
 // §4's "unknown keys ignored" gives them read-only semantics for free):
 //   "s": serial_number, "b": manufacture_date (ISO-8601 "YYYY-MM-DD") — from the write-once
@@ -270,6 +273,27 @@ PhoneBondStatus = {            // Ori → Orion, notify + readable (CBOR)
   "c": bool,     // connected. true = BLE link to iPhone is currently up.
   "n": text,     // name.      iPhone's GAP Device Name (e.g. "Xander's iPhone"), or ""
                  //            when not connected/read failed. ≤ 63 UTF-8 bytes.
+  "d": text,     // device_type. iPhone's marketing model name, e.g. "iPhone 17 Pro Max".
+                 //              Device Information Service (0x180A / Model Number String
+                 //              0x2A24) actually returns Apple's internal hardware identifier
+                 //              (e.g. "iPhone18,2"), NOT a marketing name — Ori resolves it
+                 //              via a compiled-in identifier→name table (ancs_client.cpp's
+                 //              kIphoneModels) before ever putting it on the wire, so Orion
+                 //              can just display this string as-is, no resolution of its own.
+                 //              Falls back to the raw identifier itself (still ≤ 31 bytes,
+                 //              e.g. "iPhone19,3") for a model newer than Ori's firmware
+                 //              table — never blank just because it's unrecognized.
+                 //              "" when not connected, the service isn't exposed, or the
+                 //              read failed. Read once per connection (static for the link's
+                 //              life, like "n"). Orion-side: unlike every other field in this
+                 //              struct, "d" is write-through persisted to disk
+                 //              (store::SavedState::phone_device_type, pc-app.md) — a device
+                 //              model never changes for a given bond, so Orion keeps showing
+                 //              the last-known value across an Ori disconnect/app restart
+                 //              instead of blanking it, same treatment as Ori's own serial
+                 //              number/manufacture date. Cleared only when the iPhone's bond
+                 //              genuinely ends (unpair, or Ori's own factory reset taking the
+                 //              iPhone bond down with it, §2).
   "m": uint,     // missed_calls.    live count of active ANCS notifications, CategoryID
                  //                  MissedCall (2), passing `ancs_filter` (Device Settings "f").
   "u": uint,     // unread_messages. live count, CategoryID Social (4) — ANCS' closest
@@ -278,18 +302,32 @@ PhoneBondStatus = {            // Ori → Orion, notify + readable (CBOR)
                  //                      always relayed via AncsCallState instead), passing
                  //                      `ancs_filter`, excluding whatever "m"/"u" already
                  //                      counted — the three counts are mutually exclusive.
-  "s": uint      // signal_bars. 0-4, bucketed from the live iPhone connection RSSI
+  "s": uint,     // signal_bars. 0-4, bucketed from the live iPhone connection RSSI
                  //              (NimBLEClient::getRssi()) — a real per-connection reading,
                  //              since Ori holds this link directly.
+  "l": uint      // battery_level. 0-100 (%), from the iPhone's Battery Service
+                 //                (0x180F / Battery Level 0x2A19). Read once on connect,
+                 //                then notify-driven (that characteristic supports Notify) —
+                 //                no polling, updates the instant the phone reports a change.
+                 //                That fresh connect-time read is forwarded into THIS
+                 //                characteristic's own PhoneBondStatus push immediately
+                 //                (ancs_client::on_iphone_connected() → ble_manager's
+                 //                notify_phone_bond_status(..., battery_level) →
+                 //                gatt_server.cpp) — not left for a later battery-change
+                 //                notify or ANCS queue event to surface it. Without this, a
+                 //                reconnect pushed "l":0 (this characteristic's own
+                 //                disconnect-zeroed cache) until something else happened to
+                 //                trigger a fresh stats push.
 }
 // "m"/"u"/"t" run through the SAME `ancs_filter` gate as the AncsNotification relay (§13's
 // `passes_current_filter()`, not a second implementation) and Ori's own on-device tile
 // counts/drill-down — every surface counts exactly what its list shows. A filter change
 // immediately re-pushes PhoneBondStatus (`ancs_client::set_filter()` → `push_phone_stats()`),
-// not just on the next queue event. "m"/"u"/"t"/"s" are always 0 when "c" is false. Ori
-// notifies on every iPhone state change and whenever counts/signal bucket change while
-// connected (queue change, filter change, or a 5 s RSSI poll) — not staged through §6.0's
-// BEGIN/END. Orion reads on (re)connect to recover initial state without waiting for a notify.
+// not just on the next queue event. "m"/"u"/"t"/"s"/"l" are always 0 when "c" is false ("d" is
+// "" instead, matching "n"). Ori notifies on every iPhone state change and whenever counts/
+// signal bucket/battery change while connected (queue change, filter change, RSSI poll, or
+// battery poll) — not staged through §6.0's BEGIN/END. Orion reads on (re)connect to recover
+// initial state without waiting for a notify.
 
 AncsNotification = {          // Ori → Orion, notify (char 0010) — see §13
   "o": "add" | "remove" | "clear",  // op. "add" covers a genuinely-new notification AND an
@@ -420,10 +458,13 @@ Because Write-No-Response has no ATT-level pacing, Orion MUST bound how far it r
 
 Once AncsNotification's field caps were raised to match Ori's own on-device storage (§10), a maxed-out `body` no longer fits one ATT notification, so `notify_chunked()` (`gatt_server.cpp`) sends every op on this characteristic — `add`/`remove`/`clear` alike — through the same frame format (even `remove`/`clear`, which always fit `total_frags:1`), so Orion's reassembler never has to guess whether a notify is bare CBOR or a chunk frame.
 
-Same frame format as §5 (seq_num/total_frags/payload_len, uint16 LE), sized from the negotiated MTU. Deliberately simpler than the write-direction protocol, since this is a one-way relay with no `SyncControl`-equivalent NACK channel and no overrun risk:
+Same frame format as §5 (seq_num/total_frags/payload_len, uint16 LE), sized from the negotiated MTU. Deliberately simpler than the write-direction protocol, since this is a one-way relay with no `SyncControl`-equivalent NACK channel and no overrun risk **for a single notification**:
 
-- **No NACK/retry.** A multi-fragment `add`'s fragments are sent back-to-back from Ori's single main task (nothing else can interleave), and the link layer itself acks/retransmits every packet. If Orion's reassembler sees a gap or `total_frags` mismatch, it discards the partial buffer and waits for the next `seq_num == 0` — the next queue mutation on Ori re-sends anyway, so a dropped sequence self-heals without an explicit retry.
-- **No windowed flow control.** At most ~3-4 fragments for a maxed-out body — nowhere near the burst sizes §5's `WINDOW` protects against (built for a 512 KB Time Off photo); back-to-back `notify()` calls at this scale stay well within the BLE stack's mbuf pool.
+- **No NACK/retry, at the protocol level.** A multi-fragment `add`'s fragments are sent back-to-back from Ori's single main task (nothing else can interleave), and the link layer itself acks/retransmits every packet. If Orion's reassembler sees a gap or `total_frags` mismatch, it discards the partial buffer and waits for the next `seq_num == 0` — the next queue mutation on Ori re-sends anyway, so a dropped sequence self-heals without an explicit retry. This reasoning still holds for one notification at a time: at most ~3-4 fragments for a maxed-out body — nowhere near the burst sizes §5's `WINDOW` protects against (built for a 512 KB Time Off photo).
+- **The resync burst is the one case that DOES need pacing — a transport-level fix, not a protocol change.** `ancs_client::resync_orion_relay()` (fired from `onSubscribe()` on char 0010, `firmware.md`) replays every currently-queued notification as a fresh `add`, back-to-back, once per (re)connect. Found on hardware 2026-07: with several notifications queued (a captured log showed 10, some spanning up to 8 fragments each) fired with zero pacing — often while the connection was still mid-MTU-negotiation — NimBLE's outgoing mbuf pool (default 12×256 B in NimBLE-Arduino's `nimconfig.h`) filled up, most `notify()` calls failed (`BLE_HS_ENOMEM`), and Orion tore down the link (`BLE_HS_HCI_ERR 0x13`, "Remote User Terminated Connection") rather than receive a stalled/garbled relay stream. Fixed with three changes, all firmware-internal (no wire-format change):
+  - `resync_orion_relay()` yields a short pace (`ANCS_RESYNC_ITEM_PACING_MS`, 15 ms) **between queued items**, not between one item's own fragments — the single-notification case above is untouched.
+  - `notify_chunked()` (`gatt_server.cpp`) retries a failed fragment a bounded number of times with a short backoff (`ANCS_NOTIFY_MAX_RETRIES`/`ANCS_NOTIFY_RETRY_BACKOFF_MS`) before giving up and logging — scoped to this transient mbuf-pool-full case, not a general per-fragment ack/retry protocol (NimBLE's `notify()` only returns a bool, so this can't branch on ENOMEM specifically; retrying any failure is the closest available proxy).
+  - The mbuf pool itself was also widened (`CONFIG_BT_NIMBLE_MSYS1_BLOCK_COUNT=24` in `platformio.ini`) as defense in depth — the pacing fix is what actually corrects the burst; the wider pool just gives more headroom while it drains.
 
 ---
 
@@ -490,12 +531,18 @@ Orion writes Presence Status (via Device Settings "p" field)
 Orion writes Weather (via Device Settings "w"/"d"/"u" fields) — always, all three together
   → Also applied immediately. Ori was showing no weather icon (or a stale one
     it can no longer trust) while disconnected — this repopulates it.
-Orion writes Time Sync (always — ~20 bytes, clock may drift)
 Orion writes Sync Manifest: { profile_sha, photo_sha, meetings_sha, to_sha }
 Ori compares against NVS/RAM hashes → notifies Sync Manifest: { needed: [...] }
 
 Orion computes total = byte-length of (Time Sync + only the `needed` items)
 Orion writes SyncControl{op:"BEGIN", seq:N, total:total}
+Orion writes Time Sync (always — ~20 bytes, clock may drift) — INSIDE the
+  BEGIN/END session, like every other staged item (§6.0/§6.3); this is what
+  both implementations (Orion's run_sync, tools/mock_orion_ble.py) have
+  always done. (An earlier revision of this sequence showed Time Sync before
+  BEGIN; firmware tolerates that order too — gatt_server.cpp's stage_begin()
+  carries a just-staged pre-BEGIN Time Sync into the new session instead of
+  wiping it — but inside the session is the canonical order.)
 Orion writes only requested items (profile → photo → meetings → to)
 Orion writes SyncControl{op:"END", seq:N}
 
@@ -517,6 +564,7 @@ Ori notifies Device Status = RUNTIME_READY → overlay dismissed.
 | Presence Status | Teams change or ~60 s poll | Write Device Settings {"p"} (only when value changes) |
 | Weather | Weather-API poll, ~15–30 min | Write Device Settings {"w","d","u"} together (only when any value changes) |
 | Clock Face / Time Format / ANCS Filter | User changes setting | Write Device Settings {"c"}, {"h"}, or {"f"} |
+| Seek Step | User changes setting | Write Device Settings {"k"} outside BEGIN/END; read back on (re)connect |
 
 Periodic refreshes set `RUNTIME_SYNCING` briefly but do **not** trigger the reconnecting overlay.
 
@@ -530,10 +578,13 @@ Device Settings (char `000E`) is outside the BEGIN/END pipeline. Each field is e
 - **Clock Face** (`"c"`): NVS-persisted, write-only-on-change — not on every reconnect.
 - **Time Format** (`"h"`): NVS-persisted, write-only-on-change. 0=24-hour (default), 1=12-hour; governs every wall-clock display on Ori.
 - **ANCS Filter** (`"f"`): NVS-persisted, write-only-on-change.
+- **Seek Step** (`"k"`): NVS-persisted, write-only-on-change. 1-60 seconds, default 10; how far double-tapping the left/right third of the album art seeks — `media-mode.md`.
 
 Orion can write any subset of fields in one Device Settings write (e.g. presence-only on a Teams change).
 
-**Read on (re)connect:** Orion reads Device Settings once per connection to recover the six NVS-persisted fields (`"c"`, `"h"`, `"f"`, `"1"`/`"2"`/`"3"`), so its settings UI shows correct values without caching what it last wrote. Presence is not returned (ephemeral; Orion is the source of truth).
+**Read on (re)connect:** Orion reads Device Settings once per connection to recover the seven NVS-persisted fields (`"c"`, `"h"`, `"f"`, `"1"`/`"2"`/`"3"`, `"k"`), so its settings UI shows correct values without caching what it last wrote. Presence is not returned (ephemeral; Orion is the source of truth).
+
+**Notify (added 2026-07-13):** Ori also notifies the full Device Settings read-response payload whenever its own live `signal_bars` (`"r"`) bucket to Orion changes — sampled every 5 s while connected, notified only on an actual bucket change (0-4), mirroring Phone Bond Status's identical RSSI-poll-and-notify-on-change treatment for the iPhone link. This is the only field the notify exists for: the NVS-persisted fields above only ever change via an Orion write in the first place, so Orion already knows their new value the moment it sends one and gains nothing from being told again; `"s"`/`"b"` (serial/manufacture date) never change post-provisioning. Orion's Ori Info/Stats modal (`pc-app.md`) subscribes to this notify to show live signal bars while open, replacing an earlier fixed-interval poll on Orion's own side.
 
 ---
 
@@ -611,12 +662,15 @@ No wire-level protocol version negotiation or compatibility gate — Ori and Ori
 | `DeviceSettings.weather_condition` | uint 0–6 |
 | `DeviceSettings.temperature` | int −40…140 (unit declared by `"u"` — see §4) |
 | `DeviceSettings.temperature_unit` | uint 0–1 |
+| `DeviceSettings.seek_step_s` | uint 1–60 (default 10) |
 | `DeviceSettings.serial_number` | ≤ 32 chars (firmware `g_serial[32]`, `factory_info.cpp`) — read-only, provisioning.md |
 | `DeviceSettings.manufacture_date` | ≤ 16 chars, ISO-8601 "YYYY-MM-DD" (firmware `g_mfg[16]`) — read-only, provisioning.md |
 | `DeviceSettings.signal_bars` | uint 0–4 — read-only, live |
 | `PhoneBondStatus.name` | ≤ 63 UTF-8 bytes (firmware `g_phone_name[64]` minus null terminator) |
+| `PhoneBondStatus.device_type` | ≤ 31 UTF-8 bytes (firmware `g_phone_device_type[32]` minus null terminator) |
 | `PhoneBondStatus.missed_calls/unread_messages/total_notifications` | uint 0–255 (capped at `MAX_ANCS_NOTIFICATIONS` = 50 in practice) |
 | `PhoneBondStatus.signal_bars` | uint 0–4 |
+| `PhoneBondStatus.battery_level` | uint 0–100 |
 | Unpair Phone Command | exactly 4 bytes (0x55 0x4E 0x50 0x52) |
 | `AncsNotification.icon_token` | ≤ 31 UTF-8 bytes — matches Ori's own on-device storage (`app_state.cpp`'s `AncsDetailEntry::token[32]`); longest known firmware token, `microsoft_authenticator`, is 23 |
 | `AncsNotification.app` | ≤ 39 UTF-8 bytes — matches `AncsDetailEntry::display_name[40]` |
@@ -669,6 +723,7 @@ Which icon shows in each slot is configured in Orion's settings UI and delivered
 
 - **Volume change:** `IAudioEndpointVolumeCallback` (Win) / `AudioObjectAddPropertyListener` (macOS, planned) → debounce ~100 ms → write `HostVolumeState`
 - **Track change:** `GlobalSystemMediaTransportControlsSessionManager` (Win) / `MRMediaRemoteRegisterForNowPlayingNotifications` (macOS, planned — private `MediaRemote` framework, viable since Orion ships direct-download notarized, never via the Mac App Store; re-verify per OS version) → write `MediaMetadata` + resize art to 484×216 JPEG (target 15–30 KB) → chunk-write `MediaAlbumArt`
+  - **A new track change aborts an in-flight art transfer immediately** rather than queuing behind it: Orion runs each `MediaAlbumArt` chunk stream as its own task and cancels the previous one when a newer track's art is requested (`spawn_album_art_push` in `central.rs`), so skipping rapidly through a playlist doesn't make each stale image stream to completion before the current one starts. On the wire the old stream simply stops mid-fragment; Ori discards the half-received image the moment the new transfer's `seq==0` frame lands (its chunked reassembler resets on `seq 0` — `chunked_transfer.cpp`), so no explicit "cancel" op is needed and no partial image is ever shown.
 
 ### Swipe-vs-push race (vertical volume swipe)
 

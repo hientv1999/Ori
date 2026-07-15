@@ -181,7 +181,19 @@ function doUnpairPhone(){
 // is already the identifying context. The Unpair button routes to the existing
 // confirm modal (m-unpair-phone) so the destructive action still takes a
 // deliberate second tap.
-const IPHONE_STATS={missed:2,unread:7,notifications:7,signal:4};
+const IPHONE_STATS={missed:2,unread:7,notifications:7,signal:4,deviceType:'iPhone 17 Pro Max',battery:68};
+const IP_BATT_LOW_THRESHOLD=20;
+
+// Battery icon fill + "%" label — mirrors Ori_UI_Prototype.js's battIconHTML,
+// but here the SVG markup is static in the HTML (#ipInfoBattFill/#ipInfoBattPct)
+// so this just updates the fill rect's width/color and the label text.
+function renderBattery(level){
+  const pct=Math.max(0,Math.min(100,level));
+  const fill=$('ipInfoBattFill');
+  fill.setAttribute('width',(14*pct/100).toFixed(1));
+  fill.style.fill=pct<=IP_BATT_LOW_THRESHOLD?'var(--danger)':'var(--success)';
+  $('ipInfoBattPct').textContent=pct+'%';
+}
 
 // Lights up the first `level` (0-4) bars of a .sig-bars element — shared by
 // the Ori info modal (Ori↔Orion link) and the iPhone info modal (Ori↔iPhone
@@ -195,10 +207,12 @@ function openIphoneInfoModal(){
   const t=I18N[appLang].iphoneInfoModal;
   const s=lastPhoneBondStatus;
   $('ipInfoTitle').textContent=s.n||I18N[appLang].unpairPhoneModal.fallbackName;
+  $('ipInfoType').textContent=s.c?IPHONE_STATS.deviceType:'';
   $('ipInfoState').textContent=s.c?I18N[appLang].main.connected:I18N[appLang].main.disconnected;
   $('ipInfoDot').className='p-dot '+(s.c?'available':'offline');
   renderSigBars('ipInfoSigBars',s.c?IPHONE_STATS.signal:0);
   $('ipInfoSigBars').title=t.sigLbl;
+  renderBattery(s.c?IPHONE_STATS.battery:0);
 
   // Counts + badges are only meaningful while the iPhone link is actually up.
   // Disconnected: icons stay visible but dimmed (.zero) and badges hidden —

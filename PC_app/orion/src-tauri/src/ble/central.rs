@@ -73,12 +73,15 @@ pub struct BleState {
     // Every per-connection background task spawned by `start_post_sync_tasks`
     // — media/volume bridge, phone bond watcher, firmware-version check,
     // periodic Time Sync refresh. Each is `abort()`ed at the top of
-    // `start_post_sync_tasks` before its replacement is spawned: they only
-    // self-exit by *noticing* `is_connected()` has gone false, which can lag
-    // behind a fast reconnect (btleplug hands back the same `Peripheral` for
-    // a given device, so `is_connected()` flips back to true as soon as the
-    // new connection is up) — without an explicit abort, an old task can run
-    // alongside its replacement, e.g. dispatching every KeyboardCommand twice.
+    // `start_post_sync_tasks` before its replacement is spawned: even though
+    // they self-exit event-driven now (via `disconnect_tx`, `watch_for_
+    // disconnect`'s doc comment), a fast back-to-back reconnect can still
+    // abort THAT watcher (itself respawned per-connection) before it relays
+    // the old connection's disconnect — so a task racing that exact window
+    // would otherwise never learn its own connection ended, and could run
+    // alongside its replacement, e.g. dispatching every KeyboardCommand
+    // twice. The explicit abort here is what actually closes that race,
+    // not just a nice-to-have on top of the event.
     background_tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     // The two ANCS relay watcher tasks (char 0010/0011 drain loops), owned
     // and lifecycle-managed by `subscribe_ancs_relay_early` — see its doc
@@ -113,6 +116,19 @@ pub struct BleState {
     // sleeping) — `notify_one` just leaves a permit that's silently unused
     // in that case, never a problem.
     pub reconnect_notify: tokio::sync::Notify,
+    // Event-driven disconnect signal, bumped by `watch_for_disconnect` the
+    // instant btleplug relays a genuine link-layer disconnect for the
+    // current peripheral — subscribed to by `wait_for_disconnect` and every
+    // per-connection watcher in this file instead of polling `is_connected()`
+    // on a timer. A `watch` channel specifically because each subscriber
+    // independently tracks whether it's seen the latest value, so a
+    // disconnect can never be missed the way it could between one fixed-
+    // cadence poll and the next.
+    disconnect_tx: tokio::sync::watch::Sender<u64>,
+    // The task currently relaying disconnects into `disconnect_tx` for the
+    // live connection — aborted and replaced on every (re)connect, same
+    // reasoning as `ancs_tasks`/`background_tasks` below.
+    disconnect_watcher: Mutex<Option<tokio::task::JoinHandle<()>>>,
     // Handle to whichever `supervise_connection_loop` task is currently
     // running (set at both of its spawn sites — `get_initial_state` and
     // `ble_submit_passkey`). `commands::factory_reset`/`clear_all` abort it
@@ -147,7 +163,77 @@ pub struct BleState {
     cached_address: Mutex<Option<String>>,
     cached_serial_number: Mutex<Option<String>>,
     cached_manufacture_date: Mutex<Option<String>>,
+    // iPhone's resolved model name (PhoneBondStatus "d") — same write-through
+    // treatment as the three identity fields above, write-through cached by
+    // `phone_bond_watcher` and seeded back from disk at launch. See
+    // `store::SavedState::phone_device_type`'s doc comment for why this
+    // outlives an Orion disconnect (unlike the rest of `PhoneBondStatus`,
+    // which the frontend correctly zeroes — a phone's model doesn't change
+    // just because the *Ori* link dropped).
+    cached_phone_device_type: Mutex<Option<String>>,
     last_synced: Mutex<Option<std::time::Instant>>,
+    // MediaMetadata (char 000C, Write-WITH-Response — no Write-No-Response
+    // property, unlike Album Art) and Media Album Art (char 000D, Write-NR)
+    // need DIFFERENT concurrency strategies, because the BLE ATT protocol
+    // itself treats them differently:
+    //
+    // Album Art (Write-No-Response) has no outstanding-request limit — the
+    // host can fire fragments without waiting for a peripheral ack, so a
+    // `tokio::task::JoinHandle::abort()` on the sending task genuinely stops
+    // further fragments going out; a newer track's art can cleanly preempt
+    // a still-streaming older one. `album_art_task` tracks that in-flight
+    // task, aborted+replaced by `spawn_album_art_push`.
+    //
+    // MediaMetadata (Write-WITH-Response) is an ATT request/response
+    // transaction, and the BLE spec allows only ONE such transaction
+    // outstanding per connection at a time. Aborting the Rust task that
+    // issued it does NOT retract an already-dispatched Write Request — Ori
+    // still has to receive and ack it, and the OS's Bluetooth stack won't
+    // even attempt the NEXT Write Request until that ack lands. An earlier
+    // version of this fix used the same abort-and-restart pattern for
+    // metadata too; on hardware this made a rapid burst of track changes
+    // pile up a backlog of already-dispatched-but-abandoned Write Requests
+    // that Ori had to plod through one by one, so even the LAST (wanted)
+    // metadata write ended up waiting over a second behind stale acks — the
+    // opposite of "immediately." `media_meta_push` instead uses a mailbox:
+    // at most one Write Request in flight at a time; any track change that
+    // arrives while one's outstanding just overwrites `pending` (coalescing
+    // to the latest, never queuing multiple), and the in-flight write's own
+    // task picks up whatever's newest in `pending` the moment its ack
+    // arrives, looping until nothing newer is left. See `spawn_metadata_
+    // push`'s doc comment for the implementation. Both are aborted+cleared
+    // on disconnect in `start_post_sync_tasks` alongside the other
+    // background tasks (both fields below: `task` aborted directly;
+    // `running`/`pending` reset so a stale pending payload from the dead
+    // connection is never sent to whatever connects next).
+    album_art_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    media_meta_push: Mutex<MediaMetaPushState>,
+}
+
+#[derive(Default)]
+struct MediaMetaPushState {
+    // The worker task's own handle, purely so disconnect cleanup
+    // (`start_post_sync_tasks`) can `.abort()` it directly — same rigor as
+    // `album_art_task`. NOT used to decide whether to spawn a new worker
+    // (see `running` below for why `JoinHandle::is_finished()` isn't safe
+    // for that).
+    task: Option<tokio::task::JoinHandle<()>>,
+    // True while a worker task is alive draining this mailbox (i.e. either
+    // currently awaiting a Write Request's ack, or about to loop back to
+    // check `pending` again) — NOT the same as "a write is currently on the
+    // wire," since the gap between one write's ack and checking `pending`
+    // is real but short. Only ever read/written while holding the
+    // `media_meta_push` mutex, together with `pending`, so there's no
+    // window where a setter can miss a worker that's about to exit (see
+    // `spawn_metadata_push`'s doc comment for why that atomicity matters —
+    // and why this can't just be `task.as_ref().map_or(true, |t| t.is_
+    // finished())`: a `JoinHandle` only reports finished AFTER the task
+    // fully returns, which happens strictly after this same worker would
+    // have already made its own "anything pending?" decision under this
+    // lock — checking it from the outside can't be atomic with that
+    // decision the way a single shared, lock-guarded bool can).
+    running: bool,
+    pending: Option<Vec<u8>>,
 }
 
 /// Firmware-default shortcut slot tokens — the combo a fresh device ships
@@ -174,44 +260,62 @@ impl Default for BleState {
             supervisor_running: std::sync::atomic::AtomicBool::new(false),
             pairing_generation: std::sync::atomic::AtomicU64::new(0),
             reconnect_notify: tokio::sync::Notify::new(),
+            disconnect_tx: tokio::sync::watch::channel(0).0,
+            disconnect_watcher: Mutex::default(),
             supervisor_task: Mutex::default(),
             cached_fw_version: Mutex::default(),
             cached_address: Mutex::default(),
             cached_serial_number: Mutex::default(),
             cached_manufacture_date: Mutex::default(),
+            cached_phone_device_type: Mutex::default(),
             last_synced: Mutex::default(),
+            album_art_task: Mutex::default(),
+            media_meta_push: Mutex::default(),
         }
     }
 }
 
 /// Clears the in-memory identity cache — `cached_address`/
-/// `cached_serial_number`/`cached_manufacture_date` — without touching
-/// shortcuts/combos. These three are write-through persisted to
-/// `store::SavedState` (see `BleState`'s own doc comment), so every caller
-/// pairs this with clearing the matching disk fields itself
+/// `cached_serial_number`/`cached_manufacture_date`/`cached_phone_device_type`
+/// — without touching shortcuts/combos. These four are write-through
+/// persisted to `store::SavedState` (see `BleState`'s own doc comment), so
+/// every caller pairs this with clearing the matching disk fields itself
 /// (`saved.address = None` etc.) — without also clearing the in-memory side,
 /// `get_ori_info` would keep answering with the old identity for the rest of
 /// this running session, until the next app restart re-seeded from the
-/// (by-then-cleared) disk copy. Split out from `reset_session_caches` below
-/// so `give_up_on_bond` (commands.rs) — which ends a bond the same way a
-/// factory reset does, but isn't a user-initiated "reset my shortcuts too"
-/// action — can clear identity alone.
+/// (by-then-cleared) disk copy. `cached_phone_device_type` belongs here too:
+/// a factory reset / Clear All ends Ori's own bond, which per ble-protocol.md
+/// §2 wipes its iPhone bond right along with it — same event, same treatment.
+/// Split out from `reset_session_caches` below so `give_up_on_bond`
+/// (commands.rs) — which ends a bond the same way a factory reset does, but
+/// isn't a user-initiated "reset my shortcuts too" action — can clear
+/// identity alone.
 pub async fn clear_cached_identity(state: &BleState) {
     *state.cached_address.lock().await = None;
     *state.cached_serial_number.lock().await = None;
     *state.cached_manufacture_date.lock().await = None;
+    *state.cached_phone_device_type.lock().await = None;
+}
+
+/// Clears just the iPhone's cached device type — a standalone `unpair_phone`
+/// ends only the iPhone's bond, not Ori's own, so unlike `clear_cached_identity`
+/// this leaves address/serial_number/manufacture_date untouched.
+pub async fn clear_cached_phone_device_type(state: &BleState) {
+    *state.cached_phone_device_type.lock().await = None;
 }
 
 /// Seeds the in-memory identity cache from `store::SavedState` at app
 /// startup (`commands::get_initial_state`) — same idea as
-/// `set_favorite_combos`'s own startup-seed call, just for these three
-/// fields instead. Lets `get_ori_info` answer with the last-known
-/// address/serial/manufacture-date before this session's first connect ever
-/// completes, which is the entire point of persisting them (pc-app.md).
-pub async fn seed_cached_identity(state: &BleState, address: Option<String>, serial_number: Option<String>, manufacture_date: Option<String>) {
+/// `set_favorite_combos`'s own startup-seed call, just for these fields
+/// instead. Lets `get_ori_info` answer with the last-known
+/// address/serial/manufacture-date, and lets the iPhone Info modal show the
+/// last-known device type, before this session's first connect ever
+/// completes — which is the entire point of persisting them (pc-app.md).
+pub async fn seed_cached_identity(state: &BleState, address: Option<String>, serial_number: Option<String>, manufacture_date: Option<String>, phone_device_type: Option<String>) {
     *state.cached_address.lock().await = address;
     *state.cached_serial_number.lock().await = serial_number;
     *state.cached_manufacture_date.lock().await = manufacture_date;
+    *state.cached_phone_device_type.lock().await = phone_device_type;
 }
 
 /// Resets the per-session caches that outlive a single connection — back to
@@ -298,16 +402,13 @@ pub async fn force_disconnect(state: &BleState) {
 /// if this call won the claim (the caller should proceed); `false` if
 /// another supervisor is already active. Paired with `release_supervisor`.
 pub fn try_claim_supervisor(state: &BleState) -> bool {
-    let won = state
+    state
         .supervisor_running
         .compare_exchange(false, true, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst)
-        .is_ok();
-    eprintln!("[ORION-DEBUG] try_claim_supervisor: won={won}");
-    won
+        .is_ok()
 }
 
 pub fn release_supervisor(state: &BleState) {
-    eprintln!("[ORION-DEBUG] release_supervisor called");
     state.supervisor_running.store(false, std::sync::atomic::Ordering::SeqCst);
 }
 
@@ -374,10 +475,6 @@ const SERVICE_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 const ENCRYPTION_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const MANIFEST_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 const SYNC_COMPLETE_TIMEOUT: Duration = Duration::from_secs(30);
-/// How often the pairing disconnect watcher polls `is_connected()`. Not a
-/// deadline — just the reaction granularity for noticing Ori has dropped
-/// the link (e.g. its own ~30s NimBLE pairing-procedure timeout firing).
-const DISCONNECT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// ble-protocol.md §6.3: "Time Sync | Every 10 min | Write Time Sync (inside
 /// BEGIN/END)". Ori has no battery-backed RTC (hardware.md) — without a
 /// periodic resync its clock silently drifts for the length of any long
@@ -546,7 +643,6 @@ pub const ORI_POST_DISCOVERY_FAILURE_PREFIX: &str = "__ori_post_discovery_failur
 /// `SETUP` on the device we expect to be bonded already is itself the
 /// signal, see `ORI_FACTORY_RESET_PREFIX`).
 async fn discover_named_device(adapter: &Adapter, name: &str, timeout: Duration) -> Result<Peripheral, String> {
-    eprintln!("[ORION-DEBUG] discover_named_device: starting scan for {name:?}");
     adapter.start_scan(ScanFilter::default()).await.map_err(|e| e.to_string())?;
     let mut events = adapter.events().await.map_err(|e| e.to_string())?;
     let deadline = tokio::time::sleep(timeout);
@@ -596,7 +692,6 @@ async fn discover_named_device(adapter: &Adapter, name: &str, timeout: Duration)
                             .get(&gatt::MFG_COMPANY_ID)
                             .and_then(|data| data.first())
                             .is_some_and(|&flag| flag == gatt::ADV_FLAG_SETUP);
-                        eprintln!("[ORION-DEBUG] discover_named_device: ManufacturerDataAdvertisement for matched id, raw={manufacturer_data:?}, is_reset={is_reset}");
                         let Ok(peripheral) = adapter.peripheral(&id).await else { continue };
                         break Some(if is_reset {
                             Outcome::FactoryReset(peripheral.address().into())
@@ -609,9 +704,6 @@ async fn discover_named_device(adapter: &Adapter, name: &str, timeout: Duration)
                         let Ok(Some(props)) = peripheral.properties().await else { continue };
                         let candidate = props.local_name.or(props.advertisement_name).unwrap_or_default();
                         if candidate == name {
-                            if name_matched.is_none() {
-                                eprintln!("[ORION-DEBUG] discover_named_device: name matched ({candidate:?}), waiting for ManufacturerDataAdvertisement");
-                            }
                             name_matched = Some(id);
                         }
                     }
@@ -624,18 +716,9 @@ async fn discover_named_device(adapter: &Adapter, name: &str, timeout: Duration)
 
     let _ = adapter.stop_scan().await;
     match found {
-        Some(Outcome::Found(peripheral)) => {
-            eprintln!("[ORION-DEBUG] discover_named_device: outcome = Found");
-            Ok(peripheral)
-        }
-        Some(Outcome::FactoryReset(address)) => {
-            eprintln!("[ORION-DEBUG] discover_named_device: outcome = FactoryReset (addr={address})");
-            Err(format!("{ORI_FACTORY_RESET_PREFIX}{address}"))
-        }
-        None => {
-            eprintln!("[ORION-DEBUG] discover_named_device: outcome = NotFound (timeout)");
-            Err(format!("{name} not found — is it powered on and in range?"))
-        }
+        Some(Outcome::Found(peripheral)) => Ok(peripheral),
+        Some(Outcome::FactoryReset(address)) => Err(format!("{ORI_FACTORY_RESET_PREFIX}{address}")),
+        None => Err(format!("{name} not found — is it powered on and in range?")),
     }
 }
 
@@ -646,6 +729,54 @@ fn find_char(peripheral: &Peripheral, uuid_str: &str) -> Result<Characteristic, 
         .into_iter()
         .find(|c| c.uuid == target)
         .ok_or_else(|| format!("Ori didn't advertise characteristic {uuid_str}"))
+}
+
+/// Event-driven replacement for the old `is_connected()` sleep-poll used
+/// throughout this file: subscribes to the adapter's event stream and bumps
+/// `disconnect_tx` the instant btleplug relays a genuine link-layer
+/// disconnect (`CentralEvent::DeviceDisconnected` — on Windows this is
+/// wired straight to WinRT's own `BluetoothLEDevice.ConnectionStatusChanged`
+/// event, `btleplug::winrtble::peripheral`, not a poll on btleplug's own
+/// side either) for `peripheral_id` specifically. Exits once it's relayed
+/// one disconnect — nothing more to watch for on a per-connection task — or
+/// if the event stream itself ends.
+async fn watch_for_disconnect(adapter: Adapter, peripheral_id: PeripheralId, disconnect_tx: tokio::sync::watch::Sender<u64>) {
+    let Ok(mut events) = adapter.events().await else { return };
+    while let Some(event) = events.next().await {
+        if let CentralEvent::DeviceDisconnected(id) = event {
+            if id == peripheral_id {
+                disconnect_tx.send_modify(|v| *v = v.wrapping_add(1));
+                return;
+            }
+        }
+    }
+}
+
+/// Spawns `watch_for_disconnect` for the just-established `peripheral`,
+/// aborting whatever instance was still tracked from a previous connection
+/// first — a fast repeated reconnect must not leave two watchers matching
+/// two different peripheral ids alive at once. Called once per connection,
+/// from `subscribe_ancs_relay_early` — the earliest point after the link is
+/// confirmed encrypted, common to both `reconnect` and `submit_passkey`.
+/// Every other per-connection watcher in this file subscribes its own
+/// `tokio::sync::watch::Receiver` from `state.disconnect_tx` independently
+/// (no need to thread one through as a parameter) — a `watch` channel lets
+/// any number of independent subscribers each reliably observe the next
+/// change from wherever their own baseline was when they subscribed.
+async fn spawn_disconnect_watcher(state: &BleState, adapter: &Adapter, peripheral: &Peripheral) {
+    let mut slot = state.disconnect_watcher.lock().await;
+    if let Some(prev) = slot.take() {
+        prev.abort();
+    }
+    *slot = Some(tokio::spawn(watch_for_disconnect(adapter.clone(), peripheral.id(), state.disconnect_tx.clone())));
+}
+
+/// Snapshots the currently-connected peripheral, or a plain "not connected"
+/// error — the shared tail of every command that needs a live link but isn't
+/// itself in the middle of establishing one (those use their own tailored
+/// error message instead, e.g. `submit_passkey`'s "select the device again").
+async fn require_peripheral(state: &BleState) -> Result<Peripheral, String> {
+    state.peripheral.lock().await.clone().ok_or_else(|| "not connected".to_string())
 }
 
 /// Best-effort connection-interval/latency request (maps to WinRT's
@@ -764,13 +895,23 @@ pub async fn start_pairing(app: &AppHandle, state: &BleState, name: &str) -> Res
     });
     *state.pairing_task.lock().await = Some(task);
 
+    // Event-driven, not polled: watches the adapter's event stream directly
+    // for btleplug's `CentralEvent::DeviceDisconnected` (WinRT's own
+    // `ConnectionStatusChanged` on this backend) matching this specific
+    // peripheral, instead of sleep-polling `is_connected()`.
+    let peripheral_id = peripheral.id();
     tokio::spawn(async move {
+        let Ok(mut events) = adapter.events().await else { return };
         loop {
             tokio::select! {
-                _ = tokio::time::sleep(DISCONNECT_POLL_INTERVAL) => {
-                    if !peripheral.is_connected().await.unwrap_or(false) {
-                        let _ = tx.send(pairing::PairingInput::Disconnected);
-                        return;
+                maybe_event = events.next() => {
+                    match maybe_event {
+                        Some(CentralEvent::DeviceDisconnected(id)) if id == peripheral_id => {
+                            let _ = tx.send(pairing::PairingInput::Disconnected);
+                            return;
+                        }
+                        Some(_) => continue,
+                        None => return,
                     }
                 }
                 _ = &mut done_rx => return,
@@ -959,12 +1100,10 @@ pub async fn reconnect(
     time_off: &TimeOffInput,
     shortcuts: &[String; 3],
 ) -> Result<(), String> {
-    eprintln!("[ORION-DEBUG] reconnect() entered for {name:?}");
     let adapter = get_adapter(state).await?;
     let peripheral = discover_named_device(&adapter, name, RECONNECT_SCAN_TIMEOUT).await?;
     let address: u64 = peripheral.address().into();
     let wrap = |e: String| format!("{ORI_POST_DISCOVERY_FAILURE_PREFIX}{address}:{e}");
-    eprintln!("[ORION-DEBUG] reconnect(): discover_named_device found a target, connecting (addr={address})");
     // Ori is found — Disconnected → Connecting. Emitted here rather than by
     // the supervisor loop up front (the old scheme) so the UI only ever
     // advances on genuine progress: a scan that never finds anything leaves
@@ -1029,13 +1168,11 @@ pub async fn reconnect(
 /// Time Sync refresh (§6.3).
 ///
 /// Aborts any tasks left over from a *previous* connection first — each of
-/// these only stops on its own by noticing `is_connected()` has gone false,
-/// which can lag behind a reconnect that completes faster than the task's
-/// own poll interval (`time_sync_refresher`'s is 10 minutes; a reconnect
-/// after a brief drop can land in seconds), leaving the old task running
-/// alongside its replacement — see `BleState::background_tasks`'s doc
-/// comment for the concrete failure mode this caused (doubled media
-/// commands).
+/// these self-exits event-driven now (`disconnect_tx`, `watch_for_disconnect`'s
+/// doc comment), but a fast back-to-back reconnect can still race that
+/// signal itself (see `BleState::background_tasks`'s doc comment for the
+/// exact window), leaving the old task running alongside its replacement —
+/// the concrete failure mode this caused was doubled media commands.
 ///
 /// The two ANCS relay watcher tasks are NOT spawned here — `subscribe_ancs_
 /// relay_early` already started them, well before this function runs, and
@@ -1049,6 +1186,23 @@ async fn start_post_sync_tasks(app: &AppHandle, state: &BleState, peripheral: Pe
         for task in tasks.drain(..) {
             task.abort();
         }
+    }
+    // Both media push mechanisms (spawn_album_art_push / spawn_metadata_push)
+    // are spawned dynamically by media_bridge, not tracked in
+    // background_tasks above — reset/abort any left running from a previous
+    // connection here too, so neither can linger writing to a now-dead
+    // peripheral, or hand a stale pending payload to whatever connects next,
+    // across a fast reconnect.
+    if let Some(prev) = state.album_art_task.lock().await.take() {
+        prev.abort();
+    }
+    {
+        let mut mp = state.media_meta_push.lock().await;
+        if let Some(prev) = mp.task.take() {
+            prev.abort();
+        }
+        mp.running = false;
+        mp.pending = None;
     }
 
     // The bulk transfer `run_sync` just finished (or, on a delta reconnect
@@ -1064,6 +1218,7 @@ async fn start_post_sync_tasks(app: &AppHandle, state: &BleState, peripheral: Pe
     let tasks = vec![
         tokio::spawn(check_firmware_version(app.clone(), peripheral.clone())),
         tokio::spawn(phone_bond_watcher(app.clone(), peripheral.clone())),
+        tokio::spawn(device_settings_watcher(app.clone(), peripheral.clone())),
         tokio::spawn(time_sync_refresher(app.clone(), peripheral.clone())),
         tokio::spawn(media_bridge(app.clone(), peripheral.clone())),
     ];
@@ -1083,24 +1238,23 @@ async fn start_post_sync_tasks(app: &AppHandle, state: &BleState, peripheral: Pe
     // unknown magic (write error ignored), harmlessly leaving the old
     // push-timed behavior in place.
     if let Ok(chr_cmd) = find_char(&peripheral, gatt::CHR_DEVICE_COMMAND) {
-        match peripheral.write(&chr_cmd, &gatt::RESYNC_ANCS_MAGIC, WriteType::WithResponse).await {
-            Ok(()) => eprintln!("[ORION-DEBUG] start_post_sync_tasks: RSYN (ANCS relay resync) requested"),
-            Err(e) => eprintln!("[ORION-DEBUG] start_post_sync_tasks: RSYN write failed: {e}"),
-        }
+        let _ = peripheral.write(&chr_cmd, &gatt::RESYNC_ANCS_MAGIC, WriteType::WithResponse).await;
     }
 }
 
 /// §6.3's periodic Time Sync refresh — re-sends just Time Sync, in its own
 /// scoped BEGIN/END session, every `TIME_SYNC_REFRESH_INTERVAL` for as long
-/// as the link stays up. Runs until disconnect (same `is_connected()` poll
-/// pattern used elsewhere in this file).
+/// as the link stays up. Exits immediately on disconnect (event-driven via
+/// `state.disconnect_tx`) rather than waiting out the rest of the current
+/// 10-minute tick.
 async fn time_sync_refresher(app: AppHandle, peripheral: Peripheral) {
     let mut tick = tokio::time::interval(TIME_SYNC_REFRESH_INTERVAL);
     tick.tick().await; // first tick fires immediately — run_sync/reconnect just sent one
+    let mut disconnect_rx = app.state::<BleState>().disconnect_tx.subscribe();
     loop {
-        tick.tick().await;
-        if !peripheral.is_connected().await.unwrap_or(false) {
-            return;
+        tokio::select! {
+            _ = tick.tick() => {}
+            _ = disconnect_rx.changed() => return,
         }
         let state = app.state::<BleState>();
         let _ = push_time_sync_only(&state, &peripheral).await;
@@ -1146,16 +1300,14 @@ async fn push_time_sync_only(state: &BleState, peripheral: &Peripheral) -> Resul
     wait_for_sync_complete(&mut notifications, &chr_status, SYNC_COMPLETE_TIMEOUT).await
 }
 
-/// How often the media bridge falls back to polling volume, and — only if
-/// `media::watch_now_playing` couldn't be set up — now-playing state too.
-/// Wide because it's now a safety net, not the primary detection mechanism:
-/// genuine now-playing changes arrive as pings from GSMTC's own change
-/// events (see `media::watch_now_playing`), and volume changes made
-/// *through Ori* already push immediately via `handle_keyboard_command`'s
-/// `vol_set` branch — this interval only needs to catch a volume change
-/// made some *other* way (Windows' own volume flyout, another app), which
-/// tolerates a few seconds of latency just fine.
-const VOLUME_POLL_INTERVAL: Duration = Duration::from_millis(6000);
+/// How often `media_bridge` falls back to polling now-playing state — only
+/// used at all when `media::watch_now_playing` (GSMTC's own change events)
+/// couldn't be set up in the first place. Volume no longer has (or needs) a
+/// poll fallback here: `media::watch_volume` wraps WASAPI's own
+/// `IAudioEndpointVolumeCallback` push notification, which — unlike GSMTC —
+/// has no separate "just poll this instead" primitive to fall back to if
+/// setup fails; see `media_bridge`'s `_volume_watcher` comment.
+const NOW_PLAYING_FALLBACK_POLL_INTERVAL: Duration = Duration::from_millis(6000);
 
 /// pc-app.md's PC-side seek correction: "if position deviates > ~5 s from
 /// dead-reckoned while playing, push corrected MediaMetadata with
@@ -1165,6 +1317,35 @@ const VOLUME_POLL_INTERVAL: Duration = Duration::from_millis(6000);
 /// Ori's display back up.
 const SEEK_CORRECTION_THRESHOLD_SECS: u64 = 5;
 
+/// `run_album_art_push`'s cap on how long it waits for an outstanding
+/// MediaMetadata write to drain before starting its own write anyway (see
+/// that wait's own doc comment for why it waits at all). A normal metadata
+/// write acks in tens of milliseconds; this is generous headroom for a
+/// slow-but-still-working connection while still bounding the worst case —
+/// a metadata write that's genuinely stuck (rather than just contending for
+/// airtime) must not block album art forever.
+const ART_METADATA_WAIT_TIMEOUT: Duration = Duration::from_millis(1500);
+
+/// Bounds a single MediaMetadata `WriteType::WithResponse` call. Found on
+/// hardware (2026-07-13): this write occasionally hangs far past its normal
+/// ~35-55ms — observed 4.1s and, in a second capture, 11.18s — right after
+/// back-to-back rapid track-change swipes, with no OS-level timeout of its
+/// own guarding it (`btleplug`'s Windows backend rides WinRT's
+/// `WriteValueWithResultAsync`, which is known to occasionally stall well
+/// past any reasonable per-write budget). Without this bound, one hung write
+/// holds `MediaMetaPushState::running` true for its entire stall, which (a)
+/// silently coalesces every intervening track change into `pending` without
+/// ever sending one, and (b) forces every concurrent album-art push to sit
+/// out its own `ART_METADATA_WAIT_TIMEOUT` before giving up and contending
+/// with the same still-stuck connection anyway. This does NOT cancel the
+/// underlying OS-level write — dropping the future can't retract a
+/// Write Request already handed to the BLE stack, same limitation as
+/// `spawn_album_art_push`'s doc comment describes for its own abort — it
+/// only stops *this task* from waiting on it, freeing the mailbox to
+/// immediately attempt the newest queued payload instead of staying wedged
+/// for the full stall.
+const METADATA_WRITE_TIMEOUT: Duration = Duration::from_millis(2000);
+
 /// Per-connection now-playing state `check_and_push_now_playing` tracks
 /// across calls, however it's triggered (a GSMTC change ping or, absent
 /// that, the fallback poll) — pulled into its own struct so `media_bridge`
@@ -1173,73 +1354,145 @@ const SEEK_CORRECTION_THRESHOLD_SECS: u64 = 5;
 #[derive(Default)]
 struct NowPlayingState {
     last_track: (String, String, bool),
-    // Title/artist only — gates re-fetching art from the OS and re-pushing
-    // it over BLE. Deliberately excludes `playing`: a play/pause toggle (or
-    // a player's own transient status blips — buffering, ad breaks) changes
-    // `last_track` for the metadata push below, but the artwork itself
-    // hasn't changed, so re-sending the same JPEG over a chunked BLE write
-    // on every pause/resume would be pure waste. Art only follows genuine
-    // track identity change (`media-mode.md`/`ble-protocol.md` §12 ties art
-    // to "track change", not playback-state change).
-    last_art_key: (String, String),
+    // SHA-256 of the raw OS thumbnail bytes last actually pushed (or `None`
+    // if the current track has no art) — the ONLY signal that gates a new
+    // album-art push. Deliberately independent of `last_track`/metadata:
+    // many players deliver the thumbnail in a second wave after the initial
+    // title/artist (the SMTC session is created immediately for
+    // responsiveness, art follows once fetched from network/disk), and some
+    // sources (live radio, some podcast apps) rotate art while title/artist
+    // stay static. Gating art on "did title/artist change" missed both —
+    // silently, since the old code nested the art check entirely inside the
+    // metadata-changed branch. Content-hashing the actual bytes catches a
+    // real art change no matter what metadata did or didn't do.
+    last_art_hash: Option<Vec<u8>>,
     // (position_s at last push, epoch seconds at that push) — the baseline
     // for detecting drift between Ori's own dead-reckoned position and
     // reality (see `SEEK_CORRECTION_THRESHOLD_SECS`).
     last_pushed_position: Option<(u32, u64)>,
 }
 
-/// Fetches current now-playing state and pushes a delta to Ori if it
-/// changed — the reusable body behind both `media_bridge`'s event-driven
-/// path (a GSMTC change ping) and its fallback poll (only used if
-/// `media::watch_now_playing` couldn't be set up on this system).
+/// Fetches current now-playing state and pushes metadata and album art to
+/// Ori as two fully independent deltas — the reusable body behind both
+/// `media_bridge`'s event-driven path (a GSMTC change ping) and its
+/// fallback poll (only used if `media::watch_now_playing` couldn't be set
+/// up on this system). `check_art` is false for a ping that GSMTC's own API
+/// scope guarantees can't carry an art change (`PlaybackInfoChanged`/
+/// `TimelinePropertiesChanged` — see `media::NowPlayingChange`'s doc
+/// comment) — skipping the OS thumbnail fetch entirely on those saves the
+/// round-trip on every play/pause/seek. Metadata is always checked
+/// regardless of `check_art`.
 async fn check_and_push_now_playing(
+    app: &AppHandle,
     peripheral: &Peripheral,
     chr_media: &Characteristic,
-    state: &BleState,
     chr_art: Option<&Characteristic>,
     np: &mut NowPlayingState,
+    check_art: bool,
 ) {
     match media::now_playing().await {
         Ok(Some(now)) => {
+            let identity_changed = (now.title.as_str(), now.artist.as_str()) != (np.last_track.0.as_str(), np.last_track.1.as_str());
             let track = (now.title.clone(), now.artist.clone(), now.playing);
             if track != np.last_track {
+                if identity_changed {
+                    // Kill any transfer still streaming the track we're
+                    // LEAVING right now — before the metadata push, and
+                    // before check_and_push_album_art's own (comparatively
+                    // slow) OS thumbnail fetch+hash for the new track. See
+                    // `abort_album_art_task`'s doc comment for why this
+                    // can't just wait for that function to get around to it.
+                    abort_album_art_task(app).await;
+                }
                 np.last_track = track;
                 np.last_pushed_position = now.position_s.map(|p| (p, now_epoch_secs()));
-                let _ = push_media_metadata(peripheral, chr_media, &now, true).await;
-                let art_key = (now.title.clone(), now.artist.clone());
-                if art_key != np.last_art_key {
-                    np.last_art_key = art_key;
-                    push_album_art(state, peripheral, chr_art).await;
-                }
+                let payload = encode_media_metadata_payload(&now, true);
+                // Metadata (mailbox-coalesced, `spawn_metadata_push`) and art
+                // (abort-and-restart, `spawn_album_art_push`) are pushed
+                // through TWO INDEPENDENT, non-blocking calls — never one
+                // combined blocking sequence. See each function's own doc
+                // comment for why they need different concurrency strategies
+                // (Write-WITH-Response vs Write-No-Response have different
+                // ATT-level outstanding-request rules). Neither call here
+                // awaits the underlying write completing, only the (cheap)
+                // dispatch — so this whole branch returns immediately
+                // regardless of how long either write actually takes,
+                // keeping `media_bridge`'s loop free to react to the next
+                // change right away.
+                spawn_metadata_push(app, peripheral, chr_media, payload).await;
             } else if now.playing {
                 if let (Some(actual), Some((last_pos, last_at))) = (now.position_s, np.last_pushed_position) {
                     let elapsed = now_epoch_secs().saturating_sub(last_at);
                     let expected = last_pos as u64 + elapsed;
                     let deviation = (actual as i64 - expected as i64).unsigned_abs();
                     if deviation > SEEK_CORRECTION_THRESHOLD_SECS {
-                        let _ = push_media_metadata(peripheral, chr_media, &now, true).await;
+                        let payload = encode_media_metadata_payload(&now, true);
+                        spawn_metadata_push(app, peripheral, chr_media, payload).await;
                         np.last_pushed_position = Some((actual, now_epoch_secs()));
                     }
                 }
             }
+
+            // Album art: checked independently of whether metadata changed
+            // above — never nested inside the `track != np.last_track`
+            // branch (that was the bug: a same-track art update, arriving
+            // on its own MediaPropertiesChanged ping, was never even looked
+            // at). Only run at all when this ping's source could plausibly
+            // carry an art change.
+            if check_art {
+                check_and_push_album_art(app, peripheral, chr_art, np).await;
+            }
         }
         Ok(None) if np.last_track != <(String, String, bool)>::default() => {
+            abort_album_art_task(app).await;
             np.last_track = Default::default();
-            np.last_art_key = Default::default();
+            np.last_art_hash = None;
             np.last_pushed_position = None;
-            let _ = push_empty_media_metadata(peripheral, chr_media).await;
+            spawn_metadata_push(app, peripheral, chr_media, encode_empty_media_metadata_payload()).await;
         }
         _ => {}
     }
 }
 
+/// Fetches the current track's raw OS thumbnail and pushes it to Ori only if
+/// its content actually differs from the last thing pushed — a SHA-256 over
+/// the raw bytes, not a proxy off title/artist (`NowPlayingState::last_art_hash`'s
+/// doc comment explains why the proxy missed real cases). Cheap to call on
+/// every qualifying ping: `now_playing_thumbnail()` is a local OS round-trip
+/// (no network), and hashing a JPEG/PNG thumbnail (tens of KB) is negligible
+/// next to the decode/resize/re-encode work `run_album_art_push` only does
+/// once a real change is confirmed.
+async fn check_and_push_album_art(
+    app: &AppHandle,
+    peripheral: &Peripheral,
+    chr_art: Option<&Characteristic>,
+    np: &mut NowPlayingState,
+) {
+    let Ok(raw) = media::now_playing_thumbnail().await else { return };
+    let hash = if raw.is_empty() { None } else { Some(sha256(&raw)) };
+    if hash == np.last_art_hash {
+        return;
+    }
+    np.last_art_hash = hash;
+    // Empty thumbnail (source has no art right now) — nothing to send; Ori
+    // keeps showing whatever art it last received rather than being told to
+    // clear it, matching how "nothing playing" is handled elsewhere.
+    if !raw.is_empty() {
+        spawn_album_art_push(app, peripheral, chr_art, raw).await;
+    }
+}
+
 /// Controls-mode OS bridge (§12) — subscribes to KeyboardCommand (char
-/// 000A), dispatches each notify to an OS action via `ble::media`, reacts to
-/// GSMTC change events for now-playing state (`media::watch_now_playing`),
-/// and polls volume (and, as a fallback, now-playing) at a wide interval.
-/// Runs until the link drops; there's no explicit stop signal for this pass
-/// — disconnect detection (the same `is_connected()` poll pattern as the
-/// pairing watcher) is what ends it.
+/// 000A), dispatches each notify to an OS action via `ble::media`, and
+/// reacts to real OS push notifications for both volume/mute
+/// (`media::watch_volume`, WASAPI's `IAudioEndpointVolumeCallback`) and
+/// now-playing state (`media::watch_now_playing`, GSMTC's change events) —
+/// falling back to a wide poll for now-playing only if its watcher couldn't
+/// be set up. Runs until the link drops — event-driven via
+/// `state.disconnect_tx`, not polled; the two inline `is_connected()` checks
+/// below are just a cheap belt-and-suspenders guard against writing to a
+/// peripheral that dropped in the same `select!` iteration as an
+/// already-queued ping, not the actual disconnect-detection mechanism.
 async fn media_bridge(app: AppHandle, peripheral: Peripheral) {
     let (Ok(chr_keyboard), Ok(chr_volume), Ok(chr_media)) = (
         find_char(&peripheral, gatt::CHR_KEYBOARD_COMMAND),
@@ -1255,10 +1508,11 @@ async fn media_bridge(app: AppHandle, peripheral: Peripheral) {
         return;
     }
     let Ok(mut notifications) = peripheral.notifications().await else { return };
-    // Only needed to serialize `push_album_art`'s chunked writes against
-    // other mid-session pushes (see its doc comment) — same re-fetch-from-
-    // AppHandle pattern as `run_shortcut`, since a Tauri-managed-state borrow
-    // isn't `'static` and this task is spawned.
+    // Unused directly here now (spawn_metadata_push/spawn_album_art_push
+    // each re-fetch their own state from the AppHandle they're given, same
+    // pattern as `run_shortcut`, since a Tauri-managed-state borrow isn't
+    // `'static` and those tasks are spawned) — kept for `state.disconnect_tx`
+    // below.
     let state = app.state::<BleState>();
 
     // Reconnect semantics (§12): push the current OS state immediately so
@@ -1272,12 +1526,15 @@ async fn media_bridge(app: AppHandle, peripheral: Peripheral) {
     let mut np = NowPlayingState::default();
     if let Ok(Some(now)) = media::now_playing().await {
         np.last_track = (now.title.clone(), now.artist.clone(), now.playing);
-        np.last_art_key = (now.title.clone(), now.artist.clone());
         np.last_pushed_position = now.position_s.map(|p| (p, now_epoch_secs()));
-        let _ = push_media_metadata(&peripheral, &chr_media, &now, true).await;
-        push_album_art(&state, &peripheral, chr_art.as_ref()).await;
+        let payload = encode_media_metadata_payload(&now, true);
+        spawn_metadata_push(&app, &peripheral, &chr_media, payload).await;
+        // Seeds `last_art_hash` from whatever art (if any) is available right
+        // now and pushes it — same hash-diff path a later ping would take,
+        // so there's no separate "always push on connect" special case.
+        check_and_push_album_art(&app, &peripheral, chr_art.as_ref(), &mut np).await;
     } else {
-        let _ = push_empty_media_metadata(&peripheral, &chr_media).await;
+        spawn_metadata_push(&app, &peripheral, &chr_media, encode_empty_media_metadata_payload()).await;
     }
 
     // Event-driven now-playing detection (see `media::watch_now_playing`'s
@@ -1289,15 +1546,31 @@ async fn media_bridge(app: AppHandle, peripheral: Peripheral) {
     // `now_playing()` fetch above already came back empty/failed too),
     // `now_playing_active` stays false and the volume-poll branch below
     // covers now-playing changes as a (slower) fallback instead.
-    let (now_playing_tx, mut now_playing_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let (now_playing_tx, mut now_playing_rx) = tokio::sync::mpsc::unbounded_channel::<media::NowPlayingChange>();
     let _now_playing_watcher = media::watch_now_playing(now_playing_tx).await.ok();
     let mut now_playing_active = _now_playing_watcher.is_some();
 
-    let mut volume_poll = tokio::time::interval(VOLUME_POLL_INTERVAL);
-    volume_poll.tick().await; // first tick fires immediately; the pushes above already covered "now"
+    // Event-driven volume/mute detection (WASAPI's own
+    // `IAudioEndpointVolumeCallback` — `media::watch_volume`'s doc comment).
+    // `_volume_watcher` has no fields read after construction, same
+    // kept-alive-for-its-Drop pattern as `_now_playing_watcher` above. If it
+    // fails to set up (no volume-capable render endpoint at all — rare),
+    // volume changes made outside Ori simply won't be caught until the next
+    // reconnect; there's no poll fallback for it the way now-playing has
+    // one, since unlike GSMTC there's no separate "poll this instead"
+    // primitive to fall back to here — `get_master_volume_percent()` IS the
+    // thing `watch_volume` wraps push notifications around.
+    let (volume_tx, mut volume_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let _volume_watcher = media::watch_volume(volume_tx).await.ok();
+    let mut volume_active = _volume_watcher.is_some();
+
+    let mut now_playing_fallback_poll = tokio::time::interval(NOW_PLAYING_FALLBACK_POLL_INTERVAL);
+    now_playing_fallback_poll.tick().await; // first tick fires immediately; the pushes above already covered "now"
+    let mut disconnect_rx = state.disconnect_tx.subscribe();
 
     loop {
         tokio::select! {
+            _ = disconnect_rx.changed() => return,
             maybe_notif = notifications.next() => {
                 let Some(notif) = maybe_notif else { return };
                 if notif.uuid != chr_keyboard.uuid {
@@ -1307,24 +1580,41 @@ async fn media_bridge(app: AppHandle, peripheral: Peripheral) {
                 handle_keyboard_command(&app, &peripheral, &chr_volume, &cmd).await;
             }
             maybe_ping = now_playing_rx.recv(), if now_playing_active => {
-                let Some(()) = maybe_ping else {
+                let Some(mut kind) = maybe_ping else {
                     // Channel closed (the watcher's own registration must have
                     // failed after all) — disable this branch for the rest of
-                    // the loop; the volume-poll branch's fallback takes over.
+                    // the loop; the fallback-poll branch takes over.
                     now_playing_active = false;
                     continue;
                 };
                 // A single track change can fire more than one GSMTC event
                 // (e.g. MediaPropertiesChanged + PlaybackInfoChanged) —
                 // drain any already-queued pings so this does one re-fetch
-                // instead of one per event.
-                while now_playing_rx.try_recv().is_ok() {}
+                // instead of one per event. Widen `kind` to `Properties` if
+                // ANY drained ping was one — a coalesced batch must not lose
+                // a real art-eligible signal just because a PlaybackInfo/
+                // Timeline ping happened to queue behind or ahead of it.
+                while let Ok(next) = now_playing_rx.try_recv() {
+                    if next == media::NowPlayingChange::Properties {
+                        kind = media::NowPlayingChange::Properties;
+                    }
+                }
                 if !peripheral.is_connected().await.unwrap_or(false) {
                     return;
                 }
-                check_and_push_now_playing(&peripheral, &chr_media, &state, chr_art.as_ref(), &mut np).await;
+                let check_art = kind == media::NowPlayingChange::Properties;
+                check_and_push_now_playing(&app, &peripheral, &chr_media, chr_art.as_ref(), &mut np, check_art).await;
             }
-            _ = volume_poll.tick() => {
+            maybe_vol_ping = volume_rx.recv(), if volume_active => {
+                let Some(()) = maybe_vol_ping else {
+                    // Channel closed (the watcher's blocking thread ended
+                    // early — no volume-capable render endpoint at all).
+                    // Nothing to fall back to here (unlike now-playing,
+                    // there's no separate poll primitive to catch this) —
+                    // disable the branch so this doesn't busy-loop on `None`.
+                    volume_active = false;
+                    continue;
+                };
                 if !peripheral.is_connected().await.unwrap_or(false) {
                     return;
                 }
@@ -1335,9 +1625,16 @@ async fn media_bridge(app: AppHandle, peripheral: Peripheral) {
                         let _ = push_host_volume(&peripheral, &chr_volume, level, muted).await;
                     }
                 }
-                if !now_playing_active {
-                    check_and_push_now_playing(&peripheral, &chr_media, &state, chr_art.as_ref(), &mut np).await;
+            }
+            // Only relevant at all when `watch_now_playing` itself failed to
+            // set up — guarded so this doesn't wake for nothing every tick
+            // once the real GSMTC-event path is doing its job.
+            _ = now_playing_fallback_poll.tick(), if !now_playing_active => {
+                if !peripheral.is_connected().await.unwrap_or(false) {
+                    return;
                 }
+                // Blind poll with no event-kind info — always re-check art too.
+                check_and_push_now_playing(&app, &peripheral, &chr_media, chr_art.as_ref(), &mut np, true).await;
             }
         }
     }
@@ -1472,38 +1769,140 @@ fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
     &s[..end]
 }
 
-async fn push_media_metadata(
-    peripheral: &Peripheral,
-    chr: &Characteristic,
-    now: &media::NowPlaying,
-    include_position: bool,
-) -> Result<(), String> {
+fn encode_media_metadata_payload(now: &media::NowPlaying, include_position: bool) -> Vec<u8> {
     let title = truncate_utf8(&now.title, MEDIA_TITLE_MAX_BYTES);
     let artist = truncate_utf8(&now.artist, MEDIA_ARTIST_MAX_BYTES);
-    let payload = cbor::encode(&cbor::MediaMetadata {
+    cbor::encode(&cbor::MediaMetadata {
         t: title,
         a: artist,
         c: now.can_seek,
         p: now.playing,
         o: if include_position { now.position_s } else { None },
         d: if include_position { now.duration_s } else { None },
+    })
+}
+
+fn encode_empty_media_metadata_payload() -> Vec<u8> {
+    cbor::encode(&cbor::MediaMetadata { t: "", a: "", ..Default::default() })
+}
+
+/// Submits a MediaMetadata write, coalescing with any already-outstanding
+/// one instead of running them concurrently or queuing them up. See
+/// `BleState::media_meta_push`'s doc comment for WHY: char 000C is Write-
+/// WITH-Response only, and the BLE ATT protocol permits just one such
+/// request outstanding per connection — a `tokio::task::abort()` on the
+/// SENDING task (what album art's mechanism does, and what an earlier
+/// version of this function also tried) cannot retract an already-
+/// dispatched Write Request, so aborting-and-restarting on every rapid
+/// track change just left a growing backlog of stale, un-cancellable
+/// requests that Ori had to ack one by one before the LAST (wanted) one's
+/// turn came up — observed on hardware taking over a second.
+///
+/// The fix: never have more than one Write Request in flight. If nothing is
+/// currently outstanding, this spawns a worker that sends `payload` and
+/// then keeps looping — each iteration checking `pending` again — until
+/// there's genuinely nothing newer left, at which point it marks itself not-
+/// running and exits. If a write IS already outstanding, this just replaces
+/// `pending` with `payload` (discarding whatever was queued there before,
+/// since only the LATEST track's metadata is ever worth sending) and
+/// returns immediately — the already-running worker will pick it up the
+/// moment its current ack arrives. `running`/`pending`/the spawn decision
+/// are all made under one lock acquisition so there's no window where a
+/// worker that's about to exit can miss a `pending` value set moments
+/// earlier (see `MediaMetaPushState`'s own doc comment).
+async fn spawn_metadata_push(app: &AppHandle, peripheral: &Peripheral, chr_media: &Characteristic, payload: Vec<u8>) {
+    let state = app.state::<BleState>();
+    let mut mp = state.media_meta_push.lock().await;
+    mp.pending = Some(payload);
+    if mp.running {
+        return;
+    }
+    mp.running = true;
+    drop(mp);
+
+    let app = app.clone();
+    let peripheral = peripheral.clone();
+    let chr_media = chr_media.clone();
+    let handle = tokio::spawn(async move {
+        let state = app.state::<BleState>();
+        loop {
+            let next = {
+                let mut mp = state.media_meta_push.lock().await;
+                match mp.pending.take() {
+                    Some(payload) => Some(payload),
+                    None => {
+                        mp.running = false;
+                        None
+                    }
+                }
+            };
+            let Some(payload) = next else { break };
+            let write = peripheral.write(&chr_media, &payload, WriteType::WithResponse);
+            let _ = tokio::time::timeout(METADATA_WRITE_TIMEOUT, write).await;
+        }
     });
-    peripheral.write(chr, &payload, WriteType::WithResponse).await.map_err(|e| e.to_string())
+    state.media_meta_push.lock().await.task = Some(handle);
 }
 
-async fn push_empty_media_metadata(peripheral: &Peripheral, chr: &Characteristic) -> Result<(), String> {
-    let payload = cbor::encode(&cbor::MediaMetadata { t: "", a: "", ..Default::default() });
-    peripheral.write(chr, &payload, WriteType::WithResponse).await.map_err(|e| e.to_string())
+/// Cancels whatever album-art transfer is currently in flight, without
+/// starting a replacement. Split out from `spawn_album_art_push` so
+/// `check_and_push_now_playing` can call this THE INSTANT it detects a real
+/// track-identity change (title/artist differ — a new piece of content,
+/// full stop), rather than only as a side effect of deciding to send new
+/// art. That distinction matters: deciding whether there's new art to send
+/// requires fetching and hashing the new track's OS thumbnail first
+/// (`check_and_push_album_art`), and leaving the OLD transfer running for
+/// that entire round trip gave it enough time, in practice, to finish
+/// sending on its own — a typical art payload (15-30 KB target, §10) can
+/// complete in well under a second, often faster than "detect track change
+/// -> fetch new thumbnail -> hash it" takes. Calling this first closes that
+/// window: the stale transfer is cut off immediately, before any of that
+/// slower work even starts. A no-op if nothing is in flight.
+async fn abort_album_art_task(app: &AppHandle) {
+    let state = app.state::<BleState>();
+    let mut slot = state.album_art_task.lock().await;
+    if let Some(prev) = slot.take() {
+        prev.abort();
+    }
 }
 
-/// Fetches the current track's thumbnail from the OS, builds Ori's 484×216
-/// JPEG, and pushes it chunked (Write-No-Response only, §5/§12). Silently
-/// does nothing if Ori didn't advertise the characteristic, the OS has no
-/// thumbnail for this track, or it fails to decode — art is a nice-to-have,
-/// never worth failing the track-change push over.
-async fn push_album_art(state: &BleState, peripheral: &Peripheral, chr_art: Option<&Characteristic>) {
+/// Requests an album-art push for the current track, aborting any still-in-
+/// flight previous art transfer first (belt-and-suspenders — the caller has
+/// normally already done this via `abort_album_art_task` the moment a track
+/// change was detected, well before this function's own OS thumbnail
+/// fetch+hash decided there was new art to send) so a rapid track change
+/// can never queue behind a stale transfer streaming to completion. Unlike
+/// MediaMetadata (`spawn_metadata_push`), Album Art (char 000D) is
+/// Write-No-Response only — no ATT-level outstanding-request limit — so a
+/// `tokio::task::abort()` on the sending task genuinely does stop further
+/// fragments going out. Ori also independently discards a half-sent old
+/// image the moment the new transfer's seq-0 frame arrives (firmware
+/// `chunked_transfer.cpp` resets on seq 0). A no-op if Ori didn't advertise
+/// the Album Art characteristic. `raw` is the OS thumbnail already fetched
+/// by the caller (`check_and_push_album_art`) to compute its content hash —
+/// passed through rather than re-fetched here so a confirmed art change
+/// costs exactly one OS round-trip, not two.
+async fn spawn_album_art_push(app: &AppHandle, peripheral: &Peripheral, chr_art: Option<&Characteristic>, raw: Vec<u8>) {
     let Some(chr_art) = chr_art else { return };
-    let Ok(raw) = media::now_playing_thumbnail().await else { return };
+    abort_album_art_task(app).await;
+    let state = app.state::<BleState>();
+    let mut slot = state.album_art_task.lock().await;
+    let app = app.clone();
+    let peripheral = peripheral.clone();
+    let chr_art = chr_art.clone();
+    *slot = Some(tokio::spawn(async move {
+        let state = app.state::<BleState>();
+        run_album_art_push(&state, &peripheral, &chr_art, raw).await;
+    }));
+}
+
+/// Builds Ori's 484×216 JPEG from `raw` (the OS thumbnail bytes already
+/// fetched and hash-checked by `check_and_push_album_art`) and pushes it
+/// chunked (Write-No-Response only, §5/§12). Silently does nothing if it
+/// fails to decode — art is a nice-to-have, never worth failing the
+/// track-change push over. Runs as its own task (`spawn_album_art_push`);
+/// may be aborted mid-stream by a newer track's art request.
+async fn run_album_art_push(state: &BleState, peripheral: &Peripheral, chr_art: &Characteristic, raw: Vec<u8>) {
     // Decode/resize/encode is CPU-bound (up to several JPEG re-encodes, see
     // `build_album_art_jpeg`'s doc comment) — run it on the blocking pool
     // rather than directly on this Tokio worker thread, which the phone-bond
@@ -1513,6 +1912,31 @@ async fn push_album_art(state: &BleState, peripheral: &Peripheral, chr_art: Opti
     if jpeg.is_empty() {
         return;
     }
+
+    // Let any outstanding MediaMetadata write drain first. Metadata (Write-
+    // WITH-Response) and this art transfer (Write-No-Response) use separate
+    // ATT mechanisms and don't block each other at the protocol level, but
+    // they still share ONE physical BLE connection — on hardware, firing
+    // both at once measurably let them contend for the same airtime: a
+    // capture showed a metadata ack taking 2.18s at the same time this
+    // function's own write phase took ~2.0s, for what's normally a ~50ms /
+    // ~150ms operation respectively. Waiting here costs nothing in the
+    // common case (metadata, at ~30-60ms typically, usually finishes well
+    // before this function reaches this point, most of which was spent on
+    // the JPEG re-encode above plus whatever the caller's own OS thumbnail
+    // fetch took) and bounds the worst case (a stuck/slow metadata ack) so
+    // this never waits forever.
+    let wait_start = std::time::Instant::now();
+    loop {
+        if !state.media_meta_push.lock().await.running {
+            break;
+        }
+        if wait_start.elapsed() > ART_METADATA_WAIT_TIMEOUT {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
     // Serializes against every other chunked/BEGIN-END write (see
     // `BleState::sync_lock`'s doc comment). Needed here specifically because
     // a chunk gap/timeout NACK (§5/§8) carries no characteristic identifier —
@@ -1521,6 +1945,8 @@ async fn push_album_art(state: &BleState, peripheral: &Peripheral, chr_art: Opti
     // ambiguous, since `write_chunked`'s NACK-drain for the *other* stream
     // could wrongly attribute a NACK that was actually about this one. Album
     // art is small (≤ 64 KB) so briefly holding the lock here is harmless.
+    // (sync_lock acquisition itself has been confirmed on hardware to always
+    // be near-instant, single-digit microseconds — not a bottleneck.)
     let _sync_guard = state.sync_lock.lock().await;
     let _ = write_chunked_no_response(peripheral, chr_art, &jpeg).await;
 }
@@ -1568,6 +1994,32 @@ fn is_older_version(current: &str, latest: &str) -> bool {
     parts(current) < parts(latest)
 }
 
+/// Write-through caches `status.d` (device_type) the same way
+/// `read_device_settings` caches serial_number/manufacture_date — session
+/// (`BleState::cached_phone_device_type`) + disk (`store::SavedState`) — but
+/// only on an actual non-empty value and an actual change, so this isn't a
+/// disk write on every routine stats notify (queue changes, RSSI polls) once
+/// the value is already known. A disconnect/unpair pushes `d:""`, which this
+/// deliberately ignores — `store::SavedState::phone_device_type`'s own doc
+/// comment covers who's responsible for clearing it (Factory Reset/Clear
+/// All/`give_up_on_bond`/`unpair_phone`), not a live "" from the wire.
+async fn maybe_persist_phone_device_type(app: &AppHandle, status: &cbor::PhoneBondStatus) {
+    if status.d.is_empty() {
+        return;
+    }
+    let state = app.state::<BleState>();
+    let mut cached = state.cached_phone_device_type.lock().await;
+    if cached.as_deref() == Some(status.d.as_str()) {
+        return;
+    }
+    *cached = Some(status.d.clone());
+    drop(cached);
+    if let Some(mut saved) = crate::store::load(app).await {
+        saved.phone_device_type = Some(status.d.clone());
+        let _ = crate::store::save(app, &saved).await;
+    }
+}
+
 /// Tracks Ori's iPhone ANCS bond/connection state (char `000F`) for the
 /// lifetime of the connection — reads the current value once up front (so
 /// Orion's UI doesn't have to wait for the next change to learn it), then
@@ -1580,10 +2032,12 @@ async fn phone_bond_watcher(app: AppHandle, peripheral: Peripheral) {
     }
     if let Ok(raw) = peripheral.read(&chr).await {
         if let Ok(status) = cbor::decode::<cbor::PhoneBondStatus>(&raw) {
+            maybe_persist_phone_device_type(&app, &status).await;
             let _ = app.emit("phone-bond-status", status);
         }
     }
     let Ok(mut notifications) = peripheral.notifications().await else { return };
+    let mut disconnect_rx = app.state::<BleState>().disconnect_tx.subscribe();
     loop {
         tokio::select! {
             maybe_notif = notifications.next() => {
@@ -1592,14 +2046,45 @@ async fn phone_bond_watcher(app: AppHandle, peripheral: Peripheral) {
                     continue;
                 }
                 if let Ok(status) = cbor::decode::<cbor::PhoneBondStatus>(&notif.value) {
+                    maybe_persist_phone_device_type(&app, &status).await;
                     let _ = app.emit("phone-bond-status", status);
                 }
             }
-            _ = tokio::time::sleep(DISCONNECT_POLL_INTERVAL) => {
-                if !peripheral.is_connected().await.unwrap_or(false) {
-                    return;
+            _ = disconnect_rx.changed() => return,
+        }
+    }
+}
+
+/// Relays Device Settings (char `000E`) notifies as `device-settings-update`
+/// events. Ori now pushes a fresh notify whenever its own live `signal_bars`
+/// ("r") bucket to Orion changes — the one genuinely live field in this
+/// characteristic; the NVS-persisted fields (clock_face/time_format/
+/// ancs_filter/shortcuts) only ever change via an Orion write in the first
+/// place, so Orion already knows their new value the moment it sends one and
+/// has no need to be told again. This is what lets the frontend's Ori Info
+/// modal drop its old fixed-interval poll (pc-app.md) — see app.js's
+/// `listen('device-settings-update', ...)`. No up-front read here (unlike
+/// `phone_bond_watcher`'s): `read_device_settings` already covers the
+/// (re)connect case on its own (app.js's `readSlotsFromDevice()`).
+async fn device_settings_watcher(app: AppHandle, peripheral: Peripheral) {
+    let Ok(chr) = find_char(&peripheral, gatt::CHR_DEVICE_SETTINGS) else { return };
+    if peripheral.subscribe(&chr).await.is_err() {
+        return;
+    }
+    let Ok(mut notifications) = peripheral.notifications().await else { return };
+    let mut disconnect_rx = app.state::<BleState>().disconnect_tx.subscribe();
+    loop {
+        tokio::select! {
+            maybe_notif = notifications.next() => {
+                let Some(notif) = maybe_notif else { return };
+                if notif.uuid != chr.uuid {
+                    continue;
+                }
+                if let Ok(settings) = cbor::decode::<cbor::DeviceSettingsRead>(&notif.value) {
+                    let _ = app.emit("device-settings-update", settings);
                 }
             }
+            _ = disconnect_rx.changed() => return,
         }
     }
 }
@@ -1637,21 +2122,18 @@ async fn phone_bond_watcher(app: AppHandle, peripheral: Peripheral) {
 /// **A receiver existing isn't enough — it also has to be DRAINED early.**
 /// `peripheral.notifications()` on btleplug's Windows backend hands back a
 /// receiver onto ONE broadcast channel SHARED across every characteristic on
-/// this peripheral (confirmed via `ancs_notification_watcher`'s own
-/// diagnostic logging — every notify this receiver sees, not just char
-/// 0010's, lands in its stream), with a small fixed-capacity ring buffer
-/// (~16 slots). The previous version of this function created the two
-/// receivers here but left them undrained until `start_post_sync_tasks`
-/// spawned `ancs_notification_watcher`/`ancs_call_state_watcher` — which only
-/// happens AFTER `run_sync` fully completes. In between, `run_sync` alone
-/// generates well over 16 notifies on the SAME shared channel — Device
-/// Status (RECONNECTING/SYNCING/READY), Sync Manifest, Phone Bond Status,
-/// Sync Control ACKs — none of which either receiver is reading yet. That
-/// overflows the ring and silently evicts the oldest entries, which is
-/// exactly the ANCS resync burst(s) this function exists to catch: reproduced
-/// on hardware 2026-07-12 — `ancs_notif_watcher`'s stream logged Sync
-/// Manifest / Device Status / Phone Bond Status notifies arriving, but never
-/// once a char 0010 payload, even though Ori's own log confirmed it sent
+/// this peripheral (every notify lands in the same stream, not just char
+/// 0010's), with a small fixed-capacity ring buffer (~16 slots). The previous
+/// version of this function created the two receivers here but left them
+/// undrained until `start_post_sync_tasks` spawned `ancs_notification_watcher`/
+/// `ancs_call_state_watcher` — which only happens AFTER `run_sync` fully
+/// completes. In between, `run_sync` alone generates well over 16 notifies on
+/// the SAME shared channel — Device Status (RECONNECTING/SYNCING/READY), Sync
+/// Manifest, Phone Bond Status, Sync Control ACKs — none of which either
+/// receiver is reading yet. That overflows the ring and silently evicts the
+/// oldest entries, which is exactly the ANCS resync burst(s) this function
+/// exists to catch: reproduced on hardware 2026-07-12, where the char 0010
+/// resync payload never arrived even though Ori's own log confirmed it sent
 /// "clear" + every queued item. This cost firmware's OWN guaranteed-late
 /// second resync (`state_machine::on_reconnect_end()`, `firmware.md`) its
 /// entire reason to exist: that resync is causally guaranteed to land after
@@ -1676,8 +2158,13 @@ async fn subscribe_ancs_relay_early(app: &AppHandle, state: &BleState, periphera
     let call_stream: NotifyStream = peripheral.notifications().await.map_err(|e| e.to_string())?;
     peripheral.subscribe(&chr_notif).await.map_err(|e| e.to_string())?;
     peripheral.subscribe(&chr_call).await.map_err(|e| e.to_string())?;
-    eprintln!("[ORION-DEBUG] subscribe_ancs_relay_early: char 0010 cached properties = {:?}, char 0011 cached properties = {:?}",
-               chr_notif.properties, chr_call.properties);
+
+    // Earliest point after the link is confirmed encrypted, common to both
+    // `reconnect` and `submit_passkey` — the natural single choke point to
+    // arm the event-driven disconnect signal every watcher below (and
+    // `wait_for_disconnect`) subscribes to instead of polling.
+    let adapter = get_adapter(state).await?;
+    spawn_disconnect_watcher(state, &adapter, peripheral).await;
 
     let mut tasks = state.ancs_tasks.lock().await;
     for task in tasks.drain(..) {
@@ -1696,8 +2183,9 @@ async fn subscribe_ancs_relay_early(app: &AppHandle, state: &BleState, periphera
 /// Settings `"f"`): Orion never re-filters what arrives, it just relays it
 /// faithfully — including `"clear"` (sent when the user changes the filter,
 /// followed by `"add"` for everything that now passes) so the frontend's
-/// local mirror stays in lockstep with Ori's. Runs until the link drops,
-/// same `is_connected()` poll pattern as `phone_bond_watcher`.
+/// local mirror stays in lockstep with Ori's. Runs until the link drops —
+/// event-driven via `state.disconnect_tx`, not polled (`watch_for_disconnect`'s
+/// doc comment).
 ///
 /// Spawned by `subscribe_ancs_relay_early` itself, immediately after
 /// creating and subscribing `notifications` — see its doc comment for why
@@ -1706,10 +2194,8 @@ async fn subscribe_ancs_relay_early(app: &AppHandle, state: &BleState, periphera
 /// silently drop this exact stream).
 async fn ancs_notification_watcher(app: AppHandle, peripheral: Peripheral, mut notifications: NotifyStream) {
     let Ok(chr) = find_char(&peripheral, gatt::CHR_ANCS_NOTIFICATION) else {
-        eprintln!("[ORION-DEBUG] ancs_notif_watcher: char 0010 NOT FOUND — watcher exiting");
         return;
     };
-    eprintln!("[ORION-DEBUG] ancs_notif_watcher: entering notify loop on pre-subscribed receiver");
     // Every notify on this characteristic is chunk-framed now (ble-protocol.md
     // §5's "AncsNotification chunking") — "remove"/"clear"/most "add"s
     // reassemble in one `feed()` call (total_frags:1), a maxed-out "add"'s
@@ -1717,56 +2203,24 @@ async fn ancs_notification_watcher(app: AppHandle, peripheral: Peripheral, mut n
     // connection lifetime — a fresh connection gets a fresh instance, so
     // there's no cross-connection state to worry about.
     let mut chunks = chunk::Reassembler::new();
-    // Diagnostic: try an actual read now that the firmware gives char 0010
-    // the READ property. WinRT rejects a read on a char whose *cached*
-    // properties lack READ WITHOUT hitting the device — so an Err here is a
-    // confirmation of a stale GATT cache, and an Ok proves Windows sees the
-    // new property. (Read-only diagnostic — the value is not emitted; the
-    // real notification list is populated by the notify stream / resync
-    // captured early by subscribe_ancs_relay_early.)
-    match peripheral.read(&chr).await {
-        Ok(v) => eprintln!("[ORION-DEBUG] ancs_notif_watcher: diagnostic read(char 0010) OK — {} bytes", v.len()),
-        Err(e) => eprintln!("[ORION-DEBUG] ancs_notif_watcher: diagnostic read(char 0010) FAILED: {e}"),
-    }
+    let mut disconnect_rx = app.state::<BleState>().disconnect_tx.subscribe();
     loop {
         tokio::select! {
             maybe_notif = notifications.next() => {
                 let Some(notif) = maybe_notif else {
-                    eprintln!("[ORION-DEBUG] ancs_notif_watcher: notification stream ENDED — watcher exiting");
                     return;
                 };
-                // Log EVERY notify this receiver sees (the btleplug stream is
-                // shared across all chars) so we can tell whether char 0010
-                // notifies reach Orion at all, and whether the UUID matches
-                // what we're filtering for. If char 0010 never appears here,
-                // the problem is delivery (btleplug/subscription); if it
-                // appears but is filtered out, it's a UUID-format mismatch.
-                eprintln!("[ORION-DEBUG] ancs_notif_watcher: stream RX uuid={} ({} bytes){}",
-                          notif.uuid, notif.value.len(),
-                          if notif.uuid == chr.uuid { " <- char 0010 MATCH" } else { "" });
                 if notif.uuid != chr.uuid {
                     continue;  // not char 0010 — another characteristic's notify on the shared stream
                 }
                 let Some(complete) = chunks.feed(&notif.value) else {
                     continue;  // mid-sequence fragment, or a dropped/malformed frame — chunk::Reassembler's own doc comment covers why this self-heals without a NACK
                 };
-                match cbor::decode::<cbor::AncsNotification>(&complete) {
-                    Ok(payload) => {
-                        eprintln!("[ORION-DEBUG] ancs_notif_watcher: decoded op={:?} u={} c={} a={:?} t={:?} -> emitting 'ancs-notification'",
-                                  payload.o, payload.u, payload.c, payload.a, payload.t);
-                        if let Err(e) = app.emit("ancs-notification", payload) {
-                            eprintln!("[ORION-DEBUG] ancs_notif_watcher: emit FAILED: {e}");
-                        }
-                    }
-                    Err(e) => eprintln!("[ORION-DEBUG] ancs_notif_watcher: CBOR decode FAILED: {e}"),
+                if let Ok(payload) = cbor::decode::<cbor::AncsNotification>(&complete) {
+                    let _ = app.emit("ancs-notification", payload);
                 }
             }
-            _ = tokio::time::sleep(DISCONNECT_POLL_INTERVAL) => {
-                if !peripheral.is_connected().await.unwrap_or(false) {
-                    eprintln!("[ORION-DEBUG] ancs_notif_watcher: peripheral disconnected — watcher exiting");
-                    return;
-                }
-            }
+            _ = disconnect_rx.changed() => return,
         }
     }
 }
@@ -1778,7 +2232,7 @@ async fn ancs_notification_watcher(app: AppHandle, peripheral: Peripheral, mut n
 /// window, orion-frontend owns the in-app UI that follows it (§13/§11).
 /// Never fires when `ancs_filter` is Disabled — Ori simply never sends this
 /// notify in that case, so no filter check is needed here. Runs until the
-/// link drops, same pattern as `ancs_notification_watcher`.
+/// link drops — event-driven, same as `ancs_notification_watcher`.
 ///
 /// Spawned by `subscribe_ancs_relay_early` itself, immediately after
 /// creating and subscribing `notifications` — see its doc comment for why
@@ -1788,6 +2242,7 @@ async fn ancs_notification_watcher(app: AppHandle, peripheral: Peripheral, mut n
 /// insufficient).
 async fn ancs_call_state_watcher(app: AppHandle, peripheral: Peripheral, mut notifications: NotifyStream) {
     let Ok(chr) = find_char(&peripheral, gatt::CHR_ANCS_CALL_STATE) else { return };
+    let mut disconnect_rx = app.state::<BleState>().disconnect_tx.subscribe();
     loop {
         tokio::select! {
             maybe_notif = notifications.next() => {
@@ -1802,25 +2257,37 @@ async fn ancs_call_state_watcher(app: AppHandle, peripheral: Peripheral, mut not
                     let _ = app.emit("ancs-call-state", payload);
                 }
             }
-            _ = tokio::time::sleep(DISCONNECT_POLL_INTERVAL) => {
-                if !peripheral.is_connected().await.unwrap_or(false) {
-                    return;
-                }
-            }
+            _ = disconnect_rx.changed() => return,
         }
     }
 }
 
-/// Polls the currently-connected peripheral (if any) until it disconnects —
-/// same `is_connected()` pattern as every other watcher in this file. Used
-/// by the connection supervisor (`commands.rs`) to know when to start
-/// retrying. Returns immediately if there's no active peripheral to watch.
+/// Blocks until the currently-connected peripheral (if any) genuinely
+/// disconnects — event-driven via `state.disconnect_tx`
+/// (`watch_for_disconnect`'s doc comment), not polled. Used by the
+/// connection supervisor (`commands.rs`) to know when to start retrying.
+/// Returns immediately if there's no active peripheral to watch.
+///
+/// The upfront `is_connected()` check closes a startup race a bare
+/// `disconnect_rx.changed().await` would otherwise have: a fresh
+/// `watch::Receiver`'s baseline is whatever `disconnect_tx`'s value already
+/// is the moment it subscribes, so if the disconnect (and its bump) already
+/// happened a moment before this function got here, waiting on `.changed()`
+/// alone would wait for the *next* one forever, even though the peripheral
+/// is already gone. `is_connected()` reads the same underlying flag WinRT's
+/// `ConnectionStatusChanged` callback sets alongside emitting the event
+/// (`btleplug::winrtble::peripheral`) — a cheap local read, not a BLE
+/// round-trip — so checking it first, then falling back to the event for
+/// everything after, is correct with no polling loop.
 pub async fn wait_for_disconnect(state: &BleState) {
     let Some(peripheral) = state.peripheral.lock().await.clone() else { return };
+    let mut disconnect_rx = state.disconnect_tx.subscribe();
     loop {
-        tokio::time::sleep(DISCONNECT_POLL_INTERVAL).await;
         if !peripheral.is_connected().await.unwrap_or(false) {
             return;
+        }
+        if disconnect_rx.changed().await.is_err() {
+            return; // sender dropped — shouldn't happen, but don't hang forever
         }
     }
 }
@@ -1832,12 +2299,7 @@ pub async fn wait_for_disconnect(state: &BleState) {
 /// likely already landed either way, matching how
 /// `tools/mock_orion_ble.py`'s `run_factory_reset()` treats the same race.
 pub async fn factory_reset(state: &BleState) -> Result<(), String> {
-    let peripheral = state
-        .peripheral
-        .lock()
-        .await
-        .clone()
-        .ok_or_else(|| "not connected".to_string())?;
+    let peripheral = require_peripheral(state).await?;
     let chr = find_char(&peripheral, gatt::CHR_DEVICE_COMMAND)?;
     let _ = peripheral.write(&chr, &gatt::FACTORY_RESET_MAGIC, WriteType::WithResponse).await;
 
@@ -1856,12 +2318,7 @@ pub async fn factory_reset(state: &BleState) -> Result<(), String> {
 /// notifies Phone Bond Status ({b:false, c:false}) once it processes this —
 /// `phone_bond_watcher` already picks that up and emits it to the frontend.
 pub async fn unpair_phone(state: &BleState) -> Result<(), String> {
-    let peripheral = state
-        .peripheral
-        .lock()
-        .await
-        .clone()
-        .ok_or_else(|| "not connected".to_string())?;
+    let peripheral = require_peripheral(state).await?;
     let chr = find_char(&peripheral, gatt::CHR_DEVICE_COMMAND)?;
     peripheral.write(&chr, &gatt::UNPAIR_PHONE_MAGIC, WriteType::WithResponse).await.map_err(|e| e.to_string())
 }
@@ -1875,12 +2332,7 @@ pub async fn unpair_phone(state: &BleState) -> Result<(), String> {
 /// same as every other state change in this protocol (§6 never assumes a
 /// write succeeded before the corresponding notify confirms it).
 pub async fn ancs_notification_action(state: &BleState, uid: u32, action: u8) -> Result<(), String> {
-    let peripheral = state
-        .peripheral
-        .lock()
-        .await
-        .clone()
-        .ok_or_else(|| "not connected".to_string())?;
+    let peripheral = require_peripheral(state).await?;
     let chr = find_char(&peripheral, gatt::CHR_ANCS_NOTIFICATION_ACTION)?;
     peripheral
         .write(&chr, &cbor::encode(&cbor::AncsNotificationAction { u: uid, a: action }), WriteType::WithResponse)
@@ -2031,7 +2483,7 @@ async fn run_sync(
     // happening to re-pick a new photo. Treating it as empty for this sync
     // (and clearing the persisted copy just below) lets the rest of
     // profile/meetings/Time Off still sync successfully.
-    let (photo_bytes, photo_corrupted) = decode_cached_photo(decode_profile_photo, &profile.photo_data_url, "profile photo");
+    let (photo_bytes, photo_corrupted) = decode_cached_photo(decode_profile_photo, &profile.photo_data_url);
     // Still honestly empty — no calendar source exists yet to have real
     // data from (Phase D). Once it does, this needs the same "use cached/
     // fresh real data, not a hardcoded placeholder" treatment Time Off
@@ -2040,7 +2492,7 @@ async fn run_sync(
     let meetings_bytes = cbor::encode(&cbor::MeetingList { d: local_midnight_epoch(), m: &[] });
 
     let (time_off_photo_bytes, time_off_photo_corrupted) =
-        decode_cached_photo(decode_time_off_photo, &time_off.photo_data_url, "Time Off photo");
+        decode_cached_photo(decode_time_off_photo, &time_off.photo_data_url);
     let time_off_bytes = cbor::encode(&cbor::TimeOffEntry {
         s: time_off.start.max(0) as u64,
         e: time_off.end.max(0) as u64,
@@ -2168,12 +2620,7 @@ async fn run_sync(
 /// on an actual change, so the modal's poll doesn't turn into a disk write
 /// every 3 s once the value is already known (`BleState`'s own doc comment).
 pub async fn read_device_settings(app: &AppHandle, state: &BleState) -> Result<cbor::DeviceSettingsRead, String> {
-    let peripheral = state
-        .peripheral
-        .lock()
-        .await
-        .clone()
-        .ok_or_else(|| "not connected".to_string())?;
+    let peripheral = require_peripheral(state).await?;
     let chr = find_char(&peripheral, gatt::CHR_DEVICE_SETTINGS)?;
     let raw = peripheral.read(&chr).await.map_err(|e| e.to_string())?;
     let settings: cbor::DeviceSettingsRead = cbor::decode(&raw)?;
@@ -2228,12 +2675,7 @@ async fn write_device_settings(peripheral: &Peripheral, settings: &cbor::DeviceS
 /// hidden weather), matching §6.4's "don't show what can't be verified"
 /// policy.
 pub async fn set_device_settings(state: &BleState, settings: cbor::DeviceSettingsWrite) -> Result<(), String> {
-    let peripheral = state
-        .peripheral
-        .lock()
-        .await
-        .clone()
-        .ok_or_else(|| "not connected".to_string())?;
+    let peripheral = require_peripheral(state).await?;
     write_device_settings(&peripheral, &settings).await?;
 
     // Session memory for the media bridge's `shortcut` dispatch (§12) — no
@@ -2267,12 +2709,7 @@ const MID_SESSION_SEQ: u32 = 2;
 /// know it's needed, since the user just clicked Save, so there's no
 /// manifest round-trip either).
 pub async fn push_profile(state: &BleState, profile: &ProfileInput) -> Result<(), String> {
-    let peripheral = state
-        .peripheral
-        .lock()
-        .await
-        .clone()
-        .ok_or_else(|| "not connected".to_string())?;
+    let peripheral = require_peripheral(state).await?;
 
     let chr_status = find_char(&peripheral, gatt::CHR_DEVICE_STATUS)?;
     let chr_time = find_char(&peripheral, gatt::CHR_TIME_SYNC)?;
@@ -2351,12 +2788,7 @@ pub async fn push_profile(state: &BleState, profile: &ProfileInput) -> Result<()
 /// Photo if changed). `clear_time_off` reuses this with the zeroed
 /// "inactive" entry described in `run_sync`'s comment on `time_off_bytes`.
 pub async fn push_time_off(state: &BleState, input: &TimeOffInput) -> Result<(), String> {
-    let peripheral = state
-        .peripheral
-        .lock()
-        .await
-        .clone()
-        .ok_or_else(|| "not connected".to_string())?;
+    let peripheral = require_peripheral(state).await?;
 
     let chr_status = find_char(&peripheral, gatt::CHR_DEVICE_STATUS)?;
     let chr_time = find_char(&peripheral, gatt::CHR_TIME_SYNC)?;
@@ -2633,20 +3065,15 @@ pub fn decode_time_off_photo(data_url: &str) -> Result<Vec<u8>, String> {
 /// gated through `decode_profile_photo`/`decode_time_off_photo` before it's
 /// ever persisted — see `commands::save_profile`/`save_timeoff`). Returns
 /// `(bytes, was_corrupted)`: on success, the decoded bytes and `false`; on a
-/// decode failure, logs it, returns an empty `Vec` (so the caller can still
-/// proceed with the rest of the sync) and `true` so the caller can clear the
-/// persisted field — otherwise the identical decode failure would repeat on
-/// every future reconnect forever.
-fn decode_cached_photo(decode: impl Fn(&str) -> Result<Vec<u8>, String>, url: &Option<String>, what: &str) -> (Vec<u8>, bool) {
+/// decode failure, an empty `Vec` (so the caller can still proceed with the
+/// rest of the sync) and `true` so the caller can clear the persisted field —
+/// otherwise the identical decode failure would repeat on every future
+/// reconnect forever.
+fn decode_cached_photo(decode: impl Fn(&str) -> Result<Vec<u8>, String>, url: &Option<String>) -> (Vec<u8>, bool) {
     match url {
         Some(u) => match decode(u) {
             Ok(bytes) => (bytes, false),
-            Err(e) => {
-                eprintln!(
-                    "[ORION-DEBUG] run_sync: cached {what} is corrupted ({e}) — clearing it for this sync instead of wedging every future reconnect"
-                );
-                (Vec::new(), true)
-            }
+            Err(_) => (Vec::new(), true),
         },
         None => (Vec::new(), false),
     }

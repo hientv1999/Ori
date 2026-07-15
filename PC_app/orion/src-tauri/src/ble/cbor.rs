@@ -221,13 +221,20 @@ pub struct MediaMetadata<'a> {
 /// state plus live notification stats and signal. Ori notifies on every
 /// change and keeps the characteristic value current, so a read on
 /// (re)connect recovers the state without waiting for a notify
-/// (ble-protocol.md §3/§11). `m`/`u`/`t`/`s` are always 0 while `c` is false.
+/// (ble-protocol.md §3/§11). `m`/`u`/`t`/`s`/`l` are always 0 while `c` is
+/// false (`d` is "" instead, matching `n`).
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct PhoneBondStatus {
     pub b: bool,
     pub c: bool,
     #[serde(default)]
     pub n: String,
+    /// device_type — iPhone's marketing model name (e.g. "iPhone 17 Pro
+    /// Max"), already resolved from Apple's raw hardware identifier by Ori
+    /// (ble-protocol.md's PhoneBondStatus schema) — display as-is, no
+    /// resolution needed on this side.
+    #[serde(default)]
+    pub d: String,
     #[serde(default)]
     pub m: u8,
     #[serde(default)]
@@ -236,6 +243,9 @@ pub struct PhoneBondStatus {
     pub t: u8,
     #[serde(default)]
     pub s: u8,
+    /// battery_level — 0-100 (%).
+    #[serde(default)]
+    pub l: u8,
 }
 
 /// Ori → Orion, notify (char 0010, notify-only — no Read property) —

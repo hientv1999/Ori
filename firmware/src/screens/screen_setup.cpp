@@ -13,11 +13,11 @@
 #include "widgets/widget_profile_card.h"
 #include "widgets/widget_progress_ring.h"
 
-// Setup wizard — single LVGL screen, six sub-states. Status bar is OFF
+// Setup wizard — single LVGL screen, five sub-states. Status bar is OFF
 // across the entire flow.
 //
 // Layout invariant (setup-flow.md):
-//   - Step dots are anchored at y = 440 (i.e. 40 px above the bottom of the
+//   - Step dots are anchored at y = 456 (i.e. 24 px above the bottom of the
 //     480 px screen). They MUST NOT move between pages.
 //   - On the Complete sub-state, the dot row is hidden (the page itself is
 //     a brief acknowledgement before the wizard exits).

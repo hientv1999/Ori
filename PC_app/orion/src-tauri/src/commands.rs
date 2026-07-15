@@ -40,6 +40,12 @@ pub struct InitialState {
     // ("en" default rather than `Option`) since app.js's `setAppLang` always
     // wants a concrete code to apply, not an absent-vs-default distinction.
     language: String,
+    // iPhone's last-known resolved device type (store::SavedState::
+    // phone_device_type) — lets app.js seed lastPhoneBondStatus.d before this
+    // session's first connect, same "survives an app restart" reasoning as
+    // profile/time_off above, just for the iPhone Info modal instead of the
+    // main panel. `None` when never learned or cleared by a reset/unpair.
+    phone_device_type: Option<String>,
 }
 
 /// Initial backoff before retrying a failed reconnect, doubling up to
@@ -116,10 +122,8 @@ impl Drop for SupervisorGuard {
 // which decides synchronously, before any spawn happens — eliminating the
 // race entirely rather than trying to detect it after the fact.
 async fn supervise_connection(app: AppHandle, already_connected: bool) {
-    eprintln!("[ORION-DEBUG] supervise_connection: entered (already_connected={already_connected})");
     let _guard = SupervisorGuard(app.clone());
     supervise_connection_loop(&app, already_connected).await;
-    eprintln!("[ORION-DEBUG] supervise_connection_loop: returned, guard about to drop (releases supervisor_running)");
 }
 
 /// Claims the supervisor slot and spawns `supervise_connection` only if the
@@ -128,7 +132,6 @@ async fn supervise_connection(app: AppHandle, already_connected: bool) {
 /// No-op (does not spawn) if another supervisor is already running.
 async fn try_claim_and_spawn_supervisor(app: &AppHandle, state: &crate::ble::BleState, already_connected: bool) {
     if !crate::ble::try_claim_supervisor(state) {
-        eprintln!("[ORION-DEBUG] try_claim_and_spawn_supervisor: another supervisor is already running — not spawning");
         return;
     }
     let task = tokio::spawn(supervise_connection(app.clone(), already_connected));
@@ -153,11 +156,9 @@ async fn supervise_connection_loop(app: &AppHandle, already_connected: bool) {
 
     loop {
         let Some(saved) = crate::store::load(app).await else {
-            eprintln!("[ORION-DEBUG] supervisor loop: no saved state — exiting");
             return
         };
         if !saved.paired || saved.device_name.is_empty() {
-            eprintln!("[ORION-DEBUG] supervisor loop: paired={} device_name={:?} — exiting", saved.paired, saved.device_name);
             return; // Factory Reset / Clear All ran since this loop started.
         }
 
@@ -170,7 +171,6 @@ async fn supervise_connection_loop(app: &AppHandle, already_connected: bool) {
             // so this old loop is now the live supervisor and must not fight
             // the connection it inherited).
             if !crate::ble::is_connected(&state).await {
-                eprintln!("[ORION-DEBUG] supervisor loop: calling reconnect() for {:?}", saved.device_name);
                 // Brackets the *entire* attempt — scanning included, not just
                 // the found-and-connecting sub-phase `conn-state: "connecting"`
                 // covers. Scanning (discover_named_device, inside reconnect())
@@ -195,7 +195,6 @@ async fn supervise_connection_loop(app: &AppHandle, already_connected: bool) {
                 )
                 .await;
                 let _ = app.emit("reconnect-attempt", false);
-                eprintln!("[ORION-DEBUG] supervisor loop: reconnect() returned {:?}", result);
                 if let Err(e) = result {
                     if let Some(addr) = e.strip_prefix(crate::ble::ORI_FACTORY_RESET_PREFIX) {
                         let address: u64 = addr.parse().unwrap_or(0);
@@ -284,6 +283,10 @@ async fn give_up_on_bond(app: &AppHandle, mut saved: crate::store::SavedState) {
     saved.address = None;
     saved.serial_number = None;
     saved.manufacture_date = None;
+    // Ori's own bond just ended, which per ble-protocol.md §2 takes its
+    // iPhone bond down with it — same event, same treatment as the three
+    // fields above.
+    saved.phone_device_type = None;
     let _ = crate::store::save(app, &saved).await;
     crate::ble::clear_cached_identity(&app.state::<crate::ble::BleState>()).await;
     let _ = app.emit("conn-state", "off");
@@ -299,6 +302,7 @@ pub async fn get_initial_state(app: AppHandle) -> InitialState {
             profile: ProfileInput::default(),
             time_off: TimeOffInput::default(),
             language: "en".to_string(),
+            phone_device_type: None,
         };
     };
 
@@ -310,23 +314,23 @@ pub async fn get_initial_state(app: AppHandle) -> InitialState {
     let state = app.state::<crate::ble::BleState>();
     crate::ble::set_favorite_combos(&state, saved.combos.clone()).await;
     // Same idea, for device identity (pc-app.md's Ori Info modal) — lets it
-    // show the last-known address/serial number/manufacture date even
-    // before this session's first connect completes.
-    crate::ble::seed_cached_identity(&state, saved.address.clone(), saved.serial_number.clone(), saved.manufacture_date.clone()).await;
+    // show the last-known address/serial number/manufacture date, and the
+    // iPhone Info modal show the last-known device type, even before this
+    // session's first connect completes.
+    crate::ble::seed_cached_identity(&state, saved.address.clone(), saved.serial_number.clone(), saved.manufacture_date.clone(), saved.phone_device_type.clone()).await;
 
     let language = saved.language.clone().unwrap_or_else(|| "en".to_string());
     if !saved.paired || saved.device_name.is_empty() {
-        return InitialState { paired: false, connection: "off", profile: saved.profile, time_off: saved.time_off, language };
+        return InitialState { paired: false, connection: "off", profile: saved.profile, time_off: saved.time_off, language, phone_device_type: saved.phone_device_type };
     }
 
     // Returns immediately so the UI can render the main screen right away
     // (in the "off"/disconnected state) — the supervisor runs in the
     // background and reports its own results via `conn-state`, which
     // `setConn()` already listens for.
-    eprintln!("[ORION-DEBUG] get_initial_state: trying to claim+spawn supervisor (already_connected=false)");
     try_claim_and_spawn_supervisor(&app, &state, false).await;
 
-    InitialState { paired: true, connection: "off", profile: saved.profile, time_off: saved.time_off, language }
+    InitialState { paired: true, connection: "off", profile: saved.profile, time_off: saved.time_off, language, phone_device_type: saved.phone_device_type }
 }
 
 #[tauri::command]
@@ -413,7 +417,6 @@ pub async fn ble_submit_passkey(app: AppHandle, passkey: String, profile: Profil
     // next app launch. Already connected from the pairing above, so the
     // supervisor's first loop iteration skips straight to watching for a
     // disconnect instead of redundantly reconnecting.
-    eprintln!("[ORION-DEBUG] ble_submit_passkey: trying to claim+spawn supervisor (already_connected=true)");
     try_claim_and_spawn_supervisor(&app, &state, true).await;
     Ok(())
 }
@@ -680,7 +683,17 @@ pub async fn save_shortcuts(app: AppHandle, slots: Vec<String>, combos: Vec<Vec<
 #[tauri::command]
 pub async fn unpair_phone(app: AppHandle) -> Result<(), String> {
     let state = app.state::<crate::ble::BleState>();
-    crate::ble::unpair_phone(&state).await
+    let result = crate::ble::unpair_phone(&state).await;
+    // Ends the iPhone's bond specifically — Ori's own identity is untouched,
+    // so unlike factory_reset this only clears the cached device type, not
+    // address/serial_number/manufacture_date (store::SavedState::
+    // phone_device_type's doc comment).
+    crate::ble::clear_cached_phone_device_type(&state).await;
+    if let Some(mut saved) = crate::store::load(&app).await {
+        saved.phone_device_type = None;
+        let _ = crate::store::save(&app, &saved).await;
+    }
+    result
 }
 
 /// ANCS drill-down action (Answer/Decline/End call/Dismiss/Read-all) —
@@ -723,41 +736,58 @@ pub fn oauth_signout(provider: String) {
 /// the setup wizard).
 async fn abort_supervisor(state: &crate::ble::BleState) {
     let handle = state.supervisor_task.lock().await.take();
-    eprintln!("[ORION-DEBUG] abort_supervisor: had a tracked handle = {}", handle.is_some());
     if let Some(handle) = handle {
         handle.abort();
     }
 }
 
-/// Falls back to removing Windows' own Bluetooth bond by name when
-/// `ble::factory_reset`'s address-based unpair couldn't run (it needs a live
-/// connection, `ble::factory_reset`'s doc comment) — the exact gap that
-/// strands a user whose Ori bond has already gone stale (a prior factory
-/// reset, or the address-type bond-deletion bug fixed on the firmware side)
-/// while Orion itself can no longer get a connection up at all (a stale
-/// Windows-side bond can be *why* every reconnect attempt fails at the
-/// encrypted-read step — see `ble::reconnect`'s doc comment on
-/// `ORI_POST_DISCOVERY_FAILURE_PREFIX`). Without this, Clear All / Factory
-/// Reset silently no-op on the one thing that could unstick that loop, and
-/// the user is left with no way to re-pair at all. Harmless to call
-/// unconditionally: a no-op if nothing paired matches `device_name` (already
-/// handled by the connected path, or never paired).
-async fn unpair_stale_windows_bond(device_name: &str) {
-    if device_name.is_empty() {
-        return;
+/// Falls back to removing Windows' own Bluetooth bond when
+/// `ble::factory_reset`'s address-based unpair couldn't run at all (it needs
+/// a *live* connection to even learn which peripheral to target, per
+/// `ble::factory_reset`'s doc comment) — the exact gap that strands a user
+/// whose Ori bond has already gone stale (a prior factory reset, or the
+/// address-type bond-deletion bug fixed on the firmware side) while Orion
+/// itself can no longer get a connection up at all (a stale Windows-side
+/// bond can be *why* every reconnect attempt fails at the encrypted-read
+/// step — see `ble::reconnect`'s doc comment on
+/// `ORI_POST_DISCOVERY_FAILURE_PREFIX`), and equally the case this was
+/// written for: the user hits Reset while Ori is simply disconnected right
+/// now (powered off, out of range), not just already-stale. Without this,
+/// Clear All / Factory Reset silently no-ops on the one thing that could
+/// unstick that loop, and the user is left with no way to re-pair at all.
+///
+/// Tries two independent lookups — both harmless no-ops if they don't find
+/// a match (already handled by the connected path, or never paired):
+/// - **By address** (`saved.address`, `store::SavedState`'s write-through
+///   cached identity, provisioning.md) — the precise match. `BDAddr`'s
+///   `FromStr`/`Into<u64>` round-trip the exact same `Display` format
+///   `ble::central::run_sync` wrote it in (`peripheral.address().to_string()`),
+///   so this is byte-exact, not a guess.
+/// - **By name** (`saved.device_name`) — a second, independent WinRT lookup
+///   path (enumerates currently-paired devices and matches the advertised
+///   name) kept as a backstop in case the address-based one ever doesn't
+///   find the bond Windows still has (e.g. an OS-level enumeration quirk) —
+///   cheap insurance, not redundant effort, since the two can't both miss
+///   for the same reason.
+async fn unpair_stale_windows_bond(saved: &crate::store::SavedState) {
+    if let Some(addr_str) = &saved.address {
+        if let Ok(bd) = addr_str.parse::<btleplug::api::BDAddr>() {
+            let _ = crate::ble::unpair_bluetooth_bond(bd.into()).await;
+        }
     }
-    let _ = crate::ble::unpair_bluetooth_bond_by_name(device_name).await;
+    if !saved.device_name.is_empty() {
+        let _ = crate::ble::unpair_bluetooth_bond_by_name(&saved.device_name).await;
+    }
 }
 
 #[tauri::command]
 pub async fn factory_reset(app: AppHandle) {
-    eprintln!("[ORION-DEBUG] factory_reset command invoked");
     let state = app.state::<crate::ble::BleState>();
     abort_supervisor(&state).await;
     let saved_before = crate::store::load(&app).await;
     let _ = crate::ble::factory_reset(&state).await;
     if let Some(saved) = &saved_before {
-        unpair_stale_windows_bond(&saved.device_name).await;
+        unpair_stale_windows_bond(saved).await;
     }
 
     // The just-reset device will re-advertise as a fresh unit; wipe the
@@ -784,13 +814,15 @@ pub async fn factory_reset(app: AppHandle) {
         saved.address = None;
         saved.serial_number = None;
         saved.manufacture_date = None;
+        // The wiped device's iPhone bond is gone too (ble-protocol.md §2),
+        // so its cached model name is no longer trustworthy either.
+        saved.phone_device_type = None;
         let _ = crate::store::save(&app, &saved).await;
     }
 }
 
 #[tauri::command]
 pub async fn clear_all(app: AppHandle) {
-    eprintln!("[ORION-DEBUG] clear_all command invoked");
     // This is the button the UI actually calls (the Reset modal was
     // consolidated to a single action, memory.md) — factory_reset above is
     // otherwise unreachable from the frontend right now, but kept as its
@@ -800,7 +832,7 @@ pub async fn clear_all(app: AppHandle) {
     let saved_before = crate::store::load(&app).await;
     let _ = crate::ble::factory_reset(&state).await;
     if let Some(saved) = &saved_before {
-        unpair_stale_windows_bond(&saved.device_name).await;
+        unpair_stale_windows_bond(saved).await;
     }
     crate::ble::reset_session_caches(&state).await;
     crate::store::clear(&app).await;
@@ -891,13 +923,4 @@ pub async fn set_language(app: AppHandle, code: String) -> Result<(), String> {
     let mut saved = crate::store::load(&app).await.unwrap_or_default();
     saved.language = Some(code);
     crate::store::save(&app, &saved).await
-}
-
-/// TEMPORARY DEBUG: lets the frontend forward a log line to the same stderr
-/// stream as the backend's `[ORION-DEBUG]` output, so a single terminal
-/// capture shows both the Rust BLE path and the JS ANCS-store path in one
-/// interleaved log. Remove once the ANCS-list delivery issue is resolved.
-#[tauri::command]
-pub fn debug_log(msg: String) {
-    eprintln!("{msg}");
 }

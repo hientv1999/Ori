@@ -19,6 +19,7 @@
 #include <NimBLEServer.h>
 #include <NimBLEAdvertising.h>
 #include <Preferences.h>
+#include <esp_heap_caps.h>  // heap_caps_free — owned-buffer events dropped on a full queue
 #include <string.h>
 
 #include "nvs_store.h"
@@ -49,6 +50,9 @@ enum class BleEventType : uint8_t {
     ClockFaceUpdate,   // Clock Face char write — 0=Digital, 1=Analog (state_machine::set_clock_face)
     TimeFormatUpdate,  // Device Settings "h" — 0=24-hour, 1=12-hour (state_machine::set_time_format)
     MediaMetaUpdated,  // MediaMetadata write applied to app_state — repaint media screen
+    AlbumArtStarted,   // first Media Album Art chunk fragment arrived — show loading ring
+                       // (art transfer PROGRESS is a coalescing latch, not an event — see
+                       //  s_art_pct_pending beside eq_push())
     AlbumArt,
     PhotoReceived,      // profile photo JPEG — forward to photo_cache::store()
     TimeOffPhotoReceived,   // Time Off destination JPEG (or len=0 = no photo)
@@ -57,7 +61,8 @@ enum class BleEventType : uint8_t {
     SyncBegin,         // SyncControl{op:"BEGIN"} — show orioning modal
     SyncCommit,        // SyncControl{op:"END"}   — apply staged data to NVS/UI (heavy; main task only)
     SyncEnd,           // staged commit done       — advance setup / dismiss reconnect overlay
-    OrioningProgress,  // sync milestone reached  — update progress ring (0–100)
+                       // (sync PROGRESS is a coalescing latch, not an event — see
+                       //  s_orioning_pct_pending beside eq_push())
     OrionConnected,
     OrionBonded,         // provisional bond formed (passkey OK) — UI only, NOT persisted
     OrionConfirmed,      // bonded peer proved it's Orion (valid SyncControl{BEGIN}) — persist
@@ -68,6 +73,8 @@ enum class BleEventType : uint8_t {
     UnpairPhone,       // Orion wrote the iPhone unpair magic to Device Command (char 0008)
     AncsFilterUpdate,  // Orion wrote ANCS Notification Filter via Device Settings (char 000E)
     ShortcutUpdate,    // Orion wrote shortcut slots via Device Settings (char 000E) — repaint shortcuts row
+    SeekStepUpdate,    // Orion wrote the double-tap seek step via Device Settings (char 000E, key "k")
+    HostVolumeUpdate,  // Orion wrote Host Volume State (char 000B) — refresh HUD fill/label, maybe show it
     WeatherUpdate,     // Orion wrote weather condition + temp via Device Settings (char 000E)
     AncsAction,        // Orion wrote ANCS Notification Action (char 0012, ble-protocol.md §13) —
                        // deferred so the blocking ANCS CP write can run safely on the main task
@@ -86,13 +93,14 @@ struct BleEvent {
         uint8_t  clock_face;     // ClockFaceUpdate — 0=Digital, 1=Analog
         uint8_t  time_format;    // TimeFormatUpdate — 0=24-hour, 1=12-hour
         uint8_t  ancs_filter;   // AncsFilterUpdate — 0=Disabled..3=All
+        uint8_t  seek_step_s;   // SeekStepUpdate — 1..60 seconds
         struct { uint8_t* buf; size_t len; } art;
         uint16_t conn_handle;
-        uint8_t  pct;            // OrioningProgress
         uint32_t total_bytes;    // SyncBegin — declared total from SyncControl{BEGIN}
         struct { uint8_t condition; int16_t temp_f; uint8_t unit; } weather; // WeatherUpdate
         struct { uint32_t uid; uint8_t action; } ancs_action; // AncsAction — 0=Positive, 1=Negative
         bool     ancs_resubscribed_call_state; // AncsResubscribed — true=char 0011, false=char 0010
+        struct { uint8_t level; bool show_toast; } host_volume; // HostVolumeUpdate
     } data;
     uint8_t peer_addr[6]; // populated for bonded events
 };
@@ -105,14 +113,34 @@ static BleEvent  s_event_queue[EVENT_QUEUE_SIZE];
 static volatile size_t s_eq_head = 0; // consumer (poll)
 static volatile size_t s_eq_tail = 0; // producer (NimBLE callbacks)
 
-static void eq_push(const BleEvent& e) {
+// Progress latches — the two per-percent progress streams (album-art
+// transfer, sync/Orioning ring) deliberately do NOT ride the event queue:
+// they're latest-value-wins by nature, and queued per-percent events were
+// this queue's one genuine flood source (a fragment burst landing while the
+// main task was busy could fill every slot with stale percents and force
+// eq_push below to drop whatever arrived next — including must-not-be-lost
+// events like SyncCommit or an owned art buffer). Producers are
+// ble_post_album_art_progress_event()/ble_post_orioning_progress() (NimBLE
+// host task); the consumer is poll()'s drain_progress_latches() (main task).
+// volatile write order: value first, then pending flag.
+static volatile bool    s_art_pct_pending      = false;
+static volatile uint8_t s_art_pct_value        = 0;
+static volatile bool    s_orioning_pct_pending = false;
+static volatile uint8_t s_orioning_pct_value   = 0;
+
+// Returns false when the queue is full and the event was dropped — callers
+// whose event carries an OWNED buffer (AlbumArt / PhotoReceived /
+// TimeOffPhotoReceived) MUST free it on false, or the PSRAM buffer leaks
+// (up to 512 KB for a Time Off image). Everyone else can ignore the result.
+static bool eq_push(const BleEvent& e) {
     size_t next = (s_eq_tail + 1) % EVENT_QUEUE_SIZE;
     if (next == s_eq_head) {
-        LOG("[ble] event queue FULL — event dropped\n");
-        return;
+        LOG("[ble] event queue FULL — event dropped (type=%u)\n", (unsigned)e.type);
+        return false;
     }
     s_event_queue[s_eq_tail] = e;
     s_eq_tail = next;
+    return true;
 }
 
 static bool eq_pop(BleEvent& e) {
@@ -167,6 +195,20 @@ volatile bool g_restart_pending = false;
 // touch NVS — we are seconds from reboot, and re-entering the stack (or racing
 // the flash write) is exactly what crashes the commit.
 volatile bool g_quiescing = false;
+
+// Set true for the whole OTA download phase (accepted BEGIN → commit or
+// failure-resume) by set_ota_transfer_quiet(). While set, advertising stays
+// OFF and restart_advertising() is a no-op — a bonded peer reconnecting
+// mid-download would fire the single heaviest BLE burst in the system
+// (encryption restore → NimBLE's bonding-restored CCCD replay → auto
+// onSubscribe → ANCS resync relay → Orion delta sync) right on top of the
+// USB CDC RX path, plus bond/CCCD NVS writes whose cache-disable stalls both
+// cores. Already-connected peers keep their (inert — data writes NACKed)
+// links; only NEW connections are prevented. Volatile: set on the main task
+// (ota_receiver), read on the NimBLE host task (onDisconnect →
+// restart_advertising). Distinct from g_quiescing, which is the one-way
+// commit-phase teardown; this one is reversible on failure-resume.
+volatile bool g_ota_adv_suppress = false;
 
 // True while the iPhone-pairing UI is on screen (Setup Step 4 or runtime
 // re-pair). Gates whether the ANCS service UUID is included in public
@@ -322,10 +364,10 @@ static bool delete_bond_matching_addr(const uint8_t addr[6]);
 // comments on the SMP-collision race and the conn-param-update pool
 // exhaustion fix) — this function does not touch or reorder anything in that
 // section, it only wraps what already ran strictly after it.
-static void classify_and_handle_peer(NimBLEConnInfo& info, uint16_t handle,
+static void classify_and_handle_peer(uint16_t handle, bool is_orion, bool is_iphone,
                                       const uint8_t orion_addr[6],
                                       const uint8_t iphone_addr[6]) {
-    if (conn_matches(info, orion_addr)) {
+    if (is_orion) {
         // Known Orion reconnecting (matched by identity address).
         LOG("[ble] Orion reconnected (bonded peer)\n");
         g_orion_connected = true;
@@ -334,7 +376,7 @@ static void classify_and_handle_peer(NimBLEConnInfo& info, uint16_t handle,
         ev.type = BleEventType::OrionConnected;
         ev.data.conn_handle = handle;
         eq_push(ev);
-    } else if (conn_matches(info, iphone_addr)) {
+    } else if (is_iphone) {
         // Known iPhone reconnecting (matched by identity address).
         // Track the link, but do NOT start ANCS here: the ANCS service is
         // encrypted, so discovery + CCCD subscription must wait until the
@@ -387,7 +429,7 @@ static void classify_and_handle_peer(NimBLEConnInfo& info, uint16_t handle,
 // Advertising-restart decision for a fresh connection, extracted verbatim
 // from OriServerCallbacks::onConnect() — runs strictly after
 // classify_and_handle_peer() above, same as before extraction.
-static void maybe_restart_advertising_after_connect(NimBLEConnInfo& info,
+static void maybe_restart_advertising_after_connect(bool is_orion, bool is_iphone,
                                                       const uint8_t orion_addr[6],
                                                       const uint8_t iphone_addr[6]) {
     // BLE auto-stops advertising when a connection forms. Re-advertise after
@@ -399,8 +441,7 @@ static void maybe_restart_advertising_after_connect(NimBLEConnInfo& info,
     // We skip this for an UNKNOWN peer — that's a fresh pairing in progress,
     // and re-advertising mid-bond would invite a second connection.
     // restart_advertising() stops again on its own once both are connected.
-    bool known_peer = conn_matches(info, orion_addr) ||
-                       conn_matches(info, iphone_addr);
+    bool known_peer = is_orion || is_iphone;
     bool both_bonded = !ble_manager::is_bond_slot_empty(orion_addr) &&
                        !ble_manager::is_bond_slot_empty(iphone_addr);
     bool ancs_window = g_iphone_pairing_window &&
@@ -464,9 +505,12 @@ public:
         uint8_t iphone_addr[6] = {};
         load_both_bond_addrs(orion_addr, iphone_addr);
 
-        classify_and_handle_peer(info, handle, orion_addr, iphone_addr);
+        bool is_orion  = conn_matches(info, orion_addr);
+        bool is_iphone = conn_matches(info, iphone_addr);
 
-        maybe_restart_advertising_after_connect(info, orion_addr, iphone_addr);
+        classify_and_handle_peer(handle, is_orion, is_iphone, orion_addr, iphone_addr);
+
+        maybe_restart_advertising_after_connect(is_orion, is_iphone, orion_addr, iphone_addr);
     }
 
     void onDisconnect(NimBLEServer* server,
@@ -668,8 +712,6 @@ public:
 
 static OriServerCallbacks s_server_cb;
 
-// ── Advertising helpers ────────────────────────────────────────────────────
-
 // ── ble_manager public API ─────────────────────────────────────────────────
 
 namespace ble_manager {
@@ -815,10 +857,15 @@ static void handle_album_art(const BleEvent& ev) {
     // chunked_transfer. set_album_art() decodes it (LVGL TJPGD)
     // and displays it if the media screen is active; it always
     // takes ownership and frees jpeg_buf internally either way.
+    // set_album_art() hides the loading ring itself on success; a null buf
+    // here means the transfer NACK'd (gap/timeout) — hide it directly since
+    // there's no art to trigger that path.
     if (ev.data.art.buf) {
         LOG("[ble] AlbumArt received %u bytes\n",
                        (unsigned)ev.data.art.len);
         screen_media_mode::set_album_art(ev.data.art.buf, ev.data.art.len);
+    } else {
+        screen_media_mode::hide_art_loading();
     }
 }
 
@@ -877,11 +924,25 @@ static void handle_orion_connected() {
     // when Orion's own CCCD write for that characteristic lands.
 }
 
+// Starts ANCS on `conn_handle` (idempotent if already subscribed) and
+// immediately forwards the phone name/device type/battery that
+// ancs_client::on_iphone_connected() just read synchronously to Orion via
+// PhoneBondStatus — the identical pair of calls, in this order (the notify
+// depends on data on_iphone_connected() just populated), needed by both the
+// reconnect path (handle_iphone_connected) and the fresh-bond path
+// (handle_iphone_bonded). Forwarding battery here too (not just name/device
+// type) means a reconnect never leaves Orion holding this characteristic's
+// own stale (disconnect-zeroed) battery cache.
+static void start_ancs_and_notify_phone_status(uint16_t conn_handle) {
+    ancs_client::on_iphone_connected(conn_handle);
+    gatt_server::notify_phone_bond_status(true, true, ancs_client::phone_name(),
+                                           ancs_client::phone_device_type(),
+                                           ancs_client::phone_stats().battery);
+}
+
 static void handle_iphone_connected(const BleEvent& ev) {
     LOG("[ble:poll] iPhone connected — starting ANCS\n");
-    ancs_client::on_iphone_connected(ev.data.conn_handle);
-    // Phone name is read synchronously inside on_iphone_connected().
-    gatt_server::notify_phone_bond_status(true, true, ancs_client::phone_name());
+    start_ancs_and_notify_phone_status(ev.data.conn_handle);
 }
 
 static void handle_orion_bonded(const BleEvent& ev) {
@@ -959,13 +1020,26 @@ static void handle_sync_end() {
     }
 }
 
-static void handle_orioning_progress(const BleEvent& ev) {
-    // Only one of these two is ever the live screen at a time — the
-    // other no-ops safely (update_orioning_progress checks for a
-    // SetupState* user_data; set_progress checks its own module-level
-    // ring pointer, cleared on screen delete).
-    screen_setup::update_orioning_progress(lv_scr_act(), ev.data.pct);
-    screen_reconnect_syncing::set_progress(ev.data.pct);
+// Drains the two coalescing progress latches (see their declarations beside
+// eq_push()) — called once per poll(), AFTER the event-queue drain so a
+// queued AlbumArtStarted/SyncBegin from the same burst builds its ring first
+// (a latch sampled ahead of its Started event would just no-op harmlessly on
+// the not-yet-shown ring and self-correct on the next percent anyway).
+static void drain_progress_latches() {
+    if (s_art_pct_pending) {
+        s_art_pct_pending = false;
+        screen_media_mode::update_art_loading_progress(s_art_pct_value);
+    }
+    if (s_orioning_pct_pending) {
+        s_orioning_pct_pending = false;
+        uint8_t pct = s_orioning_pct_value;
+        // Only one of these two is ever the live screen at a time — the
+        // other no-ops safely (update_orioning_progress checks for a
+        // SetupState* user_data; set_progress checks its own module-level
+        // ring pointer, cleared on screen delete).
+        screen_setup::update_orioning_progress(lv_scr_act(), pct);
+        screen_reconnect_syncing::set_progress(pct);
+    }
 }
 
 static void handle_iphone_bonded(const BleEvent& ev) {
@@ -987,9 +1061,7 @@ static void handle_iphone_bonded(const BleEvent& ev) {
     // NS/DS were only subscribed on a bonded RECONNECT — after the
     // very first pairing no notifications arrived until the iPhone
     // dropped and re-connected. Idempotent if already subscribed.
-    ancs_client::on_iphone_connected(ev.data.conn_handle);
-    // Phone name is read synchronously inside on_iphone_connected().
-    gatt_server::notify_phone_bond_status(true, true, ancs_client::phone_name());
+    start_ancs_and_notify_phone_status(ev.data.conn_handle);
     restart_advertising();
     // Pairing done → leave the phone-pairing screen: hides the
     // passkey modal, then first-boot setup advances to the Setup
@@ -1082,7 +1154,7 @@ static void handle_iphone_disconnected() {
     finish_pending_iphone_wipe();
     // If the wipe just completed, the bond is gone (bonded=false).
     // A plain disconnect (e.g. phone out of range) keeps the bond.
-    gatt_server::notify_phone_bond_status(!wipe_was_pending, false, "");
+    gatt_server::notify_phone_bond_status(!wipe_was_pending, false, "", "", 0);
 }
 
 static void handle_unpair_phone() {
@@ -1103,6 +1175,12 @@ static void handle_shortcut_update() {
     screen_media_mode::update_shortcuts();
     const app_state::ShortcutSlot* s = app_state::shortcuts();
     nvs::set_shortcut_slots(s[0].icon_token, s[1].icon_token, s[2].icon_token);
+}
+
+static void handle_seek_step_update(const BleEvent& ev) {
+    LOG("[ble:poll] seek step -> %u s\n", (unsigned)ev.data.seek_step_s);
+    app_state::set_seek_step_s(ev.data.seek_step_s);
+    nvs::set_seek_step_s(ev.data.seek_step_s);
 }
 
 static void handle_ancs_action(const BleEvent& ev) {
@@ -1284,6 +1362,10 @@ void poll() {
                 handle_media_meta_updated();
                 break;
 
+            case BleEventType::AlbumArtStarted:
+                screen_media_mode::show_art_loading();
+                break;
+
             case BleEventType::AlbumArt:
                 handle_album_art(ev);
                 break;
@@ -1332,10 +1414,6 @@ void poll() {
                 handle_sync_end();
                 break;
 
-            case BleEventType::OrioningProgress:
-                handle_orioning_progress(ev);
-                break;
-
             case BleEventType::IphoneBonded:
                 handle_iphone_bonded(ev);
                 break;
@@ -1360,6 +1438,15 @@ void poll() {
                 handle_shortcut_update();
                 break;
 
+            case BleEventType::SeekStepUpdate:
+                handle_seek_step_update(ev);
+                break;
+
+            case BleEventType::HostVolumeUpdate:
+                screen_media_mode::update_volume_from_host(
+                    ev.data.host_volume.level, ev.data.host_volume.show_toast);
+                break;
+
             case BleEventType::AncsAction:
                 handle_ancs_action(ev);
                 break;
@@ -1373,12 +1460,67 @@ void poll() {
         }
     }
 
+    drain_progress_latches();
     check_orioning_modal_deferred_show();
     check_orion_handshake_timeout();
     check_unknown_peer_timeout();
     check_deferred_factory_reset();
     drain_ancs_notifications();
     check_chunk_reassembly_timeouts();
+    gatt_server::poll_orion_signal_bars();
+}
+
+void set_ota_transfer_quiet(bool quiet) {
+    if (quiet) {
+        if (g_ota_adv_suppress) return;  // already quiet
+        g_ota_adv_suppress = true;
+        // Stop advertising so no reconnect ceremony (the heaviest BLE burst —
+        // see g_ota_adv_suppress's doc comment) can start mid-download.
+        // Peers already connected keep their links; gatt_server's
+        // set_ota_active(true) NACK gate has already made them inert.
+        NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
+        if (adv) adv->stop();
+        // Suspend ANCS processing at the source — NS/DS events are dropped in
+        // the notify callbacks and ancs_client::poll() skips its whole body
+        // (CTS/RSSI round-trips + the NS/DS drain).
+        ancs_client::suspend_for_ota();
+        LOG("[ble] OTA transfer quiet mode ON\n");
+        return;
+    }
+
+    // Failure-resume path (a successful commit reboots via quiesce_for_commit
+    // instead). No-op if never suppressed — show_error_screen() also funnels
+    // pre-accept rejects (too_large / no_memory) through here, and those must
+    // not trigger a gratuitous adv restart or iPhone drop.
+    if (!g_ota_adv_suppress) return;
+    g_ota_adv_suppress = false;
+    bool dropped = ancs_client::resume_from_ota_suspend();
+    LOG("[ble] OTA transfer quiet mode OFF (ancs dropped=%d)\n", (int)dropped);
+
+    // Anything dropped while suspended is unrecoverable on the SAME iPhone
+    // connection (iOS never re-sends NS events) — force a drop so the bonded
+    // auto-reconnect replays the full backlog, exactly like the post-bond
+    // forced reconnect every fresh pairing already performs (setup-flow.md).
+    // on_iphone_disconnected() wipes the queue and any half-completed
+    // NS→CP→DS exchange state; the replay repopulates both Ori's queue and
+    // Orion's relayed mirror from scratch. Skipped when nothing was missed —
+    // the common quick-failure case (cable pulled at 5%, quiet phone) resumes
+    // with both links still warm and no ceremony at all.
+    if (dropped && g_iphone_connected && g_iphone_conn != BLE_HS_CONN_HANDLE_NONE) {
+        NimBLEServer* server = NimBLEDevice::getServer();
+        if (server) {
+            LOG("[ble] forcing iPhone reconnect to replay ANCS events missed during OTA\n");
+            server->disconnect(g_iphone_conn);
+            // onDisconnect restarts advertising (no longer suppressed), and the
+            // iPhone auto-reconnects — same path as every bonded drop.
+        }
+    }
+
+    // Re-arm advertising per the current bond state. Idempotent with the
+    // onDisconnect-driven restart above (restart_advertising stops any active
+    // adv first); required for the nothing-dropped path where no disconnect
+    // fires at all.
+    restart_advertising();
 }
 
 void quiesce_for_commit() {
@@ -1419,6 +1561,16 @@ void quiesce_for_commit() {
 }
 
 void restart_advertising() {
+    // OTA download in progress — advertising stays off for the duration (see
+    // g_ota_adv_suppress). Covers every restart path at once: onDisconnect's
+    // unconditional restart, finish_pending_iphone_wipe, etc. Re-armed by
+    // set_ota_transfer_quiet(false) on failure-resume; a successful commit
+    // reboots (quiesce_for_commit) and re-inits from scratch instead.
+    if (g_ota_adv_suppress) {
+        LOG("[ble] restart_advertising suppressed (OTA transfer active)\n");
+        return;
+    }
+
     NimBLEServer* server = NimBLEDevice::getServer();
     if (!server) return;
 
@@ -1637,6 +1789,11 @@ static void finish_iphone_bond_wipe(const uint8_t iphone_addr[6]) {
     }
     const uint8_t zero[6] = {};
     save_bond_addr(BOND_KEY_IPHONE, zero);
+    // The bond is genuinely gone now (not just a runtime disconnect) — this is
+    // the one choke-point both unpair paths (local Unpair button, remote Orion
+    // command) funnel through, so it's where the cached name/model actually
+    // get wiped (ancs_client.h's clear_phone_identity() doc comment).
+    ancs_client::clear_phone_identity();
     LOG("[ble] iPhone bond deleted + NVS slot cleared\n");
 }
 
@@ -1683,7 +1840,7 @@ void wipe_iphone_bond() {
     g_iphone_conn      = BLE_HS_CONN_HANDLE_NONE;
     restart_advertising();
     // No IphoneDisconnected event fires for this path, so notify Orion here.
-    gatt_server::notify_phone_bond_status(false, false, "");
+    gatt_server::notify_phone_bond_status(false, false, "", "", 0);
 }
 
 // Reverts an Orion bond that was confirmed (SyncControl{BEGIN} received,
@@ -1718,7 +1875,6 @@ static void revert_unconfirmed_orion_bond() {
 }
 
 bool is_orion_connected()  { return g_orion_connected;  }
-bool is_iphone_connected() { return g_iphone_connected; }
 uint16_t orion_conn_handle() { return g_orion_conn; }
 
 void on_orion_bonded(uint16_t conn_handle, const uint8_t peer_addr[6]) {
@@ -1886,13 +2042,34 @@ void ble_post_media_meta_event() {
     eq_push(ev);
 }
 
+// First fragment of a new Media Album Art transfer landed — signal the
+// media screen to show the loading ring before the (possibly slow, ~15-30 KB)
+// transfer completes. Fires once per transfer (chunked_transfer::Context's
+// on_fragment callback below only calls this on seq==0).
+void ble_post_album_art_started_event() {
+    BleEvent ev = {};
+    ev.type = BleEventType::AlbumArtStarted;
+    eq_push(ev);
+}
+
+// Album art transfer progress (0-99) — from the same on_fragment callback,
+// debounced to one post per integer percent change (gatt_server.cpp).
+// Coalescing latch, not a queued event — see the latch declarations beside
+// eq_push() for why (per-percent events were the queue's one flood source).
+void ble_post_album_art_progress_event(uint8_t pct) {
+    s_art_pct_value   = pct;
+    s_art_pct_pending = true;
+}
+
 // Deferred album art delivery (from AlbumArt chunked callback).
 void ble_post_album_art_event(uint8_t* buf, size_t len) {
     BleEvent ev = {};
     ev.type         = BleEventType::AlbumArt;
     ev.data.art.buf = buf;
     ev.data.art.len = len;
-    eq_push(ev);
+    // Event owns `buf` — if the queue is full it never reaches the drain
+    // handler, so free it here or the PSRAM buffer leaks (eq_push's comment).
+    if (!eq_push(ev) && buf) heap_caps_free(buf);
 }
 
 // Deferred profile photo delivery (from Photo chunked callback).
@@ -1902,7 +2079,8 @@ void ble_post_photo_event(uint8_t* buf, size_t len) {
     ev.type         = BleEventType::PhotoReceived;
     ev.data.art.buf = buf;  // reuse art union member — same shape
     ev.data.art.len = len;
-    eq_push(ev);
+    // Same owned-buffer rule as ble_post_album_art_event above.
+    if (!eq_push(ev) && buf) heap_caps_free(buf);
 }
 
 // Deferred Time Off destination image (len==0 = no photo set; store_time_off clears cache).
@@ -1911,7 +2089,10 @@ void ble_post_time_off_photo_event(uint8_t* buf, size_t len) {
     ev.type         = BleEventType::TimeOffPhotoReceived;
     ev.data.art.buf = buf;
     ev.data.art.len = len;
-    eq_push(ev);
+    // Same owned-buffer rule as ble_post_album_art_event above. heap_caps_free
+    // handles both allocation paths apply_time_off_cbor uses (PSRAM heap_caps_
+    // malloc with plain malloc fallback — they share one allocator on ESP-IDF).
+    if (!eq_push(ev) && buf) heap_caps_free(buf);
 }
 
 // Deferred SyncControl BEGIN — show orioning modal / reconnect overlay on main task.
@@ -1935,7 +2116,7 @@ void ble_post_sync_commit_event() {
 
 // Posted by gatt_server::run_staged_commit() — advance setup step or dismiss
 // reconnect overlay now that staged data has been committed.
-void ble_post_sync_end_event(bool /*unused*/) {
+void ble_post_sync_end_event() {
     BleEvent ev = {};
     ev.type = BleEventType::SyncEnd;
     eq_push(ev);
@@ -1949,10 +2130,35 @@ void ble_post_shortcut_update_event() {
     eq_push(ev);
 }
 
-// Deferred sync milestone — update orioning progress ring on main task.
-void ble_post_orioning_progress(uint8_t pct) {
+// Deferred seek-step update (from Device Settings "k" write handler) — NVS
+// writes must not happen on the NimBLE host task, same reasoning as every
+// other Device Settings field above.
+void ble_post_seek_step_event(uint8_t seconds) {
     BleEvent ev = {};
-    ev.type     = BleEventType::OrioningProgress;
-    ev.data.pct = pct;
+    ev.type = BleEventType::SeekStepUpdate;
+    ev.data.seek_step_s = seconds;
     eq_push(ev);
+}
+
+// Deferred Host Volume State update (from the char 000B write handler) — the
+// fill/label touch LVGL (main task only); show_toast tells the media screen
+// whether to also surface the HUD (a genuine external change) or just
+// refresh it quietly (our own swipe's echo, already shown locally).
+void ble_post_host_volume_event(uint8_t level, bool show_toast) {
+    BleEvent ev = {};
+    ev.type = BleEventType::HostVolumeUpdate;
+    ev.data.host_volume.level = level;
+    ev.data.host_volume.show_toast = show_toast;
+    eq_push(ev);
+}
+
+// Deferred sync milestone — update orioning progress ring on main task.
+// Coalescing latch, same reasoning as ble_post_album_art_progress_event
+// above: stage_add_bytes() fires this once per integer percent of a sync
+// (up to 100 per session — a 512 KB Time Off image streams enough fragments
+// between two poll() drains to burst several at once), and a ring only ever
+// wants the newest value anyway.
+void ble_post_orioning_progress(uint8_t pct) {
+    s_orioning_pct_value   = pct;
+    s_orioning_pct_pending = true;
 }

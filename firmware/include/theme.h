@@ -38,6 +38,9 @@ constexpr uint32_t COLOR_ACCENT           = 0xE0B86A;
 constexpr uint32_t COLOR_ACCENT_SOFT      = 0x1F1A0F;   // accent at 14% over black
 constexpr uint32_t COLOR_ACCENT_FAINT     = 0x3E331D;   // accent at ~28% over black — current-week highlight
 constexpr uint32_t COLOR_ACCENT_LINE      = 0x7B653A;   // accent at 55% over black
+constexpr uint32_t COLOR_ACCENT_DARK      = 0x927845;   // accent at ~65% brightness — darker
+                                                          // gold, used by the media-mode volume
+                                                          // HUD bar fill (screen_media_mode.cpp)
 constexpr uint32_t COLOR_DANGER           = 0xD86A6A;
 constexpr uint32_t COLOR_DANGER_SOFT      = 0x1E0F0F;   // danger at 14% over black
 constexpr uint32_t COLOR_OK               = 0x7FB48A;

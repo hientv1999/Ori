@@ -5,7 +5,7 @@
 // Ori — first-time setup flow.
 //
 // Single screen, five visual sub-states. Status bar is hidden across the
-// entire flow. A 4-dot progress indicator is anchored at a FIXED y near
+// entire flow. A 3-dot progress indicator is anchored at a FIXED y near
 // the bottom — it must not move between pages, per setup-flow.md.
 //
 //   Welcome       — dots all inactive, brand + Start

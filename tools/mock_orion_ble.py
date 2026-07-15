@@ -187,6 +187,7 @@ UUID_HOST_VOLUME  = _uuid(0x000B)   # Read, Write (response)   — encrypted
 UUID_MEDIA_META   = _uuid(0x000C)   # Write (response), Notify — encrypted
 UUID_ALBUM_ART    = _uuid(0x000D)   # Write NO RESPONSE only   — encrypted
 UUID_DEV_SETTINGS = _uuid(0x000E)   # Write (response)      — encrypted
+UUID_PHONE_STATUS = _uuid(0x000F)   # Read, Notify          — encrypted (Ori → Orion)
                                     # Merges: presence | shortcut slots | clock face | ANCS filter
 
 FACTORY_RESET_MAGIC = bytes([0xFA, 0xC7, 0x5E, 0x5E])
@@ -672,6 +673,10 @@ class MockOrion:
         # Slot → token map, mirroring what was last sent to Ori via ShortcutConfig.
         # Initialized to firmware defaults; updated by run_sync() and push_shortcuts().
         self._shortcut_slots: dict[int, str] = {1: "vol-mute", 2: "mic-mute", 3: "screenshot"}
+        # In-flight album-art chunked-write task, if any — see
+        # _spawn_album_art_push()'s doc comment. Mirrors central.rs's
+        # BleState::album_art_task (the real Orion app's own equivalent).
+        self._album_art_task: Optional[asyncio.Task] = None
 
     # ── notification handlers ──
 
@@ -697,6 +702,29 @@ class MockOrion:
         except Exception:
             print(f"\n  [notify] SyncManifest ← raw {data.hex()}")
         self._manifest_reply.set()
+
+    def _on_phone_bond_status(self, _: BleakGATTCharacteristic, data: bytearray):
+        # ble-protocol.md §3/§4/§11 — Ori → Orion notify + readable on char
+        # 000F. Fires on every iPhone connect/disconnect/unpair (name/type/
+        # signal/battery reset) as well as live queue/RSSI/battery changes
+        # while connected — this is the "does Orion get told the iPhone
+        # reconnected" signal.
+        try:
+            msg = cbor2.loads(bytes(data))
+            bonded    = msg.get("b", False)
+            connected = msg.get("c", False)
+            name      = msg.get("n", "")
+            dtype     = msg.get("d", "")
+            missed    = msg.get("m", 0)
+            unread    = msg.get("u", 0)
+            total     = msg.get("t", 0)
+            signal    = msg.get("s", 0)
+            battery   = msg.get("l", 0)
+            state = "connected" if connected else ("bonded, disconnected" if bonded else "not bonded")
+            print(f"\n  [notify] PhoneBondStatus ← {state} name='{name}' type='{dtype}' "
+                  f"missed={missed} unread={unread} total={total} signal={signal} battery={battery}%")
+        except Exception as exc:
+            print(f"\n  [notify] PhoneBondStatus ← parse error: {exc}")
 
     def _on_keyboard_command(self, _: BleakGATTCharacteristic, data: bytearray):
         # ble-protocol.md §12 — Ori → Orion notify on char 000B.
@@ -850,8 +878,16 @@ class MockOrion:
         # Subscribe to Keyboard Command notifies — Ori sends play_pause / next /
         # prev / seek / vol_set / shortcut here; we bridge them to OS APIs.
         await self.client.start_notify(UUID_KEYBOARD_CMD, self._on_keyboard_command)
+        # Subscribe to Phone Bond Status — Ori's iPhone ANCS bond/connection
+        # state (ble-protocol.md §3/§11). Read once up front (same "seed
+        # current value" treatment as Device Status below) so we see whatever
+        # state Ori is already in, then relay every subsequent notify —
+        # mirrors the real Orion app's phone_bond_watcher() in central.rs.
+        await self.client.start_notify(UUID_PHONE_STATUS, self._on_phone_bond_status)
         raw = await self.client.read_gatt_char(UUID_DEV_STATUS)
         self._on_dev_status(None, raw)  # seed current value
+        phone_raw = await self.client.read_gatt_char(UUID_PHONE_STATUS)
+        self._on_phone_bond_status(None, phone_raw)  # seed current value
 
     async def push_presence(self, value: int):
         # Presence is "p" in Device Settings (char 000E) — write-only, applied
@@ -983,11 +1019,32 @@ class MockOrion:
         await self.write(UUID_MEDIA_META, meta_bytes, "MediaMetadata")
 
         art_jpeg = info.get("art_jpeg", b"")
-        if art_jpeg:
-            await self.write_chunked_nr(UUID_ALBUM_ART, art_jpeg, "MediaAlbumArt")
-            print("  [ok] Media metadata + album art pushed.\n")
-        else:
+        self._push_art(art_jpeg)
+
+    def _push_art(self, art_jpeg: bytes):
+        # Cancels any still-in-flight album art transfer and starts this one
+        # immediately instead of awaiting it inline — mirrors central.rs's
+        # spawn_album_art_push()/BleState::album_art_task (the real Orion
+        # app's own fix for this). Without this, a track change arriving
+        # while a previous track's ~15-30 KB art is still chunking out (a
+        # few hundred ms at the write-no-response pacing above) just queued
+        # behind it: media_watcher()/push_media() both used to `await` the
+        # whole chunked write inline, so the old image finished streaming to
+        # completion before the new one ever started. Ori's own receiver
+        # already resets on the new transfer's first fragment
+        # (chunked_transfer.cpp resets on seq==0), so cancelling the old
+        # asyncio.Task here is enough — no protocol-level cancel needed.
+        if self._album_art_task and not self._album_art_task.done():
+            self._album_art_task.cancel()
+        if not art_jpeg:
+            self._album_art_task = None
             print("  [info] no album art available — sent metadata only.\n")
+            return
+        self._album_art_task = asyncio.create_task(self._run_album_art_push(art_jpeg))
+
+    async def _run_album_art_push(self, art_jpeg: bytes):
+        await self.write_chunked_nr(UUID_ALBUM_ART, art_jpeg, "MediaAlbumArt")
+        print("  [ok] Media metadata + album art pushed.\n")
 
     def _print_hashes(self, profile, photo, meetings, time_off):
         # Device Settings (shortcuts/presence) has no hash entry — written

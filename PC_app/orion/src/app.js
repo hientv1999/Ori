@@ -6,12 +6,6 @@ const $=id=>document.getElementById(id);
 const invoke=(...a)=>window.__TAURI__.core.invoke(...a);
 const listen=(...a)=>window.__TAURI__.event.listen(...a);
 
-// TEMPORARY DEBUG: mirror a log line to BOTH the webview console and the
-// backend terminal (via the debug_log command) so a single terminal capture
-// shows the Rust BLE path and this JS ANCS path interleaved. Remove with the
-// debug_log command once the ANCS-list issue is resolved.
-function dlog(msg){ console.log(msg); try{ invoke('debug_log',{msg}); }catch(_){} }
-
 // Declared up front (not with the rest of the I18N block below) because
 // code below reads them before the script has run far enough to reach the
 // I18N block — a `let`/`const` referenced before its own declaration line
@@ -64,15 +58,9 @@ function backWithCheck(){
     _discardAction=()=>{
       $('nmInp').value=pfCommitted.name;$('tlInp').value=pfCommitted.title;
       $('emInp').value=pfCommitted.email;$('phInp').value=pfCommitted.phone;
-      cc('nmInp','nmCnt',32);cc('tlInp','tlCnt',32);cc('emInp','emCnt',32);cc('phInp','phCnt',16);
+      syncProfileCounters(PROFILE_FIELD_IDS);
       pfPendingUrl=null;pfRemoved=false;
-      if(pfOrigUrl){
-        $('pfDzThumb').style.backgroundImage=`url(${pfOrigUrl})`;
-        $('pfDzEmpty').style.display='none';$('pfDzImg').style.display='';$('pfReuploadBtn').style.display='';$('pfRemoveBtn').style.display='';
-      } else {
-        $('pfDzThumb').style.backgroundImage='';
-        $('pfDzEmpty').style.display='';$('pfDzImg').style.display='none';$('pfReuploadBtn').style.display='none';$('pfRemoveBtn').style.display='none';
-      }
+      setDropzoneState('pf','pfReuploadBtn','pfRemoveBtn',pfOrigUrl);
       pfChanged=false;$('pfSaveBtn').setAttribute('disabled','');back();
     };
     showModal('m-discard');return;
@@ -328,12 +316,16 @@ function setConn(s){
     state.textContent=t.connecting;
     connSections.style.display='none';toDivider.style.display='';
     fwIco.style.display='none';
-    setPhoneBondStatus({b:false,c:false,n:''});
+    // `d` (device type) is carried forward, not reset to '' with the rest —
+    // it's a static fact about the iPhone bond, not something that needs
+    // re-verifying live like m/u/t/s/l. Only cleared by an actual reset/
+    // unpair (see store::SavedState::phone_device_type's doc comment).
+    setPhoneBondStatus({b:false,c:false,n:'',d:lastPhoneBondStatus.d});
   } else if(s==='rec'){
     state.textContent=t.syncing;
     connSections.style.display='none';toDivider.style.display='';
     fwIco.style.display='none';
-    setPhoneBondStatus({b:false,c:false,n:''});
+    setPhoneBondStatus({b:false,c:false,n:'',d:lastPhoneBondStatus.d});
   } else {
     // Disconnected. Unlike Connecting/Syncing, the Notification Filter /
     // Clock Face / Time Format / Quick Actions rows stay VISIBLE and
@@ -350,7 +342,7 @@ function setConn(s){
     state.textContent=t.disconnected;
     connSections.style.display='';toDivider.style.display='none';
     fwIco.style.display='none';
-    setPhoneBondStatus({b:false,c:false,n:''});
+    setPhoneBondStatus({b:false,c:false,n:'',d:lastPhoneBondStatus.d});
     // Ori link is broken — close every ANCS/call surface, since their content
     // is relayed from Ori and can no longer be verified or acted on (request:
     // "Close all modals related to ANCS notification / incoming / ongoing call
@@ -365,7 +357,7 @@ function setConn(s){
   if(s==='connecting'||s==='rec') dismissTransientScreen();
   // Keep an already-open Ori Info modal's dot/state (and signal bars, which
   // zero out once disconnected) in step with every connection-state change
-  // instead of waiting for the next ORI_INFO_POLL_MS tick.
+  // instead of waiting for Ori's next signal_bars push.
   if($('m-ori-info').classList.contains('show')) refreshOriInfoModal();
 }
 
@@ -425,7 +417,7 @@ function setReconnectBusy(busy){
 // live to report) or no iPhone has ever been bonded (b:false — nothing to
 // show). Disconnected state is a diagonal slash (.phone-slash in the SVG),
 // not a colour change, mirroring Ori's own status-bar phone icon.
-let lastPhoneBondStatus={b:false,c:false,n:'',m:0,u:0,t:0,s:0};
+let lastPhoneBondStatus={b:false,c:false,n:'',d:'',m:0,u:0,t:0,s:0,l:0};
 function setPhoneBondStatus(status){
   lastPhoneBondStatus=status;
   const ico=$('phoneIco');
@@ -465,6 +457,22 @@ function renderSigBars(id,level){
   [...el.children].forEach((b,i)=>b.classList.toggle('active',i<level));
 }
 
+// Battery icon fill width (0-100%) + percentage label + low-battery color —
+// mirrors Ori's own modal_iphone_info.cpp (BATT_LOW_THRESHOLD=20%, same
+// green/red split as the signal bars' active color vs danger).
+const BATT_LOW_THRESHOLD=20;
+function renderBattery(level){
+  const fill=$('ipInfoBattFill'); if(!fill) return;
+  const pct=Math.max(0,Math.min(100,level));
+  // Fill sits inset a symmetric 1.25 units from the body's inner edge (an
+  // 18x10 outline at x=1..19, stroke-width 1.5) on every side — clears the
+  // body's rx=2.5 corner rounding at max fill, same geometry as Ori's
+  // firmware BATT_BODY_W/H and the UI-prototype reference design.
+  fill.setAttribute('width',(14*pct/100).toFixed(1));
+  fill.style.fill=pct<=BATT_LOW_THRESHOLD?'var(--danger)':'var(--success)';
+  $('ipInfoBattPct').textContent=pct+'%';
+}
+
 // iPhone info / stats — tapping the header phone icon (while an iPhone is
 // bonded) opens this read-only snapshot instead of jumping straight to the
 // Unpair confirm. Counts + signal come straight from Ori's ANCS client,
@@ -476,10 +484,20 @@ function openIphoneInfoModal(){
   const t=I18N[appLang].iphoneInfoModal;
   const s=lastPhoneBondStatus;
   $('ipInfoTitle').textContent=s.n||I18N[appLang].unpairPhoneModal.fallbackName;
+  // Device model subtitle — e.g. "iPhone 17 Pro Max". Already resolved from
+  // Apple's raw hardware identifier on Ori's side (ble-protocol.md); hidden
+  // entirely (not a placeholder) when empty, same ":empty" CSS rule as an
+  // unavailable value elsewhere in this modal. NOT gated on `s.c` — unlike
+  // the live stats below, this is a static fact about the bond (persisted,
+  // store::SavedState::phone_device_type) that stays worth showing even
+  // while disconnected, same treatment as the Ori Info modal's own
+  // serial_number/manufacture_date.
+  $('ipInfoType').textContent=s.d||'';
   $('ipInfoState').textContent=s.c?I18N[appLang].main.connected:I18N[appLang].main.disconnected;
   $('ipInfoDot').className='p-dot '+(s.c?'available':'offline');
   renderSigBars('ipInfoSigBars',s.c?s.s:0);
   $('ipInfoSigBars').title=t.sigLbl;
+  renderBattery(s.c?s.l:0);
 
   // Counts + badges are only meaningful while the iPhone link is actually up.
   // Disconnected: icons stay visible but dimmed (.zero) and badges hidden —
@@ -671,12 +689,23 @@ const ANCS_APP_ICON_MAP={
 // token (Orion/firmware drifted out of sync on the supported set) falls back
 // to the category glyph — mirrors Ori's own ancs_icons::image()/
 // category_image() fallback chain (ble-protocol.md §13).
-function ancsIconMarkup(bucket,iconToken){
+// Shared by every app-icon spot (ANCS list/detail rows and the call
+// ringing/in-call view/header chip): a real brand icon when Ori relayed a
+// recognised token, else a category-glyph fallback — `iconOrFallback`/
+// `iconTileClass` hold the common shape, callers just supply their own
+// fallback glyph/class.
+function iconOrFallback(iconToken,fallbackKind){
   const img=ANCS_APP_ICON_MAP[iconToken];
-  return img?'<img class="ancs-app-icon-img" src="'+img+'" alt="">':ancsIconSvg(ancsIconKind(bucket));
+  return img?'<img class="ancs-app-icon-img" src="'+img+'" alt="">':ancsIconSvg(fallbackKind);
+}
+function iconTileClass(baseClass,iconToken,fallbackClass){
+  return baseClass+(ANCS_APP_ICON_MAP[iconToken]?' has-img':' '+fallbackClass);
+}
+function ancsIconMarkup(bucket,iconToken){
+  return iconOrFallback(iconToken,ancsIconKind(bucket));
 }
 function ancsIconTileClass(baseClass,bucket,iconToken){
-  return baseClass+(ANCS_APP_ICON_MAP[iconToken]?' has-img':' '+ancsCategoryClass(bucket));
+  return iconTileClass(baseClass,iconToken,ancsCategoryClass(bucket));
 }
 
 const ANCS_LIST_TITLES=()=>I18N[appLang].ancsList.titles;
@@ -711,7 +740,6 @@ function openAncsListModal(bucket){
   const t=I18N[appLang].ancsList;
   $('ancsListTitle').textContent=ANCS_LIST_TITLES()[bucket];
   const groups=ancsGroupItems(bucket);
-  dlog('[ORION-DEBUG] openAncsListModal bucket='+bucket+': '+ANCS_STORE[bucket].size+' raw item(s), '+groups.length+' group(s)');
   const bodyEl=$('ancsListBody');
   bodyEl.dataset.bucket=bucket;
   bodyEl.innerHTML=groups.length===0?'<div class="ancs-list-empty">'+ANCS_LIST_EMPTY()[bucket]+'</div>':
@@ -907,10 +935,10 @@ function ancsBackToList(bucket){
 // 'ancs-notification' listener below is what actually closes this modal and
 // returns to the list, once Ori confirms the notification is really gone.
 function ancsPositiveAction(uid,bucket){
-  invoke('ancs_notification_action',{u:uid,a:0}).catch(e=>console.error('ancs_notification_action failed:',e));
+  invoke('ancs_notification_action',{u:uid,a:0}).catch(()=>{});
 }
 function ancsNegativeAction(uid,bucket){
-  invoke('ancs_notification_action',{u:uid,a:1}).catch(e=>console.error('ancs_notification_action failed:',e));
+  invoke('ancs_notification_action',{u:uid,a:1}).catch(()=>{});
 }
 // "Read all" on a stacked group — one write per uid (Negative/dismiss —
 // same action a lone row's own Dismiss button sends), mirroring the loop in
@@ -918,14 +946,14 @@ function ancsNegativeAction(uid,bucket){
 function ancsReadAllGroup(refUid,bucket){
   const g=ancsFindGroup(bucket,refUid);
   if(!g) return;
-  g.uids.forEach(uid=>invoke('ancs_notification_action',{u:uid,a:1}).catch(e=>console.error('ancs_notification_action failed:',e)));
+  g.uids.forEach(uid=>invoke('ancs_notification_action',{u:uid,a:1}).catch(()=>{}));
 }
 // Row's own swipe-to-delete commit — clears the whole group (if stacked),
 // same as Read all above.
 function ancsRowQuickDismiss(uid,bucket){
   const g=ancsFindGroup(bucket,uid);
   if(!g) return;
-  g.uids.forEach(u=>invoke('ancs_notification_action',{u,a:1}).catch(e=>console.error('ancs_notification_action failed:',e)));
+  g.uids.forEach(u=>invoke('ancs_notification_action',{u,a:1}).catch(()=>{}));
 }
 // Back from the list → iPhone Info (re-render so any change above shows).
 function ancsListBack(){
@@ -1033,11 +1061,10 @@ function callMetaFor(c){
 // but with the call glyph (not a category bell) as the fallback. Used by both
 // the incoming/active call modal and the header call chip below.
 function callIconInner(iconToken){
-  const img=ANCS_APP_ICON_MAP[iconToken];
-  return img?'<img class="ancs-app-icon-img" src="'+img+'" alt="">':ancsIconSvg('call');
+  return iconOrFallback(iconToken,'call');
 }
 function callIconTileClass(base,iconToken){
-  return base+(ANCS_APP_ICON_MAP[iconToken]?' has-img':' cat-ringing');
+  return iconTileClass(base,iconToken,'cat-ringing');
 }
 
 // Latest call state (the raw AncsCallState payload), so the header call chip
@@ -1124,13 +1151,13 @@ function showIncomingCall(c){
 // AncsCallState{st:2} the answer produces (same "never optimistic" rule as
 // the ANCS actions above).
 function callAnswer(uid){
-  invoke('ancs_notification_action',{u:uid,a:0}).catch(e=>console.error('ancs_notification_action failed:',e));
+  invoke('ancs_notification_action',{u:uid,a:0}).catch(()=>{});
 }
 // ANCS Negative on a ringing call = Decline — same action code the general
 // dismiss path uses, just reached from a different screen. Wait for
 // AncsCallState{st:0} to actually close the ringing view.
 function callDecline(uid){
-  invoke('ancs_notification_action',{u:uid,a:1}).catch(e=>console.error('ancs_notification_action failed:',e));
+  invoke('ancs_notification_action',{u:uid,a:1}).catch(()=>{});
 }
 function showActiveCall(c){
   const t=I18N[appLang].incomingCall;
@@ -1157,7 +1184,7 @@ function showActiveCall(c){
 // independent of neg_label, since by now the ringing-era label no longer
 // fits). Wait for AncsCallState{st:0} to close the view + stop the timer.
 function callEnd(uid){
-  invoke('ancs_notification_action',{u:uid,a:1}).catch(e=>console.error('ancs_notification_action failed:',e));
+  invoke('ancs_notification_action',{u:uid,a:1}).catch(()=>{});
 }
 
 // Ori device info / stats — tapping the header's device name + connection
@@ -1166,11 +1193,12 @@ function callEnd(uid){
 // manufacture date), its signal, and its other bond (iPhone/ANCS).
 //
 // Live while open (mirrors the iPhone Info modal's own "live while open"
-// treatment, pc-app.md): a poll timer re-fetches every ORI_INFO_POLL_MS
-// while the modal is visible, plus push hooks off `setConn()`/
-// `setPhoneBondStatus()` (search their bodies for 'm-ori-info') so the
-// connection dot/state and iPhone row react immediately on a change instead
-// of waiting for the next tick.
+// treatment, pc-app.md): Ori itself pushes a fresh Device Settings notify
+// (char 000E) whenever its live signal_bars bucket changes — no poll timer
+// needed, see the 'device-settings-update' listener below — plus push hooks
+// off `setConn()`/`setPhoneBondStatus()` (search their bodies for
+// 'm-ori-info') so the connection dot/state and iPhone row react immediately
+// on a change instead of waiting for the next Ori-side RSSI sample.
 //
 // Two data sources, merged:
 //   - get_ori_info (Rust): no live BLE read. name/firmware/last-synced are
@@ -1193,29 +1221,24 @@ function callEnd(uid){
 //     ble-protocol.md §4/§6.4). Signal bars are NOT persisted anywhere —
 //     0 bars while disconnected, same "don't show what you can't verify"
 //     policy Ori itself applies to presence/weather.
-const ORI_INFO_POLL_MS=3000;
-let oriInfoPollTimer=null;
-
-async function refreshOriInfoModal(){
+// Renders the modal from already-fetched data — shared by refreshOriInfoModal
+// (a fresh get_ori_info + a live char-000E read, used on open and on
+// connection-state pushes) and the 'device-settings-update' listener below
+// (which already has fresh `settings` from Ori's own push and only needs
+// get_ori_info's cheap cached fields alongside it — no second live read).
+function renderOriInfoModal(info,settings,live){
   const t=I18N[appLang].oriInfoModal;
-  const [info,settings]=await Promise.all([
-    invoke('get_ori_info').catch(()=>null),
-    invoke('read_device_settings').catch(()=>null),
-  ]);
-  if(!info) return false;
-
   $('oriInfoTitle').textContent=info.name||$('hName').textContent;
-  // Dot/state/signal-bars are driven off ONE signal — whether this
-  // refresh's own live char-000E read just succeeded — not off `connState`
+  // Dot/state/signal-bars are driven off ONE signal — whether the caller
+  // actually has a live `settings` read/push in hand — not off `connState`
   // (app.js's app-wide connection state machine, `setConn()`). connState is
   // deliberately debounced (supervise_connection_loop's `settled_off` gate,
-  // commands.rs) so a brief drop doesn't flash the whole UI; this modal's
-  // live-read poll has no such debounce and can catch a dead link several
+  // commands.rs) so a brief drop doesn't flash the whole UI; a live char-000E
+  // read or push has no such debounce and can catch a dead link several
   // seconds before connState does. Driving all three off `connState` alone
   // used to show 0 bars (live, correct) next to "Connected" (stale) during
   // that gap — mixing a live signal with a debounced one always risks that
-  // kind of contradiction, so all three now come from the same read.
-  const live = connState==='on' && settings!=null;
+  // kind of contradiction, so all three now come from the same source.
   $('oriInfoDot').className='p-dot '+(live?'available':connState==='off'?'offline':'away');
   $('oriInfoState').textContent = live ? I18N[appLang].main.connected
     : connState==='connecting' ? I18N[appLang].main.connecting
@@ -1234,7 +1257,7 @@ async function refreshOriInfoModal(){
   $('oriInfoFwLbl').textContent=t.fwLbl;$('oriInfoFw').textContent=live?(info.firmware_version||t.unknown):t.unknown;
   $('oriInfoAddrLbl').textContent=t.addrLbl;$('oriInfoAddr').textContent=info.address||t.unknown;
 
-  // Prefer a fresh live read (settings.s/.b) when connected, otherwise fall
+  // Prefer a fresh live read/push (settings.s/.b) when connected, otherwise fall
   // back to get_ori_info's disk-persisted copy (store::SavedState — Rust
   // side, survives an app restart) rather than a client-side JS cache: the
   // two never actually disagree except on the very first read of a newly
@@ -1265,19 +1288,29 @@ async function refreshOriInfoModal(){
   $('oriInfoSync').textContent = secs==null ? t.unknown : secs<60 ? t.justNow : t.minAgo.replace('{n}',Math.round(secs/60));
 
   $('oriInfoCloseBtn').textContent=I18N[appLang].pairfail.close;
+}
+
+// Fresh get_ori_info (cheap — cached, no BLE) + a live char-000E read, then
+// renders. Used on modal open and on connection-state pushes (setConn()/
+// setPhoneBondStatus()); NOT used for the live-while-open refresh anymore —
+// see the 'device-settings-update' listener below, which already has a
+// live `settings` from Ori's own push and skips the redundant second read.
+async function refreshOriInfoModal(){
+  const [info,settings]=await Promise.all([
+    invoke('get_ori_info').catch(()=>null),
+    invoke('read_device_settings').catch(()=>null),
+  ]);
+  if(!info) return false;
+  renderOriInfoModal(info,settings,connState==='on'&&settings!=null);
   return true;
 }
 
 async function openOriInfoModal(){
   if(!(await refreshOriInfoModal())) return;
   showModal('m-ori-info');
-  // Guarded so a stray second open() call (shouldn't happen — the header
-  // trigger is a single click target) never stacks a duplicate interval.
-  if(!oriInfoPollTimer) oriInfoPollTimer=setInterval(refreshOriInfoModal,ORI_INFO_POLL_MS);
 }
 
 function closeOriInfoModal(){
-  if(oriInfoPollTimer){clearInterval(oriInfoPollTimer);oriInfoPollTimer=null;}
   hideModal('m-ori-info');
 }
 
@@ -1361,8 +1394,33 @@ function cc(iId,cId,mx){
   const l=$(iId).value.length,el=$(cId);
   el.textContent=l+' / '+mx;el.className='fcnt'+(l>=mx?' warn':'');
 }
+// Sets a photo dropzone (thumbnail background, empty/image visibility, and
+// reupload/remove button visibility) to either "has a photo" (url given) or
+// "no photo" (url falsy) — the same four-way toggle repeated across the
+// Profile, Time Off, and first-run-setup photo pickers. `dzPrefix` is the
+// shared `<prefix>DzThumb`/`DzEmpty`/`DzImg` id prefix; the reupload/remove
+// button ids are passed separately since Time Off's use a `to` prefix
+// instead of matching its own `timeOff` dropzone prefix.
+function setDropzoneState(dzPrefix,reuploadId,removeId,url){
+  $(dzPrefix+'DzThumb').style.backgroundImage=url?`url(${url})`:'';
+  $(dzPrefix+'DzEmpty').style.display=url?'none':'';
+  $(dzPrefix+'DzImg').style.display=url?'':'none';
+  $(reuploadId).style.display=url?'':'none';
+  $(removeId).style.display=url?'':'none';
+}
+// Refreshes all four profile-field counters at once — name/title/email capped
+// at 32, phone at 16 (ble-protocol.md §10). `ids` is the field's shared
+// `<id>Inp`/`<id>Cnt` prefix for each of the four fields, in name/title/
+// email/phone order — the main Profile subscreen and first-run setup each
+// have their own id set but share this same four-field shape.
+function syncProfileCounters(ids){
+  cc(ids[0]+'Inp',ids[0]+'Cnt',32);cc(ids[1]+'Inp',ids[1]+'Cnt',32);
+  cc(ids[2]+'Inp',ids[2]+'Cnt',32);cc(ids[3]+'Inp',ids[3]+'Cnt',16);
+}
+const PROFILE_FIELD_IDS=['nm','tl','em','ph'];
+const SETUP_PROFILE_FIELD_IDS=['suNm','suTl','suEm','suPh'];
 function pfDirty(){
-  cc('nmInp','nmCnt',32);cc('tlInp','tlCnt',32);cc('emInp','emCnt',32);cc('phInp','phCnt',16);
+  syncProfileCounters(PROFILE_FIELD_IDS);
   const textChanged=$('nmInp').value!==pfCommitted.name||$('tlInp').value!==pfCommitted.title||
     $('emInp').value!==pfCommitted.email||$('phInp').value!==pfCommitted.phone;
   pfChanged=textChanged||pfPendingUrl!==null||pfRemoved;
@@ -1371,9 +1429,7 @@ function pfDirty(){
 }
 function pfRemovePhoto(){
   pfPendingUrl=null;pfRemoved=true;
-  $('pfDzThumb').style.backgroundImage='';
-  $('pfDzEmpty').style.display='';$('pfDzImg').style.display='none';
-  $('pfReuploadBtn').style.display='none';$('pfRemoveBtn').style.display='none';
+  setDropzoneState('pf','pfReuploadBtn','pfRemoveBtn',null);
   pfDirty();
 }
 function saveProfile(){
@@ -1396,16 +1452,16 @@ function saveProfile(){
     $('mainProfInitials').textContent=(parts[0][0]+(parts[1]?parts[1][0]:'')).toUpperCase();
   }
   // Can now genuinely reject (e.g. a disk-full/permissions failure writing
-  // the local store) instead of always silently succeeding — surfaced to
-  // the console rather than left as an unhandled promise rejection; the UI
-  // already optimistically applied the edit above, so there's no pending
-  // state to roll back here.
+  // the local store) instead of always silently succeeding — swallowed
+  // rather than left as an unhandled promise rejection; the UI already
+  // optimistically applied the edit above, so there's no pending state to
+  // roll back here.
   invoke('save_profile',{input:{name,title:$('tlInp').value,email:$('emInp').value,phone:$('phInp').value,photoDataUrl,photoRemoved}})
-    .catch(e=>console.error('save_profile failed:',e));
+    .catch(()=>{});
   pfRemoved=false;
   pfChanged=false;$('pfSaveBtn').setAttribute('disabled','');back();
 }
-cc('nmInp','nmCnt',32);cc('tlInp','tlCnt',32);cc('emInp','emCnt',32);cc('phInp','phCnt',16);
+syncProfileCounters(PROFILE_FIELD_IDS);
 
 let timeOffActive=false,timeOffCustomPhoto=false,timeOffDirty=false,timeOffPhotoRemoved=false;
 let toCommittedStart=null,toCommittedEnd=null,toCommittedDest='',toCommittedPhotoUrl=null;
@@ -1429,23 +1485,14 @@ function openTimeOffScreen(){
   selPhase=selStart?(selEnd?2:1):0;calHover=null;
   $('timeOffDt').value=toCommittedDest;
   timeOffPhotoRemoved=false;
-  if(toCommittedPhotoUrl){
-    timeOffOrigUrl=toCommittedPhotoUrl;timeOffPendingUrl=null;
-    $('timeOffDzThumb').style.backgroundImage=`url(${toCommittedPhotoUrl})`;
-    $('timeOffDzEmpty').style.display='none';$('timeOffDzImg').style.display='';$('toReuploadBtn').style.display='';$('toRemoveBtn').style.display='';
-  } else {
-    timeOffOrigUrl=null;timeOffPendingUrl=null;
-    $('timeOffDzThumb').style.backgroundImage='';
-    $('timeOffDzEmpty').style.display='';$('timeOffDzImg').style.display='none';$('toReuploadBtn').style.display='none';$('toRemoveBtn').style.display='none';
-  }
+  timeOffOrigUrl=toCommittedPhotoUrl||null;timeOffPendingUrl=null;
+  setDropzoneState('timeOff','toReuploadBtn','toRemoveBtn',toCommittedPhotoUrl);
   updatePeriodDisplay();
   timeOffDirty=false;cc('timeOffDt','dtCnt',48);updateToSaveState();show('s-timeOff');
 }
 function timeOffRemovePhoto(){
   timeOffPendingUrl=null;timeOffPhotoRemoved=true;timeOffDirty=true;
-  $('timeOffDzThumb').style.backgroundImage='';
-  $('timeOffDzEmpty').style.display='';$('timeOffDzImg').style.display='none';
-  $('toReuploadBtn').style.display='none';$('toRemoveBtn').style.display='none';
+  setDropzoneState('timeOff','toReuploadBtn','toRemoveBtn',null);
   updateToSaveState();
 }
 function exitTimeOff(){
@@ -1454,7 +1501,7 @@ function exitTimeOff(){
   $('mainTimeOffBanner').style.backgroundImage='';
   $('timeOffToggle').classList.remove('on');setTimeOffState(false);back();
   // Can now genuinely reject — see save_profile's comment on why.
-  invoke('clear_timeoff').catch(e=>console.error('clear_timeoff failed:',e));
+  invoke('clear_timeoff').catch(()=>{});
 }
 function setTimeOffState(active){
   const card=$('mainTimeOffCard');
@@ -1497,7 +1544,7 @@ function saveTimeOff(){
   const endExclusive=new Date(selEnd.getFullYear(),selEnd.getMonth(),selEnd.getDate()+1);
   // Can now genuinely reject — see save_profile's comment on why.
   invoke('save_timeoff',{input:{start:Math.floor(selStart.getTime()/1000),end:Math.floor(endExclusive.getTime()/1000),destination:dest,photoDataUrl,photoRemoved}})
-    .catch(e=>console.error('save_timeoff failed:',e));
+    .catch(()=>{});
   timeOffPhotoRemoved=false;
   timeOffDirty=false;timeOffActive=true;
   $('timeOffToggle').classList.add('on');setTimeOffState(true);back();
@@ -1614,8 +1661,7 @@ function timeOffPickPhoto(){$('timeOffPhoInp').click();}
 function openCropExisting(){if(timeOffOrigUrl) openCrop(timeOffOrigUrl,applyTimeOffCrop);}
 function applyTimeOffCrop(url){
   timeOffDirty=true;timeOffCustomPhoto=true;timeOffPendingUrl=url;timeOffPhotoRemoved=false;
-  $('timeOffDzThumb').style.backgroundImage=`url(${url})`;
-  $('timeOffDzEmpty').style.display='none';$('timeOffDzImg').style.display='';$('toReuploadBtn').style.display='';$('toRemoveBtn').style.display='';
+  setDropzoneState('timeOff','toReuploadBtn','toRemoveBtn',url);
   updateToSaveState();
 }
 function loadTimeOffPhoto(inp){
@@ -1630,8 +1676,7 @@ function pfPickPhoto(){$('pfPhotoInp').click();}
 function openPfCropExisting(){if(pfOrigUrl) openCrop(pfOrigUrl,applyPfCrop,1,228,228,true);}
 function applyPfCrop(url){
   pfPendingUrl=url;pfRemoved=false;
-  $('pfDzThumb').style.backgroundImage=`url(${url})`;
-  $('pfDzEmpty').style.display='none';$('pfDzImg').style.display='';$('pfReuploadBtn').style.display='';$('pfRemoveBtn').style.display='';
+  setDropzoneState('pf','pfReuploadBtn','pfRemoveBtn',url);
   pfDirty();
 }
 function loadProfilePhoto(inp){
@@ -1834,7 +1879,7 @@ function saveCalSource(){
   const info=calInfo[calSrc];
   $('mainCalSub').textContent=info.name+_calStatusSuffix(info);
   // Can now genuinely reject — see save_profile's comment on why.
-  invoke('set_calendar_source',{source:calSrc}).catch(e=>console.error('set_calendar_source failed:',e));
+  invoke('set_calendar_source',{source:calSrc}).catch(()=>{});
   back();
 }
 function discardCalSource(){calPending=calSrc;_renderCalOpts(calPending);back();}
@@ -1849,7 +1894,7 @@ function _renderGgSignBtn(){
 }
 function signGoogle(){
   if(calInfo.gg.ok){
-    invoke('oauth_signout',{provider:'google'});
+    invoke('oauth_signout',{provider:'google'}).catch(()=>{});
     calInfo.gg.ok=false;_renderGgStatus();_renderGgSignBtn();
     return;
   }
@@ -1870,7 +1915,7 @@ function _renderMsSignBtn(){
 }
 function signMicrosoft(){
   if(calInfo.ms.ok){
-    invoke('oauth_signout',{provider:'microsoft'});
+    invoke('oauth_signout',{provider:'microsoft'}).catch(()=>{});
     calInfo.ms.ok=false;_renderMsStatus();_renderMsSignBtn();
     return;
   }
@@ -2100,7 +2145,7 @@ function saveAncs(){
   [0,1,2,3].forEach(i=>$('an-ico-'+i).style.display=i===ancsLevel?'block':'none');
   // Can now genuinely reject — see save_profile's comment on why.
   invoke('save_device_settings',{settings:{f:ancsLevel}})
-    .catch(e=>console.error('save_device_settings (notification filter) failed:',e));
+    .catch(()=>{});
   back();
 }
 function saveClock(){
@@ -2108,7 +2153,7 @@ function saveClock(){
   $('mcDig').style.display=clockFace==='digital'?'flex':'none';$('mcAna').style.display=clockFace==='analog'?'block':'none';
   // Can now genuinely reject — see save_profile's comment on why.
   invoke('save_device_settings',{settings:{c:clockFace==='analog'?1:0}})
-    .catch(e=>console.error('save_device_settings (clock face) failed:',e));
+    .catch(()=>{});
   back();
 }
 function saveTimeFormat(){
@@ -2116,7 +2161,7 @@ function saveTimeFormat(){
   _renderMainTimeFormatPreview();
   // Can now genuinely reject — see save_profile's comment on why.
   invoke('save_device_settings',{settings:{h:timeFormat==='12'?1:0}})
-    .catch(e=>console.error('save_device_settings (time format) failed:',e));
+    .catch(()=>{});
   back();
 }
 function saveSlots(){
@@ -2128,7 +2173,7 @@ function saveSlots(){
   // setting only (pc-app.md — "host-side action mapping is local to Orion").
   // Can now genuinely reject — see save_profile's comment on why.
   invoke('save_shortcuts',{slots:slotCommitted,combos:kbdCommitted})
-    .catch(e=>console.error('save_shortcuts failed:',e));
+    .catch(()=>{});
   back();
 }
 
@@ -2150,7 +2195,7 @@ function discardShortcuts(){
 function doReset(){
   hideModal('m-reset');
   // Can now genuinely reject — see save_profile's comment on why.
-  invoke('clear_all').catch(e=>console.error('clear_all failed:',e));
+  invoke('clear_all').catch(()=>{});
   calSrc='ms';calPending='ms';_renderCalOpts('ms');
   $('mainCalSub').textContent=calInfo.ms.name+_calStatusSuffix(calInfo.ms);
   $('nmInp').value='';$('tlInp').value='';$('emInp').value='';$('phInp').value='';
@@ -2183,6 +2228,13 @@ function doReset(){
   ancsLevel=3;ancsPending=3;
   [0,1,2,3].forEach(i=>$('an-ico-'+i).style.display=i===3?'block':'none');
 
+  // clear_all just wiped store::SavedState::phone_device_type on the Rust
+  // side (and factory_reset's iPhone bond going down with Ori's own, per
+  // ble-protocol.md §2) — clear the cached device type here too, BEFORE
+  // setConn('off') below, so its d:lastPhoneBondStatus.d carry-forward
+  // doesn't resurrect the just-erased value.
+  lastPhoneBondStatus.d='';
+
   setConn('off');
   openSetupWizard();
 }
@@ -2203,7 +2255,7 @@ async function clickFw(){
 function startFwInstall(){
   $('fw-c').style.display='none';$('fw-i').style.display='';
   // Can now genuinely reject — see save_profile's comment on why.
-  invoke('firmware_install').catch(e=>console.error('firmware_install failed:',e));
+  invoke('firmware_install').catch(()=>{});
 }
 // Driven by 'fw-progress' events from the USB CDC OTA sender (ota.md) — phase
 // is one of "downloading"/"verifying"/"installing"/"done".
@@ -2235,7 +2287,7 @@ function fwApplyProgress({pct,phase,version}){
 function startOrionInstall(){
   $('ou-c').style.display='none';$('ou-i').style.display='';
   // Can now genuinely reject — see save_profile's comment on why.
-  invoke('orion_update_install').catch(e=>console.error('orion_update_install failed:',e));
+  invoke('orion_update_install').catch(()=>{});
 }
 // Driven by 'orion-update-progress' events; phase is
 // "downloading"/"installing"/"ready".
@@ -2260,7 +2312,7 @@ function restartOrion(){
   $('ou-c').style.display='';$('ou-i').style.display='none';$('ou-d').style.display='none';
   $('ouRing').style.strokeDashoffset=358;$('ouPct').textContent='0%';
   // Can now genuinely reject — see save_profile's comment on why.
-  invoke('orion_restart').catch(e=>console.error('orion_restart failed:',e));
+  invoke('orion_restart').catch(()=>{});
 }
 
 // ── Language (single, union setting for Orion's own UI) ─────────────────────
@@ -2560,7 +2612,7 @@ function setAppLang(code){
   // a failure just means the next launch falls back to the last-persisted
   // language (or 'en') rather than this one, same "not a big deal" severity
   // as every other local-only preference in store::SavedState.
-  invoke('set_language',{code}).catch(e=>console.error('set_language failed:',e));
+  invoke('set_language',{code}).catch(()=>{});
 }
 function applyI18n(){
   const t=I18N[appLang];
@@ -2764,11 +2816,10 @@ function openSetupWizard(){
   // comment), this is s-setup's own cleanup to do.
   while(stack.length) back();
   $('suNmInp').value='';$('suTlInp').value='';$('suEmInp').value='';$('suPhInp').value='';
-  cc('suNmInp','suNmCnt',32);cc('suTlInp','suTlCnt',32);cc('suEmInp','suEmCnt',32);cc('suPhInp','suPhCnt',16);
+  syncProfileCounters(SETUP_PROFILE_FIELD_IDS);
   $('suProfileNext').setAttribute('disabled','');
   suPhotoUrl=null;
-  $('suDzThumb').style.backgroundImage='';
-  $('suDzEmpty').style.display='';$('suDzImg').style.display='none';$('suReuploadBtn').style.display='none';$('suRemoveBtn').style.display='none';
+  setDropzoneState('su','suReuploadBtn','suRemoveBtn',null);
   suSelectedDevice=null;
   applyI18n();
   suShowStep('welcome');
@@ -2780,7 +2831,7 @@ function suGoToProfile(){suShowStep('profile');}
 // doesn't reset via openSetupWizard().
 function suBackToWelcome(){suShowStep('welcome');}
 function suDirty(){
-  cc('suNmInp','suNmCnt',32);cc('suTlInp','suTlCnt',32);cc('suEmInp','suEmCnt',32);cc('suPhInp','suPhCnt',16);
+  syncProfileCounters(SETUP_PROFILE_FIELD_IDS);
   const ok=$('suNmInp').value.trim().length>0&&$('suTlInp').value.trim().length>0;
   if(ok)$('suProfileNext').removeAttribute('disabled');else $('suProfileNext').setAttribute('disabled','');
 }
@@ -2788,14 +2839,11 @@ function suPickPhoto(){$('suPhotoInp').click();}
 function suOpenCropExisting(){if(suPhotoUrl) openCrop(suPhotoUrl,suApplyCrop,1,228,228,true);}
 function suApplyCrop(url){
   suPhotoUrl=url;
-  $('suDzThumb').style.backgroundImage=`url(${url})`;
-  $('suDzEmpty').style.display='none';$('suDzImg').style.display='';$('suReuploadBtn').style.display='';$('suRemoveBtn').style.display='';
+  setDropzoneState('su','suReuploadBtn','suRemoveBtn',url);
 }
 function suRemovePhoto(){
   suPhotoUrl=null;
-  $('suDzThumb').style.backgroundImage='';
-  $('suDzEmpty').style.display='';$('suDzImg').style.display='none';
-  $('suReuploadBtn').style.display='none';$('suRemoveBtn').style.display='none';
+  setDropzoneState('su','suReuploadBtn','suRemoveBtn',null);
 }
 function suLoadPhoto(inp){
   const file=inp.files[0];if(!file) return;inp.value='';
@@ -2946,7 +2994,7 @@ function suFinishSetup(){
   const name=$('suNmInp').value.trim()||'—';
   $('nmInp').value=$('suNmInp').value;$('tlInp').value=$('suTlInp').value;
   $('emInp').value=$('suEmInp').value;$('phInp').value=$('suPhInp').value;
-  cc('nmInp','nmCnt',32);cc('tlInp','tlCnt',32);cc('emInp','emCnt',32);cc('phInp','phCnt',16);
+  syncProfileCounters(PROFILE_FIELD_IDS);
   $('mainName').textContent=name;
   const photo=$('mainProfPhoto');
   if(suPhotoUrl){
@@ -2989,15 +3037,13 @@ function setAutostartToggle(enabled){
 // Optimistic flip + revert-on-failure, same pattern as the Save handlers
 // above (e.g. saveProfile's invoke(...).catch(...)) — the toggle isn't a
 // staged Save/Discard subscreen, so there's no pending state to hold; on
-// rejection we just revert the class and log, mirroring how those handlers
-// treat a backend failure as "surface it, don't block the optimistic UI".
+// rejection we just revert the class.
 async function toggleAutostart(){
   const next=!autostartEnabled;
   setAutostartToggle(next);
   try{
     await invoke('set_autostart_enabled',{enabled:next});
-  }catch(e){
-    console.error('set_autostart_enabled failed:',e);
+  }catch(_){
     setAutostartToggle(!next);
   }
 }
@@ -3026,6 +3072,18 @@ listen('phone-bond-status',e=>{
   // update live instead of only reflecting the snapshot from when it opened.
   if($('m-iphone-info').classList.contains('show')) openIphoneInfoModal();
 });
+// Ori pushes a fresh Device Settings notify (char 000E) whenever its live
+// signal_bars bucket to Orion changes (~every 5 s if it moved, ble-protocol.md
+// §4/§6.4) — this is what keeps the Ori Info modal's signal bars live now,
+// replacing the old fixed-interval poll. get_ori_info is cheap (cached, no
+// BLE) so it's still fetched fresh here, but the settings themselves are
+// already in hand from the push — no redundant second char-000E read.
+listen('device-settings-update',async e=>{
+  if(!$('m-ori-info').classList.contains('show')) return;
+  const info=await invoke('get_ori_info').catch(()=>null);
+  if(!info) return;
+  renderOriInfoModal(info,e.payload,connState==='on');
+});
 listen('fw-update-available',e=>{fwAvail=true;orionFwVersion=e.payload.version;
   const ico=$('fwIco');ico.style.display='';ico.classList.add('fw-on');ico.title=I18N[appLang].main.fwAvailable;});
 listen('fw-progress',e=>fwApplyProgress(e.payload));
@@ -3035,24 +3093,20 @@ listen('fw-progress',e=>fwApplyProgress(e.payload));
 // drives.
 listen('ancs-notification',e=>{
   const n=e.payload;
-  dlog('[ORION-DEBUG] ancs-notification event: '+JSON.stringify(n));
   if(n.o==='add'){
     const bucket=ancsUpsert(n);
-    dlog('[ORION-DEBUG]   add -> bucket='+bucket+', store now: missed='+ANCS_STORE.missed.size+' unread='+ANCS_STORE.unread.size+' other='+ANCS_STORE.other.size);
     ancsRefreshOpenList(bucket);
     ancsRefreshIphoneInfoIfOpen();
     return;
   }
   if(n.o==='remove'){
     const bucket=ancsRemove(n.u);
-    dlog('[ORION-DEBUG]   remove u='+n.u+' -> bucket='+bucket);
     if(!bucket) return; // never relayed to Orion in the first place — harmless no-op, same as on Ori itself
     if(!ancsCloseStaleDetail(n.u,bucket)) ancsRefreshOpenList(bucket);
     ancsRefreshIphoneInfoIfOpen();
     return;
   }
   if(n.o==='clear'){
-    dlog('[ORION-DEBUG]   clear -> wiping ANCS_STORE');
     // Full clear-and-repopulate (an ANCS filter change, ble-protocol.md
     // §13) — every currently-shown uid in any open detail is gone, and any
     // open list is now empty, regardless of which bucket either was showing.
@@ -3087,6 +3141,14 @@ invoke('get_initial_state').then(state=>{
   if(state.language&&I18N[state.language]){appLang=state.language;applyI18n();}
   hydrateProfileCard(state.profile);
   hydrateTimeOffCard(state.time_off);
+  // Seed the iPhone's last-known device type from the backend's disk-
+  // persisted copy (store::SavedState::phone_device_type) — same "survives
+  // an app restart" treatment as profile/time_off above. b/c/n/m/u/t/s/l
+  // stay at their defaults (unknown/zero) until the first live
+  // phone-bond-status arrives; only `d` is worth seeding this early, since
+  // it's the one field that's a static fact about the bond rather than
+  // something that needs verifying live.
+  if(state.phone_device_type) lastPhoneBondStatus.d=state.phone_device_type;
   // setConn() reveals #s-main (removes .pending-init) — see its own
   // comment. The unpaired/error paths below leave #s-main hidden;
   // openSetupWizard()'s #s-setup renders fine as its own overlay
@@ -3098,4 +3160,4 @@ invoke('get_initial_state').then(state=>{
 // Independent of the pairing bootstrap above — a failure here must never
 // route into openSetupWizard() (this has nothing to do with pairing state).
 invoke('get_autostart_enabled').then(setAutostartToggle)
-  .catch(e=>console.error('get_autostart_enabled failed:',e));
+  .catch(()=>{});

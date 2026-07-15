@@ -284,7 +284,7 @@
             <div class="row-main" style="color:var(--t2);" id="mainQaLabel">Quick Actions</div>
           </div>
           <div class="row-r">
-            <div class="main-slot-imgs" id="mainSlots">
+            <div class="main-slot-imgs">
               <img class="main-slot-img" id="ms1" src="assets/shortcut_icons/vol-mute.png">
               <img class="main-slot-img" id="ms2" src="assets/shortcut_icons/mic-mute.png">
               <img class="main-slot-img" id="ms3" src="assets/shortcut_icons/screenshot.png">
@@ -344,7 +344,7 @@
           <div class="fgrp" style="display:flex;flex-direction:column;align-items:center;gap:10px;">
             <div class="flbl" style="align-self:flex-start;" id="suPhotoLbl">Profile Photo</div>
             <input type="file" id="suPhotoInp" accept="image/*" style="display:none;" onchange="suLoadPhoto(this)">
-            <div id="suDropZone" class="pfDropZone">
+            <div class="pfDropZone">
               <div id="suDzEmpty" class="timeOffDzEmpty" onclick="suPickPhoto()">
                 <svg width="22" height="22">
                   <use href="#ico-img" />
@@ -444,7 +444,7 @@
             <div class="flbl" id="pfPhotoLbl2">Profile Photo</div>
             <input type="file" id="pfPhotoInp" accept="image/*" style="display:none;" onchange="loadProfilePhoto(this)">
             <div style="display:flex;flex-direction:column;align-items:center;gap:10px;">
-              <div id="pfDropZone" class="pfDropZone">
+              <div class="pfDropZone">
                 <div id="pfDzEmpty" class="timeOffDzEmpty" onclick="pfPickPhoto()">
                   <svg width="22" height="22">
                     <use href="#ico-img" />
@@ -949,12 +949,23 @@
     <div class="modal-bg" id="m-iphone-info">
       <div class="modal">
         <div class="modal-title" id="ipInfoTitle">Xander's iPhone</div>
+        <div class="ip-type" id="ipInfoType">iPhone 17 Pro Max</div>
         <div class="prof-pres" style="justify-content:space-between;margin:6px 0 16px;">
           <span style="display:flex;align-items:center;gap:5px;">
             <span class="p-dot available" id="ipInfoDot"></span>
             <span id="ipInfoState">Connected</span>
           </span>
-          <span class="sig-bars" id="ipInfoSigBars"><span></span><span></span><span></span><span></span></span>
+          <span style="display:flex;align-items:center;gap:16px;">
+            <span class="sig-bars" id="ipInfoSigBars"><span></span><span></span><span></span><span></span></span>
+            <span class="ip-batt" id="ipInfoBatt">
+              <svg viewBox="0 0 24 14" fill="none">
+                <rect x="1" y="2" width="18" height="10" rx="2.5" stroke="currentColor" stroke-width="1.5"/>
+                <rect x="20" y="5" width="2.5" height="4" rx="1" fill="currentColor"/>
+                <rect id="ipInfoBattFill" x="3" y="4" width="0" height="6" rx="1"/>
+              </svg>
+              <span id="ipInfoBattPct">--%</span>
+            </span>
+          </span>
         </div>
         <div class="ip-stats">
           <div class="ip-stat" id="ipInfoMissedTile">
