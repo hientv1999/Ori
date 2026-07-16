@@ -50,6 +50,6 @@ clears it; the list is rebuilt only when Orion reconnects and re-pushes it.
 stale meeting list would mislead. Keeping meetings in RAM ties their lifetime to
 having a live clock. The "SYNCED · X min ago" pill therefore only appears on a
 **runtime** Orion disconnect (meetings + clock still live in RAM), never after a
-power cycle. Local time comes from Orion (primary) or the iPhone's Current Time
-Service (secondary backup) — see `connectivity.md`; when neither has provided it,
-the status-bar clock is hidden entirely (no "--:--").
+power cycle. Local time comes from Orion (primary) or the bonded iPhone/iPad's
+Current Time Service (secondary backup) — see `connectivity.md`; when neither
+has provided it, the status-bar clock is hidden entirely (no "--:--").

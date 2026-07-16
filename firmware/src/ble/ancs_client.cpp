@@ -33,6 +33,7 @@
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>   // settimeofday (iPhone CTS backup clock)
+#include <esp_heap_caps.h>  // PSRAM-backed scratch buffers — list_bucket_groups()
 
 #include "app_state.h"
 #include "state_machine.h"
@@ -51,18 +52,22 @@
 #define ANCS_CP_UUID  "69D1D8F3-45E1-49A8-9821-9BBDFDAAD9D9"
 #define ANCS_DS_UUID  "22EAC6E9-24D6-4BB5-BE44-B36ACE7C7BFB"
 
-// Pacing between queued items in resync_orion_relay()'s replay burst (below)
-// — NOT needed for a single AncsNotification's own back-to-back fragments
-// (ble-protocol.md §5 already covers that case: a lone notification's few
-// fragments stay well within the mbuf pool). Confirmed on hardware: a resync
-// with 10 queued notifications (several up to 8 fragments each) fired with
-// zero pacing filled NimBLE's outgoing mbuf pool within the first couple of
-// items — largely while the connection was still mid-MTU-negotiation — most
-// fragments then failed and Orion tore down the link (BLE_HS_HCI_ERR 0x13).
-// This yield gives the NimBLE host task a window to actually flush its TX
-// queue between items. 15 ms is the same backoff granularity as
-// gatt_server.cpp's notify_with_retry() — both are just "give the host task
-// a scheduling slice," not tuned against a measured drain rate.
+// Minimum gap between items drained from the Orion relay queue (poll(),
+// below, via enqueue_ancs_relay()) — NOT needed for a single AncsNotification's
+// own back-to-back fragments (ble-protocol.md §5 already covers that case: a
+// lone notification's few fragments stay well within the mbuf pool). Confirmed
+// on hardware: a resync with 10 queued notifications (several up to 8
+// fragments each) fired with zero pacing filled NimBLE's outgoing mbuf pool
+// within the first couple of items — largely while the connection was still
+// mid-MTU-negotiation — most fragments then failed and Orion tore down the
+// link (BLE_HS_HCI_ERR 0x13). Originally paced only resync_orion_relay()'s own
+// replay burst; a live reconnect backlog streamed straight from the phone
+// (bypassing resync_orion_relay() entirely) hit the identical exhaustion, so
+// both paths now share this one gate. This yield gives the NimBLE host task a
+// window to actually flush its TX queue between items. 15 ms is the same
+// backoff granularity as gatt_server.cpp's notify_with_retry() — both are just
+// "give the host task a scheduling slice," not tuned against a measured drain
+// rate.
 static constexpr uint32_t ANCS_RESYNC_ITEM_PACING_MS = 15;
 
 // Parse an ANCS Date attribute ("yyyyMMdd'T'HHmmSS", e.g. "20140110T114000").
@@ -229,7 +234,11 @@ static void read_phone_name() {
 
 // ── Connected phone model (Device Information Service) ──────────────────
 
-char g_phone_device_type[32] = {};
+// 64 bytes (was 32) — iphone_model_map.cpp's entries now carry a short
+// connectivity/region suffix ("iPad 2 — Wi-Fi + 3G (GSM)") to disambiguate
+// siblings that used to collapse to one identical string; see that file's
+// header comment for the byte-budget this size was picked against.
+char g_phone_device_type[64] = {};
 
 // Model Number String (0x2A24) returns Apple's internal hardware identifier
 // (e.g. "iPhone18,2"), not a marketing name — iphone_model::resolve()
@@ -657,7 +666,19 @@ static void sort_groups_by_time(PublishSlot* slots, size_t count) {
 static void publish_queue() {
     app_state::AncsConfig cfg = {};
 
-    PublishSlot slots[app_state::MAX_ANCS_NOTIFICATIONS] = {};
+    // PSRAM-backed and allocated once rather than a stack array — same
+    // MAX_ANCS_NOTIFICATIONS-sized-stack-array reasoning as list_bucket_
+    // groups() above (app_state.h's doc comment), applied here too since
+    // this runs on every single notification add/remove, not just the
+    // drill-down list. Not reentrant, so static reuse is safe.
+    static PublishSlot* slots = nullptr;
+    if (!slots) {
+        slots = static_cast<PublishSlot*>(
+            heap_caps_malloc(app_state::MAX_ANCS_NOTIFICATIONS * sizeof(PublishSlot),
+                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!slots) return;  // PSRAM exhausted (shouldn't happen) — skip this publish
+    }
+    memset(slots, 0, app_state::MAX_ANCS_NOTIFICATIONS * sizeof(PublishSlot));
     size_t slot_count = 0;
 
     for (int i = 0; i < (int)g_queue_count; ++i) {
@@ -754,17 +775,78 @@ static void push_phone_stats() {
 
 // ── ANCS relay to Orion (chars 0010/0011, ble-protocol.md §13) ────────────
 
-// Relay a single "add" to Orion (char 0010). Called unconditionally from
-// on_data_source() after every GetNotificationAttributes response — covers
-// both a genuinely-new notification and iOS sending a Modified event for one
-// already queued (Orion replaces its stored copy in place, keyed by uid) —
-// and again from set_filter()'s clear-and-repopulate when the filter changes.
-// Applies the SAME filter test as the on-device status bar (publish_queue,
-// below) — not a second filter implementation. Calls (IncomingCall/
-// ActiveCall) never ride this characteristic — they relay exclusively via
-// AncsCallState (char 0011) at their own call sites in on_data_source() /
-// on_notification_source() / on_iphone_disconnected().
+static bool queue_contains(uint32_t uid) {
+    for (size_t i = 0; i < g_queue_count; ++i) {
+        if (g_queue[i].uid == uid) return true;
+    }
+    return false;
+}
+
+// Paced relay queue — decouples "notification ingested" from "notification
+// sent to Orion". relay_ancs_add()'s notify_chunked() call burns NimBLE's
+// shared mbuf pool; resync_orion_relay() already paced its own burst
+// (ANCS_RESYNC_ITEM_PACING_MS between items, above) for exactly that reason,
+// but the LIVE path — process_notification_attributes() firing once per
+// GetNotificationAttributes response — used to call relay_ancs_add()
+// synchronously with no pacing at all. A reconnect backlog replay from the
+// phone itself (dozens of PreExisting notifications landing inside one
+// poll() burst) hit the identical mbuf exhaustion — except worse: once
+// notify_chunked() started failing, the same starved BLE host also stopped
+// completing Data Source reassembly for the remaining backlog items, so they
+// never even reached queue_add() — truncating Ori's OWN notification list,
+// not just Orion's mirror.
+//
+// Both call sites now enqueue here instead of calling relay_ancs_add()
+// directly; poll() drains one entry every ANCS_RESYNC_ITEM_PACING_MS via a
+// millis() gate (same pattern as the RSSI/CTS polls in poll()), never
+// blocking — unlike the vTaskDelay loop this replaces in
+// resync_orion_relay(), which used to stall LVGL/touch for the whole resync.
+// Sized above MAX_ANCS_NOTIFICATIONS: a resync's full clear-and-repopulate
+// (up to 100) can still be mid-drain when a live notification arrives and
+// enqueues one more. Kept in internal SRAM, not PSRAM, deliberately — unlike
+// the scratch buffers above, this one is touched on every single poll() call
+// (checked, and usually drained) while anything is pending, and at 36 B/entry
+// even the full 144 entries costs barely 5 KB, so there's no capacity reason
+// to move it off the faster memory.
+struct PendingRelay {
+    uint32_t uid;
+    char     icon_token[32];
+};
+constexpr uint8_t RELAY_Q_SIZE = 144;
+static PendingRelay g_relay_q[RELAY_Q_SIZE];
+static uint8_t      g_relay_q_head = 0;
+static uint8_t      g_relay_q_tail = 0;
+static uint32_t     g_last_relay_ms = 0;
+
+static void enqueue_ancs_relay(uint32_t uid, const char* token) {
+    uint8_t next = (uint8_t)((g_relay_q_tail + 1) % RELAY_Q_SIZE);
+    if (next == g_relay_q_head) {
+        LOG("[ancs] relay queue full — dropping Orion relay for uid=%u\n", (unsigned)uid);
+        return;
+    }
+    PendingRelay& e = g_relay_q[g_relay_q_tail];
+    e.uid = uid;
+    strncpy(e.icon_token, token ? token : "unknown", sizeof(e.icon_token) - 1);
+    e.icon_token[sizeof(e.icon_token) - 1] = '\0';
+    g_relay_q_tail = next;
+}
+
+// Relay a single "add" to Orion (char 0010) — the actual GATT notify, called
+// only from poll()'s paced drain below (see enqueue_ancs_relay() above).
+// Re-reads current state by uid rather than trusting stale enqueue-time
+// data, so a Modified event landing while this uid's relay is still pending
+// is naturally reflected once it finally sends. Applies the SAME filter test
+// as the on-device status bar (publish_queue, below) — not a second filter
+// implementation. Calls (IncomingCall/ActiveCall) never ride this
+// characteristic — they relay exclusively via AncsCallState (char 0011) at
+// their own call sites in on_data_source() / on_notification_source() /
+// on_iphone_disconnected(). Guards against a uid that left g_queue while its
+// relay was still pending — queue_remove() already told Orion via its own
+// choke-point, so re-sending a stale "add" here would resurrect a row Orion
+// already dropped.
 static void relay_ancs_add(uint32_t uid, const char* token) {
+    if (!queue_contains(uid)) return;
+
     uint8_t cat = app_state::ancs_category(uid);
     if (cat == app_state::AncsCategory::INCOMING_CALL ||
         cat == app_state::AncsCategory::ACTIVE_CALL) {
@@ -830,10 +912,7 @@ static void relay_call_state(uint8_t st, uint32_t uid, uint32_t elapsed_s,
 }
 
 static void queue_add(uint32_t uid, const char* token) {
-    // Check for duplicate UID.
-    for (size_t i = 0; i < g_queue_count; ++i) {
-        if (g_queue[i].uid == uid) return;
-    }
+    if (queue_contains(uid)) return;
 
     if (g_queue_count >= app_state::MAX_ANCS_NOTIFICATIONS) {
         // Displace oldest (FIFO). Relay its removal to Orion first (char
@@ -851,7 +930,7 @@ static void queue_add(uint32_t uid, const char* token) {
         // orphaned the queue and detail store disagree: list_bucket_groups()
         // counts group members from the DETAIL store (ancs_collect_same_title)
         // even when they have no queue entry, while the tile badges count from
-        // the QUEUE (count_filtered_stats) — so past 50 live notifications a
+        // the QUEUE (count_filtered_stats) — so past 100 live notifications a
         // drill-down row's stacked count could exceed the badge it sits
         // behind, breaking the "badge always matches the list it opens"
         // invariant (connectivity.md §2).
@@ -1020,6 +1099,20 @@ void poll(bool orion_connected) {
         } else {
             on_data_source(ds.buf, ds.len);
             have_ds = ds_pop(ds);
+        }
+    }
+
+    // Paced Orion relay drain — one entry every ANCS_RESYNC_ITEM_PACING_MS,
+    // gated by millis() like the RSSI/CTS polls above rather than
+    // vTaskDelay, so a big backlog never blocks LVGL/touch. See
+    // enqueue_ancs_relay()'s doc comment for why this queue exists.
+    if (g_relay_q_head != g_relay_q_tail) {
+        uint32_t now = millis();
+        if (g_last_relay_ms == 0 || (now - g_last_relay_ms) >= ANCS_RESYNC_ITEM_PACING_MS) {
+            g_last_relay_ms = now;
+            PendingRelay& e = g_relay_q[g_relay_q_head];
+            relay_ancs_add(e.uid, e.icon_token);
+            g_relay_q_head = (uint8_t)((g_relay_q_head + 1) % RELAY_Q_SIZE);
         }
     }
 
@@ -1357,11 +1450,15 @@ static void process_notification_attributes(uint32_t resp_uid, const char* app_i
                               ftitle, fpos, fneg, neg_action, token);
 
     queue_add(resp_uid, token);
-    // Relay to Orion (char 0010) — fires for both Added and Modified (this
-    // function runs once per GetNotificationAttributes response, whichever
-    // triggered it); relay_ancs_add() itself excludes calls (relayed above via
+    // Queue the Orion relay (char 0010) rather than sending it immediately —
+    // fires for both Added and Modified (this function runs once per
+    // GetNotificationAttributes response, whichever triggered it);
+    // relay_ancs_add() itself excludes calls (relayed above via
     // AncsCallState instead) and applies the current ancs_filter.
-    relay_ancs_add(resp_uid, token);
+    // enqueue_ancs_relay()'s doc comment covers why this is paced rather
+    // than synchronous — a big reconnect backlog used to exhaust NimBLE's
+    // mbuf pool and silently truncate Ori's own notification list.
+    enqueue_ancs_relay(resp_uid, token);
 
     g_ds_len = 0;
     g_pending_uid = 0;
@@ -1510,6 +1607,12 @@ const char* phone_device_type() {
     return g_phone_device_type;
 }
 
+const char* phone_kind_word() {
+    if (strncmp(g_phone_device_type, "iPad", 4) == 0) return "iPad";
+    if (strncmp(g_phone_device_type, "iPhone", 6) == 0) return "iPhone";
+    return "iPhone or iPad";
+}
+
 PhoneStats phone_stats() {
     PhoneStats s = {};
     if (!g_client) return s;  // disconnected — all-zero, nothing to verify
@@ -1536,10 +1639,37 @@ size_t list_bucket_groups(uint8_t bucket, ListGroup* out, size_t max) {
         time_t   sort_epoch;   // representative's recv_epoch (0 = unknown)
         int      sort_idx;     // g_queue index of the first-encountered member
     };
-    Group  groups[app_state::MAX_ANCS_NOTIFICATIONS];
+    // Three MAX_ANCS_NOTIFICATIONS-sized scratch buffers, PSRAM-backed and
+    // allocated once rather than stack arrays (~5 KB total at 100 entries) —
+    // this function is the middle leg of populate_list() -> list_bucket_
+    // groups() -> ancs_collect_same_title(), and stacking all three of those
+    // arrays on the 16 KB main-task stack (shared with LVGL/BLE) risked
+    // overflow once MAX_ANCS_NOTIFICATIONS grew (see its doc comment in
+    // app_state.h). Not reentrant — single main-task caller — so static
+    // reuse across calls is safe. visited[] needs re-zeroing every call since
+    // a heap buffer doesn't get the stack array's implicit zero-init;
+    // groups[]/tmp_uids[] don't — every slot actually read is fully written
+    // first, same as the original stack arrays.
+    static Group*    groups   = nullptr;
+    static bool*     visited  = nullptr;
+    static uint32_t* tmp_uids = nullptr;
+    if (!groups || !visited || !tmp_uids) {
+        groups = static_cast<Group*>(
+            heap_caps_malloc(app_state::MAX_ANCS_NOTIFICATIONS * sizeof(Group),
+                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        visited = static_cast<bool*>(
+            heap_caps_malloc(app_state::MAX_ANCS_NOTIFICATIONS * sizeof(bool),
+                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        tmp_uids = static_cast<uint32_t*>(
+            heap_caps_malloc(app_state::MAX_ANCS_NOTIFICATIONS * sizeof(uint32_t),
+                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        // PSRAM exhausted (shouldn't happen — ~5 KB of 8 MB). Skip this
+        // refresh rather than risk a null deref; retried on the next call.
+        if (!groups || !visited || !tmp_uids) return 0;
+    }
     size_t group_count = 0;
+    memset(visited, 0, app_state::MAX_ANCS_NOTIFICATIONS * sizeof(bool));
 
-    bool visited[app_state::MAX_ANCS_NOTIFICATIONS] = {};
     for (size_t i = 0; i < g_queue_count; ++i) {
         if (visited[i]) continue;
         visited[i] = true;
@@ -1564,7 +1694,8 @@ size_t list_bucket_groups(uint8_t bucket, ListGroup* out, size_t max) {
         // behind a badge always matches it (policy changed 2026-07-11 from
         // the earlier "drill-down bypasses the ambient filter" rule). A
         // group whose members are all filtered out produces no row.
-        uint32_t tmp_uids[app_state::MAX_ANCS_NOTIFICATIONS];
+        // (tmp_uids is the function-scope PSRAM buffer declared above —
+        // reused fresh each loop iteration, not redeclared per-iteration.)
         size_t n = app_state::ancs_collect_same_title(uid, tmp_uids,
                                                        app_state::MAX_ANCS_NOTIFICATIONS);
         if (n == 0) { tmp_uids[0] = uid; n = 1; }
@@ -1669,13 +1800,10 @@ size_t list_bucket_groups(uint8_t bucket, ListGroup* out, size_t max) {
 void resync_orion_relay() {
     gatt_server::notify_ancs_clear();
     for (size_t i = 0; i < g_queue_count; ++i) {
-        relay_ancs_add(g_queue[i].uid, g_queue[i].icon_token);
-        // Pace the burst — see ANCS_RESYNC_ITEM_PACING_MS above. Only needed
-        // between items, not between one item's own fragments (that stays a
-        // tight synchronous loop inside notify_chunked(), per §5).
-        if (i + 1 < g_queue_count) {
-            vTaskDelay(pdMS_TO_TICKS(ANCS_RESYNC_ITEM_PACING_MS));
-        }
+        // Pacing lives centrally in poll()'s relay-queue drain now (see
+        // enqueue_ancs_relay()'s doc comment) — no vTaskDelay here, so a
+        // full resync no longer blocks LVGL/touch for its duration.
+        enqueue_ancs_relay(g_queue[i].uid, g_queue[i].icon_token);
     }
 }
 

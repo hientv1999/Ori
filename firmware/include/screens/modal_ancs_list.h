@@ -22,7 +22,7 @@
 // through ancs_client::set_filter()), a new notification arrives, or one
 // leaves — whether that removal came from the iPhone itself (an ANCS
 // Removed event), from Orion (a char-0012 action write), from this list's
-// own swipe-to-delete gesture, or from FIFO eviction at the 50-notification
+// own swipe-to-delete gesture, or from FIFO eviction at the 100-notification
 // cap. See modal_ancs_list::refresh_active() below and ancs_client.cpp's
 // g_ancs_list_refresh_pending for the mechanism (deferred by one main-loop
 // tick for queue changes, to stay clear of the swipe gesture's own

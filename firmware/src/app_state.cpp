@@ -45,11 +45,12 @@ struct AncsDetailEntry {
     bool     used;
 };
 // Backing storage lives in PSRAM (allocated by app_state::init()) — at
-// MAX_ANCS_NOTIFICATIONS=50 entries this is ~52 KB (grew from ~38 KB when
-// `body` was raised from 256 to 512 bytes), which would otherwise sit in
-// scarce internal SRAM for the life of the firmware. A thin span wrapper
-// keeps every existing `for (auto& e : k_detail)` loop and `k_detail[i]`
-// access unchanged.
+// MAX_ANCS_NOTIFICATIONS=100 entries this is ~104 KB (grew from ~52 KB when
+// the cap doubled from 50, and from ~38 KB before that when `body` was
+// raised from 256 to 512 bytes), which would otherwise sit in scarce
+// internal SRAM for the life of the firmware. A thin span wrapper keeps
+// every existing `for (auto& e : k_detail)` loop and `k_detail[i]` access
+// unchanged.
 struct DetailArray {
     AncsDetailEntry* data = nullptr;
     size_t           n    = 0;
@@ -116,7 +117,7 @@ void init() {
     if (k_detail.data) {
         k_detail.n = MAX_ANCS_NOTIFICATIONS;
     } else {
-        // PSRAM exhausted (shouldn't happen — this is ~38 KB out of 8 MB).
+        // PSRAM exhausted (shouldn't happen — this is ~104 KB out of 8 MB).
         // Fall back to a tiny SRAM store rather than crash on every ANCS event.
         static AncsDetailEntry s_fallback[4] = {};
         k_detail.data = s_fallback;
@@ -403,13 +404,33 @@ size_t ancs_collect_same_title(uint32_t uid, uint32_t* out_uids, size_t max) {
     if (!ref) return 0;
 
     // Gather every live entry sharing the reference's app token AND title.
-    AncsDetailEntry* matches[MAX_ANCS_NOTIFICATIONS];
+    // Scratch buffer is PSRAM-backed and allocated once, not a
+    // MAX_ANCS_NOTIFICATIONS-sized stack array — this function is called
+    // from inside list_bucket_groups()'s own MAX-sized locals
+    // (ancs_client.cpp), and stacking multiple such arrays on the 16 KB
+    // main-task stack (shared with LVGL/BLE) risked overflow once
+    // MAX_ANCS_NOTIFICATIONS grew (see this constant's doc comment in
+    // app_state.h). Not reentrant — single main-task caller, never nested
+    // with itself — so one static buffer is safe to reuse across calls.
+    static AncsDetailEntry** matches = nullptr;
+    static size_t            matches_cap = 0;
+    if (!matches) {
+        matches = static_cast<AncsDetailEntry**>(
+            heap_caps_malloc(MAX_ANCS_NOTIFICATIONS * sizeof(AncsDetailEntry*),
+                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        matches_cap = matches ? MAX_ANCS_NOTIFICATIONS : 0;
+        if (!matches) {
+            static AncsDetailEntry* s_matches_fallback[8];
+            matches = s_matches_fallback;
+            matches_cap = 8;
+        }
+    }
     size_t n = 0;
     for (auto& e : k_detail) {
         if (!e.used) continue;
         if (strcmp(e.token, ref->token) != 0) continue;
         if (strcmp(e.title, ref->title) != 0) continue;
-        if (n < MAX_ANCS_NOTIFICATIONS) matches[n++] = &e;
+        if (n < matches_cap) matches[n++] = &e;
     }
 
     // Newest-first by the phone's notification time (recv_epoch), with arrival

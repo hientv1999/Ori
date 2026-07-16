@@ -2,3 +2,6 @@
 # Python bytecode cache
 __pycache__/
 *.pyc
+
+# Rust build artifacts (PC_app/orion/src-tauri, tools/mock_orion_teams, ...)
+target/

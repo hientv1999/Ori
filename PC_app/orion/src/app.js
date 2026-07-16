@@ -418,8 +418,19 @@ function setReconnectBusy(busy){
 // show). Disconnected state is a diagonal slash (.phone-slash in the SVG),
 // not a colour change, mirroring Ori's own status-bar phone icon.
 let lastPhoneBondStatus={b:false,c:false,n:'',d:'',m:0,u:0,t:0,s:0,l:0};
+// Low-battery warning: shown once per "dip" below LOW_BATTERY_THRESHOLD.
+// Re-armed either by battery genuinely recovering above the threshold (a
+// later re-drop warns again with no reconnection needed) or by a fresh
+// (re)connection (which re-arms unconditionally, so an already-low battery
+// warns again right away rather than staying silently latched from before
+// the drop — see checkLowBattery()).
+const LOW_BATTERY_THRESHOLD=20;
+let phoneBatteryWarnedLow=false;
+
 function setPhoneBondStatus(status){
+  const wasConnected=lastPhoneBondStatus.c;
   lastPhoneBondStatus=status;
+  checkLowBattery(status,wasConnected);
   const ico=$('phoneIco');
   if(connState!=='on'||!status.b){
     ico.style.display='none';
@@ -428,10 +439,10 @@ function setPhoneBondStatus(status){
     const t=I18N[appLang].main;
     if(status.c){
       ico.classList.remove('phone-disconnected');
-      ico.title=t.phoneConnectedTitle.replace('{name}',status.n||t.phoneUnknownName);
+      ico.title=t.phoneConnectedTitle.replace('{name}',status.n||phoneKindWord(status.d));
     } else {
       ico.classList.add('phone-disconnected');
-      ico.title=t.phoneDisconnectedTitle;
+      ico.title=t.phoneDisconnectedTitle.replace('{kind}',phoneKindWord(status.d));
     }
   }
   // Keep an already-open iPhone Info modal live — Ori pushes a fresh
@@ -448,6 +459,59 @@ function setPhoneBondStatus(status){
   // Same treatment for the Ori Info modal's iPhone row — it shows the same
   // bond name/paired state, just one line instead of the full stats card.
   if($('m-ori-info').classList.contains('show')) refreshOriInfoModal();
+}
+
+// `wasConnected` is `lastPhoneBondStatus.c` from BEFORE this push overwrote
+// it — the only way to detect "this push IS a (re)connection" versus just
+// another routine update (queue change, RSSI poll, etc.) on an
+// already-connected link.
+function checkLowBattery(status,wasConnected){
+  if(!status.c){
+    // Link down — battery is unverifiable (same "don't show what can't be
+    // verified" policy as everywhere else in this app); close a warning
+    // rather than leave it referencing a now-stale reading. Deliberately NOT
+    // reset here: re-arming happens on the NEXT connect (below), not on
+    // disconnect itself, so "warn once per reconnection" reads literally.
+    if($('m-low-battery').classList.contains('show')) hideModal('m-low-battery');
+    return;
+  }
+  if(!wasConnected) phoneBatteryWarnedLow=false; // fresh (re)connection always re-arms
+  if(status.l<LOW_BATTERY_THRESHOLD){
+    if(!phoneBatteryWarnedLow){
+      phoneBatteryWarnedLow=true;
+      showLowBatteryModal(status);
+    }
+  } else if(status.l>LOW_BATTERY_THRESHOLD){
+    phoneBatteryWarnedLow=false; // recovered — silently re-arm, no modal for the recovery itself
+  }
+}
+
+// Panel visible → in-app modal, same "bring forward" treatment the incoming-
+// call takeover uses (ble-protocol.md §13/§11), interrupting whatever else is
+// open (callTakeOverScreen()) rather than stacking on top of it. Panel
+// HIDDEN (minimized to tray) → a native OS notification instead — Windows
+// draws these bottom-right by default — rather than forcing the panel open,
+// respecting the user's choice to keep Orion out of the way; the user can
+// still open Orion themselves from the notification/tray if they want detail.
+async function showLowBatteryModal(status){
+  const t=I18N[appLang].lowBatteryModal;
+  const name=status.n||phoneKindWord(status.d);
+  const body=t.body.replace('{name}',name).replace('{level}',status.l);
+  // Fail open (assume visible) if the check itself errors — the in-app modal
+  // is the safer default of the two paths.
+  const visible=await invoke('is_panel_visible').catch(()=>true);
+  if(!visible){
+    // Logged, not swallowed: this path has a known Windows dev-mode rough
+    // edge (see commands.rs's show_low_battery_notification doc comment) —
+    // silently no-op'ing here would be undiagnosable from outside.
+    invoke('show_low_battery_notification',{title:t.title,body})
+      .catch(e=>console.error('low-battery notification failed:',e));
+    return;
+  }
+  $('lowBatteryBody').textContent=body;
+  invoke('show_and_focus_window').catch(()=>{});
+  const interrupted=callTakeOverScreen();
+  (interrupted?showModalInstant:showModal)('m-low-battery');
 }
 
 // Lights up the first `level` (0-4) bars of a .sig-bars element — shared by
@@ -473,7 +537,22 @@ function renderBattery(level){
   $('ipInfoBattPct').textContent=pct+'%';
 }
 
-// iPhone info / stats — tapping the header phone icon (while an iPhone is
+// "iPhone" or "iPad" once Ori has resolved the bonded device's model
+// (PhoneBondStatus.d / lastPhoneBondStatus.d, ble-protocol.md) — Ori bonds
+// with either in the same slot, and Apple's own naming means the
+// resolved/raw string always starts with one or the other, so this is a
+// plain prefix check, no extra state. Before the very first successful
+// model read (d still ""), returns the localized generic "iPhone or iPad"
+// instead of guessing — the same wording Ori itself shows pre-bond (setup
+// Step 3 / the runtime re-pair screen). Used anywhere UI text needs the
+// right noun without hardcoding "iPhone".
+function phoneKindWord(deviceType){
+  if(deviceType&&deviceType.startsWith('iPad')) return 'iPad';
+  if(deviceType&&deviceType.startsWith('iPhone')) return 'iPhone';
+  return I18N[appLang].main.phoneKindGeneric;
+}
+
+// iPhone/iPad info / stats — tapping the header phone icon (while a phone is
 // bonded) opens this read-only snapshot instead of jumping straight to the
 // Unpair confirm. Counts + signal come straight from Ori's ANCS client,
 // relayed over the Phone Bond Status characteristic (char 000F) into
@@ -483,7 +562,7 @@ function renderBattery(level){
 function openIphoneInfoModal(){
   const t=I18N[appLang].iphoneInfoModal;
   const s=lastPhoneBondStatus;
-  $('ipInfoTitle').textContent=s.n||I18N[appLang].unpairPhoneModal.fallbackName;
+  $('ipInfoTitle').textContent=s.n||I18N[appLang].unpairPhoneModal.fallbackName.replace('{kind}',phoneKindWord(s.d));
   // Device model subtitle — e.g. "iPhone 17 Pro Max". Already resolved from
   // Apple's raw hardware identifier on Ori's side (ble-protocol.md); hidden
   // entirely (not a placeholder) when empty, same ":empty" CSS rule as an
@@ -543,7 +622,9 @@ function ipInfoToUnpair(){
 // the Orion<->Ori link up, not the iPhone one.
 function openUnpairPhoneModal(){
   const t=I18N[appLang].unpairPhoneModal;
-  const name=lastPhoneBondStatus.n||t.fallbackName;
+  const kind=phoneKindWord(lastPhoneBondStatus.d);
+  const name=lastPhoneBondStatus.n||t.fallbackName.replace('{kind}',kind);
+  $('unpairPhoneTitle').textContent=t.title.replace('{kind}',kind);
   $('unpairPhoneBody').textContent=t.body.replace('{name}',name);
   openModalFrom('m-unpair-phone');
 }
@@ -985,6 +1066,39 @@ function ancsRefreshIphoneInfoIfOpen(){
   if($('m-iphone-info').classList.contains('show')) openIphoneInfoModal();
 }
 
+// Debounces the two refreshes above across a burst of 'ancs-notification'
+// events instead of doing a full list/iPhone-Info rebuild per event — a
+// reconnect resync (ble-protocol.md §13) replays every currently-queued
+// notification as its own paced 'add', so a drill-down list left open
+// across a reconnect used to eat one full innerHTML rebuild per queued item
+// instead of one rebuild for the whole burst. 50ms is imperceptible for a
+// single live notification but comfortably longer than the 15ms firmware
+// pacing between resync items, so a burst collapses into one flush once it
+// actually goes quiet.
+const ANCS_REFRESH_DEBOUNCE_MS=50;
+let ancsRefreshTimer=null;
+let ancsPendingBuckets=new Set();
+let ancsPendingIphone=false;
+function ancsScheduleRefresh(bucket){
+  if(bucket) ancsPendingBuckets.add(bucket);
+  clearTimeout(ancsRefreshTimer);
+  ancsRefreshTimer=setTimeout(ancsFlushRefresh,ANCS_REFRESH_DEBOUNCE_MS);
+}
+function ancsScheduleIphoneRefresh(){
+  ancsPendingIphone=true;
+  ancsScheduleRefresh(null);
+}
+function ancsFlushRefresh(){
+  ancsRefreshTimer=null;
+  const buckets=ancsPendingBuckets;
+  ancsPendingBuckets=new Set();
+  buckets.forEach(ancsRefreshOpenList);
+  if(ancsPendingIphone){
+    ancsPendingIphone=false;
+    ancsRefreshIphoneInfoIfOpen();
+  }
+}
+
 // ── Incoming call — auto-appears over whatever Orion is currently showing
 // the instant AncsCallState{st:1} arrives (char 0011, ble-protocol.md §13),
 // mirroring Ori's own modal_incoming_call.cpp: a ringing banner with
@@ -1023,7 +1137,9 @@ function callFmtDuration(s){
 // comment). Returns whether anything was actually interrupted, so the caller
 // can show m-incoming-call instantly too in that case — nothing was
 // interrupted → the call is arriving fresh over a bare main screen, where
-// the normal fade-in was never reported as a problem.
+// the normal fade-in was never reported as a problem. Also reused (despite
+// the call-specific name) by showLowBatteryModal() — the same "interrupt
+// rather than stack" need, not worth a duplicate copy of this function.
 function callTakeOverScreen(){
   const open=[...document.querySelectorAll('.modal-bg.show')];
   open.forEach(m=>hideModalInstant(m.id));
@@ -1266,7 +1382,7 @@ function renderOriInfoModal(info,settings,live){
   $('oriInfoSnLbl').textContent=t.snLbl;$('oriInfoSn').textContent=(settings&&settings.s)||info.serial_number||t.unknown;
   $('oriInfoMfgLbl').textContent=t.mfgLbl;$('oriInfoMfg').textContent=(settings&&settings.b)||info.manufacture_date||t.unknown;
 
-  $('oriInfoPhoneLbl').textContent=t.phoneLbl;
+  $('oriInfoPhoneLbl').textContent=phoneKindWord(lastPhoneBondStatus.d);
   // Connection state, not identity — the phone's actual name already has a
   // home (header icon tooltip, iPhone Info modal title, Unpair modal). This
   // row only answers "is there a bond, and is it live right now."
@@ -1463,7 +1579,7 @@ function saveProfile(){
 }
 syncProfileCounters(PROFILE_FIELD_IDS);
 
-let timeOffActive=false,timeOffCustomPhoto=false,timeOffDirty=false,timeOffPhotoRemoved=false;
+let timeOffActive=false,timeOffDirty=false,timeOffPhotoRemoved=false;
 let toCommittedStart=null,toCommittedEnd=null,toCommittedDest='',toCommittedPhotoUrl=null;
 function updateToSaveState(){
   const dest=$('timeOffDt').value.trim();
@@ -1660,7 +1776,7 @@ let timeOffOrigUrl=null,timeOffPendingUrl=null;
 function timeOffPickPhoto(){$('timeOffPhoInp').click();}
 function openCropExisting(){if(timeOffOrigUrl) openCrop(timeOffOrigUrl,applyTimeOffCrop);}
 function applyTimeOffCrop(url){
-  timeOffDirty=true;timeOffCustomPhoto=true;timeOffPendingUrl=url;timeOffPhotoRemoved=false;
+  timeOffDirty=true;timeOffPendingUrl=url;timeOffPhotoRemoved=false;
   setDropzoneState('timeOff','toReuploadBtn','toRemoveBtn',url);
   updateToSaveState();
 }
@@ -2207,7 +2323,7 @@ function doReset(){
 
   // Time Off — was previously left committed, so it reappeared on the next
   // setup pass even though the rest of the profile was wiped.
-  timeOffDirty=false;timeOffActive=false;timeOffCustomPhoto=false;timeOffPhotoRemoved=false;
+  timeOffDirty=false;timeOffActive=false;timeOffPhotoRemoved=false;
   toCommittedStart=null;toCommittedEnd=null;toCommittedDest='';toCommittedPhotoUrl=null;
   timeOffOrigUrl=null;timeOffPendingUrl=null;
   $('mainTimeOffBanner').style.backgroundImage='';
@@ -2339,7 +2455,7 @@ const I18N={
     connecting:{title:'Pairing with Ori…',sub:'Waiting for Ori to confirm…'},
     syncing:{title:'Setting up Ori…',progressLabel:'A busy day ahead…',doneLabel:'Ori is set up!'},
     pairfail:{title:'Couldn’t pair with Ori',body:'The passkey didn’t match, or the request timed out on Ori. Pick a device to try again.',close:'Close'},
-    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Address',snLbl:'Serial Number',mfgLbl:'Manufactured',sigLbl:'Signal',phoneLbl:'iPhone',syncLbl:'Synced',
+    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Address',snLbl:'Serial Number',mfgLbl:'Manufactured',sigLbl:'Signal',syncLbl:'Synced',
       notSetup:'Not setup',justNow:'Just now',minAgo:'{n} min ago',unknown:'Unknown'},
     iphoneInfoModal:{missedLbl:'Missed Calls',unreadLbl:'Unread Messages',sigLbl:'Signal',notifLbl:'Notifications'},
     ancsList:{titles:{missed:'Missed Calls',unread:'Unread Messages',other:'Notifications'},
@@ -2356,7 +2472,7 @@ const I18N={
       noTimeOffPlanned:'No Time Off planned',tapToSet:'Tap to set',notifFilterRow:'Notification Filter',
       clockFaceRow:'Clock Face',timeFormatRow:'Time Format',quickActionsRow:'Quick Actions',presenceAvailable:'Available',
       settingsIcoTitle:'Settings',minimizeIcoTitle:'Minimize',fwUpToDate:'Firmware up to date',fwAvailable:'Firmware update available',
-      phoneConnectedTitle:'{name} — Connected',phoneDisconnectedTitle:'iPhone disconnected',phoneUnknownName:'iPhone',
+      phoneConnectedTitle:'{name} — Connected',phoneDisconnectedTitle:'{kind} disconnected',phoneKindGeneric:'iPhone or iPad',
       reconnectTitle:'Reconnect'},
     profileEditor:{title:'Profile'},
     timeOffEditor:{periodLbl:'Period',selectDates:'Select dates…',selectStartDate:'Select start date',
@@ -2377,9 +2493,10 @@ const I18N={
     resetModal:{title:'Reset',
       body:'This will erase your profile, settings, and factory reset Ori.',
       reset:'Reset'},
-    unpairPhoneModal:{title:'Unpair iPhone',
+    unpairPhoneModal:{title:'Unpair {kind}',
       body:'Ori will no longer show notifications from {name}.',
-      fallbackName:'The paired iPhone',unpair:'Unpair'},
+      fallbackName:'The paired {kind}',unpair:'Unpair'},
+    lowBatteryModal:{title:'Low Battery',body:'{name} is at {level}% battery.',ok:'OK'},
     fwModal:{title:'Ori Update Available',update:'Update',
       updatingFirmware:'Updating Ori…',keepPluggedIn:'Keep Ori plugged in',verifying:'Verifying…',
       nowRunning:'Now running {v}',done:'Done',
@@ -2409,7 +2526,7 @@ const I18N={
     connecting:{title:'Đang ghép nối với Ori…',sub:'Đang chờ Ori xác nhận…'},
     syncing:{title:'Đang thiết lập Ori…',progressLabel:'Một ngày bận rộn đang chờ…',doneLabel:'Ori đã thiết lập xong!'},
     pairfail:{title:'Không thể ghép nối với Ori',body:'Mã ghép nối không khớp, hoặc yêu cầu đã hết thời gian chờ trên Ori. Hãy chọn một thiết bị để thử lại.',close:'Đóng'},
-    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Địa chỉ',snLbl:'Số sê-ri',mfgLbl:'Ngày sản xuất',sigLbl:'Tín hiệu',phoneLbl:'iPhone',syncLbl:'Đồng bộ',
+    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Địa chỉ',snLbl:'Số sê-ri',mfgLbl:'Ngày sản xuất',sigLbl:'Tín hiệu',syncLbl:'Đồng bộ',
       notSetup:'Chưa thiết lập',justNow:'Vừa xong',minAgo:'{n} phút trước',unknown:'Chưa rõ'},
     iphoneInfoModal:{missedLbl:'Cuộc gọi nhỡ',unreadLbl:'Tin nhắn chưa đọc',sigLbl:'Tín hiệu',notifLbl:'Thông báo'},
     ancsList:{titles:{missed:'Cuộc gọi nhỡ',unread:'Tin nhắn chưa đọc',other:'Thông báo'},
@@ -2426,7 +2543,7 @@ const I18N={
       noTimeOffPlanned:'Chưa có lịch nghỉ phép',tapToSet:'Nhấn để đặt',notifFilterRow:'Bộ lọc thông báo',
       clockFaceRow:'Mặt đồng hồ',timeFormatRow:'Định dạng giờ',quickActionsRow:'Thao tác nhanh',presenceAvailable:'Đang hoạt động',
       settingsIcoTitle:'Cài đặt',minimizeIcoTitle:'Thu nhỏ',fwUpToDate:'Firmware đã mới nhất',fwAvailable:'Có bản cập nhật firmware',
-      phoneConnectedTitle:'{name} — Đã kết nối',phoneDisconnectedTitle:'iPhone đã ngắt kết nối',phoneUnknownName:'iPhone',
+      phoneConnectedTitle:'{name} — Đã kết nối',phoneDisconnectedTitle:'{kind} đã ngắt kết nối',phoneKindGeneric:'iPhone hoặc iPad',
       reconnectTitle:'Kết nối lại'},
     profileEditor:{title:'Hồ sơ'},
     timeOffEditor:{periodLbl:'Khoảng thời gian',selectDates:'Chọn ngày…',selectStartDate:'Chọn ngày bắt đầu',
@@ -2447,9 +2564,10 @@ const I18N={
     resetModal:{title:'Đặt lại',
       body:'Việc này sẽ xóa hồ sơ, cài đặt của bạn, và đặt lại Ori về mặc định gốc.',
       reset:'Đặt lại'},
-    unpairPhoneModal:{title:'Hủy ghép nối iPhone',
+    unpairPhoneModal:{title:'Hủy ghép nối {kind}',
       body:'Ori sẽ không còn hiển thị thông báo từ {name} nữa.',
-      fallbackName:'iPhone đã ghép nối',unpair:'Hủy ghép nối'},
+      fallbackName:'{kind} đã ghép nối',unpair:'Hủy ghép nối'},
+    lowBatteryModal:{title:'Pin yếu',body:'{name} chỉ còn {level}% pin.',ok:'OK'},
     fwModal:{title:'Có bản cập nhật Ori',update:'Cập nhật',
       updatingFirmware:'Đang cập nhật Ori…',keepPluggedIn:'Giữ Ori được cắm điện',verifying:'Đang xác minh…',
       nowRunning:'Đang chạy {v}',done:'Hoàn tất',
@@ -2479,7 +2597,7 @@ const I18N={
     connecting:{title:'Emparejando con Ori…',sub:'Esperando confirmación de Ori…'},
     syncing:{title:'Configurando Ori…',progressLabel:'Un día ocupado por delante…',doneLabel:'¡Ori está listo!'},
     pairfail:{title:'No se pudo emparejar con Ori',body:'El código no coincidió, o la solicitud caducó en Ori. Elige un dispositivo para intentarlo de nuevo.',close:'Cerrar'},
-    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Dirección',snLbl:'Número de serie',mfgLbl:'Fabricado',sigLbl:'Señal',phoneLbl:'iPhone',syncLbl:'Sincronizado',
+    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Dirección',snLbl:'Número de serie',mfgLbl:'Fabricado',sigLbl:'Señal',syncLbl:'Sincronizado',
       notSetup:'Sin configurar',justNow:'Ahora mismo',minAgo:'Hace {n} min',unknown:'Desconocido'},
     iphoneInfoModal:{missedLbl:'Llamadas perdidas',unreadLbl:'Mensajes sin leer',sigLbl:'Señal',notifLbl:'Notificaciones'},
     ancsList:{titles:{missed:'Llamadas perdidas',unread:'Mensajes sin leer',other:'Notificaciones'},
@@ -2496,7 +2614,7 @@ const I18N={
       noTimeOffPlanned:'Sin tiempo libre planeado',tapToSet:'Toca para configurar',notifFilterRow:'Filtro de notificaciones',
       clockFaceRow:'Esfera del reloj',timeFormatRow:'Formato de hora',quickActionsRow:'Acciones rápidas',presenceAvailable:'Disponible',
       settingsIcoTitle:'Configuración',minimizeIcoTitle:'Minimizar',fwUpToDate:'Firmware actualizado',fwAvailable:'Actualización de firmware disponible',
-      phoneConnectedTitle:'{name} — Conectado',phoneDisconnectedTitle:'iPhone desconectado',phoneUnknownName:'iPhone',
+      phoneConnectedTitle:'{name} — Conectado',phoneDisconnectedTitle:'{kind} desconectado',phoneKindGeneric:'iPhone o iPad',
       reconnectTitle:'Reconectar'},
     profileEditor:{title:'Perfil'},
     timeOffEditor:{periodLbl:'Periodo',selectDates:'Selecciona fechas…',selectStartDate:'Selecciona la fecha de inicio',
@@ -2517,9 +2635,10 @@ const I18N={
     resetModal:{title:'Restablecer',
       body:'Esto eliminará tu perfil, tus ajustes, y restablecerá Ori a los valores de fábrica.',
       reset:'Restablecer'},
-    unpairPhoneModal:{title:'Desvincular iPhone',
+    unpairPhoneModal:{title:'Desvincular {kind}',
       body:'Ori dejará de mostrar notificaciones de {name}.',
-      fallbackName:'El iPhone vinculado',unpair:'Desvincular'},
+      fallbackName:'El {kind} vinculado',unpair:'Desvincular'},
+    lowBatteryModal:{title:'Batería baja',body:'{name} tiene un {level}% de batería.',ok:'Aceptar'},
     fwModal:{title:'Actualización de Ori disponible',update:'Actualizar',
       updatingFirmware:'Actualizando Ori…',keepPluggedIn:'Mantén Ori conectado',verifying:'Verificando…',
       nowRunning:'Ahora ejecutando {v}',done:'Listo',
@@ -2549,7 +2668,7 @@ const I18N={
     connecting:{title:'Appairage avec Ori…',sub:"En attente de confirmation d'Ori…"},
     syncing:{title:"Configuration d'Ori…",progressLabel:'Une journée bien remplie vous attend…',doneLabel:'Ori est configuré !'},
     pairfail:{title:"Impossible d'appairer avec Ori",body:'Le code ne correspondait pas, ou la demande a expiré sur Ori. Choisissez un appareil pour réessayer.',close:'Fermer'},
-    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Adresse',snLbl:'Numéro de série',mfgLbl:'Fabriqué',sigLbl:'Signal',phoneLbl:'iPhone',syncLbl:'Synchronisé',
+    oriInfoModal:{fwLbl:'Firmware',addrLbl:'Adresse',snLbl:'Numéro de série',mfgLbl:'Fabriqué',sigLbl:'Signal',syncLbl:'Synchronisé',
       notSetup:'Non configuré',justNow:"À l'instant",minAgo:'Il y a {n} min',unknown:'Inconnu'},
     iphoneInfoModal:{missedLbl:'Appels manqués',unreadLbl:'Messages non lus',sigLbl:'Signal',notifLbl:'Notifications'},
     ancsList:{titles:{missed:'Appels manqués',unread:'Messages non lus',other:'Notifications'},
@@ -2566,7 +2685,7 @@ const I18N={
       noTimeOffPlanned:'Aucun congé prévu',tapToSet:'Toucher pour définir',notifFilterRow:'Filtre de notifications',
       clockFaceRow:"Cadran de l'horloge",timeFormatRow:"Format de l'heure",quickActionsRow:'Actions rapides',presenceAvailable:'Disponible',
       settingsIcoTitle:'Paramètres',minimizeIcoTitle:'Réduire',fwUpToDate:'Firmware à jour',fwAvailable:'Mise à jour du firmware disponible',
-      phoneConnectedTitle:'{name} — Connecté',phoneDisconnectedTitle:'iPhone déconnecté',phoneUnknownName:'iPhone',
+      phoneConnectedTitle:'{name} — Connecté',phoneDisconnectedTitle:'{kind} déconnecté',phoneKindGeneric:'iPhone ou iPad',
       reconnectTitle:'Reconnecter'},
     profileEditor:{title:'Profil'},
     timeOffEditor:{periodLbl:'Période',selectDates:'Sélectionner les dates…',selectStartDate:'Sélectionner la date de début',
@@ -2587,9 +2706,10 @@ const I18N={
     resetModal:{title:"Réinitialiser",
       body:"Cela supprimera votre profil, vos réglages, et réinitialisera Ori aux paramètres d'usine.",
       reset:'Réinitialiser'},
-    unpairPhoneModal:{title:"Dissocier l'iPhone",
+    unpairPhoneModal:{title:"Dissocier l'{kind}",
       body:"Ori n'affichera plus les notifications de {name}.",
-      fallbackName:"L'iPhone associé",unpair:'Dissocier'},
+      fallbackName:"L'{kind} associé",unpair:'Dissocier'},
+    lowBatteryModal:{title:'Batterie faible',body:'{name} est à {level} % de batterie.',ok:'OK'},
     fwModal:{title:"Mise à jour d'Ori disponible",update:'Mettre à jour',
       updatingFirmware:"Mise à jour d'Ori…",keepPluggedIn:'Gardez Ori branché',verifying:'Vérification…',
       nowRunning:'Exécute maintenant {v}',done:'Terminé',
@@ -2711,6 +2831,7 @@ function applyI18n(){
   updatePeriodDisplay();
   renderCal();
   // calendar source
+  $('mainCalSub').textContent=calInfo[calSrc].name+_calStatusSuffix(calInfo[calSrc]);
   $('calEditTitle').textContent=t.settings.calendar;
   _renderMsStatus();
   _renderMsSignBtn();
@@ -2767,9 +2888,11 @@ function applyI18n(){
   $('resetBody').textContent=t.resetModal.body;
   $('resetBtn').textContent=t.resetModal.reset;
   $('resetCancelBtn').textContent=t.common.cancel;
-  $('unpairPhoneTitle').textContent=t.unpairPhoneModal.title;
+  $('unpairPhoneTitle').textContent=t.unpairPhoneModal.title.replace('{kind}',phoneKindWord(lastPhoneBondStatus.d));
   $('unpairPhoneBtn').textContent=t.unpairPhoneModal.unpair;
   $('unpairPhoneCancelBtn').textContent=t.common.cancel;
+  $('lowBatteryTitle').textContent=t.lowBatteryModal.title;
+  $('lowBatteryOkBtn').textContent=t.lowBatteryModal.ok;
   $('ancsListBackBtn').textContent=t.common.back;
   // ANCS list/detail and the incoming-call view are built entirely at
   // open-time (openAncsListModal/openAncsDetail/showIncomingCall/
@@ -3095,15 +3218,15 @@ listen('ancs-notification',e=>{
   const n=e.payload;
   if(n.o==='add'){
     const bucket=ancsUpsert(n);
-    ancsRefreshOpenList(bucket);
-    ancsRefreshIphoneInfoIfOpen();
+    ancsScheduleRefresh(bucket);
+    ancsScheduleIphoneRefresh();
     return;
   }
   if(n.o==='remove'){
     const bucket=ancsRemove(n.u);
     if(!bucket) return; // never relayed to Orion in the first place — harmless no-op, same as on Ori itself
-    if(!ancsCloseStaleDetail(n.u,bucket)) ancsRefreshOpenList(bucket);
-    ancsRefreshIphoneInfoIfOpen();
+    if(!ancsCloseStaleDetail(n.u,bucket)) ancsScheduleRefresh(bucket);
+    ancsScheduleIphoneRefresh();
     return;
   }
   if(n.o==='clear'){

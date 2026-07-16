@@ -112,9 +112,18 @@ void    set_seek_step_s(uint8_t seconds);
 //   the icon → detail modal → close), the entry is removed and the queue shifts
 //   left, bringing the next hidden notification into the visible window.
 //   Each entry's full detail (title/subtitle/body strings) is cached in a
-//   PSRAM-allocated store (app_state::init(), ~38 KB at 50 entries) rather
+//   PSRAM-allocated store (app_state::init(), ~104 KB at 100 entries) rather
 //   than a static SRAM array — SRAM is the scarce resource on this board,
-//   PSRAM is not.
+//   PSRAM is not. Every MAX_ANCS_NOTIFICATIONS-sized scratch buffer elsewhere
+//   (ancs_client.cpp's list_bucket_groups(), modal_ancs_list.cpp's
+//   populate_list()/commit_row_delete(), this file's
+//   ancs_collect_same_title()) is PSRAM-backed for the same reason, NOT a
+//   stack array — list_bucket_groups() nests three of these calls in one
+//   chain (populate_list() -> list_bucket_groups() -> ancs_collect_same_
+//   title()), and at this size that would eat well over half of the 16 KB
+//   main-task stack shared with LVGL/BLE if left on the stack. Raised from
+//   50 to 100 on 2026-07-15 after a real backlog (46 preexisting
+//   notifications) came close to the old cap.
 //
 // MAX_ANCS_ICONS — display cap. Status-bar layout budget:
 //   bar inner width 776px minus datetime (~239px), mode-toggle (60px), and
@@ -125,7 +134,7 @@ void    set_seek_step_s(uint8_t seconds);
 //   refresh() always renders min(count, MAX_ANCS_ICONS) icons, so notifications
 //   beyond the 5th are hidden but not lost — they become visible as earlier
 //   ones are dismissed.
-constexpr size_t MAX_ANCS_NOTIFICATIONS = 50;   // queue depth
+constexpr size_t MAX_ANCS_NOTIFICATIONS = 100;   // queue depth
 constexpr size_t MAX_ANCS_ICONS         = 5;    // display cap (layout constraint)
 
 struct AncsConfig {

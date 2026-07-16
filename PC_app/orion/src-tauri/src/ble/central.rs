@@ -131,7 +131,7 @@ pub struct BleState {
     disconnect_watcher: Mutex<Option<tokio::task::JoinHandle<()>>>,
     // Handle to whichever `supervise_connection_loop` task is currently
     // running (set at both of its spawn sites — `get_initial_state` and
-    // `ble_submit_passkey`). `commands::factory_reset`/`clear_all` abort it
+    // `ble_submit_passkey`). `commands::clear_all` aborts it
     // directly rather than letting it notice the resulting disconnect on
     // its own: that loop's normal tail (`wait_for_disconnect` → emit
     // `conn-state:"off"`) is correct for an *unexpected* drop, but firing it
@@ -2016,7 +2016,7 @@ async fn maybe_persist_phone_device_type(app: &AppHandle, status: &cbor::PhoneBo
     drop(cached);
     if let Some(mut saved) = crate::store::load(app).await {
         saved.phone_device_type = Some(status.d.clone());
-        let _ = crate::store::save(app, &saved).await;
+        let _ = crate::store::save(app, saved).await;
     }
 }
 
@@ -2451,7 +2451,7 @@ async fn run_sync(
             saved.pending_clock_face = None;
             saved.pending_time_format = None;
             saved.pending_ancs_filter = None;
-            let _ = crate::store::save(app, &saved).await;
+            let _ = crate::store::save(app, saved).await;
         }
     }
 
@@ -2483,7 +2483,7 @@ async fn run_sync(
     // happening to re-pick a new photo. Treating it as empty for this sync
     // (and clearing the persisted copy just below) lets the rest of
     // profile/meetings/Time Off still sync successfully.
-    let (photo_bytes, photo_corrupted) = decode_cached_photo(decode_profile_photo, &profile.photo_data_url);
+    let (photo_bytes, photo_corrupted) = decode_cached_photo(decode_profile_photo, &profile.photo_data_url).await;
     // Still honestly empty — no calendar source exists yet to have real
     // data from (Phase D). Once it does, this needs the same "use cached/
     // fresh real data, not a hardcoded placeholder" treatment Time Off
@@ -2492,7 +2492,7 @@ async fn run_sync(
     let meetings_bytes = cbor::encode(&cbor::MeetingList { d: local_midnight_epoch(), m: &[] });
 
     let (time_off_photo_bytes, time_off_photo_corrupted) =
-        decode_cached_photo(decode_time_off_photo, &time_off.photo_data_url);
+        decode_cached_photo(decode_time_off_photo, &time_off.photo_data_url).await;
     let time_off_bytes = cbor::encode(&cbor::TimeOffEntry {
         s: time_off.start.max(0) as u64,
         e: time_off.end.max(0) as u64,
@@ -2513,7 +2513,7 @@ async fn run_sync(
             if time_off_photo_corrupted {
                 saved.time_off.photo_data_url = None;
             }
-            let _ = crate::store::save(app, &saved).await;
+            let _ = crate::store::save(app, saved).await;
         }
     }
 
@@ -2600,7 +2600,7 @@ async fn run_sync(
     if address_changed {
         if let Some(mut saved) = crate::store::load(app).await {
             saved.address = Some(address);
-            let _ = crate::store::save(app, &saved).await;
+            let _ = crate::store::save(app, saved).await;
         }
     }
     Ok(())
@@ -2611,9 +2611,11 @@ async fn run_sync(
 /// three shortcut slot tokens (ble-protocol.md §6.4). Presence/weather are
 /// excluded from Ori's own read response — Orion is their source of truth.
 /// The frontend calls this on every `setConn('on')` transition
-/// (`readSlotsFromDevice()` in app.js), matching "read on (re)connect" —
-/// and again on a ~3 s poll while the Ori Info modal is open, for live
-/// signal bars (pc-app.md).
+/// (`readSlotsFromDevice()` in app.js) and once when the Ori Info modal opens
+/// (`refreshOriInfoModal()`) — live signal bars *while the modal stays open*
+/// come from Ori's own push notify on this same characteristic instead of a
+/// poll (`device_settings_watcher`'s doc comment; pc-app.md's "replacing an
+/// earlier ~3s poll on Orion's own side").
 ///
 /// `serial_number`/`manufacture_date`, when present, are write-through
 /// cached (session + disk) the same way `run_sync` caches `address` — only
@@ -2648,7 +2650,7 @@ pub async fn read_device_settings(app: &AppHandle, state: &BleState) -> Result<c
             if mfg.is_some() {
                 saved.manufacture_date = mfg;
             }
-            let _ = crate::store::save(app, &saved).await;
+            let _ = crate::store::save(app, saved).await;
         }
     }
 
@@ -3069,14 +3071,24 @@ pub fn decode_time_off_photo(data_url: &str) -> Result<Vec<u8>, String> {
 /// rest of the sync) and `true` so the caller can clear the persisted field —
 /// otherwise the identical decode failure would repeat on every future
 /// reconnect forever.
-fn decode_cached_photo(decode: impl Fn(&str) -> Result<Vec<u8>, String>, url: &Option<String>) -> (Vec<u8>, bool) {
-    match url {
-        Some(u) => match decode(u) {
-            Ok(bytes) => (bytes, false),
-            Err(_) => (Vec::new(), true),
-        },
-        None => (Vec::new(), false),
-    }
+///
+/// Runs the actual `image::load_from_memory` decode on the blocking pool —
+/// this fires on *every* reconnect's `run_sync` (not just first pairing), and
+/// unlike `build_album_art_jpeg` (already `spawn_blocking`'d, see its call
+/// site's comment) this used to run inline on the same Tokio worker thread
+/// the phone-bond watcher, time-sync refresher, and keyboard-command
+/// dispatch for this connection all share.
+async fn decode_cached_photo(
+    decode: impl Fn(&str) -> Result<Vec<u8>, String> + Send + 'static,
+    url: &Option<String>,
+) -> (Vec<u8>, bool) {
+    let Some(u) = url.clone() else { return (Vec::new(), false) };
+    tokio::task::spawn_blocking(move || match decode(&u) {
+        Ok(bytes) => (bytes, false),
+        Err(_) => (Vec::new(), true),
+    })
+    .await
+    .unwrap_or((Vec::new(), true))
 }
 
 /// Media Album Art target: 484×216, hard cap 64 KB (ble-protocol.md §10/§12).

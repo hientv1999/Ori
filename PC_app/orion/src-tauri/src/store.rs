@@ -71,9 +71,9 @@ pub struct SavedState {
     // and read back on every app launch — this is what lets the Ori Info
     // modal (pc-app.md) show them even before a connection completes this
     // session, not just "cached within a session" like firmware_version.
-    // Cleared only when the bond itself ends: `commands::factory_reset`/
-    // `give_up_on_bond` (Ori was factory reset) explicitly null these three
-    // out; `clear_all` wipes the whole struct via `store::clear()` anyway.
+    // Cleared only when the bond itself ends: `commands::give_up_on_bond`
+    // (Ori was factory reset elsewhere) explicitly nulls these three out;
+    // `clear_all` wipes the whole struct via `store::clear()` anyway.
     #[serde(default)]
     pub address: Option<String>,
     #[serde(default)]
@@ -158,7 +158,7 @@ fn clear_blocking(app: &AppHandle) {
 // (`ble::central::push_album_art`). These are called from async Tauri
 // command handlers (`get_initial_state`, `ble_submit_passkey`,
 // `save_profile`, `save_timeoff`, `clear_timeoff`, `save_shortcuts`,
-// `factory_reset`, `clear_all`) and, more importantly, from inside
+// `clear_all`) and, more importantly, from inside
 // `supervise_connection_loop`'s retry loop — a synchronous filesystem call
 // there would block that worker thread on every single reconnect/backoff
 // iteration, for as long as Orion keeps retrying (which can be indefinitely,
@@ -169,9 +169,15 @@ pub async fn load(app: &AppHandle) -> Option<SavedState> {
     tokio::task::spawn_blocking(move || load_blocking(&app)).await.ok().flatten()
 }
 
-pub async fn save(app: &AppHandle, state: &SavedState) -> Result<(), String> {
+// Takes `state` by value rather than `&SavedState` — every call site already
+// holds its own owned `SavedState` it never reuses afterward (built fresh via
+// `store::load` + a few field mutations right before calling this), so a
+// by-reference signature only forced a redundant clone here on top of that.
+// `SavedState` can embed up to ~950KB of profile/Time-Off photo base64
+// (ble-protocol.md §10's caps), so that clone was a real, avoidable copy on
+// every single save — not just a one-field settings change.
+pub async fn save(app: &AppHandle, state: SavedState) -> Result<(), String> {
     let app = app.clone();
-    let state = state.clone();
     tokio::task::spawn_blocking(move || save_blocking(&app, &state))
         .await
         .map_err(|e| format!("store save task panicked: {e}"))?

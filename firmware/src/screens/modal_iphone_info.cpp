@@ -375,7 +375,7 @@ lv_obj_t* create(lv_obj_t* base_screen, bool connected) {
     info->connected   = connected;
 
     lv_obj_t* name = lv_label_create(scroll_area);
-    lv_label_set_text(name, (pname && pname[0]) ? pname : "iPhone");
+    lv_label_set_text(name, (pname && pname[0]) ? pname : ancs_client::phone_kind_word());
     lv_obj_set_style_text_color(name, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(name, theme::font_h2(), 0);
     lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
@@ -387,6 +387,12 @@ lv_obj_t* create(lv_obj_t* base_screen, bool connected) {
     // "don't show what can't be verified" policy as everywhere else here.
     lv_obj_t* type_lbl = lv_label_create(scroll_area);
     lv_label_set_text(type_lbl, ptype ? ptype : "");
+    // Width + WRAP: device_type can now carry a connectivity/region suffix
+    // ("iPad Pro 11-inch (3rd gen) — Wi-Fi + Cellular (China)") well past
+    // what fits on one line at this card's width — was a bare
+    // LV_SIZE_CONTENT label when every value was a short marketing name.
+    lv_obj_set_width(type_lbl, lv_pct(100));
+    lv_label_set_long_mode(type_lbl, LV_LABEL_LONG_WRAP);
     lv_obj_set_style_text_color(type_lbl, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
     lv_obj_set_style_text_font(type_lbl, theme::font_meta(), 0);
     lv_obj_set_style_text_align(type_lbl, LV_TEXT_ALIGN_CENTER, 0);
@@ -517,14 +523,15 @@ void set_connected(bool connected) {
         connected ? theme::COLOR_PRESENCE_AVAILABLE : theme::COLOR_PRESENCE_OFFLINE), 0);
     lv_label_set_text(g_active->status_lbl, connected ? "Connected" : "Disconnected");
 
-    // Title always reflects whichever iPhone is CURRENTLY connected — re-read
+    // Title always reflects whichever phone is CURRENTLY connected — re-read
     // fresh rather than trusting whatever was cached at open. ancs_client
     // deliberately keeps showing the last-known name/model across a runtime
     // disconnect (only a genuine unpair clears it, ancs_client.h's
     // clear_phone_identity()), so this still reads correctly while
-    // disconnected — it only falls back to "iPhone" once actually unpaired.
+    // disconnected — it only falls back to phone_kind_word() ("iPhone"/
+    // "iPad"/the generic "iPhone or iPad") once actually unpaired.
     const char* pname = ancs_client::phone_name();
-    lv_label_set_text(g_active->name_lbl, (pname && pname[0]) ? pname : "iPhone");
+    lv_label_set_text(g_active->name_lbl, (pname && pname[0]) ? pname : ancs_client::phone_kind_word());
 
     // Same treatment for the device-type subtitle — re-read fresh; only
     // hidden when there's truly never been a value (unpaired, or the very

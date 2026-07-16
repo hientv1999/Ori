@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <lvgl.h>
+#include <esp_heap_caps.h>  // PSRAM-backed scratch buffers — commit_row_delete()/populate_list()
 
 #include "app_state.h"
 #include "assets/ancs_badge_icons.h"
@@ -96,7 +97,17 @@ void commit_row_delete(lv_obj_t* row) {
     const uint32_t ref_uid = rs->uid;
     ListCtx* list = rs->list;
 
-    uint32_t uids[app_state::MAX_ANCS_NOTIFICATIONS];
+    // PSRAM-backed and allocated once rather than a stack array — same
+    // reasoning as populate_list()'s groups[] below (app_state.h's
+    // MAX_ANCS_NOTIFICATIONS doc comment). Not reentrant (one row-delete at
+    // a time), so static reuse is safe.
+    static uint32_t* uids = nullptr;
+    if (!uids) {
+        uids = static_cast<uint32_t*>(
+            heap_caps_malloc(app_state::MAX_ANCS_NOTIFICATIONS * sizeof(uint32_t),
+                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!uids) { lv_obj_delete(row); return; }  // PSRAM exhausted (shouldn't happen) — just delete the row, skip the clear
+    }
     size_t cnt = app_state::ancs_collect_same_title(ref_uid, uids,
                                                      app_state::MAX_ANCS_NOTIFICATIONS);
     if (cnt == 0) { uids[0] = ref_uid; cnt = 1; }
@@ -372,7 +383,19 @@ ListCtx* g_active_list = nullptr;
 // modal_iphone_info's populate_stats_row().
 void populate_list(ListCtx* list) {
     lv_obj_clean(list->scroll_area);
-    ancs_client::ListGroup groups[app_state::MAX_ANCS_NOTIFICATIONS];
+    // PSRAM-backed and allocated once rather than a stack array — this is
+    // the outer leg of populate_list() -> list_bucket_groups() -> ancs_
+    // collect_same_title(), and stacking all three MAX_ANCS_NOTIFICATIONS-
+    // sized arrays on the 16 KB main-task stack (shared with LVGL/BLE) risked
+    // overflow once the cap grew (see app_state.h's doc comment). Not
+    // reentrant (one list open at a time), so static reuse is safe.
+    static ancs_client::ListGroup* groups = nullptr;
+    if (!groups) {
+        groups = static_cast<ancs_client::ListGroup*>(
+            heap_caps_malloc(app_state::MAX_ANCS_NOTIFICATIONS * sizeof(ancs_client::ListGroup),
+                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!groups) { show_empty_state(list); return; }  // PSRAM exhausted (shouldn't happen)
+    }
     size_t n = ancs_client::list_bucket_groups(list->bucket, groups,
                                                 app_state::MAX_ANCS_NOTIFICATIONS);
     if (n == 0) {

@@ -867,7 +867,7 @@ function setupPhoneHTML(opts) {
   return setupShell(2,
     brandMarkHTML(132, -2) +
     '<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%">' +
-    '<p style="font-size:42px;color:var(--text-1);">Connect on iPhone</p>' +
+    '<p style="font-size:42px;color:var(--text-1);">Connect on iPhone or iPad</p>' +
     '<div class="ble-name" style="margin-top:10px">' + escapeHtml(BLE_NAME) + '</div>' +
     '<div class="pairing-anim" style="margin-top:24px"></div>' +
     '</div>' +
@@ -1029,7 +1029,7 @@ function repairPhoneHTML() {
   return '<div class="setup" style="padding-bottom:80px">' +
     brandMarkHTML(132, -2) +
     '<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%">' +
-    '<p style="font-size:42px;color:var(--text-1);">Connect on iPhone</p>' +
+    '<p style="font-size:42px;color:var(--text-1);">Connect on iPhone or iPad</p>' +
     '<div class="ble-name" style="margin-top:20px">' + escapeHtml(BLE_NAME) + '</div>' +
     '<div class="pairing-anim" style="margin-top:24px"></div>' +
     '</div>' +
@@ -1046,7 +1046,7 @@ function unpairPhoneHTML() {
     '<div class="icon-circle">' +
     '<svg width="36" height="36" viewBox="0 0 24 24"><use href="#i-warn"/></svg>' +
     '</div>' +
-    '<h3>Unpair iPhone?</h3>' +
+    '<h3>Unpair ' + phoneKindWord() + '?</h3>' +
     '<p>Notification will stop showing until you re-pair</p>' +
     '<div class="actions">' +
     '<button class="btn btn-danger" onclick="setScreen(\'repair-phone\')">Unpair</button>' +
@@ -1065,6 +1065,17 @@ function unpairPhoneHTML() {
 // proceeds to the existing Unpair confirmation so the destructive action still
 // takes a deliberate second tap.
 const IPHONE_INFO = { name: "Hien Van's iPhone", deviceType: 'iPhone 17 Pro Max', connected: true, missed: 2, unread: 5, notifications: 7, signal: 4, battery: 68 };
+// "iPhone" or "iPad" from IPHONE_INFO.deviceType's prefix (Apple's own
+// naming means the resolved/raw string always starts with one or the
+// other) — mirrors ancs_client::phone_kind_word() on real firmware. Falls
+// back to the generic "iPhone or iPad" if deviceType is ever unset, same
+// wording used pre-bond (Step 3 / the runtime re-pair screen).
+function phoneKindWord() {
+  const t = IPHONE_INFO.deviceType || '';
+  if (t.startsWith('iPad')) return 'iPad';
+  if (t.startsWith('iPhone')) return 'iPhone';
+  return 'iPhone or iPad';
+}
 function sigBarsHTML(level) {
   let s = '<span class="sig-bars">';
   for (let i = 0; i < 4; i++) s += '<span class="' + (i < level ? 'active' : '') + '"></span>';
@@ -2135,7 +2146,7 @@ function renderStatusBar(cfg) {
   const paired = !!(cfg.phonePaired || cfg.phoneConnected);
   const icon = cfg.phoneConnected ? 'i-phone' : 'i-phone-broken';
   const iconClass = cfg.phoneConnected ? 'phone-glyph' : 'phone-disconnect';
-  const title = paired ? 'iPhone info' : 'Long-press to manage phone pairing';
+  const title = paired ? phoneKindWord() + ' info' : 'Long-press to manage phone pairing';
   phoneSlot.innerHTML = '<div class="phone-disconnect-wrap" id="phone-icon-wrap" title="' + title + '"><svg class="' + iconClass + '" viewBox="0 0 24 24"><use href="#' + icon + '"/></svg></div>';
   const openPhoneScreen = () => {
     // IPHONE_INFO is a standalone mock object (its own dedicated sidebar

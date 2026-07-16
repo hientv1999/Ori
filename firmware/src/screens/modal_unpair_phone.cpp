@@ -35,17 +35,26 @@ namespace modal_unpair_phone {
 
 lv_obj_t* create(lv_obj_t* base_screen) {
     // Personalise with the connected phone's GAP device name when available
-    // ("Xander's iPhone"); fall back to the generic copy when not.
-    // lv_label_set_text copies the buffer, so stack storage is fine.
+    // ("Xander's iPhone"); fall back to "your iPhone"/"your iPad" (or the
+    // generic "your iPhone or iPad" before the bond's model is known) when
+    // not. lv_label_set_text copies the buffer, so stack storage is fine.
     const char* pname = ancs_client::phone_name();
+    const char* kind = ancs_client::phone_kind_word();
+
+    char generic_buf[24];
+    snprintf(generic_buf, sizeof(generic_buf), "your %s", kind);
+
     char body_buf[160];
     snprintf(body_buf, sizeof(body_buf),
              "Ori will no longer show notifications from %s",
-             (pname && pname[0]) ? pname : "your iPhone");
+             (pname && pname[0]) ? pname : generic_buf);
+
+    char title_buf[32];
+    snprintf(title_buf, sizeof(title_buf), "Unpair %s?", kind);
 
     // M8: replace the icon with a proper phone asset — shares the same alert
     // circle shape as modal_factory_reset's warning glyph (make_confirm_modal).
-    return ui::make_confirm_modal(base_screen, "Unpair iPhone?", body_buf,
+    return ui::make_confirm_modal(base_screen, title_buf, body_buf,
         "Unpair", on_unpair_confirm);
 }
 

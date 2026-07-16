@@ -95,28 +95,45 @@ pub fn show_and_focus_panel(app: &AppHandle) {
 // real system tray shows connected/reconnecting/offline at a glance even
 // while the panel is closed. Colors match the in-panel connection dot
 // (`--success`/`--away`/`--muted`) so both readouts always agree.
-fn badge_color(state: &str) -> (u8, u8, u8) {
-    match state {
-        "on" => (0x92, 0xC3, 0x53),
-        // "connecting" (found Ori, establishing the link) shares the same
-        // amber as "rec" (Syncing) — matching styles.css's
-        // `.h-dot.rec,.h-dot.connecting`. Without this arm, "connecting" fell
-        // into the `_` default below and looked identical to fully
-        // disconnected on the tray icon, the primary UI while the panel is
-        // closed.
-        "rec" | "connecting" => (0xFF, 0xAA, 0x44),
-        _ => (0x8A, 0x88, 0x84),
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BadgeColor {
+    Green,
+    Amber,
+    Grey,
+}
+
+impl BadgeColor {
+    fn for_state(state: &str) -> Self {
+        match state {
+            "on" => Self::Green,
+            // "connecting" (found Ori, establishing the link) shares the same
+            // amber as "rec" (Syncing) — matching styles.css's
+            // `.h-dot.rec,.h-dot.connecting`. Without this arm, "connecting"
+            // fell into the `_` default below and looked identical to fully
+            // disconnected on the tray icon, the primary UI while the panel
+            // is closed.
+            "rec" | "connecting" => Self::Amber,
+            _ => Self::Grey,
+        }
+    }
+
+    fn rgb(self) -> (u8, u8, u8) {
+        match self {
+            Self::Green => (0x92, 0xC3, 0x53),
+            Self::Amber => (0xFF, 0xAA, 0x44),
+            Self::Grey => (0x8A, 0x88, 0x84),
+        }
     }
 }
 
 // Draws a filled circle (status color) over a thin dark outline circle in
 // the icon's bottom-right corner, onto a copy of the base icon's raw RGBA —
 // the outline keeps the dot legible against light or dark taskbar themes.
-fn badge_icon(base: &Image<'_>, state: &str) -> Image<'static> {
+fn render_badge_icon(base: &Image<'_>, color: BadgeColor) -> Image<'static> {
     let width = base.width();
     let height = base.height();
     let mut rgba = base.rgba().to_vec();
-    let (r, g, b) = badge_color(state);
+    let (r, g, b) = color.rgb();
 
     let min_dim = width.min(height) as f32;
     let radius = min_dim * 0.20;
@@ -150,14 +167,44 @@ fn badge_icon(base: &Image<'_>, state: &str) -> Image<'static> {
     Image::new_owned(rgba, width, height)
 }
 
+// The 3 possible badged-icon variants, rendered once at startup — `set_tray_status`
+// used to re-run the full per-pixel `render_badge_icon` sweep on every single
+// connection-state transition (including transient reconnect flapping), even
+// though there are only ever 3 distinct outputs. Cloning a cached `Image` is
+// just an owned-buffer copy, far cheaper than recomputing every pixel's
+// distance-to-center each time.
+struct TrayBadgeIcons {
+    green: Image<'static>,
+    amber: Image<'static>,
+    grey: Image<'static>,
+}
+
+impl TrayBadgeIcons {
+    fn build(base: &Image<'_>) -> Self {
+        Self {
+            green: render_badge_icon(base, BadgeColor::Green),
+            amber: render_badge_icon(base, BadgeColor::Amber),
+            grey: render_badge_icon(base, BadgeColor::Grey),
+        }
+    }
+
+    fn get(&self, color: BadgeColor) -> Image<'static> {
+        match color {
+            BadgeColor::Green => self.green.clone(),
+            BadgeColor::Amber => self.amber.clone(),
+            BadgeColor::Grey => self.grey.clone(),
+        }
+    }
+}
+
 // Mirrors the panel's own `setConn()` — called from `app.js` on every
 // connection-state transition (on/rec/off) so the tray icon never drifts
 // from what the panel already shows.
 #[tauri::command]
 fn set_tray_status(app: AppHandle, state: String) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else { return };
-    let Some(base) = app.default_window_icon().cloned() else { return };
-    let _ = tray.set_icon(Some(badge_icon(&base, &state)));
+    let Some(icons) = app.try_state::<TrayBadgeIcons>() else { return };
+    let _ = tray.set_icon(Some(icons.get(BadgeColor::for_state(&state))));
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -167,15 +214,18 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_notification::init())
         .manage(ble::BleState::default())
         .setup(|app| {
             let base_icon = app.default_window_icon().cloned();
             let mut tray_builder = TrayIconBuilder::with_id(TRAY_ID).tooltip("Orion");
             if let Some(icon) = &base_icon {
+                let icons = TrayBadgeIcons::build(icon);
                 // Matches `get_initial_state()`'s default ("off") so there's
                 // no flash of an unbadged icon before the frontend's first
                 // `setConn()` call lands.
-                tray_builder = tray_builder.icon(badge_icon(icon, "off"));
+                tray_builder = tray_builder.icon(icons.get(BadgeColor::Grey));
+                app.manage(icons);
             }
             tray_builder
                 .on_tray_icon_event(|tray, event| {
@@ -231,6 +281,9 @@ pub fn run() {
             set_tray_status,
             commands::get_initial_state,
             commands::hide_panel,
+            commands::show_and_focus_window,
+            commands::is_panel_visible,
+            commands::show_low_battery_notification,
             commands::force_reconnect,
             commands::ble_scan,
             commands::ble_start_pairing,
@@ -250,7 +303,6 @@ pub fn run() {
             commands::oauth_google,
             commands::oauth_microsoft,
             commands::oauth_signout,
-            commands::factory_reset,
             commands::clear_all,
             commands::firmware_install,
             commands::orion_update_install,

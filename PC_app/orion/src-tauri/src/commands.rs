@@ -287,7 +287,7 @@ async fn give_up_on_bond(app: &AppHandle, mut saved: crate::store::SavedState) {
     // iPhone bond down with it — same event, same treatment as the three
     // fields above.
     saved.phone_device_type = None;
-    let _ = crate::store::save(app, &saved).await;
+    let _ = crate::store::save(app, saved).await;
     crate::ble::clear_cached_identity(&app.state::<crate::ble::BleState>()).await;
     let _ = app.emit("conn-state", "off");
     let _ = app.emit("needs-repair", ());
@@ -336,6 +336,59 @@ pub async fn get_initial_state(app: AppHandle) -> InitialState {
 #[tauri::command]
 pub fn hide_panel(window: WebviewWindow) {
     let _ = window.hide();
+}
+
+/// JS-invokable counterpart to the internal `show_and_focus_panel` call the
+/// incoming-call takeover already uses (`ble::central`'s
+/// `ancs_call_state_watcher`) — lets app.js's low-battery warning raise the
+/// panel the same way even though it isn't driven by a BLE notify handler
+/// that already holds an `AppHandle`.
+#[tauri::command]
+pub fn show_and_focus_window(app: AppHandle) {
+    crate::show_and_focus_panel(&app);
+}
+
+/// Whether the panel is currently shown (`true`) or hidden — via the tray
+/// icon / in-app minimize button, both of which call `hide_panel` above, the
+/// only way this panel ever goes away short of quitting. app.js's low-battery
+/// warning (`showLowBatteryModal`) checks this first: visible → show the
+/// in-app modal as normal; hidden → fire a native OS notification instead
+/// (`show_low_battery_notification` below) rather than force the panel open,
+/// respecting the user's choice to keep Orion out of the way.
+#[tauri::command]
+pub fn is_panel_visible(window: WebviewWindow) -> bool {
+    window.is_visible().unwrap_or(false)
+}
+
+/// Native OS toast for the low-battery warning while the panel is hidden —
+/// Windows draws these bottom-right by default, so no manual positioning is
+/// needed. Returns the plugin's error (if any) as a string rather than
+/// swallowing it — there's no in-app fallback UI to show instead here (the
+/// whole point of this path is that the panel is intentionally hidden), but
+/// a silent failure was undiagnosable from outside; app.js logs whatever
+/// comes back to the devtools console. Also logged to stderr directly since
+/// devtools isn't always open.
+///
+/// KNOWN WINDOWS LIMITATION (tauri-plugin-notification's own docs): toasts
+/// "only work for installed apps" — running via `tauri dev`'s unpackaged
+/// binary has no registered AppUserModelID, so Windows shows the toast under
+/// a generic host-process name/icon (or, on some Windows 10 builds/configs,
+/// declines to render it at all) rather than failing loudly. If this keeps
+/// silently no-op'ing even with no error printed, build+install a real
+/// bundle (`tauri build`, then run the installed .exe, not the dev one) and
+/// re-test there before assuming the trigger logic itself is broken.
+#[tauri::command]
+pub fn show_low_battery_notification(app: AppHandle, title: String, body: String) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|e| {
+            eprintln!("[low-battery notification] failed to show: {e}");
+            e.to_string()
+        })
 }
 
 /// The header's manual reconnect button — visible only while disconnected
@@ -409,7 +462,7 @@ pub async fn ble_submit_passkey(app: AppHandle, passkey: String, profile: Profil
     saved.paired = true;
     saved.device_name = device_name;
     saved.profile = profile;
-    let _ = crate::store::save(&app, &saved).await;
+    let _ = crate::store::save(&app, saved).await;
 
     // Hand off to the same supervisor that watches a launch-time reconnect
     // — if this first pairing's link ever drops, Orion should keep trying
@@ -469,7 +522,7 @@ pub async fn save_profile(app: AppHandle, input: ProfileInput) -> Result<(), Str
     // Propagated, not swallowed — a disk-full/permissions failure here used
     // to be silently discarded while the command still reported success, so
     // the UI showed "saved" for an edit that never actually persisted.
-    crate::store::save(&app, &saved).await?;
+    crate::store::save(&app, saved).await?;
 
     // Best-effort immediate push, scoped to just Profile Info (+ Photo if
     // changed) — ble-protocol.md §6.0/§6.3. A failure here (most commonly
@@ -507,7 +560,7 @@ pub async fn save_timeoff(app: AppHandle, input: crate::ble::TimeOffInput) -> Re
         saved.time_off.photo_data_url = input.photo_data_url.clone();
     }
     // Propagated, not swallowed — see save_profile's comment on why.
-    crate::store::save(&app, &saved).await?;
+    crate::store::save(&app, saved).await?;
 
     // Best-effort immediate push — a failure here just means Ori gets it on
     // the next reconnect's hash-manifest delta instead.
@@ -521,7 +574,7 @@ pub async fn clear_timeoff(app: AppHandle) -> Result<(), String> {
     let mut saved = crate::store::load(&app).await.unwrap_or_default();
     saved.time_off = Default::default();
     // Propagated, not swallowed — see save_profile's comment on why.
-    crate::store::save(&app, &saved).await?;
+    crate::store::save(&app, saved).await?;
 
     let state = app.state::<crate::ble::BleState>();
     let _ = crate::ble::clear_time_off(&state).await;
@@ -532,15 +585,12 @@ pub async fn clear_timeoff(app: AppHandle) -> Result<(), String> {
 /// optional, absent keys leave Ori's current state unchanged. Presence
 /// (`p`) and weather (`w`/`d`/`u`) have no caller yet — Teams/weather-API
 /// integration is Phase D — but the write path itself is real and ready.
+/// Shortcut slot tokens ("1"/"2"/"3") aren't here — they ride their own
+/// `save_shortcuts` command below, which builds `DeviceSettingsWrite`
+/// directly, so this struct only needs the fields this command actually sets.
 #[derive(Deserialize, Default)]
 pub struct DeviceSettingsInput {
     p: Option<u8>,
-    #[serde(rename = "1")]
-    slot1: Option<String>,
-    #[serde(rename = "2")]
-    slot2: Option<String>,
-    #[serde(rename = "3")]
-    slot3: Option<String>,
     c: Option<u8>,
     h: Option<u8>,
     f: Option<u8>,
@@ -564,7 +614,7 @@ pub async fn save_device_settings(app: AppHandle, settings: DeviceSettingsInput)
         if let Some(c) = settings.c { saved.pending_clock_face = Some(c); }
         if let Some(h) = settings.h { saved.pending_time_format = Some(h); }
         if let Some(f) = settings.f { saved.pending_ancs_filter = Some(f); }
-        crate::store::save(&app, &saved).await?;
+        crate::store::save(&app, saved).await?;
     }
 
     let state = app.state::<crate::ble::BleState>();
@@ -572,15 +622,13 @@ pub async fn save_device_settings(app: AppHandle, settings: DeviceSettingsInput)
         &state,
         crate::ble::cbor::DeviceSettingsWrite {
             presence: settings.p,
-            slot1: settings.slot1,
-            slot2: settings.slot2,
-            slot3: settings.slot3,
             clock_face: settings.c,
             time_format: settings.h,
             ancs_filter: settings.f,
             weather_condition: settings.w,
             temperature: settings.d,
             temperature_unit: settings.u,
+            ..Default::default()
         },
     )
     .await;
@@ -594,7 +642,7 @@ pub async fn save_device_settings(app: AppHandle, settings: DeviceSettingsInput)
             if settings.c.is_some() { saved.pending_clock_face = None; }
             if settings.h.is_some() { saved.pending_time_format = None; }
             if settings.f.is_some() { saved.pending_ancs_filter = None; }
-            crate::store::save(&app, &saved).await?;
+            crate::store::save(&app, saved).await?;
         } else {
             // Not connected (or a transient failure) — the local edit is
             // already safely persisted above and run_sync flushes it on the
@@ -656,7 +704,7 @@ pub async fn save_shortcuts(app: AppHandle, slots: Vec<String>, combos: Vec<Vec<
     saved.shortcuts = [slot1.clone(), slot2.clone(), slot3.clone()];
     saved.combos = [combo1.clone(), combo2.clone(), combo3.clone()];
     // Propagated, not swallowed — see save_profile's comment on why.
-    crate::store::save(&app, &saved).await?;
+    crate::store::save(&app, saved).await?;
 
     // Favorite key combos never go over BLE (pc-app.md — host-side action
     // mapping is local to Orion) — just update the session cache
@@ -685,13 +733,13 @@ pub async fn unpair_phone(app: AppHandle) -> Result<(), String> {
     let state = app.state::<crate::ble::BleState>();
     let result = crate::ble::unpair_phone(&state).await;
     // Ends the iPhone's bond specifically — Ori's own identity is untouched,
-    // so unlike factory_reset this only clears the cached device type, not
+    // so unlike clear_all this only clears the cached device type, not
     // address/serial_number/manufacture_date (store::SavedState::
     // phone_device_type's doc comment).
     crate::ble::clear_cached_phone_device_type(&state).await;
     if let Some(mut saved) = crate::store::load(&app).await {
         saved.phone_device_type = None;
-        let _ = crate::store::save(&app, &saved).await;
+        let _ = crate::store::save(&app, saved).await;
     }
     result
 }
@@ -729,11 +777,10 @@ pub fn oauth_signout(provider: String) {
 }
 
 /// Stops whichever `supervise_connection_loop` is currently running, if any
-/// — see `BleState::supervisor_task`'s doc comment for why
-/// `factory_reset`/`clear_all` need to do this explicitly rather than
-/// letting the loop notice the resulting disconnect and report it on its
-/// own (that would race the frontend's own reset-triggered navigation to
-/// the setup wizard).
+/// — see `BleState::supervisor_task`'s doc comment for why `clear_all`
+/// needs to do this explicitly rather than letting the loop notice the
+/// resulting disconnect and report it on its own (that would race the
+/// frontend's own reset-triggered navigation to the setup wizard).
 async fn abort_supervisor(state: &crate::ble::BleState) {
     let handle = state.supervisor_task.lock().await.take();
     if let Some(handle) = handle {
@@ -781,52 +828,9 @@ async fn unpair_stale_windows_bond(saved: &crate::store::SavedState) {
 }
 
 #[tauri::command]
-pub async fn factory_reset(app: AppHandle) {
-    let state = app.state::<crate::ble::BleState>();
-    abort_supervisor(&state).await;
-    let saved_before = crate::store::load(&app).await;
-    let _ = crate::ble::factory_reset(&state).await;
-    if let Some(saved) = &saved_before {
-        unpair_stale_windows_bond(saved).await;
-    }
-
-    // The just-reset device will re-advertise as a fresh unit; wipe the
-    // per-session caches so a re-pair in this same session pushes firmware
-    // defaults, not the previous owner's shortcut tokens (see
-    // ble::reset_session_caches).
-    crate::ble::reset_session_caches(&state).await;
-
-    // Drop the local bond record regardless of whether the write above
-    // succeeded (Ori may have already started rebooting before an ack
-    // arrived — see ble::factory_reset's doc comment), so Orion doesn't
-    // try to reconnect to a device that just wiped its own bond on next
-    // launch. pc-app.md: "Orion's local profile cache is untouched," so
-    // only `paired`/`device_name`/identity are cleared, not the cached
-    // profile. Identity (address/serial_number/manufacture_date) IS cleared
-    // here, unlike profile: it's specific to the physical unit that was just
-    // wiped, not authored data Orion re-pushes on the next pair regardless
-    // (provisioning.md — the values themselves survive on Ori's own factory
-    // partition, but Orion has no way to confirm this device is still the
-    // same one out from under a fresh pairing ceremony without asking again).
-    if let Some(mut saved) = saved_before {
-        saved.paired = false;
-        saved.device_name = String::new();
-        saved.address = None;
-        saved.serial_number = None;
-        saved.manufacture_date = None;
-        // The wiped device's iPhone bond is gone too (ble-protocol.md §2),
-        // so its cached model name is no longer trustworthy either.
-        saved.phone_device_type = None;
-        let _ = crate::store::save(&app, &saved).await;
-    }
-}
-
-#[tauri::command]
 pub async fn clear_all(app: AppHandle) {
-    // This is the button the UI actually calls (the Reset modal was
-    // consolidated to a single action, memory.md) — factory_reset above is
-    // otherwise unreachable from the frontend right now, but kept as its
-    // own command for anything that wants "reset the device only."
+    // The Reset modal exposes a single consolidated action (memory.md) — this
+    // is the only reset command the frontend calls.
     let state = app.state::<crate::ble::BleState>();
     abort_supervisor(&state).await;
     let saved_before = crate::store::load(&app).await;
@@ -922,5 +926,5 @@ pub async fn set_autostart_enabled(app: AppHandle, enabled: bool) -> Result<(), 
 pub async fn set_language(app: AppHandle, code: String) -> Result<(), String> {
     let mut saved = crate::store::load(&app).await.unwrap_or_default();
     saved.language = Some(code);
-    crate::store::save(&app, &saved).await
+    crate::store::save(&app, saved).await
 }

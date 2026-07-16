@@ -14,7 +14,7 @@
 //   - Notification ICONS only — never content or counts displayed on the icon
 //   - Tapping an icon fires an ANCS GetNotificationAttributes request for the
 //     Title and Body, which are shown in modal_ancs_notification
-//   - MAX_ANCS_NOTIFICATIONS = 50 queue depth (PSRAM-backed detail store);
+//   - MAX_ANCS_NOTIFICATIONS = 100 queue depth (PSRAM-backed detail store);
 //     MAX_ANCS_ICONS = 5 visible
 //
 // This module also handles the BLE connection setup for the iPhone link
@@ -123,6 +123,17 @@ const char* phone_name();
 // same encrypted-link/bonded-peers treatment, and the same disconnect-
 // survives-until-unpair caching, as phone_name() above.
 const char* phone_device_type();
+
+// "iPhone" or "iPad" once phone_device_type() is known — Ori bonds with
+// either in the same slot (connectivity.md), and Apple's own naming means
+// every resolved/raw device_type string already starts with one or the
+// other, so this is a plain prefix check, no extra state. Before the very
+// first successful model read of a fresh bond (device_type still ""),
+// returns the generic "iPhone or iPad" instead of guessing — the same
+// wording used pre-bond (setup Step 3 / the runtime re-pair screen). Lets UI
+// text (modal_iphone_info.cpp, modal_unpair_phone.cpp) say the right noun
+// without hardcoding "iPhone".
+const char* phone_kind_word();
 
 // Snapshot of the iPhone's live notification stats + link signal, for the
 // on-device iPhone Info/Stats overlay (modal_iphone_info) and the Phone Bond

@@ -112,7 +112,7 @@
                state is shown via a diagonal slash (.phone-slash), not a colour
                change — legible regardless of red/grey colour perception, and
                matches Ori's own status-bar phone icon (screen-layout.md). -->
-          <div class="h-ico h-ico-lg" id="phoneIco" title="iPhone connected" onclick="openIphoneInfoModal()" style="display:none;">
+          <div class="h-ico h-ico-lg" id="phoneIco" title="iPhone or iPad connected" onclick="openIphoneInfoModal()" style="display:none;">
             <svg width="21" height="21" viewBox="0 0 20 20" fill="none">
               <rect x="5" y="1.5" width="10" height="17" rx="2.2" stroke="currentColor" stroke-width="1.7" />
               <path d="M8.5 15.5h3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
@@ -931,7 +931,7 @@
           <div class="about-row"><span id="oriInfoAddrLbl">Address</span><span id="oriInfoAddr" style="font-family:ui-monospace,'Cascadia Mono',Consolas,monospace;font-size:12.5px;">—</span></div>
           <div class="about-row"><span id="oriInfoSnLbl">Serial Number</span><span id="oriInfoSn" style="font-family:ui-monospace,'Cascadia Mono',Consolas,monospace;font-size:12.5px;">—</span></div>
           <div class="about-row"><span id="oriInfoMfgLbl">Manufactured</span><span id="oriInfoMfg">—</span></div>
-          <div class="about-row"><span id="oriInfoPhoneLbl">iPhone</span><span id="oriInfoPhone">—</span></div>
+          <div class="about-row"><span id="oriInfoPhoneLbl">iPhone or iPad</span><span id="oriInfoPhone">—</span></div>
           <div class="about-row"><span id="oriInfoSyncLbl">Synced</span><span id="oriInfoSync">—</span></div>
         </div>
         <div class="btn-row" style="margin-top:16px;">
@@ -1046,14 +1046,27 @@
       </div>
     </div>
 
-    <!-- Unpair iPhone -->
+    <!-- Unpair iPhone/iPad -->
     <div class="modal-bg" id="m-unpair-phone">
       <div class="modal">
-        <div class="modal-title" id="unpairPhoneTitle">Unpair iPhone</div>
-        <div class="modal-body" id="unpairPhoneBody">The paired iPhone will stop sharing notifications with Ori. Re-pair a phone from Ori's own screen when you're ready.</div>
+        <div class="modal-title" id="unpairPhoneTitle">Unpair iPhone or iPad</div>
+        <div class="modal-body" id="unpairPhoneBody">The paired iPhone or iPad will stop sharing notifications with Ori. Re-pair a phone from Ori's own screen when you're ready.</div>
         <div class="btn-row" style="margin-top:16px;">
           <button class="btn btn-sec btn-full" id="unpairPhoneCancelBtn" onclick="hideModal('m-unpair-phone')">Cancel</button>
           <button class="btn btn-dng btn-full" id="unpairPhoneBtn" onclick="doUnpairPhone()">Unpair</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Low battery warning — shown once per below-20% dip (checkLowBattery() in app.js),
+         re-armed by a recovery above 20% or a fresh reconnection. Brings Orion to the
+         foreground first (show_and_focus_window) so it surfaces even if minimized. -->
+    <div class="modal-bg" id="m-low-battery">
+      <div class="modal">
+        <div class="modal-title" id="lowBatteryTitle">Low Battery</div>
+        <div class="modal-body" id="lowBatteryBody">iPhone is at 15% battery.</div>
+        <div class="btn-row" style="margin-top:16px;">
+          <button class="btn btn-primary btn-full" id="lowBatteryOkBtn" onclick="hideModal('m-low-battery')">OK</button>
         </div>
       </div>
     </div>

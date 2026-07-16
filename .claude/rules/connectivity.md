@@ -6,7 +6,7 @@ Ori has **three logical channels**:
 |---|---|---|
 | **USB CDC** (USB-C power cable) | Orion → Ori | Firmware update only — see `ota.md` |
 | **BLE Ori Sync Service** (custom UUID, encrypted+bonded, 18 chars) | bidirectional | Profile, photo, meetings, Time Off, time, backlight, factory reset, sync manifest, Controls-mode commands, host volume state, media metadata, media album art, filtered ANCS notification/call relay (`ble-protocol.md` §13) |
-| **iPhone ANCS** (BLE, separate bond) | iPhone → Ori (+ call actions Ori → iPhone) | Notification-icon awareness (view-only) + incoming/active call control (Answer/Decline/End) |
+| **iPhone/iPad ANCS** (BLE, separate bond) | phone → Ori (+ call actions Ori → phone) | Notification-icon awareness (view-only) + incoming/active call control (Answer/Decline/End) |
 
 No standard BLE HOGP — all Controls-mode interactions ride the custom Ori Sync Service; Orion bridges to OS-level APIs. The mode-toggle is **hidden whenever the BLE link to Orion is down**. Full GATT contract: `ble-protocol.md`. Controls-mode UI: `media-mode.md`.
 
@@ -41,11 +41,11 @@ Profile, photo, Time Off, and pairing bonds are cached in NVS and survive power 
 
 **Factory-reset handling:** adv flag `0x01 SETUP` → Orion deletes its bond without connecting; LTK mismatch is the fallback. Both paths stop the reconnect loop until the user re-pairs. See `ble-protocol.md` §7.1–7.2.
 
-## 2. iPhone ↔ Ori (ANCS)
+## 2. iPhone/iPad ↔ Ori (ANCS)
 
-iPhone only — ANCS is Apple-proprietary; Android is explicitly out of scope.
+iPhone or iPad — ANCS is Apple-proprietary; Android is explicitly out of scope. Both product lines expose the identical GATT surface Ori relies on (ANCS, Device Information Service's Model Number String, Battery Service, Current Time Service), so the same bond slot, pairing flow, and firmware/Orion code paths serve either device — see `ble-protocol.md`'s `iphone_model_map` note and `provisioning.md`-style read-only resolution. **UI text adapts to whichever is actually bonded**: the generic "iPhone or iPad" before any device has connected long enough to report its Model Number String (setup Step 3, the runtime re-pair screen), then the specific "iPhone" or "iPad" everywhere else once known — `ancs_client::phone_kind_word()` on Ori, the matching `phoneKindWord()` helper in Orion's `app.js`, both a plain prefix check on Apple's own iPhone*/iPad* naming, no extra wire state.
 
-- iPhone and PC connectivity are completely independent.
+- The bonded phone and PC connectivity are completely independent.
 - ANCS provides **notification icons** in the status bar. Tapping an icon opens a full-screen overlay (title + body); dismissed via **Close** button only. Message/content notifications are view-only — no composing or sending a reply. The one exception is call control: a still-ringing or active call's overlay instead shows Answer/Decline (or End call), since ANCS exposes those as a binary accept/reject action on the notification itself, not authored content (`modal_incoming_call`, `ancs_client::answer_notification`/`dismiss_notification`). See `product-intent.md`.
 - Icons appear and disappear based on unread notification state.
 - A **phone icon** is always visible in the status bar: always the neutral colour — disconnected adds a diagonal slash across the glyph rather than swapping to danger red, so the state reads correctly regardless of red/grey colour perception (`memory.md`). ANCS notification icons are hidden while disconnected.

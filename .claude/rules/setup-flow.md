@@ -13,12 +13,12 @@ A **3-dot** progress indicator is anchored at a fixed Y position near the bottom
 | Welcome | All 3 dots inactive | Ori wordmark; "Start" button advances |
 | Step 1 — Install Orion | Dot 0 active | Visit `ori.app/orion` on PC; user taps Next after install |
 | Step 2 — Link Orion | Dot 1 active | Base: BLE name + spinner. **Passkey modal** overlays when Orion connects. **Orioning modal** overlays during sync (progress ring, "A busy day ahead…"). Both modals dismissed automatically by state transitions — not by the user. |
-| Step 3 — iPhone pairing | Dot 2 active | Optional; user may skip; pairing can be done later via long-press |
+| Step 3 — iPhone/iPad pairing | Dot 2 active | Optional; user may skip; pairing can be done later via long-press. Screen copy reads "Connect on iPhone or iPad" since the device isn't bonded yet — see `connectivity.md` §2 |
 | Setup complete | Dots **hidden** | Brief acknowledgement before transitioning to normal runtime |
 
-### iPhone bond — forced reconnect (first-boot AND runtime re-pair)
+### iPhone/iPad bond — forced reconnect (first-boot AND runtime re-pair)
 
-iOS doesn't reliably flush the ANCS notification backlog (the "PreExisting" replay) on the **same connection** where the bond was just created — only on connections after that. An iOS-side quirk of the fresh bond itself, not first-boot-specific — a runtime re-pair without this fix never loads ANCS icons either. So after **any** iPhone bond completes and ANCS subscribes (Step 3 first-boot, or a later runtime re-pair), Ori deliberately drops the iPhone link and lets it auto-reconnect (bonded-disconnect → re-advertise → iOS auto-reconnect) — that reconnect is what triggers iOS to deliver the backlog.
+iOS/iPadOS doesn't reliably flush the ANCS notification backlog (the "PreExisting" replay) on the **same connection** where the bond was just created — only on connections after that. An iOS-side quirk of the fresh bond itself, not first-boot-specific — a runtime re-pair without this fix never loads ANCS icons either. So after **any** iPhone/iPad bond completes and ANCS subscribes (Step 3 first-boot, or a later runtime re-pair), Ori deliberately drops the phone link and lets it auto-reconnect (bonded-disconnect → re-advertise → iOS auto-reconnect) — that reconnect is what triggers iOS to deliver the backlog.
 
 Timing differs by path (`ble_manager::run_pending_ancs_backlog_reconnect()`):
 
@@ -51,7 +51,7 @@ Both screens share the same wordmark + title + description + primary-button stac
 - If PC pairing fails, stay on Step 2 and allow retry.
 - No backward navigation through steps.
 - The only alternative exit is factory reset (long-press profile photo).
-- iPhone pairing is optional; user may skip and pair later by tapping the status-bar phone icon.
+- iPhone/iPad pairing is optional; user may skip and pair later by tapping the status-bar phone icon.
 
 ## Factory Reset
 
@@ -60,11 +60,11 @@ Both screens share the same wordmark + title + description + primary-button stac
 - Erases: profile, meetings, Time Off, and pairing bonds.
 - Device returns to first-boot setup state.
 
-## Runtime Re-Pair iPhone
+## Runtime Re-Pair iPhone/iPad
 
-- **Trigger**: tap the status-bar phone icon while the iPhone is disconnected (the icon is always visible; red = disconnected). If a stale bond exists it is wiped automatically so the iPhone slot reopens.
-- Tapping the phone icon while **connected** opens the **Unpair iPhone** modal instead (personalised with the phone's GAP device name).
+- **Trigger**: tap the status-bar phone icon while the phone is disconnected (the icon is always visible; red = disconnected). If a stale bond exists it is wiped automatically so the slot reopens.
+- Tapping the phone icon while **connected** opens the **Unpair** modal instead (personalised with the phone's GAP device name; title reads "Unpair iPhone"/"Unpair iPad" once the Model Number String is known, else the generic "Unpair iPhone or iPad" — `connectivity.md` §2).
 - Available from every runtime state (not during first-boot setup).
 - Status bar **hidden** during re-pair — layout identical to Step 3.
 - A Cancel button returns to the main screen.
-- **Forced reconnect applies here too** — see "iPhone bond — forced reconnect" above. Once bonding completes, Ori immediately drops and lets the iPhone auto-reconnect so ANCS delivers its notification backlog; the phone icon may briefly show disconnected/reconnecting on the screen the re-pair returned to.
+- **Forced reconnect applies here too** — see "iPhone/iPad bond — forced reconnect" above. Once bonding completes, Ori immediately drops and lets the phone auto-reconnect so ANCS delivers its notification backlog; the phone icon may briefly show disconnected/reconnecting on the screen the re-pair returned to.

@@ -389,7 +389,7 @@ void build_phone_pairing(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
     lv_obj_t* mid = make_mid(content);
 
     lv_obj_t* h = lv_label_create(mid);
-    lv_label_set_text(h, "Connect on iPhone");
+    lv_label_set_text(h, "Connect on iPhone or iPad");
     lv_obj_set_style_text_color(h, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(h, theme::font_display(), 0);
     lv_obj_set_style_text_align(h, LV_TEXT_ALIGN_CENTER, 0);
@@ -405,9 +405,9 @@ void build_phone_pairing(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
     lv_obj_set_style_pad_bottom(spinner, 8, 0);
 
     // Runtime re-pair (prev_screen set) just returns to the launching screen, so
-    // label it "Close". During first-time setup it skips the optional iPhone
-    // step and advances, so it stays "Skip". (on_skip_phone_clicked branches on
-    // prev_screen to do the right thing in each case.)
+    // label it "Close". During first-time setup it skips the optional iPhone/
+    // iPad step and advances, so it stays "Skip". (on_skip_phone_clicked
+    // branches on prev_screen to do the right thing in each case.)
     ui::make_btn(content, s->prev_screen ? "Close" : "Skip",
         ui::BtnStyle::Tertiary,
         on_skip_phone_clicked, screen,
@@ -426,7 +426,7 @@ void build_complete(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
     // Persist "setup done" the instant the Complete screen appears — NOT only
     // after the 5 s linger / button. Otherwise a power cycle while this screen
     // is showing would still read provisioned=false + awaiting_phone=true and
-    // resume to Step 4 ("Connect on iPhone") — confusing, since pairing is
+    // resume to Step 4 ("Connect on iPhone or iPad") — confusing, since pairing is
     // already done. Marking here makes a power cycle boot straight to runtime.
     // (on_setup_complete() also calls this later; it's idempotent.)
     nvs::mark_setup_complete();

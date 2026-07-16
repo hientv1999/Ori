@@ -273,13 +273,25 @@ PhoneBondStatus = {            // Ori → Orion, notify + readable (CBOR)
   "c": bool,     // connected. true = BLE link to iPhone is currently up.
   "n": text,     // name.      iPhone's GAP Device Name (e.g. "Xander's iPhone"), or ""
                  //            when not connected/read failed. ≤ 63 UTF-8 bytes.
-  "d": text,     // device_type. iPhone's marketing model name, e.g. "iPhone 17 Pro Max".
-                 //              Device Information Service (0x180A / Model Number String
-                 //              0x2A24) actually returns Apple's internal hardware identifier
-                 //              (e.g. "iPhone18,2"), NOT a marketing name — Ori resolves it
-                 //              via a compiled-in identifier→name table (ancs_client.cpp's
-                 //              kIphoneModels) before ever putting it on the wire, so Orion
-                 //              can just display this string as-is, no resolution of its own.
+  "d": text,     // device_type. The bonded phone's marketing model name — iPhone or iPad,
+                 //              e.g. "iPhone 17 Pro Max" or "iPad Pro 12.9-inch (6th gen) —
+                 //              Wi-Fi + Cellular". Device Information Service (0x180A / Model
+                 //              Number String 0x2A24) actually returns Apple's internal
+                 //              hardware identifier (e.g. "iPhone18,2" or "iPad14,6"), NOT a
+                 //              marketing name — Ori resolves it via a compiled-in
+                 //              identifier→name table (iphone_model_map.h's
+                 //              iphone_model::resolve(), which covers both product lines)
+                 //              before ever putting it on the wire, so Orion can just display
+                 //              this string as-is, no resolution of its own. Entries that
+                 //              would otherwise collapse to an identical name across sibling
+                 //              identifiers (every iPad2,x is "iPad 2") carry a short
+                 //              connectivity/radio/region suffix instead — "iPad 2 — Wi-Fi +
+                 //              3G (GSM)" vs "(CDMA)" vs plain "iPad 2 — Wi-Fi" — which is why
+                 //              this field is 63 bytes, not a short fixed name. Also how both
+                 //              sides tell "iPhone" from "iPad" for UI text
+                 //              (ancs_client::phone_kind_word() / app.js's phoneKindWord()) —
+                 //              a plain prefix check, since every resolved/raw string already
+                 //              starts with one or the other.
                  //              Falls back to the raw identifier itself (still ≤ 31 bytes,
                  //              e.g. "iPhone19,3") for a model newer than Ori's firmware
                  //              table — never blank just because it's unrecognized.
@@ -667,8 +679,8 @@ No wire-level protocol version negotiation or compatibility gate — Ori and Ori
 | `DeviceSettings.manufacture_date` | ≤ 16 chars, ISO-8601 "YYYY-MM-DD" (firmware `g_mfg[16]`) — read-only, provisioning.md |
 | `DeviceSettings.signal_bars` | uint 0–4 — read-only, live |
 | `PhoneBondStatus.name` | ≤ 63 UTF-8 bytes (firmware `g_phone_name[64]` minus null terminator) |
-| `PhoneBondStatus.device_type` | ≤ 31 UTF-8 bytes (firmware `g_phone_device_type[32]` minus null terminator) |
-| `PhoneBondStatus.missed_calls/unread_messages/total_notifications` | uint 0–255 (capped at `MAX_ANCS_NOTIFICATIONS` = 50 in practice) |
+| `PhoneBondStatus.device_type` | ≤ 63 UTF-8 bytes (firmware `g_phone_device_type[64]` minus null terminator) — widened from 32 so `iphone_model_map.h`'s connectivity/region suffixes fit (e.g. "iPad Pro 12.9-inch (5th gen) — Wi-Fi + Cellular (Global)", the longest current entry at 58 bytes) |
+| `PhoneBondStatus.missed_calls/unread_messages/total_notifications` | uint 0–255 (capped at `MAX_ANCS_NOTIFICATIONS` = 100 in practice) |
 | `PhoneBondStatus.signal_bars` | uint 0–4 |
 | `PhoneBondStatus.battery_level` | uint 0–100 |
 | Unpair Phone Command | exactly 4 bytes (0x55 0x4E 0x50 0x52) |
