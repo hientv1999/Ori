@@ -1391,6 +1391,28 @@ const NOW_PLAYING_FALLBACK_POLL_INTERVAL: Duration = Duration::from_millis(6000)
 /// Ori's display back up.
 const SEEK_CORRECTION_THRESHOLD_SECS: u64 = 5;
 
+/// How long after a track-identity change to fire synthetic art rechecks,
+/// on top of whatever real GSMTC events arrive on their own. Two staggered
+/// delays, not one — there's no measured data on how long Chrome (or any
+/// other source) actually takes between standing up its SMTC session and
+/// pushing real artwork, so a single guessed delay risks firing before the
+/// real art has landed (recheck wasted) or later than necessary (wrong art
+/// shown longer); a short-then-long pair hedges both directions without
+/// turning this into a poll loop. Some sources — Chrome prominent among
+/// them — stand up their SMTC session (title/artist, a placeholder
+/// thumbnail) before the page's own JS has fetched and pushed the real
+/// artwork, and don't reliably re-fire `MediaPropertiesChanged` once it
+/// lands: confirmed by the Windows volume flyout (which queries GSMTC live,
+/// on demand) showing the correct art for a track Orion is still showing
+/// the placeholder for. `check_and_push_now_playing` hashes the actual
+/// thumbnail bytes regardless of *why* it was asked to recheck
+/// (`NowPlayingState::last_art_hash`'s doc comment), so each delayed,
+/// synthetic `NowPlayingChange::Properties` ping rides the exact same path a
+/// real GSMTC event would — if the first recheck fires before the real art
+/// is ready, the second is what recovers it. Adjust these once real-world
+/// timing is actually observed rather than guessed.
+const ART_RECHECK_DELAYS: [Duration; 2] = [Duration::from_millis(1000), Duration::from_millis(3000)];
+
 /// `run_album_art_push`'s cap on how long it waits for an outstanding
 /// MediaMetadata write to drain before starting its own write anyway (see
 /// that wait's own doc comment for why it waits at all). A normal metadata
@@ -1458,6 +1480,30 @@ struct NowPlayingState {
     last_pushed_position: Option<(u32, u64)>,
 }
 
+/// Fires one delayed, synthetic `NowPlayingChange::Properties` ping per
+/// `ART_RECHECK_DELAYS` entry — that constant's doc comment covers why
+/// there are two. Each rides the same `now_playing_tx`/`now_playing_rx`
+/// mailbox a real GSMTC event uses, so it coalesces with a genuine event
+/// (or the other synthetic ping) the normal way if they land close together
+/// (the select loop's own `while let Ok(next) = now_playing_rx.try_recv()`
+/// drain) instead of forcing a redundant re-fetch. `None` when
+/// `media_bridge`'s GSMTC watcher never set up — the select loop's own
+/// `now_playing_rx` branch is guarded `if now_playing_active` in that case,
+/// so a ping sent here would just sit in the mailbox unread for the rest of
+/// the connection; the fallback poll already re-checks art unconditionally
+/// on every tick (`NOW_PLAYING_FALLBACK_POLL_INTERVAL`), so nothing is lost
+/// by skipping it.
+fn schedule_art_recheck(now_playing_tx: Option<&tokio::sync::mpsc::UnboundedSender<media::NowPlayingChange>>) {
+    let Some(tx) = now_playing_tx else { return };
+    for delay in ART_RECHECK_DELAYS {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let _ = tx.send(media::NowPlayingChange::Properties);
+        });
+    }
+}
+
 /// Fetches current now-playing state and pushes metadata and album art to
 /// Ori as two fully independent deltas — the reusable body behind both
 /// `media_bridge`'s event-driven path (a GSMTC change ping) and its
@@ -1475,6 +1521,7 @@ async fn check_and_push_now_playing(
     chr_art: Option<&Characteristic>,
     np: &mut NowPlayingState,
     check_art: bool,
+    now_playing_tx: Option<&tokio::sync::mpsc::UnboundedSender<media::NowPlayingChange>>,
 ) {
     match media::now_playing().await {
         Ok(Some(now)) => {
@@ -1492,6 +1539,7 @@ async fn check_and_push_now_playing(
                     // `abort_album_art_task`'s doc comment for why this
                     // can't just wait for that function to get around to it.
                     abort_album_art_task(app).await;
+                    schedule_art_recheck(now_playing_tx);
                 }
                 np.last_track = (now.title.clone(), now.artist.clone(), now.playing);
                 np.last_pushed_position = now.position_s.map(|p| (p, now_epoch_secs()));
@@ -1528,7 +1576,20 @@ async fn check_and_push_now_playing(
             // on its own MediaPropertiesChanged ping, was never even looked
             // at). Only run at all when this ping's source could plausibly
             // carry an art change.
-            if check_art {
+            //
+            // Deliberately skipped right here for a fresh track-identity
+            // change (`identity_changed`): checking immediately, right at
+            // the event, would almost always still grab the same
+            // not-yet-loaded placeholder `ART_RECHECK_DELAYS`'s doc comment
+            // describes — wasting an OS thumbnail fetch, and on a real art
+            // change, a BLE push of art that gets superseded a second
+            // later. `schedule_art_recheck` (called above, inside the
+            // `identity_changed` branch) already covers this case with its
+            // own two delayed pings; a same-track art-only ping
+            // (`identity_changed == false`, e.g. a live radio stream
+            // rotating art) has no placeholder race and still checks
+            // immediately here as before.
+            if check_art && !identity_changed {
                 check_and_push_album_art(app, peripheral, chr_art, np).await;
             }
         }
@@ -1636,7 +1697,10 @@ async fn media_bridge(app: AppHandle, peripheral: Peripheral) {
     // `now_playing_active` stays false and the volume-poll branch below
     // covers now-playing changes as a (slower) fallback instead.
     let (now_playing_tx, mut now_playing_rx) = tokio::sync::mpsc::unbounded_channel::<media::NowPlayingChange>();
-    let _now_playing_watcher = media::watch_now_playing(now_playing_tx).await.ok();
+    // `media_bridge` keeps its own clone (rather than handing over the only
+    // copy) so `schedule_art_recheck` can still post into this mailbox after
+    // `watch_now_playing` takes ownership of the one it needs.
+    let _now_playing_watcher = media::watch_now_playing(now_playing_tx.clone()).await.ok();
     let mut now_playing_active = _now_playing_watcher.is_some();
 
     // Event-driven volume/mute detection (WASAPI's own
@@ -1692,7 +1756,7 @@ async fn media_bridge(app: AppHandle, peripheral: Peripheral) {
                     return;
                 }
                 let check_art = kind == media::NowPlayingChange::Properties;
-                check_and_push_now_playing(&app, &peripheral, &chr_media, chr_art.as_ref(), &mut np, check_art).await;
+                check_and_push_now_playing(&app, &peripheral, &chr_media, chr_art.as_ref(), &mut np, check_art, Some(&now_playing_tx)).await;
             }
             maybe_vol_ping = volume_rx.recv(), if volume_active => {
                 let Some(()) = maybe_vol_ping else {
@@ -1723,7 +1787,11 @@ async fn media_bridge(app: AppHandle, peripheral: Peripheral) {
                     return;
                 }
                 // Blind poll with no event-kind info — always re-check art too.
-                check_and_push_now_playing(&app, &peripheral, &chr_media, chr_art.as_ref(), &mut np, true).await;
+                // No synthetic-recheck sender: this branch only runs when the
+                // GSMTC watcher itself never set up (`schedule_art_recheck`'s
+                // doc comment), and this same poll already re-checks art
+                // unconditionally on its own next tick regardless.
+                check_and_push_now_playing(&app, &peripheral, &chr_media, chr_art.as_ref(), &mut np, true, None).await;
             }
         }
     }
