@@ -12,7 +12,7 @@ Status bar and profile card are visible in all three modes.
 ## Mode-toggle button (status bar)
 
 - **Position:** rightmost status-bar element always. Right-cluster order: `[ANCS icons] [phone icon (always visible)] [mode-toggle]`.
-- **Hidden when Orion is offline** — except in Clock, where it always shows as a return button. On PC disconnect while in Media mode: auto-revert to Calendar + hide toggle.
+- **Hidden until Orion has fully synced** — not merely BLE-connected; a bonded reconnect keeps it hidden through the Reconnect-Syncing window and shows it only once `RUNTIME_READY` lands (the same moment the profile-card border flips green — `screen-layout.md`). Also hidden whenever Orion is offline — except in Clock, where it always shows as a return button. On PC disconnect while in Media mode: auto-revert to Calendar + hide toggle.
 - **Size:** 60 × 60 px, 12 px corner radius.
 - **Icon shows destination, not current state:**
   - Calendar mode → headphones on neutral `--screen-elev` background ("tap to enter Controls")

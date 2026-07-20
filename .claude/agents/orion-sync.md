@@ -14,7 +14,7 @@ You are the Orion Sync Agent. You are the PC-side counterpart to the firmware's 
 - Implement the GATT client side of the protocol spec defined by the **Product/System Architect Agent**
 
 ### Sync protocol implementation
-`pc-app.md`'s "What the PC App Must Implement" is the source of truth for every payload, push trigger, and timing rule (profile/calendar/Time Off/time/presence/shortcuts/clock face, the hash-manifest delta sync, chunked-write flow control) — implement that list; don't restate it here. One thing called out specifically because it's easy to miss:
+`pc-app.md`'s "What the PC App Must Implement" is the source of truth for every payload, push trigger, and timing rule (profile/calendar/Time Off/time/shortcuts/clock face, the hash-manifest delta sync, chunked-write flow control) — implement that list; don't restate it here. One thing called out specifically because it's easy to miss:
 - **Errors/retries**: NACK and reconnect-from-`BEGIN` semantics are in `ble-protocol.md` §5/§8 — don't invent your own retry policy.
 
 ### Firmware update (USB CDC)

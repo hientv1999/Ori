@@ -88,7 +88,7 @@ Orion uses the mode flag to detect "Ori factory-reset since last bond" without c
 
 ## 3. Service and characteristics
 
-**One service, eighteen characteristics** — plus a separate BLE SIG standard service for firmware version (§3.1).
+**One service, nineteen characteristics** — plus a separate BLE SIG standard service for firmware version (§3.1).
 
 ```
 Ori Sync Service:  6F726900-0000-4F72-9F00-000000000000
@@ -116,6 +116,7 @@ Each characteristic UUID replaces bytes 4–5 of the base with the offset below.
 | 16 | **ANCS Notification** | `0010` | Read, Notify | Ori → Orion (notify) | Yes |
 | 17 | **ANCS Call State** | `0011` | Read, Notify | Ori → Orion (notify) | Yes |
 | 18 | **ANCS Notification Action** | `0012` | Write (response) | Orion → Ori | Yes |
+| 19 | **Lunar Holiday List** | `0013` | Write (no response) | Orion → Ori (chunked) | Yes |
 
 Reads/writes on encrypted characteristics over an unencrypted link return `INSUFFICIENT_AUTHENTICATION`. Chars 16–18 are covered in full in §13.
 
@@ -228,10 +229,7 @@ MediaMetadata = {                // Orion → Ori, write (+ Ori can notify on it
 
 DeviceSettings = {          // Orion → Ori, write (response). Fields optional; absent = unchanged.
                              // All present fields validated before any applied (atomic).
-                             // Applied immediately, outside BEGIN/END (like Clock Face/Presence).
-  "p": uint,     // presence. 0=Available 1=Busy 2=Away 3=Offline. Ephemeral (not in NVS) —
-                 // Orion re-writes every (re)connect; Ori shows Offline before first write
-                 // and immediately on BLE drop.
+                             // Applied immediately, outside BEGIN/END (like Clock Face).
   "1": text,     // shortcut_slot1. icon token ≤ 19 chars (§12). Unknown token hides the slot.
   "2": text,     // shortcut_slot2.
   "3": text,     // shortcut_slot3. "1"/"2"/"3" persisted to NVS; write-only-on-change,
@@ -244,18 +242,58 @@ DeviceSettings = {          // Orion → Ori, write (response). Fields optional;
                  // 2=Important (IncomingCall or ANCS Important flag) 3=All (default).
                  // NVS-persisted, write-only-on-change.
   "w": uint,     // weather_condition. 0=Clear 1=PartlyCloudy 2=Cloudy 3=Rain 4=Thunderstorm
-                 // 5=Snow 6=Fog. Ephemeral; always sent together with "d"+"u".
+                 // 5=Snow 6=Fog. Ephemeral; always sent together with "d"+"u"+"n"+"i".
   "d": int,      // temperature. Whole degrees in the unit "u" declares — Ori renders the raw
                  // integer verbatim, never converts. Signed (sub-zero). Ephemeral, with "w"+"u".
   "u": uint,     // temperature_unit. 0=Fahrenheit 1=Celsius. Ephemeral; a write with only
-                 // some of "w"/"d"/"u" present is ignored — always send all three together.
-  "k": uint      // seek_step_s. Double-tap-left/right-third-of-album-art seek step, in
+                 // some of "w"/"d"/"u"/"n"/"i" present is ignored — always send all five together.
+  "n": uint,     // is_night. 0=Day 1=Night. Ephemeral, with "w"+"d"+"u"+"i". Governs the
+                 // day/night variant of the weather glyph (screen-layout.md).
+  "i": uint,     // intensity. 0=None 1=Light 2=Moderate 3=Heavy — only meaningful for
+                 // Rain/Thunderstorm/Snow ("w" 3/4/5, all 3 levels) and Fog ("w" 6,
+                 // Light/Heavy only — only two real WMO fog codes to map from, no Moderate).
+                 // Always 0/None for Clear/PartlyCloudy/Cloudy, which have no intensity axis.
+                 // Ephemeral, with "w"+"d"+"u"+"n".
+  "k": uint,     // seek_step_s. Double-tap-left/right-third-of-album-art seek step, in
                  // seconds (1-60, default 10). NVS-persisted, write-only-on-change,
                  // read back on (re)connect — media-mode.md.
+  "g": uint,     // holiday_country. holiday_data::Country: 0=None 1=US 2=VN 3=CA 4=GB
+                 // 5=AU 6=ES 7=MX 8=FR — covers the primary country for each of
+                 // Orion's 4 supported UI languages (English/Vietnamese/Spanish/
+                 // French), plus Canada twice over. GB (not "UK") is the ISO
+                 // 3166-1 alpha-2 code for the United Kingdom. Selects which
+                 // compiled-in rule table (Fixed-date/NthWeekday/EasterOffset/
+                 // LastWeekday/WeekdayBefore/WeekdayOnOrAfter — no BLE dependency)
+                 // name_for() evaluates for the calendar-icon and month-view holiday
+                 // highlighting (screen-layout.md/state-machine.md). NVS-persisted.
+                 // Independent field — unlike the weather group above, applied whenever
+                 // present regardless of the other fields' presence. Orion derives this from
+                 // the same country its weather.rs location lookup already resolved (no
+                 // second geolocation call) and pushes it on every (re)connect alongside the
+                 // Lunar Holiday List below — see pc-app.md's holiday.rs section.
+  "j": uint      // holiday_region. Region within holiday_country — 0=None (national
+                 // only), else a per-country code (holiday_data.h's own table: e.g.
+                 // under CA, 1=BC 2=ON ... 10=QC 13=NU; under GB, 1=Scotland
+                 // 2=NorthernIreland; under AU, 1=NSW ... 8=NT; under ES, 1-19 across
+                 // its autonomous communities; under US, a modest 5-state set). A
+                 // region can ADD a holiday its country has no national equivalent
+                 // for (Quebec's Saint-Jean-Baptiste Day), REPLACE a national one on
+                 // the same date (Quebec's "National Patriots' Day" instead of
+                 // Victoria Day), or the national rule can EXCLUDE specific regions
+                 // entirely (Australia's June King's Birthday excludes Queensland,
+                 // which has its own October date, and Western Australia, which has
+                 // no fixed rule at all — see holiday_data.cpp). Vietnam, Mexico, and
+                 // every subdivision of France always resolve to 0 — no
+                 // well-documented regional variation found (Mexico, Vietnam) or the
+                 // needed geolocation granularity isn't available (France's
+                 // Alsace-Moselle carve-out is a *département*-level distinction,
+                 // finer than the *region*-level code Orion resolves — pc-app.md).
+                 // Same independent-field, NVS-persisted, every-(re)connect-push
+                 // treatment as holiday_country.
 }
 // Out-of-range field value → NACK_CBOR_DECODE via SyncControl notify.
 //
-// Read (Orion → Ori): returns all NVS-persisted fields ("c","h","f","1","2","3","k") plus three
+// Read (Orion → Ori): returns all NVS-persisted fields ("c","h","f","1","2","3","k","g","j") plus three
 // read-only identity/link fields (an incoming write simply never looks for these keys —
 // §4's "unknown keys ignored" gives them read-only semantics for free):
 //   "s": serial_number, "b": manufacture_date (ISO-8601 "YYYY-MM-DD") — from the write-once
@@ -265,8 +303,26 @@ DeviceSettings = {          // Orion → Ori, write (response). Fields optional;
 //     ladder as PhoneBondStatus's "s"). Windows' btleplug can only read a peripheral's RSSI
 //     from adverts, which stop once connected — Ori can read its live connection RSSI
 //     directly (ble_gap_conn_rssi), so it reports its own reading back instead.
-// Presence/weather not returned (ephemeral; Orion is source of truth). Orion reads on
+// Weather not returned (ephemeral; Orion is source of truth). Orion reads on
 // (re)connect to restore its settings UI without caching what it last wrote.
+
+LunarHolidayList = {       // Orion → Ori, write (char 0013). No BEGIN/END staging, no
+                           // manifest hash — same simple treatment as Media Album Art (§5).
+  "e": [uint, ...]         // epoch_days. Every Vietnamese Tet (lunar New Year) date from
+                           // 1970 through 2100, as epoch-days (days since 1970-01-01,
+                           // matching MeetingList's own day-rollover epoch convention).
+                           // Computed once per Orion session via the chinese-lunisolar-
+                           // calendar crate (pc-app.md) — no rule table can express a real
+                           // lunisolar calendar, unlike Easter's ecclesiastical
+                           // approximation, so this is the one holiday still needing a BLE
+                           // push. Ori commits the whole list to NVS on receipt
+                           // (holiday_data::set_lunar_days(), ~200 entries, capped by
+                           // MAX_LUNAR_DAYS) — once synced successfully one time, Tet
+                           // renders correctly fully offline forever after. Only
+                           // meaningful when holiday_country ("g" above) is VN; sent
+                           // unconditionally regardless of country (cheap, and simpler
+                           // than gating the push on the country value).
+}
 
 PhoneBondStatus = {            // Ori → Orion, notify + readable (CBOR)
   "b": bool,     // bonded.    true = iPhone NVS slot is occupied.
@@ -458,7 +514,7 @@ Offset  Size  Field
 
 ### Write type and flow control (throughput)
 
-Profile Photo, Meeting List, and Time Off Entry advertise **both** `Write` and `Write Without Response`; Media Album Art is Write-No-Response only. Orion SHOULD stream fragments Write-No-Response — it avoids the per-fragment ATT round-trip, letting many fragments ride each connection event (especially on the 2M PHY). This is the dominant throughput lever (≈5–10× over per-fragment Write-with-response).
+Profile Photo, Meeting List, and Time Off Entry advertise **both** `Write` and `Write Without Response`; Media Album Art and Lunar Holiday List are Write-No-Response only. Orion SHOULD stream fragments Write-No-Response — it avoids the per-fragment ATT round-trip, letting many fragments ride each connection event (especially on the 2M PHY). This is the dominant throughput lever (≈5–10× over per-fragment Write-with-response).
 
 Because Write-No-Response has no ATT-level pacing, Orion MUST bound how far it runs ahead of Ori so a fast burst can't overrun Ori's RX buffers:
 
@@ -538,11 +594,14 @@ Ori notifies Device Status = RUNTIME_RECONNECTING
 
 Orion writes Device Settings (shortcuts — always; clock face / ANCS filter if changed)
   → Applied immediately on Ori — outside the BEGIN/END staging pipeline.
-Orion writes Presence Status (via Device Settings "p" field)
-  → Also applied immediately.
-Orion writes Weather (via Device Settings "w"/"d"/"u" fields) — always, all three together
+Orion writes Weather (via Device Settings "w"/"n"/"i"/"d"/"u" fields) — always, all five together
   → Also applied immediately. Ori was showing no weather icon (or a stale one
     it can no longer trust) while disconnected — this repopulates it.
+Orion writes Device Settings "g" (holiday_country) + Lunar Holiday List — always, re-sending
+  the session-cached table with no recomputation (holiday.rs, pc-app.md).
+  → Also applied immediately, outside BEGIN/END. Best-effort like weather —
+    Ori already has NVS-cached copies of both from the last successful sync,
+    so a dropped push here just means the next reconnect retries.
 Orion writes Sync Manifest: { profile_sha, photo_sha, meetings_sha, to_sha }
 Ori compares against NVS/RAM hashes → notifies Sync Manifest: { needed: [...] }
 
@@ -573,10 +632,10 @@ Ori notifies Device Status = RUNTIME_READY → overlay dismissed.
 | Time Off Entry | Calendar event | Hash-check, push if needed |
 | Profile Info / Photo | User edit in Orion | Hash-check, push if needed |
 | Shortcut Config | User changes slot | Write Device Settings {"1","2","3"} outside BEGIN/END; read back on (re)connect |
-| Presence Status | Teams change or ~60 s poll | Write Device Settings {"p"} (only when value changes) |
-| Weather | Weather-API poll, ~15–30 min | Write Device Settings {"w","d","u"} together (only when any value changes) |
+| Weather | Weather-API poll, ~15–30 min | Write Device Settings {"w","n","i","d","u"} together (only when any value changes) |
 | Clock Face / Time Format / ANCS Filter | User changes setting | Write Device Settings {"c"}, {"h"}, or {"f"} |
 | Seek Step | User changes setting | Write Device Settings {"k"} outside BEGIN/END; read back on (re)connect |
+| Holiday Country / Lunar Holiday List | On every (re)connect | Write Device Settings {"g"} + Lunar Holiday List (char 0013), re-sending the session-cached table — no periodic re-poll, no user setting |
 
 Periodic refreshes set `RUNTIME_SYNCING` briefly but do **not** trigger the reconnecting overlay.
 
@@ -584,17 +643,17 @@ Periodic refreshes set `RUNTIME_SYNCING` briefly but do **not** trigger the reco
 
 Device Settings (char `000E`) is outside the BEGIN/END pipeline. Each field is ephemeral or user-configured:
 
-- **Presence** (`"p"`): ephemeral. Orion writes on every (re)connect and every Teams state change. Ori shows `Offline` before the first write and immediately on BLE drop.
-- **Weather** (`"w"`/`"d"`/`"u"`): ephemeral, same treatment as Presence — all three written together, on (re)connect and whenever the poll (~15–30 min) detects an actual change. Before the first write, and on BLE drop, Ori hides the weather icon/temperature entirely (no placeholder) — same "don't show what can't be verified" policy as Presence-offline.
+- **Weather** (`"w"`/`"n"`/`"i"`/`"d"`/`"u"`): ephemeral — all five written together, on (re)connect and whenever the poll (~15–30 min) detects an actual change. Before the first write, and on BLE drop, Ori hides the weather icon/temperature entirely (no placeholder) — "don't show what can't be verified."
 - **Shortcuts** (`"1"/"2"/"3"`): NVS-persisted, write-only-on-change. Orion reads back on (re)connect to populate its Quick Actions UI.
 - **Clock Face** (`"c"`): NVS-persisted, write-only-on-change — not on every reconnect.
 - **Time Format** (`"h"`): NVS-persisted, write-only-on-change. 0=24-hour (default), 1=12-hour; governs every wall-clock display on Ori.
 - **ANCS Filter** (`"f"`): NVS-persisted, write-only-on-change.
 - **Seek Step** (`"k"`): NVS-persisted, write-only-on-change. 1-60 seconds, default 10; how far double-tapping the left/right third of the album art seeks — `media-mode.md`.
+- **Holiday Country** (`"g"`) **and Holiday Region** (`"j"`): both NVS-persisted on Ori, but — unlike Shortcuts/Clock Face/Time Format/ANCS Filter/Seek Step above — Orion doesn't track a "did this change" state for either and simply re-sends both on every (re)connect, same as Weather; the values only ever change if the user's resolved location genuinely changes country/region mid-session (rare for a desk-based PC), so the redundant resend costs two bytes and needs no dirty-tracking. No user-facing setting drives either — Orion derives both automatically from the same location its weather.rs lookup resolves (country from the ISO 3166-1 code, region from the ISO 3166-2 subdivision code the SAME reverse-geocode/IP-lookup response already carries — no second network call). Always sent alongside the Lunar Holiday List (char 0013) — see `pc-app.md`.
 
-Orion can write any subset of fields in one Device Settings write (e.g. presence-only on a Teams change).
+Orion can write any subset of fields in one Device Settings write (e.g. clock-face-only on a user setting change).
 
-**Read on (re)connect:** Orion reads Device Settings once per connection to recover the seven NVS-persisted fields (`"c"`, `"h"`, `"f"`, `"1"`/`"2"`/`"3"`, `"k"`), so its settings UI shows correct values without caching what it last wrote. Presence is not returned (ephemeral; Orion is the source of truth).
+**Read on (re)connect:** Orion reads Device Settings once per connection to recover the seven NVS-persisted fields (`"c"`, `"h"`, `"f"`, `"1"`/`"2"`/`"3"`, `"k"`), so its settings UI shows correct values without caching what it last wrote. `"g"`/`"j"` are excluded from this read-back — Orion is their own source of truth (same reasoning `"s"`/`"b"`/weather already establish for other read-only-from-Ori's-perspective or Orion-sourced fields), so there's no "pending edit" to reconcile.
 
 **Notify (added 2026-07-13):** Ori also notifies the full Device Settings read-response payload whenever its own live `signal_bars` (`"r"`) bucket to Orion changes — sampled every 5 s while connected, notified only on an actual bucket change (0-4), mirroring Phone Bond Status's identical RSSI-poll-and-notify-on-change treatment for the iPhone link. This is the only field the notify exists for: the NVS-persisted fields above only ever change via an Orion write in the first place, so Orion already knows their new value the moment it sends one and gains nothing from being told again; `"s"`/`"b"` (serial/manufacture date) never change post-provisioning. Orion's Ori Info/Stats modal (`pc-app.md`) subscribes to this notify to show live signal bars while open, replacing an earlier fixed-interval poll on Orion's own side.
 
@@ -666,7 +725,6 @@ No wire-level protocol version negotiation or compatibility gate — Ori and Ori
 | `MediaMetadata.title` | ≤ 192 UTF-8 bytes |
 | `MediaMetadata.artist` | ≤ 96 UTF-8 bytes |
 | Media Album Art (JPEG, 484×216) | target 15–30 KB; hard cap 64 KB |
-| `DeviceSettings.presence` | uint 0–3 |
 | `DeviceSettings.slot1/2/3` | ≤ 19 chars each (firmware buffer) — icon token, e.g. "vol-mute" |
 | `DeviceSettings.clock_face` | uint 0–1 |
 | `DeviceSettings.time_format` | uint 0–1 |
@@ -674,10 +732,15 @@ No wire-level protocol version negotiation or compatibility gate — Ori and Ori
 | `DeviceSettings.weather_condition` | uint 0–6 |
 | `DeviceSettings.temperature` | int −40…140 (unit declared by `"u"` — see §4) |
 | `DeviceSettings.temperature_unit` | uint 0–1 |
+| `DeviceSettings.is_night` | uint 0–1 |
+| `DeviceSettings.intensity` | uint 0–3 (only 0, 1, or 3 valid when `weather_condition` is Fog — no Moderate, it has just two real WMO codes; 0 always when `weather_condition` has no intensity axis — see §4) |
 | `DeviceSettings.seek_step_s` | uint 1–60 (default 10) |
 | `DeviceSettings.serial_number` | ≤ 32 chars (firmware `g_serial[32]`, `factory_info.cpp`) — read-only, provisioning.md |
 | `DeviceSettings.manufacture_date` | ≤ 16 chars, ISO-8601 "YYYY-MM-DD" (firmware `g_mfg[16]`) — read-only, provisioning.md |
 | `DeviceSettings.signal_bars` | uint 0–4 — read-only, live |
+| `DeviceSettings.holiday_country` | uint 0–8 (0=None 1=US 2=VN 3=CA 4=GB 5=AU 6=ES 7=MX 8=FR) |
+| `DeviceSettings.holiday_region` | uint 0–19 (0=None/national-only; meaning of 1+ depends on `holiday_country` — holiday_data.h's per-country table) |
+| `LunarHolidayList.epoch_days` | ≤ 200 entries (firmware `MAX_LUNAR_DAYS`), each a uint16 epoch-day covering 1970–2100 |
 | `PhoneBondStatus.name` | ≤ 63 UTF-8 bytes (firmware `g_phone_name[64]` minus null terminator) |
 | `PhoneBondStatus.device_type` | ≤ 63 UTF-8 bytes (firmware `g_phone_device_type[64]` minus null terminator) — widened from 32 so `iphone_model_map.h`'s connectivity/region suffixes fit (e.g. "iPad Pro 12.9-inch (5th gen) — Wi-Fi + Cellular (Global)", the longest current entry at 58 bytes) |
 | `PhoneBondStatus.missed_calls/unread_messages/total_notifications` | uint 0–255 (capped at `MAX_ANCS_NOTIFICATIONS` = 100 in practice) |
@@ -700,8 +763,8 @@ No wire-level protocol version negotiation or compatibility gate — Ori and Ori
 
 ## 11. Implementation owners
 
-- **`esp32-connectivity`** — GATT server, bonding, chunk reassembly, NVS persistence + hashes, factory-reset routine, ANCS client, chars 10–18. No HOGP. Owns the filter-gated relay logic (§13) — the SAME filter evaluation used for the on-device status bar, not a second implementation.
-- **`orion-sync`** — scanning + connection lifecycle, bonding storage, hash-manifest delta, chunked writes, background keep-alive, USB CDC OTA path (`ota.md`), media-mode OS bridge (§12), ANCS relay (§13). Reads char 15 on connect and subscribes to notifies; writes Unpair Phone magic via char 8 on user request; writes char 14 on reconnect (shortcuts+presence+weather), on Teams presence changes, weather-poll changes, and clock-face/time-format/ANCS-filter changes. Subscribes to chars 16–17, maintains Orion's local notification mirror; writes char 18 on Answer/Decline/End-call/Dismiss taps. Owns bringing the Orion window to the foreground on `AncsCallState{st:1}` (`orion-frontend` owns the in-app UI that follows).
+- **`esp32-connectivity`** — GATT server, bonding, chunk reassembly, NVS persistence + hashes, factory-reset routine, ANCS client, chars 10–19. No HOGP. Owns the filter-gated relay logic (§13) — the SAME filter evaluation used for the on-device status bar, not a second implementation. Owns `holiday_data`'s compiled-in rule tables (Fixed-date/NthWeekday/EasterOffset) and the lunar-date NVS cache char 0013 feeds.
+- **`orion-sync`** — scanning + connection lifecycle, bonding storage, hash-manifest delta, chunked writes, background keep-alive, USB CDC OTA path (`ota.md`), media-mode OS bridge (§12), ANCS relay (§13). Reads char 15 on connect and subscribes to notifies; writes Unpair Phone magic via char 8 on user request; writes char 14 on reconnect (shortcuts+weather+holiday_country), on weather-poll changes, and clock-face/time-format/ANCS-filter changes; writes char 0013 (Lunar Holiday List) on every (re)connect. Subscribes to chars 16–17, maintains Orion's local notification mirror; writes char 18 on Answer/Decline/End-call/Dismiss taps. Owns bringing the Orion window to the foreground on `AncsCallState{st:1}` (`orion-frontend` owns the in-app UI that follows). Owns `holiday.rs`'s lunisolar computation (`pc-app.md`).
 
 Pre-release: no need to bump a version header per change — just keep this file in sync with the firmware/Orion implementations as the contract evolves.
 

@@ -8,7 +8,7 @@ Ori has **three logical channels**:
 | **BLE Ori Sync Service** (custom UUID, encrypted+bonded, 18 chars) | bidirectional | Profile, photo, meetings, Time Off, time, backlight, factory reset, sync manifest, Controls-mode commands, host volume state, media metadata, media album art, filtered ANCS notification/call relay (`ble-protocol.md` §13) |
 | **iPhone/iPad ANCS** (BLE, separate bond) | phone → Ori (+ call actions Ori → phone) | Notification-icon awareness (view-only) + incoming/active call control (Answer/Decline/End) |
 
-No standard BLE HOGP — all Controls-mode interactions ride the custom Ori Sync Service; Orion bridges to OS-level APIs. The mode-toggle is **hidden whenever the BLE link to Orion is down**. Full GATT contract: `ble-protocol.md`. Controls-mode UI: `media-mode.md`.
+No standard BLE HOGP — all Controls-mode interactions ride the custom Ori Sync Service; Orion bridges to OS-level APIs. The mode-toggle is **hidden until Orion has fully synced** — not just whenever the BLE link is down; a bonded reconnect keeps it hidden through the Reconnect-Syncing window too. Full GATT contract: `ble-protocol.md`. Controls-mode UI: `media-mode.md`.
 
 ## USB-C: power + opportunistic data
 
@@ -35,7 +35,7 @@ Source: `PC_app/`. See `pc-app.md` for app details.
 - Current local time
 - Weather condition + temperature (icon and text on the profile photo — `screen-layout.md`)
 
-Profile, photo, Time Off, and pairing bonds are cached in NVS and survive power cycles and connection loss. **The meeting list, local time, and weather are RAM-only** — a power cycle clears them. Meetings are re-pushed by Orion on reconnect; the clock is re-supplied by Orion (primary) or the iPhone (secondary backup, see §2); weather is re-pushed by Orion on reconnect and hidden entirely until then (same "don't show what can't be verified" policy as Presence — `ble-protocol.md` §6.4). See `meeting-list.md` for why meetings aren't persisted.
+Profile, photo, Time Off, and pairing bonds are cached in NVS and survive power cycles and connection loss. **The meeting list, local time, and weather are RAM-only** — a power cycle clears them. Meetings are re-pushed by Orion on reconnect; the clock is re-supplied by Orion (primary) or the iPhone (secondary backup, see §2); weather is re-pushed by Orion on reconnect and hidden entirely until then (same "don't show what can't be verified" policy — `ble-protocol.md` §6.4). See `meeting-list.md` for why meetings aren't persisted.
 
 **Reconnect:** hash-manifest delta sync — Orion sends SHA-256 of each item; Ori replies with what it needs. Typical reconnect ~300 ms when nothing changed. See `ble-protocol.md` §6.2 for the wire flow and `state-machine.md` for the overlay UX.
 

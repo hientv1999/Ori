@@ -4,7 +4,7 @@ The left panel has **two user-selectable modes** via the status-bar mode-toggle 
 
 **Clock** is a third view entered by tapping the date/time in the status bar — not part of the toggle cycle. While in Clock, the mode-toggle becomes a **return** button (calendar icon, neutral style) that restores the previous mode.
 
-**Calendar (month view)** is a fourth view entered by long-pressing the date/time in the status bar — also not part of the toggle cycle, and view-only (no meeting data overlaid). It shares Clock's exit mechanics: the mode-toggle becomes the same return button and restores the previous mode.
+**Calendar (month view)** is a fourth view entered by long-pressing the date/time in the status bar — also not part of the toggle cycle, and carries no meeting data (a day cell showing a local holiday is tappable — `gestures.md` — but nothing here reflects the meeting list). It shares Clock's exit mechanics: the mode-toggle becomes the same return button and restores the previous mode.
 
 ## Priority Order (Highest → Lowest)
 
@@ -17,7 +17,7 @@ The left panel has **two user-selectable modes** via the status-bar mode-toggle 
    - **Clock view** — digital clock, entered via status-bar time tap; status bar date/time hidden.
    - **Calendar view** — month grid, entered via status-bar time long-press; status bar date/time hidden.
    - *Persistence exception:* Clock and Calendar view are entered by an explicit user action, so once open they are **held above** the passive higher-priority states (Time Off, Reconnect-Syncing) until the user exits via the mode-toggle return button. Only a full-screen takeover (OTA, Setup) pulls the user out. The 5-minute countdown still appears — but as a modal *overlay on top of* Clock/Calendar, not by replacing them.
-   - **Controls mode** — media-controller UI. Only available when Orion is connected; auto-reverts to Calendar on PC disconnect. See `media-mode.md`.
+   - **Controls mode** — media-controller UI. Only available once Orion has fully synced (not merely connected — the mode-toggle that's the only way in stays hidden through a reconnect's resync window); auto-reverts to Calendar on PC disconnect. See `media-mode.md`.
 
 The right panel and status bar remain visible in all states **except OTA-Updating**.
 
@@ -45,7 +45,8 @@ Left panel: Time Off destination scenic image fills the full panel. A frosted-da
 - **Entry:** long-press (1 s) the date/time text in the status bar — a custom, shorter-than-default hold timed off PRESSED/RELEASED on that widget only; the shared indev long-press threshold (3 s, set in `main.cpp`) still governs the profile-photo and phone-icon long-presses.
 - **Exit:** tap the mode-toggle button → returns to the mode active before entering Calendar (same `g_pre_clock_mode` restore as Clock).
 - Status bar date/time hidden; mode-toggle always visible (even when Orion is offline).
-- View-only: a 7-column month grid (weekday header + day cells), today highlighted in an accent-filled circle, with up/down chevrons in the header to navigate between months. No meeting data is overlaid — the meeting list is RAM-only (`meeting-list.md`), so there is nothing reliable to show beyond today even if it were.
+- A 7-column month grid (weekday header + day cells), today highlighted in an accent-filled circle, with up/down chevrons in the header to navigate between months. No meeting data is overlaid — the meeting list is RAM-only (`meeting-list.md`), so there is nothing reliable to show beyond today even if it were.
+- **Local holidays** are computed entirely on-device (`holiday_data`, no BLE dependency for the 8 supported countries' — US/VN/CA/GB/AU/ES/MX/FR — national AND well-documented regional rules (fixed-date/nth-weekday/last-weekday/weekday-before/weekday-on-or-after/Easter-offset — e.g. Canadian provinces' own Family Day variants, Australian states' own Labour Day dates); the one exception, Vietnamese Tet, comes from a small lunar-date table Orion pushes once and Ori caches in NVS — `ble-protocol.md` §4/§6.4). A holiday day cell renders with a red ring (composes independently with today's own accent fill/ring — both apply their own outline, so a holiday that's also today shows both) and red day-number text, and is tappable: tapping opens a full-screen detail overlay with the holiday's name, full date, and a short description, dismissed via **Close** button only (same "Close-only, no tap-outside" convention as the meeting detail overlay, `meeting-list.md`) — see `gestures.md`. Non-holiday cells are inert, same as before.
 - Navigating months only re-renders the grid in place; it does not leave or re-enter the Calendar state.
 - Countdown modal still fires on top of Calendar when triggered.
 - Only a full-screen takeover (OTA, Setup) overrides Calendar. Passive state changes do **not** exit Calendar — neither meeting-list updates nor Time Off becoming (or staying) active while the user is in Calendar. Exit is always via the mode-toggle return button, which drops back to the mode active before Calendar (so a still-active Time Off window reappears then).
