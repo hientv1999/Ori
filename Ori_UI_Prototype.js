@@ -7,11 +7,13 @@
 // 30px (matching status-bar time + clock date). See `.profile-name` CSS.
 const PROFILE = { name: 'Everstorm Dominion', title: 'Founder, Ori', email: 'everstorm@ori.app', phone: '+1 (415) 555 0192' };
 // Demo-only mock weather data for the icon + text on the profile photo.
-// Mirrors the BLE Device Settings "w"/"d"/"u" fields (ble-protocol.md §4/§6.4).
-// `condition` is a key into WEATHER_ICONS (below). Screens can override it via
-// the `weather` field on a SCREENS entry (see the "Weather" nav group), the
-// same pattern SCREENS.presence already uses for the profile-photo border.
-const WEATHER = { tempF: 72, unit: 'F', condition: 'partly-cloudy' };
+// Mirrors the BLE Device Settings "w"/"n"/"i"/"d"/"u" fields (ble-protocol.md
+// §4/§6.4): condition, day/night, and (for rain/thunderstorm/snow/fog) an
+// intensity level. `condition` is a key into weatherIconSvg() (below).
+// Screens can override any of the three via the `weather`/`weatherNight`/
+// `weatherIntensity` fields on a SCREENS entry (see the "Weather" nav group),
+// the same pattern SCREENS.presence already uses for the profile-photo border.
+const WEATHER = { tempF: 72, unit: 'F', condition: 'partly-cloudy', isNight: false, intensity: 'moderate' };
 
 // 12-/24-hour clock preference. On the real device this is an NVS-persisted
 // setting Orion pushes over BLE (Device Settings key "h", ble-protocol.md §4);
@@ -34,8 +36,11 @@ function fmtClock(hhmm24) {
 
 // Weather badge icon library. Compact inline SVGs (32x32 viewBox) rendered at
 // 28x28 inside the 46px badge circle. Mirrors typical weather-provider
-// condition buckets (clear / cloudy / rain / thunderstorm / snow / fog) so
-// swapping in a real weather API later just needs a key mapping.
+// condition buckets (clear / cloudy / rain / thunderstorm / snow / fog),
+// each with a day/night variant and, for rain/thunderstorm/snow/fog, an
+// intensity variant (fog: light/heavy only; the others: light/moderate/
+// heavy) — so swapping in a real weather API later just needs a key + two
+// flag mapping (ble-protocol.md §4's DeviceSettings "w"/"n"/"i" fields).
 //
 // LVGL 9.5.0 feasibility: every shape below is built only from circles,
 // rounded rects, and straight-line strokes on purpose — the same primitives
@@ -55,84 +60,212 @@ function cloudSvg(fill, dx, dy) {
     '<circle cx="' + (19.5 + dx) + '" cy="' + (12.5 + dy) + '" r="5" fill="' + fill + '"/>';
 }
 
-const WEATHER_ICONS = {
-  clear: {
-    label: 'Clear',
-    svg: '<svg viewBox="0 0 32 32">' +
-      '<g stroke="#F0B84C" stroke-width="1.8" stroke-linecap="round">' +
-      '<line x1="16" y1="2" x2="16" y2="6"/><line x1="16" y1="26" x2="16" y2="30"/>' +
-      '<line x1="2" y1="16" x2="6" y2="16"/><line x1="26" y1="16" x2="30" y2="16"/>' +
-      '<line x1="6.3" y1="6.3" x2="9.1" y2="9.1"/><line x1="22.9" y1="22.9" x2="25.7" y2="25.7"/>' +
-      '<line x1="6.3" y1="25.7" x2="9.1" y2="22.9"/><line x1="22.9" y1="9.1" x2="25.7" y2="6.3"/>' +
-      '</g><circle cx="16" cy="16" r="7.5" fill="#F0B84C"/></svg>',
-  },
-  'partly-cloudy': {
-    label: 'Partly Cloudy',
-    svg: '<svg viewBox="0 0 32 32">' +
-      '<g stroke="#F0B84C" stroke-width="1.6" stroke-linecap="round">' +
-      '<line x1="8" y1="0.3" x2="8" y2="2.6"/><line x1="0.8" y1="1" x2="2.7" y2="2.8"/>' +
-      '<line x1="0.3" y1="8" x2="2.6" y2="8"/></g>' +
-      '<circle cx="8" cy="8" r="5.2" fill="#F0B84C"/>' +
-      cloudSvg('#E7EAEE', 3, 2) + '</svg>',
-  },
-  cloudy: {
-    label: 'Cloudy',
-    // Smaller "back" cloud (same 3-circle + rounded-rect shape, hand-offset
-    // up-right) peeking behind the standard front cloud.
-    // Whole composition nudged right 2.25 (front + back shifted equally) to centre.
-    svg: '<svg viewBox="0 0 32 32">' +
-      '<rect x="14.25" y="8" width="14" height="6.5" rx="3.2" fill="#9AA2AE"/>' +
-      '<circle cx="18.25" cy="7.3" r="3.6" fill="#9AA2AE"/>' +
-      '<circle cx="21.95" cy="5.4" r="4.4" fill="#9AA2AE"/>' +
-      '<circle cx="25.55" cy="7.6" r="3.6" fill="#9AA2AE"/>' +
-      cloudSvg('#E7EAEE', 2.25, 0) + '</svg>',
-  },
-  rain: {
-    label: 'Rain',
-    // Cloud nudged right (dx=2.25) to centre; raindrops left where they are.
-    svg: '<svg viewBox="0 0 32 32">' +
-      cloudSvg('#C7CDD6', 2.25, 0) +
-      '<g stroke="#5FB4E0" stroke-width="1.8" stroke-linecap="round">' +
-      '<line x1="10" y1="24" x2="8" y2="29"/><line x1="16" y1="24" x2="14" y2="29"/><line x1="22" y1="24" x2="20" y2="29"/>' +
-      '</g></svg>',
-  },
-  thunderstorm: {
-    label: 'Thunderstorm',
-    // Bolt is a plain multi-point polyline stroke (no fill) — an lv_line
-    // with the same point list ports directly.
-    svg: '<svg viewBox="0 0 32 32">' +
-      cloudSvg('#8B93A1', 2.25, 0) +
-      '<polyline points="18.5,20 14,26.5 17,26.5 13.5,31.5" fill="none" ' +
-      'stroke="#F0C93E" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  },
-  snow: {
-    label: 'Snow',
-    svg: '<svg viewBox="0 0 32 32">' +
-      cloudSvg('#C7CDD6', 2.25, 0) +
-      '<g stroke="#DCEEFF" stroke-width="1.3" stroke-linecap="round">' +
-      '<line x1="9" y1="23.6" x2="9" y2="28.4"/><line x1="6.8" y1="24.6" x2="11.2" y2="27.4"/><line x1="11.2" y1="24.6" x2="6.8" y2="27.4"/>' +
-      '<line x1="16" y1="24.6" x2="16" y2="29.4"/><line x1="13.8" y1="25.6" x2="18.2" y2="28.4"/><line x1="18.2" y1="25.6" x2="13.8" y2="28.4"/>' +
-      '<line x1="23" y1="23.6" x2="23" y2="28.4"/><line x1="20.8" y1="24.6" x2="25.2" y2="27.4"/><line x1="25.2" y1="24.6" x2="20.8" y2="27.4"/>' +
-      '</g></svg>',
-  },
-  fog: {
-    label: 'Fog',
-    svg: '<svg viewBox="0 0 32 32">' +
-      // Lines shifted up 2.5 (were y 10..27, centre 18.5) to centre in the badge.
-      '<g stroke="#AAB2BD" stroke-width="2.2" stroke-linecap="round">' +
-      '<line x1="5" y1="7.5" x2="27" y2="7.5"/><line x1="8" y1="13.5" x2="27" y2="13.5"/>' +
-      '<line x1="5" y1="19.5" x2="24" y2="19.5"/><line x1="9" y1="24.5" x2="27" y2="24.5"/>' +
-      '</g></svg>',
-  },
+// Night-sky dots — a handful of small dim circles scattered in whatever open
+// background space a given condition's silhouette leaves clear. Drawn BEFORE
+// the cloud/sun/precipitation shapes so a star that happens to land under a
+// cloud's edge is naturally covered rather than poking through it.
+function starsSvg(pts) {
+  return pts.map(function(p) {
+    return '<circle cx="' + p[0] + '" cy="' + p[1] + '" r="' + p[2] + '" fill="#7B8494"/>';
+  }).join('');
+}
+const STAR_POSITIONS = {
+  clear:           [[5, 5, 0.9], [27, 6, 0.7], [6, 27, 0.6], [26, 26, 0.8]],
+  'partly-cloudy': [[4, 4, 0.7], [28, 5, 0.6]],
+  cloudy:          [[2.5, 6, 0.7], [2.5, 27, 0.6]],
+  rain:            [[3, 4, 0.7], [29, 4, 0.6]],
+  thunderstorm:    [[3, 4, 0.7], [29, 4, 0.6]],
+  snow:            [[3, 4, 0.7], [29, 4, 0.6]],
+  fog:             [[4, 4, 0.6], [28, 4, 0.6]],
 };
 
-function applyWeather(condition, tempF, unit) {
-  const icon = WEATHER_ICONS[condition] || WEATHER_ICONS['partly-cloudy'];
+// Sun (day) vs. moon (night) — Clear/Partly Cloudy's only shared element.
+// Night drops the ray burst entirely (a plain disc reads as "moon" on its
+// own) rather than trying to reuse the day rays: Partly Cloudy's rays are a
+// hand-picked subset that peeks out from behind the cloud silhouette, not a
+// generic burst, so they have no clean night analogue. A light, mostly-
+// neutral grey with just a faint cool/blue hint (R/G/B within 18 of each
+// other) — an earlier saturated blue (#6E86C4) read as too blue, and before
+// that a near-white (#B9C4D6) was nearly indistinguishable from Partly
+// Cloudy's pale cloud fill at badge size, making Partly-Cloudy-night read as
+// plain Cloudy-night. #B0B6C2 stays ~55 points darker than the cloud fill
+// (#E7EAEE) to keep that separation.
+function moonSvg(cx, cy, r) {
+  return '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="#B0B6C2"/>';
+}
+
+// Every cloud/fog shape gets a darker, cooler fill at night — precipitation
+// (raindrops/snowflakes/bolts) keeps its day colour unchanged, only the
+// cloud silhouette itself dims, mirroring how most weather-icon sets show
+// night. This is the PRIMARY day/night cue for Rain/Thunderstorm/Snow/Fog/
+// Cloudy, which have no sun/moon element of their own to swap — the
+// background stars (`starsSvg`) are a secondary accent, not sufficient by
+// themselves at this size.
+const NIGHT_CLOUD = {
+  front: '#5A6272',  // day #E7EAEE — PartlyCloudy/Cloudy front cloud
+  back:  '#454C5C',  // day #9AA2AE — Cloudy back cloud
+  light: '#545C6E',  // day #C7CDD6 — Rain/Snow cloud
+  storm: '#3D4250',  // Thunderstorm cloud at night — still darkens further than
+                      // Rain/Snow's `light` even though its day colour (#C7CDD6)
+                      // now matches theirs; the bolt is what marks it a storm
+  fog:   '#4F5666',  // day #AAB2BD — Fog lines
+};
+
+// Rain/snow's repeated element count + size scale with intensity; each
+// helper centres its group on x=16 regardless of count so the icon doesn't
+// drift sideways as the count changes.
+function rainDropsSvg(count, len, strokeW) {
+  const spacing = 6, startX = 16 - ((count - 1) * spacing) / 2;
+  let lines = '';
+  for (let i = 0; i < count; i++) {
+    const x = startX + i * spacing;
+    lines += '<line x1="' + x + '" y1="24" x2="' + (x - 2) + '" y2="' + (24 + len) + '"/>';
+  }
+  return '<g stroke="#5FB4E0" stroke-width="' + strokeW + '" stroke-linecap="round">' + lines + '</g>';
+}
+
+// One snowflake = a 3-line asterisk (vertical + two diagonals through the
+// same centre point); snowflakesSvg() repeats it, spaced like rainDropsSvg().
+function snowflakeSvg(cx) {
+  const cy = 26, vlen = 2.4, dx = 2.2, dy = 1.4;
+  return '<line x1="' + cx + '" y1="' + (cy - vlen) + '" x2="' + cx + '" y2="' + (cy + vlen) + '"/>' +
+    '<line x1="' + (cx - dx) + '" y1="' + (cy - dy) + '" x2="' + (cx + dx) + '" y2="' + (cy + dy) + '"/>' +
+    '<line x1="' + (cx + dx) + '" y1="' + (cy - dy) + '" x2="' + (cx - dx) + '" y2="' + (cy + dy) + '"/>';
+}
+function snowflakesSvg(count, strokeW) {
+  const spacing = 7, startX = 16 - ((count - 1) * spacing) / 2;
+  let flakes = '';
+  for (let i = 0; i < count; i++) flakes += snowflakeSvg(startX + i * spacing);
+  return '<g stroke="#DCEEFF" stroke-width="' + strokeW + '" stroke-linecap="round">' + flakes + '</g>';
+}
+
+// Thunderbolt polyline, scaled/shifted from its own top anchor point —
+// Light/Moderate/Heavy draw 1/2/3 side by side (slightly scaled down at 3-up
+// so they stay separated) rather than one enlarged bolt, matching the same
+// stroke-count-per-intensity convention as rainDropsSvg()/snowflakesSvg().
+function boltSvg(scale, dx, strokeW) {
+  // x-shifted -2.5 from the original [[18.5,20],[14,26.5],[17,26.5],[13.5,31.5]]
+  // so the bolt's top point (x=16) lines up under the cloud's own centre
+  // (~15.25, cloudSvg's rect base) instead of sitting visibly right of it.
+  const base = [[16, 20], [11.5, 26.5], [14.5, 26.5], [11, 31.5]];
+  const anchor = base[0];
+  const pts = base.map(function(p) {
+    return (anchor[0] + (p[0] - anchor[0]) * scale + dx) + ',' + (anchor[1] + (p[1] - anchor[1]) * scale);
+  }).join(' ');
+  return '<polyline points="' + pts + '" fill="none" stroke="#F0C93E" stroke-width="' + strokeW +
+    '" stroke-linecap="round" stroke-linejoin="round"/>';
+}
+
+// Fog has no cloud silhouette, just horizontal bands, so it darkens its own
+// line colour at night the same way the other conditions darken their cloud
+// fill (NIGHT_CLOUD.fog) rather than relying on stars alone. Light is a
+// couple of short, thin wisps; Heavy is the original dense 4-band pattern
+// (unchanged from the pre-intensity icon).
+function fogLinesSvg(heavy, isNight) {
+  const spans = heavy
+    ? [[5, 7.5, 27], [8, 13.5, 27], [5, 19.5, 24], [9, 24.5, 27]]
+    : [[7, 12, 23], [9, 20, 25]];
+  const strokeW = heavy ? 2.2 : 1.6;
+  const color = isNight ? NIGHT_CLOUD.fog : '#AAB2BD';
+  let lines = '';
+  spans.forEach(function(s) {
+    lines += '<line x1="' + s[0] + '" y1="' + s[1] + '" x2="' + s[2] + '" y2="' + s[1] + '"/>';
+  });
+  return '<g stroke="' + color + '" stroke-width="' + strokeW + '" stroke-linecap="round">' + lines + '</g>';
+}
+
+const CONDITION_LABEL = {
+  clear: 'Clear', 'partly-cloudy': 'Partly Cloudy', cloudy: 'Cloudy',
+  rain: 'Rain', thunderstorm: 'Thunderstorm', snow: 'Snow', fog: 'Fog',
+};
+// Conditions with an intensity axis — mirrors weather.rs's WMO-code ->
+// intensity bucketing (fog only has two real WMO codes, so it skips
+// "moderate" entirely; every other condition here uses all three levels).
+const HAS_INTENSITY = { rain: true, thunderstorm: true, snow: true, fog: true };
+
+function intensityLabel(condition, intensity) {
+  if (!HAS_INTENSITY[condition] || !intensity || intensity === 'moderate') return '';
+  return intensity === 'light' ? 'Light ' : intensity === 'heavy' ? 'Heavy ' : '';
+}
+
+// Builds one weather badge icon. `intensity` is one of 'light'/'moderate'/
+// 'heavy' for Rain/Thunderstorm/Snow (Fog only ever uses 'light'/'heavy',
+// with anything else treated as 'heavy' — its original, denser look) and
+// ignored entirely for Clear/Partly Cloudy/Cloudy, which have no intensity axis.
+function weatherIconSvg(condition, isNight, intensity) {
+  const stars = isNight ? starsSvg(STAR_POSITIONS[condition] || []) : '';
+  let body;
+  switch (condition) {
+    case 'clear':
+      body = isNight ? moonSvg(16, 16, 7.5) :
+        '<g stroke="#F0B84C" stroke-width="1.8" stroke-linecap="round">' +
+        '<line x1="16" y1="2" x2="16" y2="6"/><line x1="16" y1="26" x2="16" y2="30"/>' +
+        '<line x1="2" y1="16" x2="6" y2="16"/><line x1="26" y1="16" x2="30" y2="16"/>' +
+        '<line x1="6.3" y1="6.3" x2="9.1" y2="9.1"/><line x1="22.9" y1="22.9" x2="25.7" y2="25.7"/>' +
+        '<line x1="6.3" y1="25.7" x2="9.1" y2="22.9"/><line x1="22.9" y1="9.1" x2="25.7" y2="6.3"/>' +
+        '</g><circle cx="16" cy="16" r="7.5" fill="#F0B84C"/>';
+      break;
+    case 'partly-cloudy': {
+      const sunOrMoon = isNight ? moonSvg(8, 8, 5.2) :
+        '<g stroke="#F0B84C" stroke-width="1.6" stroke-linecap="round">' +
+        '<line x1="8" y1="0.3" x2="8" y2="2.6"/><line x1="0.8" y1="1" x2="2.7" y2="2.8"/>' +
+        '<line x1="0.3" y1="8" x2="2.6" y2="8"/></g><circle cx="8" cy="8" r="5.2" fill="#F0B84C"/>';
+      // Cloud painted last (on top), partially covering the sun/moon.
+      body = sunOrMoon + cloudSvg(isNight ? NIGHT_CLOUD.front : '#E7EAEE', 3, 2);
+      break;
+    }
+    case 'cloudy': {
+      // Smaller "back" cloud (same 3-circle + rounded-rect shape, hand-offset
+      // up-right) peeking behind the standard front cloud. Whole composition
+      // nudged right 2.25 (front + back shifted equally) to centre.
+      const back = isNight ? NIGHT_CLOUD.back : '#9AA2AE';
+      body = '<rect x="14.25" y="8" width="14" height="6.5" rx="3.2" fill="' + back + '"/>' +
+        '<circle cx="18.25" cy="7.3" r="3.6" fill="' + back + '"/>' +
+        '<circle cx="21.95" cy="5.4" r="4.4" fill="' + back + '"/>' +
+        '<circle cx="25.55" cy="7.6" r="3.6" fill="' + back + '"/>' +
+        cloudSvg(isNight ? NIGHT_CLOUD.front : '#E7EAEE', 2.25, 0);
+      break;
+    }
+    case 'rain': {
+      // Cloud nudged right (dx=2.25) to centre; raindrops left where they are.
+      const drops = intensity === 'light' ? rainDropsSvg(1, 4, 1.5) :
+        intensity === 'heavy' ? rainDropsSvg(3, 6, 2.2) : rainDropsSvg(2, 5, 1.8);
+      body = cloudSvg(isNight ? NIGHT_CLOUD.light : '#C7CDD6', 2.25, 0) + drops;
+      break;
+    }
+    case 'thunderstorm': {
+      // Cloud nudged right to centre; bolt(s) below left where they are.
+      const bolt = intensity === 'light' ? boltSvg(0.72, 0, 1.6) :
+        intensity === 'heavy' ? (boltSvg(0.85, -5, 1.9) + boltSvg(0.85, 0, 1.9) + boltSvg(0.85, 5, 1.9)) :
+        (boltSvg(1, -3, 2) + boltSvg(1, 3, 2));
+      // Day cloud uses the same regular light-grey fill as Rain/Snow (not a
+      // special darker "storm" tone) — only the bolt marks this as a storm.
+      body = cloudSvg(isNight ? NIGHT_CLOUD.storm : '#C7CDD6', 2.25, 0) + bolt;
+      break;
+    }
+    case 'snow': {
+      // Cloud nudged right to centre; snowflakes below left as-is.
+      const flakes = intensity === 'light' ? snowflakesSvg(1, 1.3) :
+        intensity === 'heavy' ? snowflakesSvg(3, 1.3) : snowflakesSvg(2, 1.3);
+      body = cloudSvg(isNight ? NIGHT_CLOUD.light : '#C7CDD6', 2.25, 0) + flakes;
+      break;
+    }
+    case 'fog':
+      body = fogLinesSvg(intensity !== 'light', isNight);
+      break;
+    default:
+      return weatherIconSvg('partly-cloudy', isNight, intensity);
+  }
+  return '<svg viewBox="0 0 32 32">' + stars + body + '</svg>';
+}
+
+function applyWeather(condition, tempF, unit, isNight, intensity) {
   const badge = document.getElementById('weather-badge');
   const bubble = document.getElementById('temp-bubble');
   if (badge) {
-    badge.innerHTML = icon.svg;
-    badge.title = icon.label;
+    badge.innerHTML = weatherIconSvg(condition, !!isNight, intensity || 'moderate');
+    badge.title = intensityLabel(condition, intensity) + (CONDITION_LABEL[condition] || condition) +
+      (isNight ? ' \xb7 Night' : '');
   }
   if (bubble && tempF !== undefined) bubble.textContent = tempF + '°' + (unit || 'F');
 }
@@ -182,7 +315,7 @@ function applyProfile() {
   document.getElementById('profile-photo').textContent = initialsOf(PROFILE.name);
   document.getElementById('profile-name').textContent = PROFILE.name;
   document.getElementById('profile-title').textContent = PROFILE.title;
-  applyWeather(WEATHER.condition, WEATHER.tempF, WEATHER.unit);
+  applyWeather(WEATHER.condition, WEATHER.tempF, WEATHER.unit, WEATHER.isNight, WEATHER.intensity);
 }
 
 // Mock "now" is 14:30. The 14:00-15:00 row is marked inProgress so the
@@ -235,6 +368,12 @@ const SCREENS = {
     statusBar: { ancsApps: ['gmail'], phoneConnected: true },
     leftRender: () => '<div class="empty"><svg class="glyph"><use href="#i-cal"/></svg><div class="headline">No meetings today</div><div class="sub">Enjoy the focus time</div></div>',
   },
+  'no-meetings-holiday': {
+    label: 'Local holidays', title: 'No meetings — local holiday',
+    desc: 'Demo only: when today is a recognized local holiday, the calendar glyph recolors to the holiday accent and the subtitle names the holiday instead of "Enjoy the focus time." How Ori would learn which dates are holidays (data source) is not yet designed — this reviews the visual treatment only.',
+    statusBar: { ancsApps: ['gmail'], phoneConnected: true },
+    leftRender: () => '<div class="empty"><svg class="glyph holiday"><use href="#i-cal"/></svg><div class="headline">No meetings today</div><div class="sub">Local Holiday</div></div>',
+  },
   'clock': {
     label: 'Primary state', title: 'Digital clock',
     desc: 'Entered by tapping the time in the status bar. Status-bar date/time is hidden since the clock face IS the time. Mode-toggle (calendar icon) returns to the previous mode.',
@@ -251,7 +390,14 @@ const SCREENS = {
   },
   'calendar': {
     label: 'Primary state', title: 'Calendar (month view)',
-    desc: 'Entered by long-pressing the time in the status bar for 1s (1.2s here). View-only month grid with today highlighted; left/right arrows navigate months. Mode-toggle (calendar-return icon) returns to the previous mode. Status-bar date/time is hidden since this view IS a calendar.',
+    desc: 'Entered by long-pressing the time in the status bar for 1s (1.2s here). View-only month grid with today highlighted (a muted gold circle) and its whole week banded behind it in a fainter gold; both dim a tier further when today is only a spillover day from paging to an adjacent month. Left/right arrows navigate months. Mode-toggle (calendar-return icon) returns to the previous mode. Status-bar date/time is hidden since this view IS a calendar.',
+    statusBar: { ancsApps: ['gmail', 'facebook'], phoneConnected: true, hideDateTime: true },
+    mode: 'clock',
+    leftRender: () => calendarHTML(),
+  },
+  'calendar-holidays': {
+    label: 'Local holidays', title: 'Calendar month view — local holidays',
+    desc: 'Demo only: holiday dates get a hollow red ring around the day number, with the number itself in red too (not a solid fill, so it never competes with "today"’s solid gold fill). A day that is both shows the gold fill and red ring together, with the number staying red rather than turning white (see today’s cell here). Illustrative fixed demo dates (day 3 / day 20 of whichever month is shown, plus today) — the real data source is not yet designed. Left/right arrows still navigate months.',
     statusBar: { ancsApps: ['gmail', 'facebook'], phoneConnected: true, hideDateTime: true },
     mode: 'clock',
     leftRender: () => calendarHTML(),
@@ -541,9 +687,107 @@ const SCREENS = {
   },
   'weather-fog': {
     label: 'Weather', title: 'Fog / mist badge',
-    desc: 'Weather badge showing horizontal fog bands.',
+    desc: 'Weather badge showing horizontal fog bands (dense/"Heavy" variant).',
     statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
     weather: 'fog',
+    leftRender: () => meetingListHTML(TODAY_MEETINGS),
+  },
+  'weather-clear-night': {
+    label: 'Weather', title: 'Clear — night (moon + stars)',
+    desc: 'Night variant: the sun’s ray burst is replaced by a plain moon disc, plus a few background stars.',
+    statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
+    weather: 'clear', weatherNight: true,
+    leftRender: () => meetingListHTML(TODAY_MEETINGS),
+  },
+  'weather-partly-cloudy-night': {
+    label: 'Weather', title: 'Partly cloudy — night',
+    desc: 'Night variant: moon behind the cloud instead of the sun.',
+    statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
+    weather: 'partly-cloudy', weatherNight: true,
+    leftRender: () => meetingListHTML(TODAY_MEETINGS),
+  },
+  'weather-cloudy-night': {
+    label: 'Weather', title: 'Cloudy — night',
+    desc: 'Night variant: same double-cloud silhouette, stars in the open sky above.',
+    statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
+    weather: 'cloudy', weatherNight: true,
+    leftRender: () => meetingListHTML(TODAY_MEETINGS),
+  },
+  'weather-rain-light': {
+    label: 'Weather', title: 'Rain — Light',
+    desc: 'Intensity variant: 1 drop.',
+    statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
+    weather: 'rain', weatherIntensity: 'light',
+    leftRender: () => meetingListHTML(TODAY_MEETINGS),
+  },
+  'weather-rain-heavy': {
+    label: 'Weather', title: 'Rain — Heavy',
+    desc: 'Intensity variant: 3 longer, thicker drops.',
+    statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
+    weather: 'rain', weatherIntensity: 'heavy',
+    leftRender: () => meetingListHTML(TODAY_MEETINGS),
+  },
+  'weather-rain-heavy-night': {
+    label: 'Weather', title: 'Rain — Heavy · Night',
+    desc: 'Both axes at once: heavy rain, at night (darkened cloud + stars).',
+    statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
+    weather: 'rain', weatherIntensity: 'heavy', weatherNight: true,
+    leftRender: () => meetingListHTML(TODAY_MEETINGS),
+  },
+  'weather-thunderstorm-light': {
+    label: 'Weather', title: 'Thunderstorm — Light',
+    desc: 'Intensity variant: one thinner, shorter bolt.',
+    statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
+    weather: 'thunderstorm', weatherIntensity: 'light',
+    leftRender: () => meetingListHTML(TODAY_MEETINGS),
+  },
+  'weather-thunderstorm-heavy': {
+    label: 'Weather', title: 'Thunderstorm — Heavy',
+    desc: 'Intensity variant: three bolts side by side.',
+    statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
+    weather: 'thunderstorm', weatherIntensity: 'heavy',
+    leftRender: () => meetingListHTML(TODAY_MEETINGS),
+  },
+  'weather-thunderstorm-heavy-night': {
+    label: 'Weather', title: 'Thunderstorm — Heavy · Night',
+    desc: 'Night variant: no sun/moon element here, so the cloud itself darkens (plus stars) — the same treatment Snow and Fog use below.',
+    statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
+    weather: 'thunderstorm', weatherIntensity: 'heavy', weatherNight: true,
+    leftRender: () => meetingListHTML(TODAY_MEETINGS),
+  },
+  'weather-snow-light': {
+    label: 'Weather', title: 'Snow — Light',
+    desc: 'Intensity variant: 1 snowflake.',
+    statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
+    weather: 'snow', weatherIntensity: 'light',
+    leftRender: () => meetingListHTML(TODAY_MEETINGS),
+  },
+  'weather-snow-heavy': {
+    label: 'Weather', title: 'Snow — Heavy',
+    desc: 'Intensity variant: 3 snowflakes.',
+    statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
+    weather: 'snow', weatherIntensity: 'heavy',
+    leftRender: () => meetingListHTML(TODAY_MEETINGS),
+  },
+  'weather-snow-heavy-night': {
+    label: 'Weather', title: 'Snow — Heavy · Night',
+    desc: 'Night variant: darkened cloud + stars, same as Rain/Thunderstorm/Fog.',
+    statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
+    weather: 'snow', weatherIntensity: 'heavy', weatherNight: true,
+    leftRender: () => meetingListHTML(TODAY_MEETINGS),
+  },
+  'weather-fog-light': {
+    label: 'Weather', title: 'Fog — Light',
+    desc: 'Intensity variant: a couple of short, thin wisps instead of the dense 4-band pattern.',
+    statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
+    weather: 'fog', weatherIntensity: 'light',
+    leftRender: () => meetingListHTML(TODAY_MEETINGS),
+  },
+  'weather-fog-heavy-night': {
+    label: 'Weather', title: 'Fog — Heavy · Night',
+    desc: 'Night variant: no cloud shape to darken here, so the fog lines themselves darken instead, plus stars above.',
+    statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
+    weather: 'fog', weatherIntensity: 'heavy', weatherNight: true,
     leftRender: () => meetingListHTML(TODAY_MEETINGS),
   },
 };
@@ -568,7 +812,6 @@ function meetingListHTML(items, cached) {
       '<div class="content">' +
       '<div class="title">' + escapeHtml(m.title) + '</div>' +
       '<div class="meta"><span class="loc">' + escapeHtml(m.loc) +
-      '</span><span class="dot"></span><span class="org">' + escapeHtml(m.org) +
       '</span></div></div></div>';
   }
   return html + '</div>';
@@ -662,6 +905,26 @@ function analogClockHTML() {
 
 let _calViewDate = null; // first-of-month being viewed; null = current month
 
+// Local-holiday demo flag — set by setScreen() only for the dedicated
+// 'calendar-holidays' nav entry (see SCREENS), never for the plain 'calendar'
+// entry, so the baseline month view is untouched by this demo. The real data
+// source (how Ori would actually learn which dates are local holidays) isn't
+// designed yet — this is a visual-treatment review only, using illustrative
+// fixed days rather than a real holiday calendar.
+let _calDemoHolidays = false;
+
+// Returns a holiday name for day `d` of the currently viewed month, or null.
+// Today is always included when the demo is on (guarantees a "today +
+// holiday" combined example the moment the demo screen opens, without
+// depending on real-world date luck); day 3 / day 20 of every month are
+// fixed illustrative dates so navigating months keeps showing the pattern.
+function demoHolidayName(d, isToday) {
+  if (!_calDemoHolidays) return null;
+  if (isToday) return 'Local Holiday';
+  if (d === 3 || d === 20) return 'Public Holiday';
+  return null;
+}
+
 function calendarHTML() {
   const today = new Date();
   const view = _calViewDate || new Date(today.getFullYear(), today.getMonth(), 1);
@@ -679,13 +942,43 @@ function calendarHTML() {
     cells.push({ day: daysInPrevMonth - firstDow + 1 + i, outside: true });
   }
   for (let d = 1; d <= daysInMonth; d++) {
-    const isToday = d === today.getDate() && month === today.getMonth() && year === today.getFullYear();
-    cells.push({ day: d, outside: false, today: isToday });
+    cells.push({ day: d, outside: false });
   }
   let nextDay = 1;
   while (cells.length % 7 !== 0) {
     cells.push({ day: nextDay++, outside: true });
   }
+  const dayRows = cells.length / 7;
+
+  // Locate today as a linear index into `cells`, matching even as a spillover
+  // (outside-month) day when paging to an adjacent month — mirrors firmware's
+  // screen_calendar.cpp day_index math (mktime-based there; plain Date diff
+  // here, both noon-anchored to sidestep DST-boundary edge cases).
+  const cell0 = new Date(year, month, 1 - firstDow, 12, 0, 0);
+  const todayNoon = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 12, 0, 0);
+  const dayIndex = Math.round((todayNoon - cell0) / 86400000);
+  const todayCell = (dayIndex >= 0 && dayIndex < cells.length) ? dayIndex : -1;
+  const todayRow = todayCell >= 0 ? Math.floor(todayCell / 7) : -1;
+  // Bright tier when today's own month is on screen; fainter tier when today
+  // is only a spillover day from the adjacent month being paged through.
+  const todayInMonth = (year === today.getFullYear() && month === today.getMonth());
+
+  if (todayCell >= 0) {
+    const c = cells[todayCell];
+    c.today = todayInMonth;
+    c.todayFaint = !todayInMonth;
+  }
+  cells.forEach(c => {
+    if (c.outside && !c.todayFaint) return; // holidays only apply within the viewed month's own days
+    c.holidayName = demoHolidayName(c.day, !!(c.today || c.todayFaint));
+  });
+
+  // Faint-gold band behind today's whole week — emitted BEFORE the day cells
+  // (see .cal-week-highlight in the CSS) so it paints underneath them.
+  const weekHighlight = todayCell >= 0
+    ? '<div class="cal-week-highlight" style="grid-column:1/8;grid-row:' + (todayRow + 1) +
+      ';background:' + (todayInMonth ? 'var(--accent-faint)' : 'var(--accent-soft)') + ';"></div>'
+    : '';
 
   return '<div class="calendar-view">' +
     '<div class="cal-header">' +
@@ -697,9 +990,16 @@ function calendarHTML() {
     '<div class="cal-weekdays">' +
     weekdays.map(w => '<div class="cal-weekday">' + w + '</div>').join('') +
     '</div>' +
-    '<div class="cal-grid">' +
-    cells.map(c => '<div class="cal-day' + (c.outside ? ' outside' : '') + (c.today ? ' today' : '') + '">' +
-      '<div class="cal-day-num">' + c.day + '</div></div>').join('') +
+    '<div class="cal-grid" style="grid-template-rows:repeat(' + dayRows + ',1fr);">' +
+    weekHighlight +
+    cells.map((c, i) => {
+      const row = Math.floor(i / 7), col = i % 7;
+      return '<div class="cal-day' + (c.outside ? ' outside' : '') + (c.today ? ' today' : '') +
+        (c.todayFaint ? ' today-faint' : '') + (c.holidayName ? ' holiday' : '') + '"' +
+        (c.holidayName ? ' title="' + escapeHtml(c.holidayName) + '"' : '') +
+        ' style="grid-column:' + (col + 1) + ';grid-row:' + (row + 1) + ';">' +
+        '<div class="cal-day-num">' + c.day + '</div></div>';
+    }).join('') +
     '</div></div>';
 }
 
@@ -2233,10 +2533,13 @@ function setScreen(id) {
     const presence = pcConnected ? (cfg.presence || 'available') : 'offline';
     photo.classList.add('presence-' + presence);
   }
-  // Weather icon + temp text. cfg.weather lets a screen preview a specific
-  // condition (see the "Weather" nav group); screens that don't care fall
-  // back to the WEATHER mock-data default.
-  applyWeather(cfg.weather || WEATHER.condition, WEATHER.tempF, WEATHER.unit);
+  // Weather icon + temp text. cfg.weather/cfg.weatherNight/cfg.weatherIntensity
+  // let a screen preview a specific condition/day-night/intensity combination
+  // (see the "Weather" nav group); screens that don't care fall back to the
+  // WEATHER mock-data default.
+  applyWeather(cfg.weather || WEATHER.condition, WEATHER.tempF, WEATHER.unit,
+    cfg.weatherNight !== undefined ? cfg.weatherNight : WEATHER.isNight,
+    cfg.weatherIntensity || WEATHER.intensity);
   const setupLayer = document.getElementById('setup-layer');
   const body = document.getElementById('body');
   const left = document.getElementById('left-panel');
@@ -2248,14 +2551,15 @@ function setScreen(id) {
     setupLayer.innerHTML = '';
     setupLayer.style.display = 'none';
     body.style.visibility = 'visible';
-    if (id === 'calendar') _calViewDate = null; // always open on the current month
+    if (id === 'calendar' || id === 'calendar-holidays') _calViewDate = null; // always open on the current month
+    _calDemoHolidays = (id === 'calendar-holidays');
     left.innerHTML = cfg.leftRender ? cfg.leftRender() : '';
     if (cfg.mode === 'media') {
       bindAlbumArtGestures();
       bindPlayPauseButton();
       bindSeekBar();
     }
-    if (id === 'calendar') bindCalendarNav();
+    if (id === 'calendar' || id === 'calendar-holidays') bindCalendarNav();
   }
   const modalLayer = document.getElementById('modal-layer');
   if (cfg.modal) {

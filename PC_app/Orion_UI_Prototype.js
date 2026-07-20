@@ -65,6 +65,9 @@ function backWithCheck(){
   if(top==='s-ancs'&&ancsPending!==ancsLevel){_discardAction=discardAncs;showModal('m-discard');return;}
   if(top==='s-clock'&&clockPending!==clockFace){_discardAction=discardClock;showModal('m-discard');return;}
   if(top==='s-timeformat'&&timeFormatPending!==timeFormat){_discardAction=discardTimeFormat;showModal('m-discard');return;}
+  if(top==='s-workinghours'&&whDirty){_discardAction=discardWorkingHours;showModal('m-discard');return;}
+  if(top==='s-weatheralert'&&waDirty){_discardAction=discardWeatherAlert;showModal('m-discard');return;}
+  if(top==='s-lowbatteryalert'&&lbDirty){_discardAction=discardLowBatteryAlert;showModal('m-discard');return;}
   if(top==='s-shortcuts'){
     if(_kbdRecSlot) stopKbdRecord();
     if(_isSlotsDirty()){_discardAction=discardShortcuts;showModal('m-discard');return;}
@@ -79,6 +82,34 @@ function confirmDiscard(){
 
 function showModal(id){$(id).classList.add('show');}
 function hideModal(id){$(id).classList.remove('show');}
+
+// ── Corner toast — design mockup for pc-app.md's "panel hidden → native OS
+// toast" path (low battery, Working Hours rain/snow reminder, network
+// warning, Bluetooth guard). One shared element (index.html's #corner-toast)
+// with per-call icon/title/body rather than four separate markups — see
+// that element's own doc comment for why it lives outside #panel.
+const CORNER_TOAST_ICONS={
+  battery:'<svg viewBox="0 0 24 14" fill="none"><rect x="1" y="2" width="18" height="10" rx="2.5" stroke="currentColor" stroke-width="1.5"/><rect x="20" y="5" width="2.5" height="4" rx="1" fill="currentColor"/><rect x="3" y="8" width="5" height="2" rx="1" fill="var(--danger)"/></svg>',
+  weather:'<svg viewBox="0 0 20 20" fill="none"><path d="M6.5 11a3 3 0 01.4-5.98A4 4 0 0114.3 6.4 2.7 2.7 0 0114 11.7H6.9A2.4 2.4 0 016.5 11z" fill="currentColor"/><path d="M7.5 14.5l-.8 1.7M10.5 14.5l-.8 1.7M13.5 14.5l-.8 1.7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
+  network:'<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 6v5"/><circle cx="10" cy="14" r="0.75" fill="currentColor" stroke="none"/><path d="M8.7 3.3a1.5 1.5 0 012.6 0l6.3 11a1.5 1.5 0 01-1.3 2.2H3.7a1.5 1.5 0 01-1.3-2.2l6.3-11z"/></svg>',
+  bluetooth:'<svg viewBox="0 0 24 24" fill="none"><path d="m7 7 10 10-5 5V2l5 5L7 17" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><line x1="2" y1="22" x2="22" y2="2" stroke="var(--danger)" stroke-width="1.8" stroke-linecap="round"/></svg>',
+};
+function showCornerToast(kind,title,body){
+  $('cornerToastIco').innerHTML=CORNER_TOAST_ICONS[kind]||'';
+  $('cornerToastTitle').textContent=title;
+  $('cornerToastBody').textContent=body;
+  $('corner-toast').classList.add('show');
+}
+function hideCornerToast(){$('corner-toast').classList.remove('show');}
+
+// Network-health header icon (pc-app.md) — two independent flags, since the
+// real app's calendar and weather polls run on their own schedules and
+// either one failing on its own is worth flagging; the icon just shows "at
+// least one of them couldn't refresh," not which.
+let calendarNetOk=true,weatherNetOk=true;
+function renderNetWarnIco(){
+  $('netWarnIco').style.display=(!calendarNetOk||!weatherNetOk)?'':'none';
+}
 
 let fwAvail=false;
 let orionAppVersion='1.0.0';
@@ -1150,7 +1181,7 @@ function onCropTouchMove(e){
 function onCropTouchEnd(e){if(e.touches.length<2) _lastPinchDist=null;}
 
 let calSrc='ms',calPending='ms';
-const calInfo={ms:{name:'Microsoft Teams',ok:true},gg:{name:'Google Calendar',ok:false}};
+const calInfo={ms:{name:'Microsoft Teams',ok:false},gg:{name:'Google Calendar',ok:false}};
 function _renderCalOpts(s){
   ['ms','gg'].forEach(k=>$('co-'+k).classList.toggle('sel',k===s));
   $('msSignInRow').style.display=s==='ms'?'':'none';
@@ -1175,45 +1206,48 @@ function saveCalSource(){
   back();
 }
 function discardCalSource(){calPending=calSrc;_renderCalOpts(calPending);back();}
-let ggSigningIn=false;
+// Google Calendar has no real integration yet (calInfo.gg.ok stays
+// permanently false — same "Coming soon" placeholder treatment as the
+// setup wizard's identical row, pc-app.md) — the row itself stays
+// selectable (so mainCalSub/_calStatusSuffix's existing calInfo[calSrc]
+// lookup keeps working if a user had it selected from before this button
+// was simplified), but there's no sign-in action behind it anymore.
 function _renderGgStatus(){
+  $('ggSt').textContent=I18N[appLang].profile.calGcalComingSoon;
+}
+// Calendar Source — Outlook sharing-invitation XML import (pc-app.md),
+// deliberately NOT OAuth. Static-prototype mock (no real backend, unlike
+// the identically-named functions in the real app) — fakes a successful
+// import after a short delay, same mock style as suImportCalendar() above.
+// Re-importing (rather than a separate Disconnect action) is the only way
+// to change or clear a connected source — pc-app.md's "Re-importing a fresh
+// XML simply overwrites the stored ICalUrl, no special-case handling
+// needed." A full Settings -> Reset -> Clear All is still the way to wipe
+// it back to disconnected.
+let msImporting=false;
+function _msStatusText(){
   const t=I18N[appLang].calendarSource;
-  $('ggSt').textContent=ggSigningIn?t.signingIn:(calInfo.gg.ok?I18N[appLang].main.connected:t.notSignedIn);
+  if(msImporting) return t.importing;
+  return calInfo.ms.ok?t.connected:t.notConnected;
 }
-function _renderGgSignBtn(){
-  const t=I18N[appLang].calendarSource;
-  $('ggSignBtn').textContent=calInfo.gg.ok?t.signOutGoogle:t.signInGoogle;
-}
-function signGoogle(){
-  if(calInfo.gg.ok){
-    calInfo.gg.ok=false;_renderGgStatus();_renderGgSignBtn();
-    return;
-  }
-  ggSigningIn=true;_renderGgStatus();$('ggSignBtn').disabled=true;
-  setTimeout(()=>{
-    ggSigningIn=false;calInfo.gg.ok=true;_renderGgStatus();
-    $('ggSignBtn').disabled=false;_renderGgSignBtn();setCalPending('gg');
-  },1400);
-}
-let msSigningIn=false;
 function _renderMsStatus(){
-  const t=I18N[appLang].calendarSource;
-  $('teamsStatusTxt').textContent=msSigningIn?t.signingIn:(calInfo.ms.ok?t.teamsStatus:t.notSignedIn);
+  $('teamsStatusTxt').textContent=_msStatusText();
 }
-function _renderMsSignBtn(){
+function _renderMsButtons(){
   const t=I18N[appLang].calendarSource;
-  $('msSignBtn').textContent=calInfo.ms.ok?t.signOutMicrosoft:t.signInMicrosoft;
+  const importBtn=$('msImportBtn');
+  importBtn.textContent=msImporting?t.importing:t.importFile;
+  importBtn.disabled=msImporting;
 }
-function signMicrosoft(){
-  if(calInfo.ms.ok){
-    calInfo.ms.ok=false;_renderMsStatus();_renderMsSignBtn();
-    return;
-  }
-  msSigningIn=true;_renderMsStatus();$('msSignBtn').disabled=true;
+function importMicrosoftCalendar(){
+  if(msImporting) return;
+  msImporting=true;_renderMsStatus();_renderMsButtons();
   setTimeout(()=>{
-    msSigningIn=false;calInfo.ms.ok=true;_renderMsStatus();
-    $('msSignBtn').disabled=false;_renderMsSignBtn();setCalPending('ms');
-  },1400);
+    msImporting=false;
+    calInfo.ms.ok=true;
+    _renderMsStatus();_renderMsButtons();
+    setCalPending('ms');
+  },1100);
 }
 
 // Favorite is now three independently-configurable slots (Favorite 1/2/3)
@@ -1263,6 +1297,21 @@ const _kbdCombos=[[],[],[]];
 let ancsLevel=3;let ancsPending=3;
 let clockFace='digital';let clockPending='digital';
 let timeFormat='24';let timeFormatPending='24';
+// Alert section (Settings, pc-app.md/reminders.rs) — Orion-local only, no
+// BLE involved, so unlike ancs/clock/timeFormat above there's no pending-
+// vs-committed BLE write to track; each screen's own dirty flag is enough
+// since Save always writes that screen's current values wholesale. Three
+// independent screens (Working Hours / Weather Alert / Low Battery Alert),
+// each its own Settings row — same "one focused screen per setting"
+// convention as Clock Face/Time Format/Notification Filter. Working Hours
+// has no enable of its own — it's schedule data Weather Alert reads.
+let whStartMin=9*60,whEndMin=17*60;
+let whDays=[true,true,true,true,true,false,false]; // Mon=0..Sun=6
+let whDirty=false;
+let waEnabled=false,waOffsetMin=15; // Weather Alert — minutes before whEndMin
+let waEnabledPending=false,waDirty=false;
+let lbEnabled=false,lbThresholdPct=20; // Low Battery Alert — percent threshold
+let lbEnabledPending=false,lbDirty=false;
 const slotCommitted=['vol-mute','mic-mute','screenshot'];
 const kbdCommitted=[[],[],[]];
 
@@ -1427,6 +1476,123 @@ function discardShortcuts(){
   back();
 }
 
+// ── Alert section (Settings, pc-app.md/reminders.rs) ─────────────────────────
+// Working Hours (start/end/days, its own screen, no enable) + Weather Alert
+// (rain/snow reminder) + Low Battery Alert (iPhone battery threshold) — each
+// its own Settings row + subscreen. Weather Alert's offset-before-end-time
+// check reads Working Hours' whEndMin/whDays.
+function minutesToTimeStr(m){return String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0');}
+function timeStrToMinutes(s){const[h,m]=s.split(':').map(Number);return (h||0)*60+(m||0);}
+
+// ── Working Hours ────────────────────────────────────────────────────────
+function _renderWhDays(){for(let i=0;i<7;i++)$('whDay'+i).classList.toggle('sel',whDays[i]);}
+function toggleWhDay(i){whDays[i]=!whDays[i];_renderWhDays();whDirty=true;}
+
+function _renderMainWorkHoursSub(){
+  const t=I18N[appLang].workingHours;
+  const isWeekdays=whDays[0]&&whDays[1]&&whDays[2]&&whDays[3]&&whDays[4]&&!whDays[5]&&!whDays[6];
+  const isEveryDay=whDays.every(d=>d);
+  const daysTxt=isEveryDay?t.everyDay:isWeekdays?t.weekdays:t.dayAbbrevs.filter((_,i)=>whDays[i]).join(', ');
+  $('settingsWorkHoursSub').textContent=minutesToTimeStr(whStartMin)+'–'+minutesToTimeStr(whEndMin)+' · '+daysTxt;
+}
+
+function openWorkingHours(){
+  $('whStartInp').value=minutesToTimeStr(whStartMin);
+  $('whEndInp').value=minutesToTimeStr(whEndMin);
+  _renderWhDays();
+  whDirty=false;
+  show('s-workinghours');
+}
+function saveWorkingHours(){
+  whStartMin=timeStrToMinutes($('whStartInp').value||'09:00');
+  whEndMin=timeStrToMinutes($('whEndInp').value||'17:00');
+  whDirty=false;
+  _renderMainWorkHoursSub();
+  back();
+}
+function discardWorkingHours(){whDirty=false;back();}
+
+// ── Weather Alert ─────────────────────────────────────────────────────────
+function toggleWaEnabled(){
+  waEnabledPending=!waEnabledPending;
+  $('waEnabledToggle').classList.toggle('on',waEnabledPending);
+  $('waSliderRow').classList.toggle('disabled',!waEnabledPending);
+  $('waOffsetSlider').disabled=!waEnabledPending;
+  waDirty=true;
+}
+function onWaOffsetInput(){
+  $('waOffsetVal').textContent=$('waOffsetSlider').value+' '+I18N[appLang].weatherAlert.minUnit;
+  waDirty=true;
+}
+function _renderMainWeatherAlertSub(){
+  const t=I18N[appLang].weatherAlert;
+  $('settingsWeatherAlertSub').textContent=waEnabled?t.subOn.replace('{n}',waOffsetMin):t.off;
+}
+function openWeatherAlert(){
+  waEnabledPending=waEnabled;
+  $('waEnabledToggle').classList.toggle('on',waEnabledPending);
+  $('waSliderRow').classList.toggle('disabled',!waEnabledPending);
+  $('waOffsetSlider').disabled=!waEnabledPending;
+  $('waOffsetSlider').value=waOffsetMin;
+  $('waOffsetVal').textContent=waOffsetMin+' '+I18N[appLang].weatherAlert.minUnit;
+  waDirty=false;
+  show('s-weatheralert');
+}
+function saveWeatherAlert(){
+  waEnabled=waEnabledPending;
+  waOffsetMin=+$('waOffsetSlider').value;
+  waDirty=false;
+  _renderMainWeatherAlertSub();
+  back();
+}
+function discardWeatherAlert(){waDirty=false;back();}
+
+// ── Low Battery Alert ────────────────────────────────────────────────────
+function toggleLbEnabled(){
+  lbEnabledPending=!lbEnabledPending;
+  $('lbEnabledToggle').classList.toggle('on',lbEnabledPending);
+  $('lbSliderRow').classList.toggle('disabled',!lbEnabledPending);
+  $('lbThresholdSlider').disabled=!lbEnabledPending;
+  lbDirty=true;
+}
+function onLbThresholdInput(){
+  $('lbThresholdVal').textContent=$('lbThresholdSlider').value+'%';
+  lbDirty=true;
+}
+function _renderMainLowBatteryAlertSub(){
+  const t=I18N[appLang].lowBatteryAlert;
+  $('settingsLowBatteryAlertSub').textContent=lbEnabled?t.subOn.replace('{n}',lbThresholdPct):t.off;
+}
+function openLowBatteryAlert(){
+  lbEnabledPending=lbEnabled;
+  $('lbEnabledToggle').classList.toggle('on',lbEnabledPending);
+  $('lbSliderRow').classList.toggle('disabled',!lbEnabledPending);
+  $('lbThresholdSlider').disabled=!lbEnabledPending;
+  $('lbThresholdSlider').value=lbThresholdPct;
+  $('lbThresholdVal').textContent=lbThresholdPct+'%';
+  lbDirty=false;
+  show('s-lowbatteryalert');
+}
+function saveLowBatteryAlert(){
+  lbEnabled=lbEnabledPending;
+  lbThresholdPct=+$('lbThresholdSlider').value;
+  lbDirty=false;
+  _renderMainLowBatteryAlertSub();
+  back();
+}
+function discardLowBatteryAlert(){lbDirty=false;back();}
+
+// Mirrors the real app's showLowBatteryModal/showWorkHoursReminder: panel
+// visible → in-app modal; here always shown directly (this prototype has no
+// tray-hidden native-toast path to demo).
+function showWorkHoursReminder(kind,endMinutes){
+  const t=I18N[appLang].workHoursReminder;
+  const texts=t[kind]||t.rain;
+  $('whReminderTitle').textContent=texts.title;
+  $('whReminderBody').textContent=texts.body.replace('{time}',minutesToTimeStr(endMinutes));
+  showModal('m-work-hours-reminder');
+}
+
 // Reset: wipes Ori's own NVS + bonds (factory reset, ble-protocol.md §7.2)
 // AND Orion's local cache (profile, calendar sign-in, shortcuts) — there's
 // no longer a lesser "device-only" reset option, so this always walks back
@@ -1556,10 +1722,27 @@ const I18N={
       desc:'Orion keeps your Ori in sync — profile, calendar, and quick controls, all handled automatically from this PC.',
       start:'Start'},
     profile:{changeLang:'Back',title:'Set up your profile',sub:"This is what appears on Ori's display.",
+      calendarStepTitle:'Connect your calendar',
+      locationStepTitle:'Enable location',
+      locationHeading:'Show local weather on Ori',
+      locationDesc:"Orion uses your location to display current weather on Ori's screen. Your device may ask you to confirm this.",
+      locationAllow:'Allow',
+      locationSkip:'Not now',
       photoLbl:'Profile Photo',choosePhoto:'Choose photo',recrop:'Recrop',reupload:'Reupload',remove:'Remove',
       nameLbl:'Name',namePh:'Full name',jobLbl:'Job title',jobPh:'e.g. Senior Product Manager',
-      emailLbl:'Email',emailPh:'name@company.com',phoneLbl:'Phone',phonePh:'+1 555 000 0000',next:'Next'},
-    discover:{editProfile:'Edit profile',title:'Select your Ori',sub:'Make sure Ori is powered on and in pairing mode.',
+      emailLbl:'Email',emailPh:'name@company.com',phoneLbl:'Phone',phonePh:'+1 555 000 0000',next:'Next',
+      importCalendarBtn:'Import Outlook calendar sharing file',
+      calHelpLink:'How do I get this file?',
+      calHelpTitle:'Getting your calendar file',
+      calHelpSteps:['Open Microsoft Teams and go to the <b>Calendar</b> tab.','Click the <b>•••</b> (more options) button.','Click <b>Share</b>, then enter your personal or external email address.','Check that email for the attached file, then come back here and import it.'],
+      calHelpClose:'Got it',
+      calGcalComingSoon:'Coming soon',
+      importing:'Importing…',
+      importCalendarDoneSingular:'Imported — 1 meeting today.',
+      importCalendarDonePlural:'Imported — {n} meetings today.',
+      importCalendarDoneEmpty:'Imported — no meetings today.',
+      importFailed:'Import failed — check the file and try again.'},
+    discover:{title:'Select your Ori',sub:'Make sure Ori is powered on and in pairing mode.',
       scanning:'Looking for nearby Ori devices…',rescan:'Scan again',strongSignal:'Strong signal',weakSignal:'Weak signal'},
     passkey:{title:'Enter passkey',bodyPre:'Enter the 6-digit code shown on ',bodySuf:'.',cancel:'Cancel',pair:'Pair'},
     connecting:{title:'Pairing with Ori…',sub:'Waiting for Ori to confirm…'},
@@ -1569,7 +1752,7 @@ const I18N={
       notSetup:'Not setup',justNow:'Just now',minAgo:'{n} min ago'},
     iphoneInfoModal:{missedLbl:'Missed Calls',unreadLbl:'Unread Messages',sigLbl:'Signal',notifLbl:'Notifications'},
     settings:{title:'Settings',general:'General',auto:'Run automatically',autoSub:'Launch at Windows startup',
-      calendar:'Calendar Source',language:'Language',about:'About',app:'Software Version',reset:'Reset'},
+      calendar:'Calendar Source',language:'Language',alert:'Alert',about:'About',app:'Software Version',reset:'Reset'},
     main:{connected:'Connected',connecting:'Connecting…',syncing:'Syncing…',disconnected:'Disconnected',timeOff:'Time Off',
       noTimeOffPlanned:'No Time Off planned',tapToSet:'Tap to set',notifFilterRow:'Notification Filter',
       clockFaceRow:'Clock Face',timeFormatRow:'Time Format',quickActionsRow:'Quick Actions',presenceAvailable:'Available',
@@ -1579,9 +1762,9 @@ const I18N={
     timeOffEditor:{periodLbl:'Period',selectDates:'Select dates…',selectStartDate:'Select start date',
       selectEndDate:'Now select end date',destinationLbl:'Destination',destinationPh:'City, Country',
       destinationPhotoLbl:'Destination photo'},
-    calendarSource:{teamsStatus:'Signed in · Exchange Online',notSignedIn:'Not signed in',signingIn:'Signing in…',
-      notConnected:'Not connected',signInGoogle:'Sign in with Google',signOutGoogle:'Sign out from Google',
-      signInMicrosoft:'Sign in with Microsoft',signOutMicrosoft:'Sign out from Microsoft'},
+    calendarSource:{notConnected:'Not connected',connected:'Connected',importing:'Importing…',
+      importFile:'Import Outlook calendar sharing file',
+      importFailed:'Import failed — check the file and try again.'},
     quickActions:{slotPrefix:'Slot',notSet:'Not set',clickToSet:'Click to set',clickToChange:'Click to change',
       pressShortcut:'Press shortcut…',escToCancel:'Esc to cancel',
       actionLabels:{'vol-mute':'Volume Mute','mic-mute':'Mic Mute',screenshot:'Screenshot','lock-screen':'Lock Screen','favorite-1':'Favorite 1','favorite-2':'Favorite 2','favorite-3':'Favorite 3',calculator:'Calculator'}},
@@ -1597,6 +1780,31 @@ const I18N={
     unpairPhoneModal:{title:'Unpair iPhone',
       body:'Ori will no longer show notifications from {name}.',
       fallbackName:'The paired iPhone',unpair:'Unpair'},
+    lowBatteryModal:{title:'Low Battery',body:'{name} is at {level}% battery.',ok:'OK'},
+    workingHours:{row:'Working Hours',title:'Working Hours',
+      desc:"Sets when your work day starts and ends — Weather Alert uses this to know when to check the forecast.",
+      startLbl:'Start time',endLbl:'End time',daysLbl:'Working days',
+      everyDay:'Every day',weekdays:'Weekdays',
+      dayAbbrevs:['Mon','Tue','Wed','Thu','Fri','Sat','Sun'],
+      cancel:'Cancel',save:'Save'},
+    weatherAlert:{row:'Weather Alert',title:'Weather Alert',off:'Off',
+      desc:"Warns you before rain or snow arrives near the end of your work day, so you're not caught without an umbrella.",
+      enableLbl:'Enable weather alert',sliderLbl:'Alert before end time',minUnit:'min',
+      subOn:'{n} min before',cancel:'Cancel',save:'Save'},
+    lowBatteryAlert:{row:'Low Battery Alert',title:'Low Battery Alert',off:'Off',
+      desc:"Warns you when your iPhone's battery drops below the level you choose.",
+      enableLbl:'Enable low battery alert',sliderLbl:'Alert below',
+      subOn:'Below {n}%',cancel:'Cancel',save:'Save'},
+    workHoursReminder:{
+      rain:{title:'Rain expected',body:'Rain is expected around the time your work day ends at {time}.'},
+      thunderstorm:{title:'Thunderstorm expected',body:'A thunderstorm is expected around the time your work day ends at {time}.'},
+      snow:{title:'Snow expected',body:'Snow is expected around the time your work day ends at {time}.'},
+      ok:'OK'},
+    bluetoothModal:{title:'Bluetooth is off',body:'Turn on Bluetooth to keep using Orion.'},
+    netWarnTitle:'No Internet access',
+    netWarnBody:"Some calendar or weather data couldn't be refreshed. It'll try again automatically.",
+    calNetWarn:"Couldn't reach the internet to check for meetings yet — it'll try again automatically.",
+    locationNetWarn:"Couldn't reach the internet to set up weather yet — it'll try again automatically.",
     fwModal:{title:'Ori Update Available',update:'Update',
       updatingFirmware:'Updating Ori…',keepPluggedIn:'Keep Ori plugged in',verifying:'Verifying…',
       nowRunning:'Now running {v}',done:'Done',
@@ -1617,10 +1825,27 @@ const I18N={
       desc:'Orion giữ Ori của bạn luôn đồng bộ — hồ sơ, lịch và các điều khiển nhanh, tất cả được xử lý tự động từ máy tính này.',
       start:'Bắt đầu'},
     profile:{changeLang:'Quay lại',title:'Thiết lập hồ sơ của bạn',sub:'Đây là thông tin hiển thị trên màn hình Ori.',
+      calendarStepTitle:'Kết nối lịch của bạn',
+      locationStepTitle:'Bật vị trí',
+      locationHeading:'Hiển thị thời tiết địa phương trên Ori',
+      locationDesc:'Orion dùng vị trí của bạn để hiển thị thời tiết hiện tại trên màn hình Ori. Thiết bị của bạn có thể yêu cầu xác nhận điều này.',
+      locationAllow:'Cho phép',
+      locationSkip:'Để sau',
       photoLbl:'Ảnh hồ sơ',choosePhoto:'Chọn ảnh',recrop:'Cắt lại',reupload:'Tải lại ảnh',remove:'Xóa ảnh',
       nameLbl:'Họ tên',namePh:'Họ và tên',jobLbl:'Chức danh',jobPh:'VD: Trưởng phòng Sản phẩm',
-      emailLbl:'Email',emailPh:'ten@congty.com',phoneLbl:'Số điện thoại',phonePh:'+84 90 000 0000',next:'Tiếp theo'},
-    discover:{editProfile:'Sửa hồ sơ',title:'Chọn Ori của bạn',sub:'Đảm bảo Ori đã mở và đang ở chế độ ghép nối.',
+      emailLbl:'Email',emailPh:'ten@congty.com',phoneLbl:'Số điện thoại',phonePh:'+84 90 000 0000',next:'Tiếp theo',
+      importCalendarBtn:'Nhập tệp chia sẻ lịch Outlook',
+      calHelpLink:'Làm sao để lấy tệp này?',
+      calHelpTitle:'Cách lấy tệp lịch của bạn',
+      calHelpSteps:['Mở Microsoft Teams và vào tab <b>Lịch</b>.','Nhấn nút <b>•••</b> (tùy chọn khác).','Nhấn <b>Chia sẻ</b>, rồi nhập địa chỉ email cá nhân hoặc bên ngoài của bạn.','Kiểm tra email đó để lấy tệp đính kèm, rồi quay lại đây và nhập tệp.'],
+      calHelpClose:'Đã hiểu',
+      calGcalComingSoon:'Sắp ra mắt',
+      importing:'Đang nhập…',
+      importCalendarDoneSingular:'Đã nhập — 1 cuộc họp hôm nay.',
+      importCalendarDonePlural:'Đã nhập — {n} cuộc họp hôm nay.',
+      importCalendarDoneEmpty:'Đã nhập — không có cuộc họp hôm nay.',
+      importFailed:'Nhập thất bại — kiểm tra tệp và thử lại.'},
+    discover:{title:'Chọn Ori của bạn',sub:'Đảm bảo Ori đã mở và đang ở chế độ ghép nối.',
       scanning:'Đang tìm thiết bị Ori gần đây…',rescan:'Quét lại',strongSignal:'Tín hiệu mạnh',weakSignal:'Tín hiệu yếu'},
     passkey:{title:'Nhập mã ghép nối',bodyPre:'Nhập mã 6 số hiển thị trên ',bodySuf:'.',cancel:'Hủy',pair:'Ghép nối'},
     connecting:{title:'Đang ghép nối với Ori…',sub:'Đang chờ Ori xác nhận…'},
@@ -1630,7 +1855,7 @@ const I18N={
       notSetup:'Chưa thiết lập',justNow:'Vừa xong',minAgo:'{n} phút trước'},
     iphoneInfoModal:{missedLbl:'Cuộc gọi nhỡ',unreadLbl:'Tin nhắn chưa đọc',sigLbl:'Tín hiệu',notifLbl:'Thông báo'},
     settings:{title:'Cài đặt',general:'Chung',auto:'Tự động chạy',autoSub:'Khởi động cùng Windows',
-      calendar:'Nguồn lịch',language:'Ngôn ngữ',about:'Giới thiệu',app:'Phiên bản phần mềm',reset:'Đặt lại'},
+      calendar:'Nguồn lịch',language:'Ngôn ngữ',alert:'Cảnh báo',about:'Giới thiệu',app:'Phiên bản phần mềm',reset:'Đặt lại'},
     main:{connected:'Đã kết nối',connecting:'Đang kết nối…',syncing:'Đang đồng bộ…',disconnected:'Đã ngắt kết nối',timeOff:'Nghỉ phép',
       noTimeOffPlanned:'Chưa có lịch nghỉ phép',tapToSet:'Nhấn để đặt',notifFilterRow:'Bộ lọc thông báo',
       clockFaceRow:'Mặt đồng hồ',timeFormatRow:'Định dạng giờ',quickActionsRow:'Thao tác nhanh',presenceAvailable:'Đang hoạt động',
@@ -1640,9 +1865,9 @@ const I18N={
     timeOffEditor:{periodLbl:'Khoảng thời gian',selectDates:'Chọn ngày…',selectStartDate:'Chọn ngày bắt đầu',
       selectEndDate:'Bây giờ chọn ngày kết thúc',destinationLbl:'Điểm đến',destinationPh:'Thành phố, Quốc gia',
       destinationPhotoLbl:'Ảnh điểm đến'},
-    calendarSource:{teamsStatus:'Đã đăng nhập · Exchange Online',notSignedIn:'Chưa đăng nhập',signingIn:'Đang đăng nhập…',
-      notConnected:'Chưa kết nối',signInGoogle:'Đăng nhập bằng Google',signOutGoogle:'Đăng xuất khỏi Google',
-      signInMicrosoft:'Đăng nhập bằng Microsoft',signOutMicrosoft:'Đăng xuất khỏi Microsoft'},
+    calendarSource:{notConnected:'Chưa kết nối',connected:'Đã kết nối',importing:'Đang nhập…',
+      importFile:'Nhập tệp chia sẻ lịch Outlook',
+      importFailed:'Nhập thất bại — kiểm tra tệp và thử lại.'},
     quickActions:{slotPrefix:'Khe',notSet:'Chưa đặt',clickToSet:'Nhấn để đặt',clickToChange:'Nhấn để đổi',
       pressShortcut:'Nhấn tổ hợp phím…',escToCancel:'Nhấn Esc để hủy',
       actionLabels:{'vol-mute':'Tắt âm lượng','mic-mute':'Tắt mic',screenshot:'Chụp màn hình','lock-screen':'Khóa màn hình','favorite-1':'Yêu thích 1','favorite-2':'Yêu thích 2','favorite-3':'Yêu thích 3',calculator:'Máy tính'}},
@@ -1658,6 +1883,31 @@ const I18N={
     unpairPhoneModal:{title:'Hủy ghép nối iPhone',
       body:'Ori sẽ không còn hiển thị thông báo từ {name} nữa.',
       fallbackName:'iPhone đã ghép nối',unpair:'Hủy ghép nối'},
+    lowBatteryModal:{title:'Pin yếu',body:'{name} chỉ còn {level}% pin.',ok:'OK'},
+    workingHours:{row:'Giờ làm việc',title:'Giờ làm việc',
+      desc:'Đặt giờ bắt đầu và kết thúc ngày làm việc — Cảnh báo thời tiết dùng thông tin này để biết khi nào cần kiểm tra dự báo.',
+      startLbl:'Giờ bắt đầu',endLbl:'Giờ kết thúc',daysLbl:'Ngày làm việc',
+      everyDay:'Mỗi ngày',weekdays:'Ngày trong tuần',
+      dayAbbrevs:['T2','T3','T4','T5','T6','T7','CN'],
+      cancel:'Hủy',save:'Lưu'},
+    weatherAlert:{row:'Cảnh báo thời tiết',title:'Cảnh báo thời tiết',off:'Tắt',
+      desc:'Cảnh báo bạn trước khi mưa hoặc tuyết đến gần giờ kết thúc ngày làm việc, để bạn không bị bất ngờ khi ra về.',
+      enableLbl:'Bật cảnh báo thời tiết',sliderLbl:'Cảnh báo trước giờ kết thúc',minUnit:'phút',
+      subOn:'Trước {n} phút',cancel:'Hủy',save:'Lưu'},
+    lowBatteryAlert:{row:'Cảnh báo pin yếu',title:'Cảnh báo pin yếu',off:'Tắt',
+      desc:'Cảnh báo khi pin iPhone của bạn xuống dưới mức bạn chọn.',
+      enableLbl:'Bật cảnh báo pin yếu',sliderLbl:'Cảnh báo khi dưới',
+      subOn:'Dưới {n}%',cancel:'Hủy',save:'Lưu'},
+    workHoursReminder:{
+      rain:{title:'Sắp có mưa',body:'Trời sắp có mưa vào khoảng thời gian kết thúc ngày làm việc của bạn lúc {time}.'},
+      thunderstorm:{title:'Sắp có giông bão',body:'Trời sắp có giông bão vào khoảng thời gian kết thúc ngày làm việc của bạn lúc {time}.'},
+      snow:{title:'Sắp có tuyết',body:'Trời sắp có tuyết vào khoảng thời gian kết thúc ngày làm việc của bạn lúc {time}.'},
+      ok:'OK'},
+    bluetoothModal:{title:'Bluetooth đang tắt',body:'Bật Bluetooth để tiếp tục sử dụng Orion.'},
+    netWarnTitle:'Không có kết nối Internet',
+    netWarnBody:'Một số dữ liệu lịch hoặc thời tiết chưa thể làm mới. Hệ thống sẽ tự động thử lại.',
+    calNetWarn:'Chưa thể kết nối internet để kiểm tra cuộc họp — hệ thống sẽ tự động thử lại.',
+    locationNetWarn:'Chưa thể kết nối internet để thiết lập thời tiết — hệ thống sẽ tự động thử lại.',
     fwModal:{title:'Có bản cập nhật Ori',update:'Cập nhật',
       updatingFirmware:'Đang cập nhật Ori…',keepPluggedIn:'Giữ Ori được cắm điện',verifying:'Đang xác minh…',
       nowRunning:'Đang chạy {v}',done:'Hoàn tất',
@@ -1678,10 +1928,27 @@ const I18N={
       desc:'Orion mantiene tu Ori sincronizado — perfil, calendario y controles rápidos, todo gestionado automáticamente desde este PC.',
       start:'Comenzar'},
     profile:{changeLang:'Atrás',title:'Configura tu perfil',sub:'Esto es lo que aparece en la pantalla de Ori.',
+      calendarStepTitle:'Conecta tu calendario',
+      locationStepTitle:'Activar ubicación',
+      locationHeading:'Mostrar el clima local en Ori',
+      locationDesc:'Orion usa tu ubicación para mostrar el clima actual en la pantalla de Ori. Es posible que tu dispositivo te pida confirmarlo.',
+      locationAllow:'Permitir',
+      locationSkip:'Ahora no',
       photoLbl:'Foto de perfil',choosePhoto:'Elegir foto',recrop:'Recortar de nuevo',reupload:'Subir otra vez',remove:'Quitar',
       nameLbl:'Nombre',namePh:'Nombre completo',jobLbl:'Cargo',jobPh:'p. ej. Gerente de Producto',
-      emailLbl:'Correo',emailPh:'nombre@empresa.com',phoneLbl:'Teléfono',phonePh:'+34 600 000 000',next:'Siguiente'},
-    discover:{editProfile:'Editar perfil',title:'Selecciona tu Ori',sub:'Asegúrate de que Ori esté encendido y en modo de emparejamiento.',
+      emailLbl:'Correo',emailPh:'nombre@empresa.com',phoneLbl:'Teléfono',phonePh:'+34 600 000 000',next:'Siguiente',
+      importCalendarBtn:'Importar archivo de calendario compartido de Outlook',
+      calHelpLink:'¿Cómo obtengo este archivo?',
+      calHelpTitle:'Cómo obtener tu archivo de calendario',
+      calHelpSteps:['Abre Microsoft Teams y ve a la pestaña <b>Calendario</b>.','Haz clic en el botón <b>•••</b> (más opciones).','Haz clic en <b>Compartir</b> e introduce tu dirección de correo personal o externa.','Revisa ese correo para ver el archivo adjunto, luego vuelve aquí e impórtalo.'],
+      calHelpClose:'Entendido',
+      calGcalComingSoon:'Próximamente',
+      importing:'Importando…',
+      importCalendarDoneSingular:'Importado — 1 reunión hoy.',
+      importCalendarDonePlural:'Importado — {n} reuniones hoy.',
+      importCalendarDoneEmpty:'Importado — sin reuniones hoy.',
+      importFailed:'Error al importar — revisa el archivo e inténtalo de nuevo.'},
+    discover:{title:'Selecciona tu Ori',sub:'Asegúrate de que Ori esté encendido y en modo de emparejamiento.',
       scanning:'Buscando dispositivos Ori cercanos…',rescan:'Buscar de nuevo',strongSignal:'Señal fuerte',weakSignal:'Señal débil'},
     passkey:{title:'Introduce el código',bodyPre:'Introduce el código de 6 dígitos que aparece en ',bodySuf:'.',cancel:'Cancelar',pair:'Emparejar'},
     connecting:{title:'Emparejando con Ori…',sub:'Esperando confirmación de Ori…'},
@@ -1691,7 +1958,7 @@ const I18N={
       notSetup:'Sin configurar',justNow:'Ahora mismo',minAgo:'Hace {n} min'},
     iphoneInfoModal:{missedLbl:'Llamadas perdidas',unreadLbl:'Mensajes sin leer',sigLbl:'Señal',notifLbl:'Notificaciones'},
     settings:{title:'Configuración',general:'General',auto:'Iniciar automáticamente',autoSub:'Abrir al iniciar Windows',
-      calendar:'Fuente de calendario',language:'Idioma',about:'Acerca de',app:'Versión del software',reset:'Restablecer'},
+      calendar:'Fuente de calendario',language:'Idioma',alert:'Alerta',about:'Acerca de',app:'Versión del software',reset:'Restablecer'},
     main:{connected:'Conectado',connecting:'Conectando…',syncing:'Sincronizando…',disconnected:'Desconectado',timeOff:'Tiempo libre',
       noTimeOffPlanned:'Sin tiempo libre planeado',tapToSet:'Toca para configurar',notifFilterRow:'Filtro de notificaciones',
       clockFaceRow:'Esfera del reloj',timeFormatRow:'Formato de hora',quickActionsRow:'Acciones rápidas',presenceAvailable:'Disponible',
@@ -1701,9 +1968,9 @@ const I18N={
     timeOffEditor:{periodLbl:'Periodo',selectDates:'Selecciona fechas…',selectStartDate:'Selecciona la fecha de inicio',
       selectEndDate:'Ahora selecciona la fecha de fin',destinationLbl:'Destino',destinationPh:'Ciudad, país',
       destinationPhotoLbl:'Foto del destino'},
-    calendarSource:{teamsStatus:'Sesión iniciada · Exchange Online',notSignedIn:'No has iniciado sesión',signingIn:'Iniciando sesión…',
-      notConnected:'No conectado',signInGoogle:'Iniciar sesión con Google',signOutGoogle:'Cerrar sesión de Google',
-      signInMicrosoft:'Iniciar sesión con Microsoft',signOutMicrosoft:'Cerrar sesión de Microsoft'},
+    calendarSource:{notConnected:'No conectado',connected:'Conectado',importing:'Importando…',
+      importFile:'Importar archivo de calendario compartido de Outlook',
+      importFailed:'Error al importar — revisa el archivo e inténtalo de nuevo.'},
     quickActions:{slotPrefix:'Ranura',notSet:'Sin definir',clickToSet:'Haz clic para definir',clickToChange:'Haz clic para cambiar',
       pressShortcut:'Presiona el atajo…',escToCancel:'Esc para cancelar',
       actionLabels:{'vol-mute':'Silenciar volumen','mic-mute':'Silenciar micrófono',screenshot:'Captura de pantalla','lock-screen':'Bloquear pantalla','favorite-1':'Favorito 1','favorite-2':'Favorito 2','favorite-3':'Favorito 3',calculator:'Calculadora'}},
@@ -1719,6 +1986,31 @@ const I18N={
     unpairPhoneModal:{title:'Desvincular iPhone',
       body:'Ori dejará de mostrar notificaciones de {name}.',
       fallbackName:'El iPhone vinculado',unpair:'Desvincular'},
+    lowBatteryModal:{title:'Batería baja',body:'{name} tiene un {level}% de batería.',ok:'Aceptar'},
+    workingHours:{row:'Horario laboral',title:'Horario laboral',
+      desc:'Define cuándo empieza y termina tu jornada — la Alerta de clima usa esto para saber cuándo revisar el pronóstico.',
+      startLbl:'Hora de inicio',endLbl:'Hora de fin',daysLbl:'Días laborables',
+      everyDay:'Todos los días',weekdays:'Días laborables',
+      dayAbbrevs:['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'],
+      cancel:'Cancelar',save:'Guardar'},
+    weatherAlert:{row:'Alerta de clima',title:'Alerta de clima',off:'Desactivada',
+      desc:'Te avisa antes de que llegue lluvia o nieve cerca del final de tu jornada, para que no te agarre desprevenido.',
+      enableLbl:'Activar alerta de clima',sliderLbl:'Avisar antes de la hora de fin',minUnit:'min',
+      subOn:'{n} min antes',cancel:'Cancelar',save:'Guardar'},
+    lowBatteryAlert:{row:'Alerta de batería baja',title:'Alerta de batería baja',off:'Desactivada',
+      desc:'Te avisa cuando la batería de tu iPhone baja del nivel que elijas.',
+      enableLbl:'Activar alerta de batería baja',sliderLbl:'Avisar por debajo de',
+      subOn:'Por debajo del {n}%',cancel:'Cancelar',save:'Guardar'},
+    workHoursReminder:{
+      rain:{title:'Se espera lluvia',body:'Se espera lluvia alrededor de la hora en que termina tu jornada, a las {time}.'},
+      thunderstorm:{title:'Se espera tormenta',body:'Se espera una tormenta alrededor de la hora en que termina tu jornada, a las {time}.'},
+      snow:{title:'Se espera nieve',body:'Se espera nieve alrededor de la hora en que termina tu jornada, a las {time}.'},
+      ok:'Aceptar'},
+    bluetoothModal:{title:'Bluetooth está apagado',body:'Activa Bluetooth para seguir usando Orion.'},
+    netWarnTitle:'Sin acceso a Internet',
+    netWarnBody:'No se pudieron actualizar algunos datos de calendario o clima. Se intentará de nuevo automáticamente.',
+    calNetWarn:'No se pudo conectar a internet para revisar reuniones todavía — se intentará de nuevo automáticamente.',
+    locationNetWarn:'No se pudo conectar a internet para configurar el clima todavía — se intentará de nuevo automáticamente.',
     fwModal:{title:'Actualización de Ori disponible',update:'Actualizar',
       updatingFirmware:'Actualizando Ori…',keepPluggedIn:'Mantén Ori conectado',verifying:'Verificando…',
       nowRunning:'Ahora ejecutando {v}',done:'Listo',
@@ -1739,10 +2031,27 @@ const I18N={
       desc:'Orion synchronise votre Ori — profil, calendrier et raccourcis, tout est géré automatiquement depuis ce PC.',
       start:'Commencer'},
     profile:{changeLang:'Retour',title:'Configurez votre profil',sub:"C'est ce qui apparaît sur l'écran d'Ori.",
+      calendarStepTitle:'Connectez votre calendrier',
+      locationStepTitle:'Activer la localisation',
+      locationHeading:'Afficher la météo locale sur Ori',
+      locationDesc:"Orion utilise votre position pour afficher la météo actuelle sur l'écran d'Ori. Votre appareil peut vous demander de le confirmer.",
+      locationAllow:'Autoriser',
+      locationSkip:'Plus tard',
       photoLbl:'Photo de profil',choosePhoto:'Choisir une photo',recrop:'Recadrer',reupload:'Réimporter',remove:'Supprimer',
       nameLbl:'Nom',namePh:'Nom complet',jobLbl:'Poste',jobPh:'p. ex. Chef de produit senior',
-      emailLbl:'E-mail',emailPh:'nom@entreprise.com',phoneLbl:'Téléphone',phonePh:'+33 6 00 00 00 00',next:'Suivant'},
-    discover:{editProfile:'Modifier le profil',title:'Sélectionnez votre Ori',sub:"Assurez-vous qu'Ori est allumé et en mode d'appairage.",
+      emailLbl:'E-mail',emailPh:'nom@entreprise.com',phoneLbl:'Téléphone',phonePh:'+33 6 00 00 00 00',next:'Suivant',
+      importCalendarBtn:'Importer le fichier de partage du calendrier Outlook',
+      calHelpLink:'Comment obtenir ce fichier ?',
+      calHelpTitle:'Obtenir votre fichier de calendrier',
+      calHelpSteps:["Ouvrez Microsoft Teams et allez dans l'onglet <b>Calendrier</b>.","Cliquez sur le bouton <b>•••</b> (plus d'options).","Cliquez sur <b>Partager</b>, puis saisissez votre adresse e-mail personnelle ou externe.","Consultez cet e-mail pour le fichier joint, puis revenez ici pour l'importer."],
+      calHelpClose:'Compris',
+      calGcalComingSoon:'Bientôt disponible',
+      importing:'Importation…',
+      importCalendarDoneSingular:"Importé — 1 réunion aujourd'hui.",
+      importCalendarDonePlural:"Importé — {n} réunions aujourd'hui.",
+      importCalendarDoneEmpty:"Importé — aucune réunion aujourd'hui.",
+      importFailed:"Échec de l'importation — vérifiez le fichier et réessayez."},
+    discover:{title:'Sélectionnez votre Ori',sub:"Assurez-vous qu'Ori est allumé et en mode d'appairage.",
       scanning:"Recherche d'appareils Ori à proximité…",rescan:'Rescanner',strongSignal:'Signal fort',weakSignal:'Signal faible'},
     passkey:{title:'Saisir le code',bodyPre:'Saisissez le code à 6 chiffres affiché sur ',bodySuf:'.',cancel:'Annuler',pair:'Appairer'},
     connecting:{title:'Appairage avec Ori…',sub:"En attente de confirmation d'Ori…"},
@@ -1752,7 +2061,7 @@ const I18N={
       notSetup:'Non configuré',justNow:"À l'instant",minAgo:'Il y a {n} min'},
     iphoneInfoModal:{missedLbl:'Appels manqués',unreadLbl:'Messages non lus',sigLbl:'Signal',notifLbl:'Notifications'},
     settings:{title:'Paramètres',general:'Général',auto:'Démarrage automatique',autoSub:'Lancer au démarrage de Windows',
-      calendar:'Source de calendrier',language:'Langue',about:'À propos',app:'Version du logiciel',reset:'Réinitialiser'},
+      calendar:'Source de calendrier',language:'Langue',alert:'Alerte',about:'À propos',app:'Version du logiciel',reset:'Réinitialiser'},
     main:{connected:'Connecté',connecting:'Connexion…',syncing:'Synchronisation…',disconnected:'Déconnecté',timeOff:'Congé',
       noTimeOffPlanned:'Aucun congé prévu',tapToSet:'Toucher pour définir',notifFilterRow:'Filtre de notifications',
       clockFaceRow:"Cadran de l'horloge",timeFormatRow:"Format de l'heure",quickActionsRow:'Actions rapides',presenceAvailable:'Disponible',
@@ -1762,9 +2071,9 @@ const I18N={
     timeOffEditor:{periodLbl:'Période',selectDates:'Sélectionner les dates…',selectStartDate:'Sélectionner la date de début',
       selectEndDate:'Sélectionnez maintenant la date de fin',destinationLbl:'Destination',destinationPh:'Ville, pays',
       destinationPhotoLbl:'Photo de la destination'},
-    calendarSource:{teamsStatus:'Connecté · Exchange Online',notSignedIn:'Non connecté',signingIn:'Connexion en cours…',
-      notConnected:'Non connecté',signInGoogle:'Se connecter avec Google',signOutGoogle:'Se déconnecter de Google',
-      signInMicrosoft:'Se connecter avec Microsoft',signOutMicrosoft:'Se déconnecter de Microsoft'},
+    calendarSource:{notConnected:'Non connecté',connected:'Connecté',importing:'Importation…',
+      importFile:'Importer le fichier de partage du calendrier Outlook',
+      importFailed:"Échec de l'importation — vérifiez le fichier et réessayez."},
     quickActions:{slotPrefix:'Emplacement',notSet:'Non défini',clickToSet:'Cliquer pour définir',clickToChange:'Cliquer pour modifier',
       pressShortcut:'Appuyez sur le raccourci…',escToCancel:'Échap pour annuler',
       actionLabels:{'vol-mute':'Muet volume','mic-mute':'Muet micro',screenshot:"Capture d'écran",'lock-screen':"Verrouiller l'écran",'favorite-1':'Favori 1','favorite-2':'Favori 2','favorite-3':'Favori 3',calculator:'Calculatrice'}},
@@ -1780,6 +2089,31 @@ const I18N={
     unpairPhoneModal:{title:"Dissocier l'iPhone",
       body:"Ori n'affichera plus les notifications de {name}.",
       fallbackName:"L'iPhone associé",unpair:'Dissocier'},
+    lowBatteryModal:{title:'Batterie faible',body:'{name} est à {level} % de batterie.',ok:'OK'},
+    workingHours:{row:'Heures de travail',title:'Heures de travail',
+      desc:"Définit le début et la fin de votre journée de travail — l'Alerte météo s'en sert pour savoir quand vérifier les prévisions.",
+      startLbl:'Heure de début',endLbl:'Heure de fin',daysLbl:'Jours travaillés',
+      everyDay:'Tous les jours',weekdays:'Jours ouvrés',
+      dayAbbrevs:['Lun','Mar','Mer','Jeu','Ven','Sam','Dim'],
+      cancel:'Annuler',save:'Enregistrer'},
+    weatherAlert:{row:'Alerte météo',title:'Alerte météo',off:'Désactivée',
+      desc:"Vous prévient avant l'arrivée de pluie ou de neige vers la fin de votre journée de travail, pour ne pas être pris au dépourvu.",
+      enableLbl:'Activer l\'alerte météo',sliderLbl:'Alerter avant la fin de journée',minUnit:'min',
+      subOn:'{n} min avant',cancel:'Annuler',save:'Enregistrer'},
+    lowBatteryAlert:{row:'Alerte batterie faible',title:'Alerte batterie faible',off:'Désactivée',
+      desc:"Vous prévient quand la batterie de votre iPhone descend sous le niveau choisi.",
+      enableLbl:'Activer l\'alerte batterie faible',sliderLbl:'Alerter en dessous de',
+      subOn:'En dessous de {n} %',cancel:'Annuler',save:'Enregistrer'},
+    workHoursReminder:{
+      rain:{title:'Pluie prévue',body:'De la pluie est prévue vers la fin de votre journée de travail à {time}.'},
+      thunderstorm:{title:'Orage prévu',body:"Un orage est prévu vers la fin de votre journée de travail à {time}."},
+      snow:{title:'Neige prévue',body:'De la neige est prévue vers la fin de votre journée de travail à {time}.'},
+      ok:'OK'},
+    bluetoothModal:{title:'Le Bluetooth est désactivé',body:'Activez le Bluetooth pour continuer à utiliser Orion.'},
+    netWarnTitle:"Pas d'accès à Internet",
+    netWarnBody:"Certaines données de calendrier ou de météo n'ont pas pu être actualisées. Nouvelle tentative automatique.",
+    calNetWarn:"Impossible de joindre internet pour vérifier les réunions — nouvelle tentative automatique.",
+    locationNetWarn:"Impossible de joindre internet pour configurer la météo — nouvelle tentative automatique.",
     fwModal:{title:"Mise à jour d'Ori disponible",update:'Mettre à jour',
       updatingFirmware:"Mise à jour d'Ori…",keepPluggedIn:'Gardez Ori branché',verifying:'Vérification…',
       nowRunning:'Exécute maintenant {v}',done:'Terminé',
@@ -1806,6 +2140,15 @@ function applyI18n(){
   $('suWelcomeDesc').textContent=t.welcome.desc;
   $('suStartBtn').textContent=t.welcome.start;
   $('suChangeLangTxt').textContent=t.profile.changeLang;
+  $('suCalendarTitle').textContent=t.profile.calendarStepTitle;
+  _renderImportCard();
+  $('suCalNext').textContent=t.profile.next;
+  $('suCalHelpTxt').textContent=t.profile.calHelpLink;
+  $('calHelpTitle').textContent=t.profile.calHelpTitle;
+  $('calHelpSteps').innerHTML=t.profile.calHelpSteps.map(s=>`<li>${s}</li>`).join('');
+  $('calHelpCloseBtn').textContent=t.profile.calHelpClose;
+  $('suGcalComingSoon').textContent=t.profile.calGcalComingSoon;
+  $('suProfileBackTxt').textContent=t.profile.changeLang;
   $('suProfileTitle').textContent=t.profile.title;
   $('suProfileSub').textContent=t.profile.sub;
   $('suPhotoLbl').textContent=t.profile.photoLbl;
@@ -1822,7 +2165,13 @@ function applyI18n(){
   $('suPhoneLblTxt').textContent=t.profile.phoneLbl;
   $('suPhInp').placeholder=t.profile.phonePh;
   $('suProfileNext').textContent=t.profile.next;
-  $('suEditProfileTxt').textContent=t.discover.editProfile;
+  $('suLocationBackTxt').textContent=t.profile.changeLang;
+  $('suLocationTitle').textContent=t.profile.locationStepTitle;
+  $('suLocationHeading').textContent=t.profile.locationHeading;
+  $('suLocationDesc').textContent=t.profile.locationDesc;
+  $('suLocationAllowBtn').textContent=t.profile.locationAllow;
+  $('suLocationSkipBtn').textContent=t.profile.locationSkip;
+  $('suEditProfileTxt').textContent=t.profile.changeLang;
   $('suDiscoverTitle').textContent=t.discover.title;
   $('suDiscoverSub').textContent=t.discover.sub;
   $('suScanningTxt').textContent=t.discover.scanning;
@@ -1843,6 +2192,45 @@ function applyI18n(){
   $('settingsAutoMain').textContent=t.settings.auto;
   $('settingsAutoSub').textContent=t.settings.autoSub;
   $('settingsCalLbl').textContent=t.settings.calendar;
+  $('settingsAlertLbl').textContent=t.settings.alert;
+  // Working Hours
+  $('whTitle').textContent=t.workingHours.title;
+  $('settingsWorkHoursLbl').textContent=t.workingHours.row;
+  $('whSectionDesc').textContent=t.workingHours.desc;
+  $('whStartLbl').textContent=t.workingHours.startLbl;
+  $('whEndLbl').textContent=t.workingHours.endLbl;
+  $('whDaysLbl').textContent=t.workingHours.daysLbl;
+  for(let i=0;i<7;i++) $('whDay'+i).textContent=t.workingHours.dayAbbrevs[i].slice(0,2);
+  $('whCancelBtn').textContent=t.workingHours.cancel;
+  $('whSaveBtn').textContent=t.workingHours.save;
+  _renderMainWorkHoursSub();
+  // Weather Alert
+  $('waTitle').textContent=t.weatherAlert.title;
+  $('settingsWeatherAlertLbl').textContent=t.weatherAlert.row;
+  $('waSectionDesc').textContent=t.weatherAlert.desc;
+  $('waEnableLbl').textContent=t.weatherAlert.enableLbl;
+  $('waSliderLbl').textContent=t.weatherAlert.sliderLbl;
+  $('waOffsetVal').textContent=$('waOffsetSlider').value+' '+t.weatherAlert.minUnit;
+  $('waCancelBtn').textContent=t.weatherAlert.cancel;
+  $('waSaveBtn').textContent=t.weatherAlert.save;
+  _renderMainWeatherAlertSub();
+  // Low Battery Alert
+  $('lbTitle').textContent=t.lowBatteryAlert.title;
+  $('settingsLowBatteryAlertLbl').textContent=t.lowBatteryAlert.row;
+  $('lbSectionDesc').textContent=t.lowBatteryAlert.desc;
+  $('lbEnableLbl').textContent=t.lowBatteryAlert.enableLbl;
+  $('lbSliderLbl').textContent=t.lowBatteryAlert.sliderLbl;
+  $('lbCancelBtn').textContent=t.lowBatteryAlert.cancel;
+  $('lbSaveBtn').textContent=t.lowBatteryAlert.save;
+  _renderMainLowBatteryAlertSub();
+  $('whReminderOkBtn').textContent=t.workHoursReminder.ok;
+  $('lowBatteryTitle').textContent=t.lowBatteryModal.title;
+  $('lowBatteryOkBtn').textContent=t.lowBatteryModal.ok;
+  $('btOffTitle').textContent=t.bluetoothModal.title;
+  $('btOffBody').textContent=t.bluetoothModal.body;
+  $('netWarnIco').title=t.netWarnTitle;
+  $('suCalNetWarnTxt').textContent=t.calNetWarn;
+  $('suLocationNetWarnTxt').textContent=t.locationNetWarn;
   $('settingsLangLbl').textContent=t.settings.language;
   $('settingsAboutLbl').textContent=t.settings.about;
   $('settingsAppLbl').textContent=t.settings.app;
@@ -1893,9 +2281,8 @@ function applyI18n(){
   // calendar source
   $('calEditTitle').textContent=t.settings.calendar;
   _renderMsStatus();
-  _renderMsSignBtn();
+  _renderMsButtons();
   _renderGgStatus();
-  _renderGgSignBtn();
   $('calCancelBtn').textContent=t.common.cancel;
   $('calSaveBtn').textContent=t.common.save;
   // quick actions
@@ -1979,7 +2366,9 @@ function openSetupWizard(){
   clearTimeout(_suScanTimer);
   $('suNmInp').value='';$('suTlInp').value='';$('suEmInp').value='';$('suPhInp').value='';
   cc('suNmInp','suNmCnt',32);cc('suTlInp','suTlCnt',32);cc('suEmInp','suEmCnt',32);cc('suPhInp','suPhCnt',16);
+  $('suCalNext').setAttribute('disabled','');
   $('suProfileNext').setAttribute('disabled','');
+  suImportState='idle';suImportMeetingCount=0;
   suPhotoUrl=null;
   $('suDzThumb').style.backgroundImage='';
   $('suDzEmpty').style.display='';$('suDzImg').style.display='none';$('suReuploadBtn').style.display='none';$('suRemoveBtn').style.display='none';
@@ -1989,15 +2378,86 @@ function openSetupWizard(){
   suShowStep('welcome');
   show('s-setup');
 }
-function suGoToProfile(){suShowStep('profile');}
-// Lets the user change language after starting profile setup, without
-// losing what they've already entered — just switches the visible step,
-// doesn't reset via openSetupWizard().
+function suGoToCalendar(){suShowStep('calendar');}
+// Lets the user change language after starting the wizard, without losing
+// what they've already entered — just switches the visible step, doesn't
+// reset via openSetupWizard().
 function suBackToWelcome(){suShowStep('welcome');}
+// Calendar step's own Next — gated on a completed import (suImportState
+// ==='done'), same defensive re-check pattern suGoToLocation() below uses.
+function suGoToProfile(){
+  if(suImportState!=='done') return;
+  suShowStep('profile');
+}
+function suBackToCalendar(){suShowStep('calendar');}
+// Runtime setup's calendar step (step 1) is just this one action (pc-app.md's
+// Calendar Source XML import) — Job title, Phone, and Photo have no source
+// in the sharing file and stay manual on the profile step (step 2), which
+// this pre-fills name/email into. This is a static-prototype mock (no real
+// file I/O or backend) — it fabricates a plausible result after a short
+// delay, same mock style as importMicrosoftCalendar() above (Settings ->
+// Calendar Source's own import button). The real Tauri app's equivalent
+// (PC_app/orion/src-tauri/src/commands.rs's import_calendar_xml) actually
+// opens a file picker and parses the XML.
+//
+// suImportState drives the .cal-import-card's visual state (idle/busy/done/
+// err, styles.css/Orion_UI_Prototype.css) — kept as one string rather than
+// several booleans since the four states are mutually exclusive and a
+// re-render (_renderImportCard, also called from applyI18n on a language
+// switch) only ever needs to branch on "which one," never combine them.
+let suImportState='idle',suImportMeetingCount=0;
+function _renderImportCard(){
+  const t=I18N[appLang].profile;
+  const card=$('suImportCard');
+  card.classList.remove('busy','done','err');
+  if(suImportState==='busy'){
+    card.classList.add('busy');
+    $('suImportTitle').textContent=t.importing;
+    $('suImportSub').textContent='';
+  }else if(suImportState==='done'){
+    card.classList.add('done');
+    $('suImportTitle').textContent=$('suNmInp').value||t.importCalendarBtn;
+    const n=suImportMeetingCount;
+    $('suImportSub').textContent=n===0?t.importCalendarDoneEmpty:(n===1?t.importCalendarDoneSingular:t.importCalendarDonePlural.replace('{n}',n));
+  }else if(suImportState==='err'){
+    card.classList.add('err');
+    $('suImportTitle').textContent=t.importCalendarBtn;
+    $('suImportSub').textContent=t.importFailed;
+  }else{
+    $('suImportTitle').textContent=t.importCalendarBtn;
+    $('suImportSub').textContent='';
+  }
+}
+function suImportCalendar(){
+  if(suImportState==='busy') return;
+  suImportState='busy';
+  _renderImportCard();
+  setTimeout(()=>{
+    suImportState='done';
+    $('suNmInp').value='Xander To';$('suEmInp').value='xander@company.com';
+    suImportMeetingCount=3;
+    suDirty();
+    _renderImportCard();
+    $('suCalNext').removeAttribute('disabled');
+  },1100);
+}
+
+function suShowStep(name){
+  ['welcome','calendar','profile','location','discover'].forEach(s=>$('su-step-'+s).classList.toggle('show',s===name));
+}
+// Profile step's own dirty-check — name+title required, same minimum bar
+// the standalone Settings profile editor enforces.
 function suDirty(){
   cc('suNmInp','suNmCnt',32);cc('suTlInp','suTlCnt',32);cc('suEmInp','suEmCnt',32);cc('suPhInp','suPhCnt',16);
   const ok=$('suNmInp').value.trim().length>0&&$('suTlInp').value.trim().length>0;
   if(ok)$('suProfileNext').removeAttribute('disabled');else $('suProfileNext').setAttribute('disabled','');
+}
+// Profile step's own Next — same defensive re-check pattern
+// suGoToProfile()'s doc comment describes, now advancing to the location
+// step (step 3) instead of straight to device discovery.
+function suGoToLocation(){
+  if($('suProfileNext').hasAttribute('disabled')) return;
+  suShowStep('location');
 }
 function suPickPhoto(){$('suPhotoInp').click();}
 function suOpenCropExisting(){if(suPhotoUrl) openCrop(suPhotoUrl,suApplyCrop,1,228,228,true);}
@@ -2018,10 +2478,6 @@ function suLoadPhoto(inp){
   reader.onload=e=>{suPhotoUrl=e.target.result;openCrop(suPhotoUrl,suApplyCrop,1,228,228,true);};
   reader.readAsDataURL(file);
 }
-
-function suShowStep(name){
-  ['welcome','profile','discover'].forEach(s=>$('su-step-'+s).classList.toggle('show',s===name));
-}
 // Pairing modal phases (n: 1=Enter Passkey, 2=Connecting, 3=Syncing) — this is
 // where Enter Passkey/Connecting/Syncing live now, instead of as wizard steps.
 function suShowPairPhase(n){
@@ -2031,11 +2487,21 @@ function suShowPairPhase(n){
   // Ori's screen immediately, without having to click into the first box.
   if(n===1) $('suPk0').focus();
 }
-function suGoDiscover(){
-  if($('suProfileNext').hasAttribute('disabled')) return;
+// Location step's own two actions — both advance to device discovery
+// unconditionally (weather is best-effort everywhere else in this app, see
+// weather.rs; there's nothing here worth gating Next on). "Allow" would
+// trigger the real OS location-permission prompt in the actual app
+// (app.js's requestWeatherLocation(), via navigator.geolocation) — this is
+// a static-prototype mock (no real backend), so it just logs and advances.
+function suLocationAllow(){
+  console.log('[mock] requestWeatherLocation() would fire here in the real app');
   suShowStep('discover');suStartScan();
 }
-function suBackToProfile(){clearTimeout(_suScanTimer);suShowStep('profile');}
+function suLocationSkip(){
+  suShowStep('discover');suStartScan();
+}
+function suBackToProfile(){suShowStep('profile');}
+function suBackToLocation(){clearTimeout(_suScanTimer);suShowStep('location');}
 
 function suStartScan(){
   clearTimeout(_suScanTimer);
@@ -2148,6 +2614,9 @@ function _navReset(){
   clearTimeout(_suScanTimer);clearTimeout(_suConnectTimer);clearInterval(_suSyncTimer);clearInterval(_fwInstallTimer);clearInterval(_ouInstallTimer);
   callSessionStop(); // leaving the dev-nav page shouldn't leave a call timer ticking in the background
   $('panel').classList.remove('hide');$('tray').classList.add('open');
+  $('suCalNetWarn').classList.remove('show');$('suLocationNetWarn').classList.remove('show'); // reset setup net-warning banners to hidden
+  calendarNetOk=true;weatherNetOk=true;renderNetWarnIco(); // reset the header network-warning icon — demo pages that want it flip these back off after this runs
+  hideCornerToast();
 }
 
 const NAV_PAGES={
@@ -2157,9 +2626,14 @@ const NAV_PAGES={
   'main-connecting':()=>{setConn('connecting');},
   'main-syncing':()=>{setConn('rec');},
   'main-disconnected':()=>{setConn('off');},
+  'main-network-warn':()=>{setConn('on');calendarNetOk=false;weatherNetOk=true;renderNetWarnIco();},
   'setup-welcome':()=>{openSetupWizard();},
+  'setup-calendar':()=>{openSetupWizard();suShowStep('calendar');},
+  'setup-calendar-net-warn':()=>{openSetupWizard();suShowStep('calendar');$('suCalNetWarn').classList.add('show');},
   'setup-profile':()=>{openSetupWizard();suShowStep('profile');},
+  'setup-location':()=>{openSetupWizard();suShowStep('location');},
   'setup-discover':()=>{openSetupWizard();suShowStep('discover');suStartScan();},
+  'setup-discover-net-warn':()=>{openSetupWizard();suShowStep('discover');suStartScan();$('suLocationNetWarn').classList.add('show');},
   'setup-passkey':()=>{openSetupWizard();suShowStep('discover');suSelectDevice('Ori-XT-9F');},
   'setup-connecting':()=>{openSetupWizard();suShowStep('discover');suSelectDevice('Ori-XT-9F');suShowPairPhase(2);},
   'setup-syncing':()=>{
@@ -2174,10 +2648,43 @@ const NAV_PAGES={
   'clock-face':()=>{setConn('on');openClock();},
   'time-format':()=>{setConn('on');openTimeFormat();},
   'notification-filter':()=>{setConn('on');openAncs();},
+  'working-hours':()=>{setConn('on');openWorkingHours();},
+  'weather-alert':()=>{setConn('on');openWeatherAlert();},
+  'low-battery-alert':()=>{setConn('on');openLowBatteryAlert();},
   'modal-ori-info':()=>{setConn('on');openOriInfoModal();},
   'modal-iphone-info':()=>{setConn('on');setPhoneBondStatus({b:true,c:true,n:"Xander's iPhone"});openIphoneInfoModal();},
   'modal-incoming-call':()=>{setConn('on');setPhoneBondStatus({b:true,c:true,n:"Xander's iPhone"});showIncomingCall(399);},
   'modal-on-call':()=>{setConn('on');setPhoneBondStatus({b:true,c:true,n:"Xander's iPhone"});callSessionStart(399);CallSession.elapsedS=37;showActiveCall(399);},
+  'modal-low-battery':()=>{
+    setConn('on');setPhoneBondStatus({b:true,c:true,n:"Xander's iPhone"});
+    const t=I18N[appLang].lowBatteryModal;
+    $('lowBatteryBody').textContent=t.body.replace('{name}',"Xander's iPhone").replace('{level}',15);
+    showModal('m-low-battery');
+  },
+  'modal-work-hours-reminder':()=>{setConn('on');showWorkHoursReminder('rain',17*60);},
+  'modal-bluetooth-off':()=>{setConn('on');showModal('m-bluetooth-off');},
+  // Corner toasts — panel-minimized counterpart to the modals above
+  // (pc-app.md's "panel hidden → native OS toast" path). minimizePanel()
+  // demos the actual hidden-panel state the toast is meant to appear over.
+  'toast-low-battery':()=>{
+    setConn('on');minimizePanel();
+    const t=I18N[appLang].lowBatteryModal;
+    showCornerToast('battery',t.title,t.body.replace('{name}',"Xander's iPhone").replace('{level}',15));
+  },
+  'toast-weather':()=>{
+    setConn('on');minimizePanel();
+    const t=I18N[appLang].workHoursReminder.rain;
+    showCornerToast('weather',t.title,t.body.replace('{time}',minutesToTimeStr(17*60)));
+  },
+  'toast-network':()=>{
+    setConn('on');minimizePanel();
+    showCornerToast('network',I18N[appLang].netWarnTitle,I18N[appLang].netWarnBody);
+  },
+  'toast-bluetooth':()=>{
+    setConn('on');minimizePanel();
+    const t=I18N[appLang].bluetoothModal;
+    showCornerToast('bluetooth',t.title,t.body);
+  },
   'modal-reset':()=>{setConn('on');show('s-settings');showModal('m-reset');},
   'modal-pairing-fail':()=>{openSetupWizard();suShowStep('discover');suSelectDevice('Ori-XT-9F');suShowPairPhase(2);suShowPairFail();},
   'modal-fw-available':()=>{setConn('on');simFwUpdate();showModal('m-fw');},

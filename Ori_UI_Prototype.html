@@ -24,9 +24,16 @@
       --text-3: #565B65;
       --accent: #E0B86A;
       --accent-soft: rgba(224, 184, 106, 0.14);
+      --accent-faint: rgba(224, 184, 106, 0.28);  /* current-week highlight band — matches firmware's COLOR_ACCENT_FAINT */
       --accent-line: rgba(224, 184, 106, 0.55);
       --danger: #D86A6A;
       --ok: #7FB48A;
+      /* Local-holiday accent — same red as --danger (a separate named token
+     so its use is self-documenting wherever it appears), reusing it rather
+     than inventing a new hue since holidays and in-progress meetings never
+     appear on the same screen (calendar month view vs. meeting list) — no
+     real risk of the two meanings being confused in context. */
+      --holiday: var(--danger);
       /* Teams-presence palette for the profile-photo border — colors match the
      actual Microsoft Teams presence swatches so users get instant recognition. */
       --presence-available: #92C353;
@@ -356,14 +363,15 @@
    top-left corner, outside the profile-photo circle (228px photo + 6px
    border = 240px visible circle, radius 120 from .profile-photo-wrap's own
    centre at 114,114). left/top target the icon's own CENTRE (translate
-   -50%/-50%), offset (-100,-130) from the wrap centre — far enough to clear
-   the 120px-radius circle with margin on the diagonal, regardless of the
-   icon's exact box size. Mirrors widget_profile_card.cpp's
-   CORNER_OFFSET_X/CORNER_OFFSET_Y. */
+   -50%/-50%), offset (-100,-114) from the wrap centre — clears the
+   120px-radius circle on the diagonal, regardless of the icon's exact box
+   size. Prototype-only positioning (shifted 16px lower than
+   widget_profile_card.cpp's CORNER_OFFSET_X/CORNER_OFFSET_Y, which are
+   unchanged). */
     .weather-badge {
       position: absolute;
       left: 14px;
-      top: -16px;
+      top: 0px;
       transform: translate(-50%, -50%);
       width: 42px;
       height: 42px;
@@ -390,7 +398,7 @@
     .temp-bubble {
       position: absolute;
       left: 204px;
-      top: -16px;
+      top: 0px;
       transform: translate(-50%, -50%);
       color: #FFFFFF;
       font-size: 22px;
@@ -569,10 +577,8 @@
       font-size: 24px;
       color: var(--text-2);
       display: flex;
-      gap: 12px;
       align-items: center;
       overflow: hidden;
-      flex-wrap: nowrap;
       min-width: 0;
     }
 
@@ -581,24 +587,7 @@
       overflow: hidden;
       text-overflow: ellipsis;
       min-width: 0;
-      flex-shrink: 1;
-      max-width: 220px;
-    }
-
-    .meeting .meta .dot {
-      width: 3px;
-      height: 3px;
-      border-radius: 50%;
-      background: var(--text-3);
-      flex-shrink: 0;
-    }
-
-    .meeting .meta .org {
-      flex-shrink: 0;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      max-width: 140px;
+      width: 100%;
     }
 
     .empty {
@@ -616,6 +605,14 @@
       height: 80px;
       color: var(--text-3);
       margin-bottom: 22px;
+    }
+
+    /* Today-is-a-local-holiday variant: the empty-state glyph recolors and
+   its subtitle (set in JS) names the holiday instead of "Enjoy the focus
+   time" — the color alone would be an unexplained accent, so both change
+   together. */
+    .empty .glyph.holiday {
+      color: var(--holiday);
     }
 
     .empty .headline {
@@ -812,10 +809,64 @@
       opacity: 0.5;
     }
 
+    /* Local-holiday indicator — a hollow ring (no fill), not a solid fill
+   like "today" below. Because a ring and a fill are different properties
+   (border vs. background), a day that's both today AND a holiday shows
+   both at once — today's gold fill plus this red ring — with no extra
+   rule needed for the fill/ring combination itself. */
+    .calendar-view .cal-day.holiday .cal-day-num {
+      box-shadow: 0 0 0 2px var(--holiday);
+      color: var(--holiday);
+    }
+
+    /* Matches firmware's screen_calendar.cpp exactly: today's own circle uses
+   the muted --accent-line (55% gold), not a flat full-saturation gold — a
+   SECOND, fainter tier (.today-faint, --accent-faint/28%) applies when
+   today is only a spillover day pulled into an adjacent month's leading/
+   trailing week (paging forward/back), not the month actually on screen. */
     .calendar-view .cal-day.today .cal-day-num {
-      background: var(--accent);
+      background: var(--accent-line);
       color: #fff;
       font-weight: 600;
+    }
+
+    .calendar-view .cal-day.today-faint .cal-day-num {
+      background: var(--accent-faint);
+      color: var(--text-1);
+      font-weight: 600;
+    }
+
+    /* Text color is the one property both today tiers and .holiday all set,
+   so combined states need explicit rules: on a day that's both, the number
+   stays red (holiday) rather than turning white/text-1 (today) — higher
+   specificity (4 classes vs. 3) wins regardless of source order, so this
+   doesn't rely on cascade position to stay correct. */
+    .calendar-view .cal-day.today.holiday .cal-day-num,
+    .calendar-view .cal-day.today-faint.holiday .cal-day-num {
+      color: var(--holiday);
+    }
+
+    /* Current-week highlight — a pill spanning all 7 columns of whichever
+   row contains today, drawn behind the day badges (see calendarHTML(),
+   which emits this element before the day cells so DOM order puts it
+   underneath). Every day cell AND this band are given explicit grid-row/
+   grid-column placement (rather than relying on grid auto-flow) specifically
+   so this full-row-spanning item can't shift the day cells' own positions —
+   CSS Grid's auto-placement algorithm routes auto-flowed items around
+   already-occupied cells, which an explicitly-placed 7-wide band would
+   otherwise disrupt. align-self:center (not stretch) keeps it a fixed-height
+   pill even though its grid row itself may be taller. Same two-tier bright/
+   faint distinction as the today circle above, driven by an inline
+   background-color (see calendarHTML()) rather than a class modifier. */
+    .calendar-view .cal-week-highlight {
+      /* 38px, not firmware's 44px BADGE_SIZE — matches THIS prototype's own
+     .cal-day-num circle size (a pre-existing, unrelated size difference from
+     firmware) so the band sits flush against the day circles with no halo
+     gap, same relationship firmware has between its own two 44px values. */
+      height: 38px;
+      align-self: center;
+      border-radius: 999px;
+      pointer-events: none;
     }
 
     .timeOff {
@@ -2591,6 +2642,11 @@
         <button data-screen="kbd-mode">Media mode (BLE bridge)</button>
       </div>
       <div class="group">
+        <div class="group-title">Local holidays (demo)</div>
+        <button data-screen="no-meetings-holiday">No meetings — local holiday</button>
+        <button data-screen="calendar-holidays">Calendar month — local holidays</button>
+      </div>
+      <div class="group">
         <div class="group-title">Modal popups</div>
         <button data-screen="countdown">5-min meeting countdown</button>
         <button data-screen="factory-reset">Factory reset confirm</button>
@@ -2642,6 +2698,20 @@
         <button data-screen="weather-thunderstorm">Thunderstorm</button>
         <button data-screen="weather-snow">Snow</button>
         <button data-screen="weather-fog">Fog</button>
+        <button data-screen="weather-clear-night">Clear · Night</button>
+        <button data-screen="weather-partly-cloudy-night">Partly cloudy · Night</button>
+        <button data-screen="weather-cloudy-night">Cloudy · Night</button>
+        <button data-screen="weather-rain-light">Rain · Light</button>
+        <button data-screen="weather-rain-heavy">Rain · Heavy</button>
+        <button data-screen="weather-rain-heavy-night">Rain · Heavy · Night</button>
+        <button data-screen="weather-thunderstorm-light">Thunderstorm · Light</button>
+        <button data-screen="weather-thunderstorm-heavy">Thunderstorm · Heavy</button>
+        <button data-screen="weather-thunderstorm-heavy-night">Thunderstorm · Heavy · Night</button>
+        <button data-screen="weather-snow-light">Snow · Light</button>
+        <button data-screen="weather-snow-heavy">Snow · Heavy</button>
+        <button data-screen="weather-snow-heavy-night">Snow · Heavy · Night</button>
+        <button data-screen="weather-fog-light">Fog · Light</button>
+        <button data-screen="weather-fog-heavy-night">Fog · Heavy · Night</button>
       </div>
       <div class="group">
         <div class="group-title">Edge cases</div>

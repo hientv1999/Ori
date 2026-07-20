@@ -23,13 +23,18 @@
       <button data-page="main-connecting" onclick="navTo('main-connecting')">Connecting</button>
       <button data-page="main-syncing" onclick="navTo('main-syncing')">Syncing</button>
       <button data-page="main-disconnected" onclick="navTo('main-disconnected')">Disconnected</button>
+      <button data-page="main-network-warn" onclick="navTo('main-network-warn')">Connected · Network warning</button>
     </div>
 
     <div class="group">
       <div class="group-title">First-Run Setup</div>
       <button data-page="setup-welcome" onclick="navTo('setup-welcome')">Welcome</button>
-      <button data-page="setup-profile" onclick="navTo('setup-profile')">1 · Profile</button>
-      <button data-page="setup-discover" onclick="navTo('setup-discover')">2 · Device Discovery</button>
+      <button data-page="setup-calendar" onclick="navTo('setup-calendar')">1 · Connect Calendar</button>
+      <button data-page="setup-calendar-net-warn" onclick="navTo('setup-calendar-net-warn')">1 · Connect Calendar · Network warning</button>
+      <button data-page="setup-profile" onclick="navTo('setup-profile')">2 · Profile</button>
+      <button data-page="setup-location" onclick="navTo('setup-location')">3 · Location Permission</button>
+      <button data-page="setup-discover" onclick="navTo('setup-discover')">4 · Device Discovery</button>
+      <button data-page="setup-discover-net-warn" onclick="navTo('setup-discover-net-warn')">4 · Device Discovery · Network warning</button>
       <button data-page="setup-passkey" onclick="navTo('setup-passkey')">Pairing modal · Enter Passkey</button>
       <button data-page="setup-connecting" onclick="navTo('setup-connecting')">Pairing modal · Connecting</button>
       <button data-page="setup-syncing" onclick="navTo('setup-syncing')">Pairing modal · Syncing</button>
@@ -45,6 +50,9 @@
       <button data-page="clock-face" onclick="navTo('clock-face')">Clock Face</button>
       <button data-page="time-format" onclick="navTo('time-format')">Time Format</button>
       <button data-page="notification-filter" onclick="navTo('notification-filter')">Notification Filter</button>
+      <button data-page="working-hours" onclick="navTo('working-hours')">Working Hours</button>
+      <button data-page="weather-alert" onclick="navTo('weather-alert')">Weather Alert</button>
+      <button data-page="low-battery-alert" onclick="navTo('low-battery-alert')">Low Battery Alert</button>
     </div>
 
     <div class="group">
@@ -53,6 +61,9 @@
       <button data-page="modal-iphone-info" onclick="navTo('modal-iphone-info')">iPhone Info / Stats</button>
       <button data-page="modal-incoming-call" onclick="navTo('modal-incoming-call')">Incoming Call</button>
       <button data-page="modal-on-call" onclick="navTo('modal-on-call')">On Call</button>
+      <button data-page="modal-low-battery" onclick="navTo('modal-low-battery')">Low Battery</button>
+      <button data-page="modal-work-hours-reminder" onclick="navTo('modal-work-hours-reminder')">Weather Alert Reminder</button>
+      <button data-page="modal-bluetooth-off" onclick="navTo('modal-bluetooth-off')">Bluetooth Off</button>
       <button data-page="modal-reset" onclick="navTo('modal-reset')">Reset</button>
       <button data-page="modal-pairing-fail" onclick="navTo('modal-pairing-fail')">Pairing Failed</button>
       <button data-page="modal-fw-available" onclick="navTo('modal-fw-available')">Ori Update Available</button>
@@ -60,6 +71,14 @@
       <button data-page="modal-orion-update-available" onclick="navTo('modal-orion-update-available')">Orion Update Available</button>
       <button data-page="modal-orion-update-installing" onclick="navTo('modal-orion-update-installing')">Orion Updating</button>
       <button data-page="modal-orion-update-ready" onclick="navTo('modal-orion-update-ready')">Orion Update Ready (Restart)</button>
+    </div>
+
+    <div class="group">
+      <div class="group-title">Corner Toasts (Minimized)</div>
+      <button data-page="toast-low-battery" onclick="navTo('toast-low-battery')">Low Battery</button>
+      <button data-page="toast-weather" onclick="navTo('toast-weather')">Weather Alert Reminder</button>
+      <button data-page="toast-network" onclick="navTo('toast-network')">Network Warning</button>
+      <button data-page="toast-bluetooth" onclick="navTo('toast-bluetooth')">Bluetooth Off</button>
     </div>
 
     <div class="footer">Nav is prototype-only chrome for design review — it isn't part of the real Orion app.</div>
@@ -92,6 +111,24 @@
       <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6" />
       <line x1="10" y1="11" x2="10" y2="17" />
       <line x1="14" y1="11" x2="14" y2="17" />
+    </symbol>
+    <symbol id="ico-help" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+      stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9.3 9.3a2.7 2.7 0 015.2 1c0 1.8-2.5 1.7-2.5 3.7" />
+      <circle cx="12" cy="17" r="0.5" fill="currentColor" stroke="none" />
+    </symbol>
+    <symbol id="ico-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+      stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0116 0z" />
+      <circle cx="12" cy="10" r="2.8" />
+    </symbol>
+    <symbol id="ico-outlook" viewBox="0 0 24 24">
+      <rect x="8" y="5.5" width="14.5" height="13" rx="2" fill="#1490DF" />
+      <path d="M8 8.5l7.25 4.5 7.25-4.5" fill="none" stroke="#fff" stroke-width="1.3" stroke-linecap="round"
+        stroke-linejoin="round" />
+      <rect x="1" y="4.5" width="12.5" height="15" rx="2.2" fill="#0F6CBD" />
+      <circle cx="7.25" cy="12" r="3.6" fill="none" stroke="#fff" stroke-width="2.3" />
     </symbol>
     <symbol id="ico-teams" viewBox="0 0 24 24">
       <rect width="24" height="24" rx="5" fill="#5059C9" />
@@ -154,6 +191,17 @@
           </div>
         </div>
         <div class="hdr-icons">
+          <!-- Network-health warning (pc-app.md) — lit whenever the most
+               recent calendar or weather background fetch failed (e.g. no
+               internet), so the user knows that data may be stale without
+               anything actually erroring out. Left of the phone icon. Hidden
+               by default; toggled by app.js's renderNetWarnIco(). -->
+          <div class="h-ico" id="netWarnIco" title="No Internet access" style="display:none;color:var(--away);">
+            <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M10 6v5"/><circle cx="10" cy="14" r="0.75" fill="currentColor" stroke="none"/>
+              <path d="M8.7 3.3a1.5 1.5 0 012.6 0l6.3 11a1.5 1.5 0 01-1.3 2.2H3.7a1.5 1.5 0 01-1.3-2.2l6.3-11z"/>
+            </svg>
+          </div>
           <!-- Read-only: Orion just observes Ori's iPhone/ANCS bond (char 000F) —
                it doesn't manage phone pairing, that's done on Ori's own screen.
                Hidden entirely when no iPhone has ever been bonded; neutral color
@@ -370,22 +418,80 @@
             </select>
           </div>
           <button class="btn btn-primary btn-full" id="suStartBtn" style="margin-top:28px;max-width:200px;"
-            onclick="suGoToProfile()">Start</button>
+            onclick="suGoToCalendar()">Start</button>
         </div>
         <div class="su-dots">
+          <div class="su-dot"></div>
+          <div class="su-dot"></div>
           <div class="su-dot"></div>
           <div class="su-dot"></div>
         </div>
       </div>
 
-      <!-- Step 1: Profile -->
-      <div class="su-step" id="su-step-profile">
+      <!-- Step 1: Connect calendar -->
+      <div class="su-step" id="su-step-calendar">
         <div class="su-hdr">
           <div class="su-back" onclick="suBackToWelcome()">
             <svg width="7" height="12">
               <use href="#ico-back" />
             </svg>
             <span id="suChangeLangTxt">Back</span>
+          </div>
+          <div class="su-title" id="suCalendarTitle">Connect your calendar</div>
+        </div>
+        <div class="su-body" style="display:flex;flex-direction:column;justify-content:center;flex:1;">
+          <div class="cal-import-card" id="suImportCard" onclick="suImportCalendar()">
+            <div class="cal-import-ico">
+              <svg width="26" height="26"><use href="#ico-outlook" /></svg>
+              <span class="cal-import-spin"></span>
+              <span class="cal-import-check">✓</span>
+            </div>
+            <div>
+              <div class="cal-import-title" id="suImportTitle">Import Outlook calendar sharing file</div>
+              <div class="cal-import-sub" id="suImportSub"></div>
+            </div>
+          </div>
+          <div class="pfReuploadBtn" onclick="showModal('m-cal-help')" style="margin-top:12px;">
+            <svg width="13" height="13"><use href="#ico-help" /></svg>
+            <span id="suCalHelpTxt">How do I get this file?</span>
+          </div>
+          <!-- Shown when the import succeeded locally (XML parsed fine) but
+               the immediate post-import calendar fetch couldn't reach the
+               network — informational only, never blocks Next (pc-app.md). -->
+          <div class="su-net-warn" id="suCalNetWarn">
+            <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M10 6v5"/><circle cx="10" cy="14" r="0.75" fill="currentColor" stroke="none"/><path d="M8.7 3.3a1.5 1.5 0 012.6 0l6.3 11a1.5 1.5 0 01-1.3 2.2H3.7a1.5 1.5 0 01-1.3-2.2l6.3-11z"/></svg>
+            <span id="suCalNetWarnTxt">Couldn't reach the internet to check for meetings yet — it'll try again automatically.</span>
+          </div>
+          <!-- Google Calendar placeholder — same .cal-opt row Settings ->
+               Calendar Source uses, disabled (.dis: opacity + inert) until
+               a real integration lands. -->
+          <div class="cal-opt dis" style="margin-top:16px;">
+            <div class="co-ico"><svg width="22" height="22"><use href="#ico-gcal" /></svg></div>
+            <div class="co-info">
+              <div class="co-nm">Google Calendar</div>
+              <div class="co-st" id="suGcalComingSoon">Coming soon</div>
+            </div>
+          </div>
+        </div>
+        <div class="su-foot">
+          <button class="btn btn-primary btn-full" id="suCalNext" disabled onclick="suGoToProfile()">Next</button>
+        </div>
+        <div class="su-dots">
+          <div class="su-dot active"></div>
+          <div class="su-dot"></div>
+          <div class="su-dot"></div>
+          <div class="su-dot"></div>
+        </div>
+      </div>
+
+      <!-- Step 2: Profile -->
+      <div class="su-step" id="su-step-profile">
+        <div class="su-hdr">
+          <div class="su-back" onclick="suBackToCalendar()">
+            <svg width="7" height="12">
+              <use href="#ico-back" />
+            </svg>
+            <span id="suProfileBackTxt">Back</span>
           </div>
           <div class="su-title" id="suProfileTitle">Set up your profile</div>
           <div class="su-sub" id="suProfileSub">This is what appears on Ori's display.</div>
@@ -394,7 +500,7 @@
           <div class="fgrp" style="display:flex;flex-direction:column;align-items:center;gap:10px;">
             <div class="flbl" style="align-self:flex-start;" id="suPhotoLbl">Profile Photo</div>
             <input type="file" id="suPhotoInp" accept="image/*" style="display:none;" onchange="suLoadPhoto(this)">
-            <div id="suDropZone" class="pfDropZone">
+            <div class="pfDropZone">
               <div id="suDzEmpty" class="timeOffDzEmpty" onclick="suPickPhoto()">
                 <svg width="22" height="22">
                   <use href="#ico-img" />
@@ -444,22 +550,64 @@
           </div>
         </div>
         <div class="su-foot">
-          <button class="btn btn-primary btn-full" id="suProfileNext" disabled onclick="suGoDiscover()">Next</button>
+          <button class="btn btn-primary btn-full" id="suProfileNext" disabled onclick="suGoToLocation()">Next</button>
         </div>
         <div class="su-dots">
+          <div class="su-dot"></div>
           <div class="su-dot active"></div>
+          <div class="su-dot"></div>
           <div class="su-dot"></div>
         </div>
       </div>
 
-      <!-- Step 2: Device discovery -->
-      <div class="su-step" id="su-step-discover">
+      <!-- Step 3: Location permission — a custom explainer shown before the
+           real OS location-consent prompt (which can't be restyled — it's
+           rendered natively by WebView2/WKWebView, outside any web content,
+           the same security boundary every browser's own permission prompts
+           have). Allow/Skip both advance unconditionally; Allow additionally
+           fires requestWeatherLocation() (app.js), which is what actually
+           triggers that native prompt. -->
+      <div class="su-step" id="su-step-location">
         <div class="su-hdr">
           <div class="su-back" onclick="suBackToProfile()">
             <svg width="7" height="12">
               <use href="#ico-back" />
             </svg>
-            <span id="suEditProfileTxt">Edit profile</span>
+            <span id="suLocationBackTxt">Back</span>
+          </div>
+          <div class="su-title" id="suLocationTitle">Enable location</div>
+        </div>
+        <div class="su-body" style="display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;text-align:center;gap:14px;">
+          <div class="loc-permit-ico">
+            <svg width="30" height="30"><use href="#ico-pin" /></svg>
+          </div>
+          <div>
+            <div class="loc-permit-title" id="suLocationHeading">Show local weather on Ori</div>
+            <div class="loc-permit-desc" id="suLocationDesc">Orion uses your location to display current weather on Ori's screen. Your device may ask you to confirm this.</div>
+          </div>
+        </div>
+        <div class="su-foot">
+          <div class="btn-row" style="margin-top:0;">
+            <button class="btn btn-sec btn-full" id="suLocationSkipBtn" onclick="suLocationSkip()">Not now</button>
+            <button class="btn btn-primary btn-full" id="suLocationAllowBtn" onclick="suLocationAllow()">Allow</button>
+          </div>
+        </div>
+        <div class="su-dots">
+          <div class="su-dot"></div>
+          <div class="su-dot"></div>
+          <div class="su-dot active"></div>
+          <div class="su-dot"></div>
+        </div>
+      </div>
+
+      <!-- Step 4: Device discovery -->
+      <div class="su-step" id="su-step-discover">
+        <div class="su-hdr">
+          <div class="su-back" onclick="suBackToLocation()">
+            <svg width="7" height="12">
+              <use href="#ico-back" />
+            </svg>
+            <span id="suEditProfileTxt">Back</span>
           </div>
           <div class="su-title" id="suDiscoverTitle">Select your Ori</div>
           <div class="su-sub" id="suDiscoverSub">Make sure Ori is powered on and in pairing mode.</div>
@@ -474,8 +622,17 @@
             <div id="suScanningTxt">Looking for nearby Ori devices…</div>
           </div>
           <div class="su-devlist" id="suDevList" style="display:none;"></div>
+          <!-- Shown when the location step's weather resolution couldn't
+               reach the network — informational only, never blocks pairing
+               (pc-app.md). -->
+          <div class="su-net-warn" id="suLocationNetWarn">
+            <svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M10 6v5"/><circle cx="10" cy="14" r="0.75" fill="currentColor" stroke="none"/><path d="M8.7 3.3a1.5 1.5 0 012.6 0l6.3 11a1.5 1.5 0 01-1.3 2.2H3.7a1.5 1.5 0 01-1.3-2.2l6.3-11z"/></svg>
+            <span id="suLocationNetWarnTxt">Couldn't reach the internet to set up weather yet — it'll try again automatically.</span>
+          </div>
         </div>
         <div class="su-dots">
+          <div class="su-dot"></div>
+          <div class="su-dot"></div>
           <div class="su-dot"></div>
           <div class="su-dot active"></div>
         </div>
@@ -647,7 +804,7 @@
             <div class="co-ico"><svg width="22" height="22"><use href="#ico-teams" /></svg></div>
             <div class="co-info">
               <div class="co-nm">Microsoft Teams</div>
-              <div class="co-st" id="teamsStatusTxt">Signed in · Exchange Online</div>
+              <div class="co-st" id="teamsStatusTxt">Not connected</div>
             </div>
             <div class="co-chk">✓</div>
           </div>
@@ -655,16 +812,17 @@
             <div class="co-ico"><svg width="22" height="22"><use href="#ico-gcal" /></svg></div>
             <div class="co-info">
               <div class="co-nm">Google Calendar</div>
-              <div class="co-st" id="ggSt">Not signed in</div>
+              <div class="co-st" id="ggSt">Coming soon</div>
             </div>
             <div class="co-chk">✓</div>
           </div>
         </div>
         <div id="msSignInRow" style="padding:0 14px 14px;display:none;text-align:center;">
-          <button class="btn btn-sec btn-full" onclick="signMicrosoft()" id="msSignBtn">Sign out from Microsoft</button>
+          <button class="btn btn-primary btn-block" onclick="importMicrosoftCalendar()" id="msImportBtn">Import Outlook calendar sharing file</button>
+          <div id="msImportNote" style="font-size:12px;color:var(--t3);margin-top:10px;line-height:1.4;">Calendar updates may take a few hours to appear.</div>
         </div>
         <div id="ggSignInRow" style="padding:0 14px 14px;text-align:center;">
-          <button class="btn btn-sec btn-full" onclick="signGoogle()" id="ggSignBtn">Sign in with Google</button>
+          <button class="btn btn-sec btn-block" id="ggComingSoonBtn" disabled>Coming soon</button>
         </div>
       </div>
       <div class="sub-foot">
@@ -831,6 +989,113 @@
       </div>
     </div>
 
+    <!-- ── WORKING HOURS SUB-SCREEN ── -->
+    <!-- Orion-local only (pc-app.md) — never pushed to Ori over BLE. Schedule
+         data only, no enable of its own — Weather Alert (its own subscreen)
+         reads whEndMin/whDays to know when to check the forecast. One
+         focused screen per Alert-section row, matching Clock Face/Time
+         Format/Notification Filter's existing convention, rather than one
+         combined page. -->
+    <div class="screen" id="s-workinghours">
+      <div class="hdr">
+        <div class="hdr-title" style="text-align:center;" id="whTitle">Working Hours</div>
+      </div>
+      <div class="body">
+        <div class="clock-opts">
+          <div class="alert-desc" id="whSectionDesc">Sets when your work day starts and ends — Weather Alert uses this to know when to check the forecast.</div>
+          <div class="pg-lbl" id="whStartLbl">Start time</div>
+          <input type="time" class="finp" id="whStartInp" style="margin-bottom:14px;" oninput="whDirty=true;">
+          <div class="pg-lbl" id="whEndLbl">End time</div>
+          <input type="time" class="finp" id="whEndInp" style="margin-bottom:14px;" oninput="whDirty=true;">
+          <div class="pg-lbl" id="whDaysLbl">Working days</div>
+          <div class="wh-days" id="whDays">
+            <div class="wh-day" data-day="0" id="whDay0" onclick="toggleWhDay(0)">Mo</div>
+            <div class="wh-day" data-day="1" id="whDay1" onclick="toggleWhDay(1)">Tu</div>
+            <div class="wh-day" data-day="2" id="whDay2" onclick="toggleWhDay(2)">We</div>
+            <div class="wh-day" data-day="3" id="whDay3" onclick="toggleWhDay(3)">Th</div>
+            <div class="wh-day" data-day="4" id="whDay4" onclick="toggleWhDay(4)">Fr</div>
+            <div class="wh-day" data-day="5" id="whDay5" onclick="toggleWhDay(5)">Sa</div>
+            <div class="wh-day" data-day="6" id="whDay6" onclick="toggleWhDay(6)">Su</div>
+          </div>
+        </div>
+      </div>
+      <div class="sub-foot">
+        <div class="btn-row" style="margin-top:0;">
+          <button class="btn btn-sec btn-full" id="whCancelBtn" onclick="backWithCheck()">Cancel</button>
+          <button class="btn btn-primary btn-full" id="whSaveBtn" onclick="saveWorkingHours()">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── WEATHER ALERT SUB-SCREEN ── -->
+    <!-- Rain/snow reminder — fires waOffsetMin minutes before Working
+         Hours' end time, on a working day, only while enabled
+         (reminders.rs). -->
+    <div class="screen" id="s-weatheralert">
+      <div class="hdr">
+        <div class="hdr-title" style="text-align:center;" id="waTitle">Weather Alert</div>
+      </div>
+      <div class="body">
+        <div class="clock-opts">
+          <div class="alert-desc" id="waSectionDesc">Warns you before rain or snow arrives near the end of your work day, so you're not caught without an umbrella.</div>
+          <div class="alert-toggle-row">
+            <span class="alert-toggle-lbl" id="waEnableLbl">Enable weather alert</span>
+            <div class="toggle" id="waEnabledToggle" onclick="toggleWaEnabled()"></div>
+          </div>
+          <div class="alert-slider-row" id="waSliderRow">
+            <div class="alert-slider-hdr">
+              <span id="waSliderLbl">Alert before end time</span>
+              <span class="alert-slider-val" id="waOffsetVal">15 min</span>
+            </div>
+            <input type="range" class="alert-slider" id="waOffsetSlider" min="0" max="30" step="5" value="15" list="waTicks" oninput="onWaOffsetInput()">
+            <datalist id="waTicks">
+              <option value="0"></option><option value="5"></option><option value="10"></option>
+              <option value="15"></option><option value="20"></option><option value="25"></option><option value="30"></option>
+            </datalist>
+          </div>
+        </div>
+      </div>
+      <div class="sub-foot">
+        <div class="btn-row" style="margin-top:0;">
+          <button class="btn btn-sec btn-full" id="waCancelBtn" onclick="backWithCheck()">Cancel</button>
+          <button class="btn btn-primary btn-full" id="waSaveBtn" onclick="saveWeatherAlert()">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── LOW BATTERY ALERT SUB-SCREEN ── -->
+    <div class="screen" id="s-lowbatteryalert">
+      <div class="hdr">
+        <div class="hdr-title" style="text-align:center;" id="lbTitle">Low Battery Alert</div>
+      </div>
+      <div class="body">
+        <div class="clock-opts">
+          <div class="alert-desc" id="lbSectionDesc">Warns you when your iPhone's battery drops below the level you choose.</div>
+          <div class="alert-toggle-row">
+            <span class="alert-toggle-lbl" id="lbEnableLbl">Enable low battery alert</span>
+            <div class="toggle" id="lbEnabledToggle" onclick="toggleLbEnabled()"></div>
+          </div>
+          <div class="alert-slider-row" id="lbSliderRow">
+            <div class="alert-slider-hdr">
+              <span id="lbSliderLbl">Alert below</span>
+              <span class="alert-slider-val" id="lbThresholdVal">20%</span>
+            </div>
+            <input type="range" class="alert-slider" id="lbThresholdSlider" min="5" max="30" step="5" value="20" list="lbTicks" oninput="onLbThresholdInput()">
+            <datalist id="lbTicks">
+              <option value="5"></option><option value="10"></option><option value="15"></option>
+              <option value="20"></option><option value="25"></option><option value="30"></option>
+            </datalist>
+          </div>
+        </div>
+      </div>
+      <div class="sub-foot">
+        <div class="btn-row" style="margin-top:0;">
+          <button class="btn btn-sec btn-full" id="lbCancelBtn" onclick="backWithCheck()">Cancel</button>
+          <button class="btn btn-primary btn-full" id="lbSaveBtn" onclick="saveLowBatteryAlert()">Save</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ── ANCS FILTER SUB-SCREEN ── -->
     <div class="screen" id="s-ancs">
       <div class="hdr">
@@ -926,6 +1191,38 @@
           </div>
         </div>
 
+        <!-- Alert section — Working Hours (schedule data only), Weather
+             Alert, and Low Battery Alert each get their own row + subscreen,
+             same "one focused screen per setting" convention as Clock Face /
+             Time Format / Notification Filter above, rather than one
+             cramped combined page (pc-app.md, reminders.rs). -->
+        <div class="pg-section">
+          <div class="pg-lbl" id="settingsAlertLbl">Alert</div>
+          <div class="pg-card">
+            <div class="pg-row" style="cursor:pointer;" onclick="openWorkingHours()">
+              <div>
+                <div class="pg-row-main" id="settingsWorkHoursLbl">Working Hours</div>
+                <div class="pg-row-sub" id="settingsWorkHoursSub">09:00–17:00 · Weekdays</div>
+              </div>
+              <div class="chev">›</div>
+            </div>
+            <div class="pg-row" style="cursor:pointer;" onclick="openWeatherAlert()">
+              <div>
+                <div class="pg-row-main" id="settingsWeatherAlertLbl">Weather Alert</div>
+                <div class="pg-row-sub" id="settingsWeatherAlertSub">Off</div>
+              </div>
+              <div class="chev">›</div>
+            </div>
+            <div class="pg-row" style="cursor:pointer;" onclick="openLowBatteryAlert()">
+              <div>
+                <div class="pg-row-main" id="settingsLowBatteryAlertLbl">Low Battery Alert</div>
+                <div class="pg-row-sub" id="settingsLowBatteryAlertSub">Off</div>
+              </div>
+              <div class="chev">›</div>
+            </div>
+          </div>
+        </div>
+
         <div class="pg-section">
           <div class="pg-lbl" id="settingsAboutLbl">About</div>
           <div class="pg-card">
@@ -994,6 +1291,46 @@
           <button class="btn btn-sec btn-full" id="resetCancelBtn" onclick="hideModal('m-reset')">Cancel</button>
           <button class="btn btn-dng btn-full" id="resetBtn" onclick="doReset()">Reset</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Low battery warning — shown once per below-20% dip (checkLowBattery()
+         in the real app; here demoed directly via the nav's "Low Battery"
+         entry). Dismiss-only. -->
+    <div class="modal-bg" id="m-low-battery">
+      <div class="modal">
+        <div class="modal-title" id="lowBatteryTitle">Low Battery</div>
+        <div class="modal-body" id="lowBatteryBody">iPhone is at 15% battery.</div>
+        <div class="btn-row" style="margin-top:16px;">
+          <button class="btn btn-primary btn-full" id="lowBatteryOkBtn" onclick="hideModal('m-low-battery')">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Weather Alert rain/snow reminder — fires waOffsetMin minutes before
+         the configured end-of-day time when the latest weather poll shows
+         rain/thunderstorm/snow, only while enabled (reminders.rs). -->
+    <div class="modal-bg" id="m-work-hours-reminder">
+      <div class="modal">
+        <div class="modal-title" id="whReminderTitle">Rain expected</div>
+        <div class="modal-body" id="whReminderBody">Rain is expected around the time your work day ends at 17:00.</div>
+        <div class="btn-row" style="margin-top:16px;">
+          <button class="btn btn-primary btn-full" id="whReminderOkBtn" onclick="hideModal('m-work-hours-reminder')">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bluetooth guard (pc-app.md, ble/bt_radio.rs) — shown whenever the
+         Windows Bluetooth radio is off/unavailable, at startup or any time
+         during runtime. Deliberately has NO Cancel/OK/Close button at all —
+         every other modal in this app only ever closes via an explicit
+         button handler, so omitting buttons here already makes it non-
+         dismissable with zero extra plumbing. Cleared automatically the
+         instant Bluetooth is back on — never by the user. -->
+    <div class="modal-bg" id="m-bluetooth-off">
+      <div class="modal">
+        <div class="modal-title" id="btOffTitle">Bluetooth is off</div>
+        <div class="modal-body" id="btOffBody">Turn on Bluetooth to keep using Orion.</div>
       </div>
     </div>
 
@@ -1084,6 +1421,19 @@
         <div class="btn-row" style="margin-top:16px;">
           <button class="btn btn-sec btn-full" id="unpairPhoneCancelBtn" onclick="hideModal('m-unpair-phone')">Cancel</button>
           <button class="btn btn-dng btn-full" id="unpairPhoneBtn" onclick="doUnpairPhone()">Unpair</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- How to get the Outlook sharing file (setup wizard's calendar step) -->
+    <div class="modal-bg" id="m-cal-help">
+      <div class="modal">
+        <div class="modal-title" id="calHelpTitle">Getting your calendar file</div>
+        <div class="modal-body">
+          <ol class="modal-steps" id="calHelpSteps"></ol>
+        </div>
+        <div class="btn-row" style="margin-top:16px;">
+          <button class="btn btn-primary btn-full" id="calHelpCloseBtn" onclick="hideModal('m-cal-help')">Got it</button>
         </div>
       </div>
     </div>
@@ -1251,6 +1601,39 @@
     </div><!-- /screen-stack -->
 
   </div><!-- /panel -->
+
+  <!-- ═══════════ CORNER TOAST (panel minimized) ═══════════ -->
+  <!-- Design mockup for the panel-hidden counterpart to the in-app modals —
+       pc-app.md's "panel visible → in-app modal; panel hidden → native OS
+       toast" pattern, drawn here as a custom corner card instead of a bare
+       OS notification so it can carry an icon + richer copy per warning
+       type. Deliberately a SIBLING of #panel (not nested inside it): a
+       parent's opacity:0 (.panel.hide) would otherwise hide this too, even
+       though it's position:fixed. Same bottom-right anchor as the panel
+       itself and the taskbar tray icon, matching real Windows toast
+       placement. One shared element, content set per-trigger by
+       showCornerToast() (app.js) — not four separate markups. -->
+  <div class="corner-toast" id="corner-toast">
+    <div class="corner-toast-close" id="cornerToastClose" onclick="hideCornerToast()" title="Dismiss">
+      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M1 1l8 8M9 1l-8 8"/></svg>
+    </div>
+    <!-- Top line: Ori wordmark, centered — same .wm markup as the taskbar
+         tray icon / app titlebar, just re-scoped under .corner-toast-brand
+         so it can be centered independently of that element's own layout. -->
+    <div class="corner-toast-brand"><span class="o">o</span><span class="r">r</span><span class="i">i</span></div>
+    <!-- Two columns: icon (left) sized via flex stretch to match however
+         tall the title+description text block (right) actually renders —
+         at minimum 1 title line + 3 description lines, per design — with
+         the inner SVG's own viewBox preserving its aspect ratio (no
+         distortion) as it scales to fill that height. -->
+    <div class="corner-toast-row">
+      <div class="corner-toast-ico" id="cornerToastIco"></div>
+      <div class="corner-toast-body">
+        <div class="corner-toast-title" id="cornerToastTitle">Title</div>
+        <div class="corner-toast-text" id="cornerToastBody">Body text.</div>
+      </div>
+    </div>
+  </div>
 
   <script src="Orion_UI_Prototype.js"></script>
 </body>
