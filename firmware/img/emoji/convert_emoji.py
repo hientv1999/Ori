@@ -26,7 +26,7 @@ import os, sys, urllib.request, urllib.parse, json, io
 from PIL import Image
 
 EMOJI_PX   = 28                      # rendered glyph height (px)
-MAX_EMOJI  = 250                     # hard cap (flash budget)
+MAX_EMOJI  = 100                     # hard cap (flash budget) — see FOLDERS below
 RAW        = "https://raw.githubusercontent.com/microsoft/fluentui-emoji/main/assets/"
 
 HERE       = os.path.dirname(os.path.abspath(__file__))
@@ -34,114 +34,43 @@ FW         = os.path.abspath(os.path.join(HERE, "..", ".."))
 OUT_C      = os.path.join(FW, "src", "assets", "emoji_assets.c")
 OUT_H      = os.path.join(FW, "include", "assets", "emoji_assets.h")
 
-# Curated folders (Fluent CLDR names). Over-listed slightly; capped at MAX_EMOJI.
+# Curated folders (Fluent CLDR names), in real-world usage-frequency order
+# (Unicode Consortium median frequency data, cross-referenced 2026-07 against
+# this repo's own metadata.json for each name to confirm the codepoint match
+# — Fluent's folder names don't always match the raw Unicode 1.0 character
+# name, e.g. U+1F44C is "Ok hand" here, not "OK hand"). Previously an
+# ~250-entry category-broad list; replaced with the top 100 emoji by actual
+# usage, which covers ~80% of real top-100 usage on its own (the old list
+# only reached that by accident — most of its 250 slots went to long-tail
+# individual food/animal/travel icons that barely register in real usage).
+# Order matters if MAX_EMOJI is ever lowered further: earlier entries are
+# more frequently used and should be kept first.
 FOLDERS = [
-    # hearts / love
-    "Red heart","Orange heart","Yellow heart","Green heart","Blue heart",
-    "Purple heart","Black heart","Broken heart","Two hearts","Sparkling heart",
-    "Growing heart","Beating heart","Revolving hearts","Heart with arrow",
-    # hands / gestures
-    "Thumbs up","Thumbs down","Clapping hands","Raising hands","Folded hands",
-    "Waving hand","OK hand","Victory hand","Crossed fingers","Flexed biceps",
-    "Handshake","Raised fist","Call me hand","Love-you gesture",
-    "Backhand index pointing right","Backhand index pointing left",
-    # smileys
-    "Grinning face","Grinning face with big eyes","Beaming face with smiling eyes",
-    "Grinning squinting face","Face with tears of joy","Rolling on the floor laughing",
-    "Slightly smiling face","Smiling face with smiling eyes",
-    "Smiling face with heart-eyes","Smiling face with sunglasses","Star-struck",
-    "Face blowing a kiss","Winking face","Face savoring food","Thinking face",
-    "Zany face","Face with raised eyebrow","Neutral face","Unamused face",
-    "Face with rolling eyes","Smirking face","Pensive face","Confused face",
-    "Worried face","Crying face","Loudly crying face","Face screaming in fear",
-    "Angry face","Pouting face","Exploding head","Hot face","Cold face",
-    "Flushed face","Pleading face","Sleeping face","Face with medical mask",
-    "Nauseated face","Woozy face","Partying face","Smiling face with halo",
-    "Cowboy hat face","Shushing face","Face with hand over mouth","Grimacing face",
-    "Winking face with tongue","Zipper-mouth face","Sleepy face","Yawning face",
-    # objects / symbols
-    "Fire","Party popper","Confetti ball","Sparkles","Star","Glowing star",
-    "Hundred points","Collision","Balloon","Birthday cake","Wrapped gift",
-    "Trophy","Crown","Rocket","Check mark button","Cross mark","Warning",
-    "Red exclamation mark","Red question mark","Eyes","Skull","Ghost","Robot",
-    "Alien","Pile of poo","Clinking beer mugs","Clinking glasses","Hot beverage",
-    "Musical notes","High voltage","Sun","Rainbow","Snowflake","Light bulb",
-    "Bell","Locked","Key","Money bag","Dollar banknote","Bomb","Alarm clock",
-    "Hourglass done",
-    # --- extended set (net ~150 total) ---
-    # more smileys
-    "Smiling face","Kissing face with closed eyes","Face with tongue",
-    "Hugging face","Nerd face","Smiling face with horns","Clown face","Lying face",
-    "Sneezing face","Face vomiting","Astonished face","Fearful face","Weary face",
-    "Tired face","Disappointed face","Downcast face with sweat",
-    "Anxious face with sweat","Face with steam from nose","Relieved face",
-    "Persevering face","Money-mouth face","Saluting face","Smiling face with tear",
-    # more hands / body
-    "Raised back of hand","Vulcan salute","Sign of the horns","Index pointing up",
-    "Writing hand","Brain","Eye","Pinched fingers","Left-facing fist","Right-facing fist",
-    # animals / nature / plants
-    "Dog face","Cat face","Unicorn","Butterfly","Four leaf clover","Rose",
-    "Bouquet","Sunflower","Cherry blossom","Christmas tree","Maple leaf","Mushroom",
-    "Seedling",
-    # weather
-    "Sun behind cloud","Cloud with rain","Snowman","Droplet","Tornado","Comet",
-    # food / drink
-    "Pizza","Hamburger","Doughnut","Cookie","Ice cream","Red apple","Banana",
-    "Watermelon","Strawberry","Grapes","Peach","Avocado","Wine glass",
-    "Cocktail glass","Beer mug","Bottle with popping cork","Hot beverage",
-    # activities / objects
-    "Soccer ball","Basketball","Video game","Game die","Direct hit","Guitar",
-    "Microphone","Camera","Movie camera","Clapper board","Books","Open book",
-    "Memo","Pencil","Pushpin","Round pushpin","Paperclip","Scissors","Envelope",
-    "Package","Calendar","Watch","Stopwatch","Mobile phone","Laptop","Battery",
-    "Flashlight","Gear","Wrench","Hammer","Shield","Toolbox","Link",
-    "Magnifying glass tilted left","1st place medal","Sports medal",
-    # symbols / hearts
-    "Speech balloon","Thought balloon","Right arrow","Play button","Repeat button",
-    "No entry","Prohibited","Recycling symbol","Anger symbol","Sparkle",
-    "Double exclamation mark","Exclamation question mark","Check mark",
-    "Pink heart","White heart","Brown heart","Heart on fire","Mending heart",
-    "Heart exclamation","Kiss mark",
-    # --- second extension (net ~250 total) ---
-    # animals
-    "Dog","Cat","Horse face","Cow face","Pig face","Mouse face","Hamster",
-    "Rabbit face","Bear","Panda","Koala","Tiger face","Lion","Frog",
-    "Monkey face","See-no-evil monkey","Hear-no-evil monkey","Speak-no-evil monkey",
-    "Chicken","Penguin","Bird","Baby chick","Duck","Eagle","Owl","Wolf","Fox",
-    "Horse","Honeybee","Bug","Lady beetle","Ant","Spider","Turtle","Snake",
-    "T-Rex","Dragon","Whale","Dolphin","Fish","Tropical fish","Shark","Octopus",
-    "Snail","Crab","Paw prints",
-    # food / drink
-    "Green apple","Pear","Tangerine","Lemon","Mango","Pineapple","Coconut",
-    "Tomato","Eggplant","Broccoli","Carrot","Ear of corn","Hot pepper",
-    "Mushroom","Bread","Croissant","Pretzel","Bagel","Pancakes","Waffle",
-    "Cheese wedge","Poultry leg","Cut of meat","Bacon","French fries",
-    "Hot dog","Sandwich","Taco","Burrito","Egg","Green salad","Popcorn",
-    "Rice ball","Cooked rice","Spaghetti","Sushi","Dumpling","Fortune cookie",
-    "Shaved ice","Shortcake","Pie","Chocolate bar","Candy","Lollipop",
-    "Honey pot","Milk glass","Bubble tea","Teacup without handle","Tumbler glass",
-    # travel / places
-    "Automobile","Taxi","Bus","Fire engine","Police car","Airplane","Rocket",
-    "Bicycle","Motorcycle","Ship","Sailboat","Helicopter","Train",
-    "House","Office building","Hospital","School","Mountain","Volcano",
-    "Beach with umbrella","Desert island","Sunrise","National park","Tent",
-    "Globe showing Europe-Africa","World map","Compass",
-    # objects
-    "Candle","Nut and bolt","Chains","Ribbon","Teddy bear","Kite","Crystal ball",
-    "Telescope","Microscope","Test tube","Dna","Pill","Syringe","Adhesive bandage",
-    "Stethoscope","Broom","Basket","Soap","Sponge","Bucket","Toothbrush",
-    "Lipstick","Ring","Gem stone","Handbag","Backpack","Briefcase","Eyeglasses",
-    "Sunglasses","Necktie","T-shirt","Jeans","Dress","Running shoe","Top hat",
-    "Graduation cap",
-    # arrows / symbols
-    "Up arrow","Down arrow","Left arrow","Left-right arrow","Up-down arrow",
-    "Right arrow curving left","Left arrow curving right","Counterclockwise arrows button",
-    "Clockwise vertical arrows","Fast-forward button","Pause button","Stop button",
-    "Record button","Next track button","Play or pause button","Shuffle tracks button",
-    "Plus","Minus","Multiply","Divide","Heavy dollar sign","Trade mark",
-    "Cross mark button","White question mark","White exclamation mark",
-    "Peace symbol","Atom symbol","Radioactive","Biohazard","No entry",
-    "Anatomical heart","Heart decoration",
+    "Face with tears of joy", "Red heart", "Smiling face with heart-eyes", "Rolling on the floor laughing",
+    "Smiling face with smiling eyes", "Folded hands", "Two hearts", "Loudly crying face",
+    "Face blowing a kiss", "Thumbs up", "Grinning face with sweat", "Clapping hands",
+    "Beaming face with smiling eyes", "Heart suit", "Fire", "Broken heart",
+    "Sparkling heart", "Blue heart", "Crying face", "Thinking face",
+    "Grinning squinting face", "Face with rolling eyes", "Flexed biceps", "Winking face",
+    "Smiling face", "Ok hand", "Hugging face", "Purple heart",
+    "Pensive face", "Smiling face with sunglasses", "Smiling face with halo", "Rose",
+    "Person facepalming", "Party popper", "Double exclamation mark", "Revolving hearts",
+    "Victory hand", "Sparkles", "Person shrugging", "Face screaming in fear",
+    "Relieved face", "Cherry blossom", "Raising hands", "Face savoring food",
+    "Growing heart", "Green heart", "Smirking face", "Yellow heart",
+    "Slightly smiling face", "Beating heart", "Star-struck", "Grinning face with smiling eyes",
+    "Grinning face", "Black heart", "Grinning face with big eyes", "Hundred points",
+    "See-no-evil monkey", "Backhand index pointing down", "Musical notes", "Unamused face",
+    "Face with hand over mouth", "Heart exclamation", "Red exclamation mark", "Winking face with tongue",
+    "Kiss mark", "Eyes", "Sleepy face", "Expressionless face",
+    "Collision", "Person raising hand", "Disappointed face", "Weary face",
+    "Pouting face", "Zany face", "Oncoming fist", "Sun",
+    "Sad but relieved face", "Drooling face", "Backhand index pointing right", "Woman dancing",
+    "Flushed face", "Raised hand", "Kissing face with closed eyes", "Squinting face with tongue",
+    "Sleeping face", "Glowing star", "Grimacing face", "Upside-down face",
+    "Four leaf clover", "Tulip", "Smiling cat with heart-eyes", "Downcast face with sweat",
+    "Star", "Check mark button", "Rainbow", "Smiling face with horns",
+    "Sign of the horns", "Sweat droplets", "Check mark", "Persevering face",
 ]
 
 def fetch(path):

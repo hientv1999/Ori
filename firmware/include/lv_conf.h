@@ -217,7 +217,10 @@
 
 #define LV_FONT_DEFAULT         &ori_font_hanken_20
 #define LV_FONT_FMT_TXT_LARGE   0
-#define LV_USE_FONT_COMPRESSED  0
+// Required to decode ori_font_hanken_*'s compressed glyph bitmaps
+// (tools/regen_fonts.sh) — without this, LVGL can't decompress any glyph and
+// renders no text at all.
+#define LV_USE_FONT_COMPRESSED  1
 #define LV_USE_FONT_PLACEHOLDER 1
 
 /*=================
