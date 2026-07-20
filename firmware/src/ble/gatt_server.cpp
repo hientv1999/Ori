@@ -2260,10 +2260,18 @@ void run_staged_commit() {
     if (needs_nvs) {
         // Blank the display immediately before the flash write burst. LCD_CAM
         // DMA keeps scanning the (now black) framebuffer, so there are no
-        // rendering glitches during NVS / LittleFS writes. LVGL redraws the
-        // next screen automatically when it flushes after the state
-        // transition below.
+        // rendering glitches during NVS / LittleFS writes.
         lcd_panel::blackout();
+        // Tell state_machine::on_reconnect_end() (fired below via
+        // ble_post_sync_end_event()) that this sync needs an explicit
+        // repaint once it's done, regardless of whether this sync was big
+        // enough to have shown the reconnect-syncing overlay — see
+        // mark_display_needs_repaint()'s own doc comment (state_machine.h)
+        // for the bug this closes (a small profile/photo-only edit blanked
+        // the screen here but, before this flag existed, nothing repainted
+        // it afterward: the status bar, mode-toggle, and meeting list all
+        // stayed empty even though their widgets were untouched).
+        state_machine::mark_display_needs_repaint();
     }
 
     stage_commit();

@@ -122,6 +122,13 @@ lv_obj_t* g_runtime_left   = nullptr;
 // screen to overlay). Decides which teardown path on_reconnect_end() takes.
 bool g_reconnect_overlay_mode = false;
 
+// Set by mark_display_needs_repaint() (called from gatt_server::
+// run_staged_commit() whenever this sync's NVS write blanked the
+// framebuffer) and consumed exactly once by finish_reconnect_now() — see
+// mark_display_needs_repaint()'s own doc comment in state_machine.h for why
+// this can't just reuse g_reconnect_overlay_mode.
+bool g_needs_repaint = false;
+
 // Reference to the periodic tick timer created in state_machine::init().
 lv_timer_t* g_tick_timer = nullptr;
 
@@ -1109,6 +1116,11 @@ static void refresh_runtime_left() {
 static void finish_reconnect_now() {
     bool was_overlay          = g_reconnect_overlay_mode;
     bool was_reconnect_screen = (g_state == AppState::RECONNECT_SYNCING);
+    // Consumed exactly once here, regardless of which branch below actually
+    // ends up needing it — see mark_display_needs_repaint()'s doc comment
+    // (state_machine.h) for why this is a separate flag from was_overlay.
+    bool needs_repaint        = g_needs_repaint;
+    g_needs_repaint           = false;
     // ota_receiver::dismiss_error() ("Close" on the Update-failed screen)
     // flips g_ota_state to Idle BEFORE routing through on_reconnect_end() into
     // here, specifically so this is distinguishable from a background BLE sync
@@ -1129,8 +1141,13 @@ static void finish_reconnect_now() {
     // Mirror the guard in on_reconnect_begin(): a sync that ran while the
     // countdown modal was up never touched g_state on the way in, so don't
     // touch it on the way out either — the modal stays exactly as it is until
-    // the user taps Close.
-    if (g_state == AppState::COUNTDOWN) return;
+    // the user taps Close. Still repaints on the way out if this sync's
+    // commit blanked the framebuffer (same gap as below, just for this
+    // screen) — the countdown ring/text are otherwise left blank too.
+    if (g_state == AppState::COUNTDOWN) {
+        if (needs_repaint) lv_obj_invalidate(lv_scr_act());
+        return;
+    }
 
     if (g_runtime_body) {
         // A live calendar screen (NO_MEETINGS / MEETING_LIST) is on top → never
@@ -1150,11 +1167,22 @@ static void finish_reconnect_now() {
             // no re-layout, no status-bar-timer churn.
             refresh_runtime_left();
             lv_obj_invalidate(lv_scr_act());
+        } else if (needs_repaint) {
+            // A small mid-session sync (e.g. a profile-only edit, or removing
+            // the profile photo) never shows the overlay — its declared
+            // total_bytes can easily land under RECONNECT_OVERLAY_MIN_BYTES —
+            // but still commits to NVS and blanks the framebuffer exactly like
+            // a big sync does. Nothing about the meeting list itself changed
+            // (this push carries no Meetings/Time Off data), so skip the
+            // rebuild, but the blanked screen still needs an explicit repaint
+            // or it's left showing black/empty indefinitely: LVGL's object
+            // tree is unchanged, so nothing else would ever trigger one.
+            lv_obj_invalidate(lv_scr_act());
         }
-        // Otherwise this was a tiny periodic sync that never showed an overlay
-        // (time-only — meetings arrive only in an over-200-byte sync, which does
-        // show the overlay). Nothing visible changed, so leave the live meeting
-        // list exactly as it is: no rebuild, no repaint, no flicker.
+        // Otherwise (neither flag set) this was a tiny periodic sync that
+        // touched no flash (time-only). Nothing visible changed and nothing
+        // was blanked, so leave the live meeting list exactly as it is: no
+        // rebuild, no repaint, no flicker.
         return;
     }
 
@@ -1170,6 +1198,12 @@ static void finish_reconnect_now() {
         g_force_rebuild = true;
         g_state = AppState::NO_MEETINGS;
         evaluate();
+    } else if (needs_repaint) {
+        // Same NVS-blackout-with-no-overlay case as above, but for whatever
+        // non-calendar screen (Clock, Calendar month view, Controls mode)
+        // happened to be up when this small sync's commit blanked the whole
+        // framebuffer — it needs the same explicit repaint, not a rebuild.
+        lv_obj_invalidate(lv_scr_act());
     }
 }
 
@@ -1274,6 +1308,10 @@ void on_reconnect_end() {
     }
 
     finish_reconnect_now();
+}
+
+void mark_display_needs_repaint() {
+    g_needs_repaint = true;
 }
 
 void set_weather(uint8_t condition, int16_t temp_f, uint8_t unit,

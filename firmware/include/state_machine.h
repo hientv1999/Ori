@@ -118,6 +118,22 @@ void on_reconnect_begin();
 // BLE reconnect to Orion finished — Device Status → RUNTIME_READY.
 void on_reconnect_end();
 
+// Called by gatt_server::run_staged_commit() whenever this sync actually
+// wrote to NVS (Profile, Photo, or Time Off) and therefore blanked the
+// framebuffer (lcd_panel::blackout()) ahead of the flash write. That
+// blackout is gated purely on WHICH items were staged, entirely independent
+// of whether the sync was big enough to have shown the reconnect-syncing
+// overlay (RECONNECT_OVERLAY_MIN_BYTES) — a small mid-session push (e.g.
+// removing the profile photo, or any profile-only edit) still commits to
+// NVS and still blanks the screen, but never sets g_reconnect_overlay_mode.
+// on_reconnect_end()'s repaint step used to be gated on that overlay flag
+// alone, so a sync like this left the framebuffer blanked with nothing to
+// ever redraw it — the status bar, mode-toggle, and meeting list all read
+// as empty even though their underlying widgets were untouched. This flag
+// lets on_reconnect_end() repaint whenever the blackout genuinely
+// happened, regardless of overlay size.
+void mark_display_needs_repaint();
+
 // Called by screen_meeting_list::create() / screen_no_meetings::create() to
 // register the live calendar-runtime screen's containers, so a reconnect sync
 // can refresh ONLY the left panel in place (refresh_runtime_left) instead of
