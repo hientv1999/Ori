@@ -21,6 +21,9 @@ constexpr const char* k_slot2        = "sc_2";         // string: shortcut slot 
 constexpr const char* k_slot3        = "sc_3";         // string: shortcut slot 3 token
 constexpr const char* k_seek_step    = "seek_step";   // uint8: double-tap seek step, seconds
 constexpr const char* k_ota_ack      = "ota_ack";     // string: post-update version
+constexpr const char* k_holiday_ctry = "hol_ctry";    // uint8: holiday_data::Country
+constexpr const char* k_holiday_region = "hol_region"; // uint8: region within that country
+constexpr const char* k_holiday_lunar = "hol_lunar";  // bytes: uint16_t[] epoch-day array
 
 Preferences prefs;
 
@@ -217,6 +220,52 @@ void set_shortcut_slots(const char* s1, const char* s2, const char* s3) {
     prefs.end();
     LOG("[nvs] shortcut_slots=%s,%s,%s\n",
         s1 ? s1 : "", s2 ? s2 : "", s3 ? s3 : "");
+}
+
+// ── Local-holiday country selection ────────────────────────────────────────
+
+uint8_t get_holiday_country() {
+    return get_uchar(k_holiday_ctry, 0);  // default: None
+}
+
+void set_holiday_country(uint8_t country) {
+    set_uchar(k_holiday_ctry, country, "holiday_country");
+}
+
+uint8_t get_holiday_region() {
+    return get_uchar(k_holiday_region, 0);  // default: None
+}
+
+void set_holiday_region(uint8_t region) {
+    set_uchar(k_holiday_region, region, "holiday_region");
+}
+
+// ── Lunar-holiday date cache (raw bytes, not a scalar — doesn't fit the
+// get_uchar/set_uchar helpers above) ───────────────────────────────────────
+
+size_t get_lunar_days(uint16_t* out, size_t max_entries) {
+    if (!out || max_entries == 0) return 0;
+    size_t count = 0;
+    if (prefs.begin(NAMESPACE, /*readOnly=*/true)) {
+        size_t stored_bytes = prefs.getBytesLength(k_holiday_lunar);
+        size_t stored_count = stored_bytes / sizeof(uint16_t);
+        count = stored_count < max_entries ? stored_count : max_entries;
+        if (count > 0) prefs.getBytes(k_holiday_lunar, out, count * sizeof(uint16_t));
+        prefs.end();
+    }
+    return count;
+}
+
+void set_lunar_days(const uint16_t* days, size_t count) {
+    if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
+        if (days && count > 0) {
+            prefs.putBytes(k_holiday_lunar, days, count * sizeof(uint16_t));
+        } else {
+            prefs.remove(k_holiday_lunar);
+        }
+        prefs.end();
+    }
+    LOG("[nvs] lunar_days: %u entries\n", (unsigned)count);
 }
 
 // ── Factory reset ──────────────────────────────────────────────────────────

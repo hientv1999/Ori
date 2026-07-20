@@ -12,6 +12,10 @@
 //   "notif_filt"  — uint8: ANCS filter level 0-3
 //   "sc_1/2/3"    — string: shortcut slot token (≤19 chars + null)
 //   "seek_step"   — uint8: double-tap seek step, seconds (1-60, default 10)
+//   "hol_ctry"    — uint8: holiday_data::Country (0=None 1=US 2=VN 3=CA ...)
+//   "hol_region"  — uint8: region within that country, 0=None (holiday_data.h)
+//   "hol_lunar"   — bytes: raw uint16_t[] epoch-day array (Lunar New Year
+//                   dates pushed by Orion — see holiday_data.h)
 //
 // Profile, photo, and meeting/Time Off hashes live in the "ori" namespace too,
 // under keys owned by nvs_sync.h.
@@ -85,6 +89,28 @@ void    set_seek_step_s(uint8_t seconds);
 // device: "vol-mute" / "mic-mute" / "screenshot".
 void get_shortcut_slots(char* s1, char* s2, char* s3, size_t slot_sz);
 void set_shortcut_slots(const char* s1, const char* s2, const char* s3);
+
+// Local-holiday country selection (0=None, 1=US, 2=VN — holiday_data::Country).
+// Default None. Set by Orion via Device Settings (char 000E, key "g");
+// persisted so the compiled-in holiday rule table keeps working without a
+// live BLE connection once set at least once.
+uint8_t get_holiday_country();
+void    set_holiday_country(uint8_t country);
+
+// Active region within the selected country (0=None/national-only) — see
+// holiday_data.h's per-country region code table. Same persistence
+// reasoning as get/set_holiday_country() above.
+uint8_t get_holiday_region();
+void    set_holiday_region(uint8_t region);
+
+// Lunar-holiday date cache (Vietnam's Tet) — a raw array of uint16_t epoch-day
+// values (days since 1970-01-01 UTC), pushed by Orion once via the Lunar
+// Holiday List characteristic and persisted so it survives power cycles and
+// keeps working without a live BLE connection. get_lunar_days() returns the
+// number of entries actually read into `out` (0 if never set), capped at
+// max_entries.
+size_t get_lunar_days(uint16_t* out, size_t max_entries);
+void   set_lunar_days(const uint16_t* days, size_t count);
 
 // Factory reset — clears ALL keys in the "ori" namespace.
 // Does NOT reboot; caller is responsible for calling ESP.restart() after.

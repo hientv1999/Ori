@@ -217,39 +217,21 @@ lv_obj_t* make_meeting_row(lv_obj_t* parent, const app_state::Meeting& m) {
     lv_obj_set_style_text_font(title, theme::font_title(), 0);
     lv_obj_set_style_text_color(title, theme::color(meeting_state_color(m, theme::COLOR_TEXT_PRIMARY)), 0);
 
-    // Meta row: location · organizer.
+    // Meta row: location, fills the entire remaining row width.
     lv_obj_t* meta = lv_obj_create(content);
     lv_obj_set_size(meta, lv_pct(100), LV_SIZE_CONTENT);
     ui::clear_container(meta);
     lv_obj_set_style_pad_top(meta, 6, 0);
-    lv_obj_set_style_pad_column(meta, 12, 0);
     lv_obj_set_flex_flow(meta, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(meta, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     lv_obj_t* loc = lv_label_create(meta);
     lv_label_set_long_mode(loc, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(loc, 220);
+    lv_obj_set_width(loc, lv_pct(100));
     lv_obj_set_height(loc, theme::font_meta()->line_height);
     lv_label_set_text(loc, m.loc);
     lv_obj_set_style_text_font(loc, theme::font_meta(), 0);
     lv_obj_set_style_text_color(loc, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
-
-    lv_obj_t* dot = lv_obj_create(meta);
-    lv_obj_set_size(dot, 4, 4);
-    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(dot, theme::color(theme::COLOR_TEXT_TERTIARY), 0);
-    lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(dot, 0, 0);
-    lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
-
-    lv_obj_t* org = lv_label_create(meta);
-    lv_label_set_long_mode(org, LV_LABEL_LONG_DOT);
-    lv_obj_set_width(org, 140);
-    lv_obj_set_height(org, theme::font_meta()->line_height);
-    lv_label_set_text(org, m.org);
-    lv_obj_set_style_text_font(org, theme::font_meta(), 0);
-    lv_obj_set_style_text_color(org, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
 
     // Row click → meeting detail modal, unless the meeting starts within the
     // 5-minute countdown window, in which case the countdown screen (same one

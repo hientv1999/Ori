@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <time.h>
 
+#include "holiday_data.h"
 #include "theme.h"
 #include "ui_helpers.h"
 #include "widgets/widget_profile_card.h"
@@ -45,6 +46,8 @@ constexpr int16_t BADGE_SIZE = 44; // sized so a 6-week month's rows stay >= the
 constexpr int16_t NAV_BTN_SIZE = 36;
 
 void render_into(lv_obj_t* left);
+static void show_holiday_detail(lv_obj_t* screen, int year, int month, int day,
+                                 const char* name, const char* description);
 
 // Shared step logic for the four nav callbacks below — dir is always ±1, so
 // exactly one of a function's two bound-checks can ever trigger per call
@@ -123,6 +126,88 @@ lv_obj_t* make_double_chevron_btn(lv_obj_t* parent, bool pointing_left, lv_event
     make_chevron_line(btn, pointing_left ? left_a : right_a);
     make_chevron_line(btn, pointing_left ? left_b : right_b);
     return btn;
+}
+
+// Full-screen holiday detail overlay — dismissed via the Close button only
+// (this app's established convention for every tap-to-expand overlay; see
+// screen_meeting_list.cpp's show_meeting_detail(), which this mirrors).
+static void show_holiday_detail(lv_obj_t* screen, int year, int month, int day,
+                                 const char* name, const char* description) {
+    lv_obj_t* scrim = ui::make_scrim(screen);
+
+    lv_obj_t* box = lv_obj_create(scrim);
+    lv_obj_set_size(box, 800, 480);
+    lv_obj_set_pos(box, 0, 0);
+    ui::clear_container(box);
+    lv_obj_set_style_pad_left(box, 40, 0);
+    lv_obj_set_style_pad_right(box, 40, 0);
+    lv_obj_set_style_pad_top(box, 24, 0);
+    lv_obj_set_style_pad_bottom(box, 24, 0);
+    lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(box, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_add_flag(box, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
+
+    lv_obj_t* scroll_area = lv_obj_create(box);
+    lv_obj_set_width(scroll_area, lv_pct(100));
+    lv_obj_set_flex_grow(scroll_area, 1);
+    lv_obj_set_style_bg_opa(scroll_area, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(scroll_area, 0, 0);
+    lv_obj_set_style_pad_all(scroll_area, 0, 0);
+    lv_obj_add_flag(scroll_area, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(scroll_area, LV_OBJ_FLAG_SCROLL_MOMENTUM);
+    lv_obj_set_scroll_dir(scroll_area, LV_DIR_VER);
+    lv_obj_set_flex_flow(scroll_area, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(scroll_area, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    ui::make_flex_spacer(scroll_area);
+
+    // Name — state-colored to match the day cell's ring/text treatment.
+    lv_obj_t* name_lbl = lv_label_create(scroll_area);
+    lv_label_set_long_mode(name_lbl, LV_LABEL_LONG_DOT);
+    lv_label_set_text(name_lbl, name);
+    lv_obj_set_width(name_lbl, lv_pct(100));
+    lv_obj_set_style_text_font(name_lbl, theme::font_title(), 0);
+    lv_obj_set_style_text_color(name_lbl, theme::color(theme::COLOR_DANGER), 0);
+    lv_obj_set_style_text_align(name_lbl, LV_TEXT_ALIGN_CENTER, 0);
+
+    // Full date — "Weekday, Month Day, Year", same strftime + manual-assembly
+    // idiom already used by screen_clock.cpp (avoids relying on the %-d GNU
+    // extension for a no-leading-zero day number, which ESP32's newlib may
+    // not support).
+    struct tm t = {};
+    t.tm_year = year - 1900;
+    t.tm_mon  = month - 1;
+    t.tm_mday = day;
+    t.tm_hour = 12;
+    time_t tt = mktime(&t);
+    struct tm norm;
+    localtime_r(&tt, &norm);
+    char weekday[16], mon[8], date_buf[56];
+    strftime(weekday, sizeof(weekday), "%A", &norm);
+    strftime(mon, sizeof(mon), "%B", &norm);
+    snprintf(date_buf, sizeof(date_buf), "%s, %s %d, %d", weekday, mon, norm.tm_mday, norm.tm_year + 1900);
+    lv_obj_t* date_lbl = lv_label_create(scroll_area);
+    lv_label_set_text(date_lbl, date_buf);
+    lv_obj_set_style_text_font(date_lbl, theme::font_meta(), 0);
+    lv_obj_set_style_text_color(date_lbl, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
+    lv_obj_set_style_text_align(date_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_pad_top(date_lbl, 16, 0);
+
+    // Description — full text, wrapping.
+    lv_obj_t* desc_lbl = lv_label_create(scroll_area);
+    lv_label_set_long_mode(desc_lbl, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(desc_lbl, description);
+    lv_obj_set_width(desc_lbl, lv_pct(100));
+    lv_obj_set_style_text_font(desc_lbl, theme::font_meta(), 0);
+    lv_obj_set_style_text_color(desc_lbl, theme::color(theme::COLOR_TEXT_TERTIARY), 0);
+    lv_obj_set_style_text_align(desc_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_pad_top(desc_lbl, 12, 0);
+
+    ui::make_flex_spacer(scroll_area);
+
+    lv_obj_t* close_btn = ui::make_btn(box, "Close", ui::BtnStyle::Tertiary,
+                                       nullptr, nullptr, 12, 26, theme::font_meta());
+    lv_obj_add_event_cb(close_btn, ui::close_scrim_cb, LV_EVENT_CLICKED, scrim);
 }
 
 // (Re)build the header + month grid inside `left`. Called on first entry
@@ -320,6 +405,13 @@ void render_into(lv_obj_t* left) {
             outside = false;
         }
         bool today = (i == today_cell);  // matches spillover days too (see today_cell)
+        // Holidays only resolved for real days in the viewed month — outside
+        // (previous/next month spillover) cells never carry holiday data.
+        // g_view_month is 0-based (struct tm convention); holiday_data::name_for()
+        // takes a 1-based month.
+        const holiday_data::Info* holiday_info = outside ? nullptr :
+            holiday_data::name_for(holiday_data::country(), holiday_data::region(), g_view_year, g_view_month + 1, day_num);
+        bool is_holiday = (holiday_info != nullptr);
 
         lv_obj_t* badge = lv_obj_create(grid);
         lv_obj_set_size(badge, BADGE_SIZE, BADGE_SIZE);
@@ -336,6 +428,37 @@ void render_into(lv_obj_t* left) {
                 today_in_month ? theme::COLOR_ACCENT_LINE : theme::COLOR_ACCENT_FAINT), 0);
         } else {
             lv_obj_set_style_bg_opa(badge, LV_OPA_TRANSP, 0);
+        }
+        if (is_holiday) {
+            // Hollow ring, not a fill — a fill would compete with today's own
+            // gold fill above; a border composes with it instead, so a day
+            // that's both today AND a holiday shows both at once for free.
+            lv_obj_set_style_border_width(badge, 2, 0);
+            lv_obj_set_style_border_color(badge, theme::color(theme::COLOR_DANGER), 0);
+
+            // Only holiday cells are tappable — the rest of the month view
+            // stays view-only. Each cell gets its own small heap-allocated
+            // context (freed on LV_EVENT_DELETE, same idiom widget_profile_card.cpp's
+            // add_wline() uses for its point arrays) since day cells are
+            // rebuilt fresh on every render and have no stable backing struct
+            // to point into (unlike meeting rows, which own a persistent array).
+            lv_obj_add_flag(badge, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_style_opa(badge, LV_OPA_60, LV_STATE_PRESSED);
+            struct HolidayCellCtx {
+                int year, month, day; // month 1-12
+                const char* name;
+                const char* description;
+            };
+            auto* ctx = new HolidayCellCtx{g_view_year, g_view_month + 1, day_num,
+                                           holiday_info->name, holiday_info->description};
+            lv_obj_add_event_cb(badge, [](lv_event_t* e) {
+                auto* c = static_cast<HolidayCellCtx*>(lv_event_get_user_data(e));
+                show_holiday_detail(lv_obj_get_screen((lv_obj_t*)lv_event_get_target(e)),
+                                     c->year, c->month, c->day, c->name, c->description);
+            }, LV_EVENT_CLICKED, ctx);
+            lv_obj_add_event_cb(badge, [](lv_event_t* e) {
+                delete static_cast<HolidayCellCtx*>(lv_event_get_user_data(e));
+            }, LV_EVENT_DELETE, ctx);
         }
         lv_obj_set_grid_cell(badge, LV_GRID_ALIGN_CENTER, col, 1, LV_GRID_ALIGN_CENTER, row, 1);
 
@@ -355,6 +478,11 @@ void render_into(lv_obj_t* left) {
             lv_obj_set_style_opa(lbl, LV_OPA_50, 0);
         } else {
             lv_obj_set_style_text_color(lbl, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
+        }
+        // Holiday text stays red regardless of the state above (today or
+        // plain) — matches the prototype's higher-specificity override rule.
+        if (is_holiday) {
+            lv_obj_set_style_text_color(lbl, theme::color(theme::COLOR_DANGER), 0);
         }
         lv_obj_center(lbl);
     }

@@ -97,8 +97,8 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
     const char* p_email = widget_profile_card::get_profile_email();
     const char* p_phone = widget_profile_card::get_profile_phone();
 
-    widget_profile_card::Presence pres = widget_profile_card::get_default_presence();
-    uint32_t pres_color = widget_profile_card::presence_color(pres);
+    widget_profile_card::ConnStatus conn_status = widget_profile_card::get_default_conn_status();
+    uint32_t conn_color = widget_profile_card::conn_status_color(conn_status);
 
     // Independent screen — pure black background, no status bar.
     // Tap the profile photo to return to base_screen.
@@ -127,8 +127,8 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
     lv_obj_set_flex_flow(body_row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(body_row, LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    // OVERFLOW_VISIBLE so the presence ring's glow (below) isn't clipped to
-    // this row's box — same reasoning as widget_profile_card.cpp's card.
+    // OVERFLOW_VISIBLE so the connection-status ring's glow (below) isn't
+    // clipped to this row's box — same reasoning as widget_profile_card.cpp's card.
     lv_obj_add_flag(body_row, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
 
     // ── Left column ───────────────────────────────────────────────────────────
@@ -174,8 +174,7 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
 
     // Build a row "[icon tile] [label]" and return the (empty, styled) label.
     // `draw` paints the icon into the tile; pass nullptr to leave it for the
-    // caller (the status row paints a presence dot itself). `out_tile` returns
-    // the tile when the caller needs it.
+    // caller. `out_tile` returns the tile when the caller needs it.
     auto add_row = [&](void (*draw)(lv_obj_t*, uint32_t), uint32_t icon_col,
                        uint32_t text_col, lv_obj_t** out_tile) -> lv_obj_t* {
         lv_obj_t* row = lv_obj_create(info);
@@ -203,20 +202,6 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
     lv_obj_t* title_lbl = add_row(draw_person, theme::COLOR_ACCENT,
                                   theme::COLOR_TEXT_SECONDARY, nullptr);
     lv_label_set_text(title_lbl, p_title);
-
-    // Status — presence dot (colour + glow track presence; registered for live
-    // updates so a Presence Status write recolours it while the modal is open).
-    lv_obj_t* status_tile = nullptr;
-    lv_obj_t* status_lbl  = add_row(nullptr, 0, pres_color, &status_tile);
-    lv_obj_t* status_dot  = shape(status_tile, 18, 18, pres_color, LV_RADIUS_CIRCLE);
-    lv_obj_center(status_dot);
-    lv_obj_set_style_shadow_width(status_dot, 14, 0);
-    lv_obj_set_style_shadow_spread(status_dot, 2, 0);
-    lv_obj_set_style_shadow_color(status_dot, theme::color(pres_color), 0);
-    // Offline gets no glow — matches the photo ring's offline treatment.
-    lv_obj_set_style_shadow_opa(status_dot,
-        pres == widget_profile_card::Presence::Offline ? LV_OPA_TRANSP : LV_OPA_50, 0);
-    lv_label_set_text(status_lbl, widget_profile_card::presence_label(pres));
 
     // Email — envelope icon.
     lv_obj_t* email_lbl = add_row(draw_envelope, theme::COLOR_ACCENT,
@@ -248,8 +233,8 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
     lv_obj_set_flex_flow(right_col, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(right_col, LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    // OVERFLOW_VISIBLE so the presence ring's glow isn't clipped to this
-    // column's box — same reasoning as widget_profile_card.cpp's card.
+    // OVERFLOW_VISIBLE so the connection-status ring's glow isn't clipped to
+    // this column's box — same reasoning as widget_profile_card.cpp's card.
     lv_obj_add_flag(right_col, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
 
     lv_obj_t* photo_ring = lv_obj_create(right_col);
@@ -260,17 +245,17 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
     // Solid flat fill (not a gradient) — see widget_profile_card.cpp's ring
     // comment for why: a directional gradient here would make the glow below
     // read as growing bottom-to-top instead of evenly outward from the photo.
-    lv_obj_set_style_bg_color(photo_ring, theme::color(pres_color), 0);
+    lv_obj_set_style_bg_color(photo_ring, theme::color(conn_color), 0);
     lv_obj_set_style_bg_opa(photo_ring, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(photo_ring, 0, 0);
     lv_obj_set_style_pad_all(photo_ring, 0, 0);
-    // Static presence glow — matches widget_profile_card.cpp's ring, no anim.
-    lv_obj_set_style_shadow_color(photo_ring, theme::color(pres_color), 0);
+    // Static connection-status glow — matches widget_profile_card.cpp's ring, no anim.
+    lv_obj_set_style_shadow_color(photo_ring, theme::color(conn_color), 0);
     lv_obj_set_style_shadow_width(photo_ring, 40, 0);
     lv_obj_set_style_shadow_spread(photo_ring, 8, 0);
-    // Offline gets no glow — see widget_profile_card.cpp's shadow_opa_for_presence().
+    // Disconnected gets no glow — see widget_profile_card.cpp's shadow_opa_for_conn_status().
     lv_obj_set_style_shadow_opa(photo_ring,
-        pres == widget_profile_card::Presence::Offline ? LV_OPA_TRANSP : LV_OPA_50, 0);
+        conn_status == widget_profile_card::ConnStatus::Disconnected ? LV_OPA_TRANSP : LV_OPA_50, 0);
     lv_obj_set_style_shadow_ofs_x(photo_ring, 0, 0);
     lv_obj_set_style_shadow_ofs_y(photo_ring, 0, 0);
     lv_obj_clear_flag(photo_ring, LV_OBJ_FLAG_SCROLLABLE);
@@ -297,12 +282,10 @@ lv_obj_t* create(lv_obj_t* base_screen, lv_obj_t* ref_photo) {
     lv_obj_set_style_clip_corner(photo, true, 0);
 
     widget_profile_card::ModalLabels modal_labels = {};
-    modal_labels.status_lbl = status_lbl;
     modal_labels.name_lbl   = name_lbl;
     modal_labels.title_lbl  = title_lbl;
     modal_labels.email_lbl  = email_lbl;
     modal_labels.phone_lbl  = phone_lbl;
-    modal_labels.status_dot = status_dot;
     widget_profile_card::register_modal_labels(modal_labels);
 
     // Always create the image (even with no photo yet) and register it so

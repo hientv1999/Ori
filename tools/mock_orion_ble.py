@@ -18,7 +18,7 @@ Usage:
     python tools/mock_orion_ble.py --address AA:BB:CC:DD:EE:FF
     python tools/mock_orion_ble.py --presence 1   # push BUSY on connect
     python tools/mock_orion_ble.py --weather 3    # push RAIN on connect
-    python tools/mock_orion_ble.py --stress-meetings   # 32 max-length meetings instead of 5 realistic ones
+    python tools/mock_orion_ble.py --stress-meetings   # 32 max-length meetings instead of 6 realistic ones
 
 Interactive commands (shown on connect):
     s  — sync now (hash-driven delta; also runs automatically on connect)
@@ -154,9 +154,10 @@ _TIME_OFF_PHOTO_SRC = os.path.join(_REPO_ROOT, "firmware", "img", "time_off_phot
 # firmware JPEG decoder and shortening chunked transfers during testing.
 _FORCED_JPEG_QUALITY: Optional[int] = None
 
-# False (default) = a believable 5-meeting day, for eyeballing the meeting
-# list screen. True (--stress-meetings) = 32 max-length meetings, the
-# protocol-cap boundary test this script originally always sent.
+# False (default) = a believable 6-meeting day starting from right now, for
+# eyeballing the meeting list screen. True (--stress-meetings) = 32
+# max-length meetings, the protocol-cap boundary test this script originally
+# always sent.
 _STRESS_MEETINGS: bool = False
 
 # ── UUIDs ────────────────────────────────────────────────────────────────────
@@ -506,13 +507,13 @@ def build_profile() -> bytes:
 def _local_midnight_epoch() -> int:
     """Epoch (UTC) of THIS machine's local midnight, today.
 
-    Meeting hour offsets below (e.g. "09:00") are meant as local wall-clock
-    times — using UTC midnight instead (now - now % 86400) silently shifts
-    the whole sample day by the tester's UTC offset, e.g. on a UTC-7 machine
-    "09:00-17:00" actually lands at 02:00-10:00 local. Past mid-morning,
-    every sample meeting is already expired and the list shows empty —
-    easily mistaken for a sync bug. datetime.timestamp() on an aware
-    datetime always returns the correct UTC epoch regardless of tzinfo.
+    Used for MeetingList's "d" day-rollover marker (ble-protocol.md §4) and
+    for Time Off's start/end window — both want THIS machine's local
+    wall-clock midnight, not a naive UTC-day boundary (now - now % 86400),
+    which silently shifts by the tester's UTC offset. datetime.timestamp()
+    on an aware datetime always returns the correct UTC epoch regardless of
+    tzinfo. Meeting start/end times themselves are anchored to "now" instead
+    (build_meetings_realistic()), not to this midnight.
     """
     local_now = datetime.now().astimezone()
     local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -524,24 +525,33 @@ def build_meetings() -> bytes:
 def build_meetings_realistic() -> bytes:
     # A believable day, not a boundary test — for eyeballing the meeting list
     # screen with content that actually looks like someone's calendar.
+    # Anchored to "now" (not fixed wall-clock times) so the list is always
+    # relevant regardless of when this script is run: the first meeting
+    # starts immediately (exercises the in-progress red highlight right
+    # away — meeting-list.md), and the rest follow at realistic spacing.
+    # "d" (date) is still local midnight of today — that field is only for
+    # day-rollover detection (ble-protocol.md §4), independent of when the
+    # meetings themselves start.
     # Keys are single chars: i=id, s=start, e=end, t=title, l=loc, o=org;
     # wrapper: d=date, m=items.
+    now      = int(datetime.now(timezone.utc).timestamp())
     midnight = _local_midnight_epoch()
+    # (start_offset_min, duration_min, title, loc, org) — offsets relative to "now".
     sample = [
-        ("09:00", "09:30", "Daily Standup",            "Zoom",              "Sarah Chen"),
-        ("10:00", "11:00", "Q3 Roadmap Review",        "Conference Room A", "Mike Torres"),
-        ("12:00", "13:00", "Lunch with Design Team",   "Cafeteria",         "Priya Patel"),
-        ("14:30", "15:00", "1:1 with Manager",         "Zoom",              "James Wright"),
-        ("16:00", "17:00", "Sprint Retro",             "Conference Room B", "Sarah Chen"),
+        (0,   30, "Daily Standup",          "Zoom",              "Sarah Chen"),
+        (45,  60, "Q3 Roadmap Review",      "Conference Room A", "Mike Torres"),
+        (150, 60, "Lunch with Design Team", "Cafeteria",         "Priya Patel"),
+        (240, 30, "1:1 with Manager",       "Zoom",              "James Wright"),
+        (330, 60, "Sprint Retro",           "Conference Room B", "Sarah Chen"),
+        (420, 45, "Client Sync",            "Zoom",              "Priya Patel"),
     ]
     items = []
-    for i, (hhmm_start, hhmm_end, title, loc, org) in enumerate(sample):
-        sh, sm = (int(x) for x in hhmm_start.split(":"))
-        eh, em = (int(x) for x in hhmm_end.split(":"))
+    for i, (offset_min, dur_min, title, loc, org) in enumerate(sample):
+        start = now + offset_min * 60
         items.append({
             "i": f"ev{i:02d}",
-            "s": midnight + sh * 3600 + sm * 60,
-            "e": midnight + eh * 3600 + em * 60,
+            "s": start,
+            "e": start + dur_min * 60,
             "t": title,
             "l": loc,
             "o": org,
@@ -575,11 +585,13 @@ def build_time_off(image: bytes = b"") -> bytes:
     # destination maximized to its 128-byte wire cap (ble-protocol.md §10).
     # Keys are single chars: s=start, e=end, d=destination, m=image.
     #
-    # Anchored to local midnight (not raw "now") for the same reason as
-    # build_meetings_realistic(): a live wall-clock second makes start/end
-    # — and therefore the whole entry's hash — different on every call, so
-    # Ori's manifest correctly (but unhelpfully, for testing) reports Time Off as
-    # changed on every single resync even though nothing actually changed.
+    # Anchored to local midnight (not raw "now"): a live wall-clock second
+    # makes start/end — and therefore the whole entry's hash — different on
+    # every call, so Ori's manifest correctly (but unhelpfully, for testing)
+    # reports Time Off as changed on every single resync even though nothing
+    # actually changed. (Meetings deliberately don't bother with this — see
+    # build_meetings_realistic() — since they're RAM-only on Ori with no
+    # persisted state to spuriously invalidate.)
     midnight    = _local_midnight_epoch()
     week        = 7 * 86400
     destination = ("Tokyo, Japan — Cherry Blossom Season Adventure " * 3)[:128]
@@ -1636,7 +1648,7 @@ if __name__ == "__main__":
                              "3=RAIN 4=THUNDERSTORM 5=SNOW 6=FOG")
     parser.add_argument("--stress-meetings", action="store_true",
                         help="send 32 max-length meetings (protocol-cap boundary test) "
-                             "instead of the default 5-meeting realistic day")
+                             "instead of the default 6-meeting realistic day")
     args = parser.parse_args()
     if args.photo_quality is not None:
         if not 1 <= args.photo_quality <= 95:

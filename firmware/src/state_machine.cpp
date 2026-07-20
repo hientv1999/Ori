@@ -54,6 +54,7 @@ uint8_t  g_mode            = 0;                     // 0=Calendar, 1=Media
 uint8_t  g_pre_clock_mode  = 0;                     // mode to restore when leaving Clock/Calendar
 uint8_t  g_clock_face      = 0;                     // 0=Digital, 1=Analog (nvs::get/set_clock_face)
 bool     g_pc_connected    = false; // true only once Orion's BLE link is confirmed
+bool     g_pc_synced       = false; // true only once a full sync has landed — see set_pc_synced()
 bool     g_phone_connected = false;
 bool     g_phone_bonded    = false; // true when an iPhone bond exists in NVS
 bool     g_force_rebuild   = false; // force evaluate() to rebuild even if state unchanged
@@ -66,24 +67,21 @@ bool     g_force_rebuild   = false; // force evaluate() to rebuild even if state
 // until the 5 s timer fires on_setup_complete(), which clears the flag.
 bool     g_setup_complete_hold = false;
 
-// Most recent Teams presence pushed by Orion via the Presence Status
-// characteristic (ble-protocol.md §3). 0x03 = Offline, matching the
-// gatt_server default and the "never show stale presence" rule — never
-// persisted to NVS (presence is ephemeral, §6.4).
-uint8_t  g_presence_byte   = 0x03;
-
-// Most recent weather condition + temperature + unit pushed by Orion via the
-// Device Settings "w"/"d"/"u" fields (ble-protocol.md §3/§4). Unlike presence
-// there is no "unverified" enum value to fall back to, so g_weather_valid
+// Most recent weather condition + temperature + unit + day/night + intensity
+// pushed by Orion via the Device Settings "w"/"d"/"u"/"n"/"i" fields
+// (ble-protocol.md §3/§4). There is no
+// "unverified" enum value to fall back to, so g_weather_valid
 // gates visibility instead — apply_widget_defaults() hides the icon/text
 // entirely (rather than rendering a fallback condition/temp/unit) whenever
 // the PC link is down or Orion has never sent weather this boot. The cached
-// condition/temp/unit are NOT reset on disconnect — only g_weather_valid is —
-// there's no reason to discard the last-known numbers, just stop showing
-// them until Orion re-confirms (mirrors set_pc_connected()'s presence reset).
+// condition/temp/unit/is_night/intensity are NOT reset on disconnect — only
+// g_weather_valid is — there's no reason to discard the last-known values,
+// just stop showing them until Orion re-confirms.
 uint8_t  g_weather_condition_byte = 0;
 int16_t  g_weather_temp_f         = 0;
 uint8_t  g_weather_unit_byte      = 0;  // 0=Fahrenheit 1=Celsius
+bool     g_weather_is_night       = false;
+uint8_t  g_weather_intensity      = 0;  // widget_profile_card::WeatherIntensity, 0=None
 bool     g_weather_valid          = false;
 
 // Post-OTA acknowledgement (read from NVS at init). When pending, the boot
@@ -255,20 +253,14 @@ static bool check_countdown(const char** out_title,
     return false;
 }
 
-// Apply the shared widget defaults (presence, PC link, mode) before any
+// Apply the shared widget defaults (PC link, mode) before any
 // screen is created, so each screen picks up the current runtime state
-// without requiring per-screen setup calls.
+// without requiring per-screen setup calls. Connection-status border colour
+// is NOT re-derived here — unlike weather below, it isn't recomputed from
+// cached fields on every rebuild; it's set directly at each transition
+// (OrionConnected/SyncBegin/SyncEnd/OrionDisconnected, ble_manager.cpp), and
+// widget_profile_card::create() reads the current default for any new card.
 void apply_widget_defaults() {
-    // Reflect the cached Presence Status value (pushed by Orion) while the PC
-    // link is up; force Offline while it's down. Do NOT hardcode "Available"
-    // here — this runs on every screen rebuild (mode toggle, meeting list
-    // refresh, clock enter/exit, etc.) and a hardcoded value would clobber a
-    // real Busy/Away presence back to Available on the next rebuild.
-    widget_profile_card::set_default_presence(
-        g_pc_connected
-            ? static_cast<widget_profile_card::Presence>(g_presence_byte)
-            : widget_profile_card::Presence::Offline);
-
     // Reflect the cached weather condition/temp/unit while the PC link is up
     // and Orion has actually sent weather this boot; hide the icon + text
     // entirely otherwise — there's no "unverified" enum value like Offline
@@ -277,12 +269,19 @@ void apply_widget_defaults() {
         static_cast<widget_profile_card::WeatherCondition>(g_weather_condition_byte),
         g_weather_temp_f,
         static_cast<widget_profile_card::TemperatureUnit>(g_weather_unit_byte),
-        g_pc_connected && g_weather_valid);
+        g_pc_connected && g_weather_valid,
+        g_weather_is_night,
+        static_cast<widget_profile_card::WeatherIntensity>(g_weather_intensity));
 
-    // Mode-toggle is shown when PC is connected OR when in Clock/Calendar
-    // (the toggle acts as a "return" button there, works even offline).
+    // Mode-toggle is shown once Orion has fully synced OR when in
+    // Clock/Calendar (the toggle acts as a "return" button there, works even
+    // offline). Gated on g_pc_synced, NOT g_pc_connected — a bonded reconnect
+    // sets the latter true immediately on encryption complete, well before
+    // Orion has actually resynced (ble-protocol.md §6.2); showing the toggle
+    // that early would let the user open Controls mode against stale/
+    // incomplete media state mid-resync.
     bool in_clock_like = (g_state == AppState::CLOCK || g_state == AppState::CALENDAR_VIEW);
-    bool show_toggle = g_pc_connected || in_clock_like;
+    bool show_toggle = g_pc_synced || in_clock_like;
     widget_status_bar::set_default_pc_connected(show_toggle);
     widget_status_bar::set_default_phone_bonded(g_phone_bonded);
     widget_status_bar::set_default_phone_connected(g_phone_connected);
@@ -1144,7 +1143,7 @@ static void finish_reconnect_now() {
             // Big sync (photo / profile / meetings / Time Off): rebuild ONLY the
             // left panel in place — the shared status bar + profile card, whose
             // own contents already updated live during the sync (set_photo /
-            // set_profile / set_presence), are left untouched. Then repaint the
+            // set_profile), are left untouched. Then repaint the
             // screen to recover from the NVS-commit blackout that blanked the
             // whole framebuffer (run_staged_commit, ble-protocol.md §6.0) — a
             // redraw of the existing widget tree, NOT a rebuild: no allocation,
@@ -1205,8 +1204,8 @@ void on_reconnect_begin() {
     // exactly as they are (no teardown, no reflow, no timer churn). This is the
     // common case (reconnecting from the normal meeting/no-meetings screen) and
     // the whole point of this design. The profile card keeps updating its photo/
-    // name/presence live underneath (set_photo / set_profile), so nothing about
-    // the surrounding chrome flashes.
+    // name/connection-status live underneath (set_photo / set_profile /
+    // set_default_conn_status), so nothing about the surrounding chrome flashes.
     if (g_runtime_left &&
         (g_state == AppState::NO_MEETINGS || g_state == AppState::MEETING_LIST)) {
         g_reconnect_overlay_mode = true;
@@ -1277,35 +1276,34 @@ void on_reconnect_end() {
     finish_reconnect_now();
 }
 
-void set_presence(uint8_t presence_byte) {
-    g_presence_byte = presence_byte;
-    widget_profile_card::set_default_presence(
-        g_pc_connected
-            ? static_cast<widget_profile_card::Presence>(g_presence_byte)
-            : widget_profile_card::Presence::Offline);
-}
-
-void set_weather(uint8_t condition, int16_t temp_f, uint8_t unit) {
+void set_weather(uint8_t condition, int16_t temp_f, uint8_t unit,
+                  bool is_night, uint8_t intensity) {
     g_weather_condition_byte = condition;
     g_weather_temp_f = temp_f;
     g_weather_unit_byte = unit;
+    g_weather_is_night = is_night;
+    g_weather_intensity = intensity;
     g_weather_valid = true;
     widget_profile_card::set_default_weather(
         static_cast<widget_profile_card::WeatherCondition>(g_weather_condition_byte),
         g_weather_temp_f,
         static_cast<widget_profile_card::TemperatureUnit>(g_weather_unit_byte),
-        g_pc_connected && g_weather_valid);
+        g_pc_connected && g_weather_valid,
+        g_weather_is_night,
+        static_cast<widget_profile_card::WeatherIntensity>(g_weather_intensity));
 }
 
 void set_pc_connected(bool connected) {
     bool changed = (connected != g_pc_connected);
     g_pc_connected = connected;
+    // Every (re)connect or disconnect starts (or ends) "not yet synced" —
+    // only a real SyncControl{END} (set_pc_synced(), from handle_sync_end())
+    // flips this back on. Keeps the mode-toggle hidden through a bonded
+    // reconnect's RECONNECTING/SYNCING window, not just while disconnected.
+    g_pc_synced = false;
 
     if (!connected) {
-        // Never show a stale presence after the link drops — reset so a
-        // future reconnect starts from Offline until Orion re-pushes.
-        g_presence_byte = 0x03;
-        // Same "don't show what can't be verified" rule for weather — hide
+        // "don't show what can't be verified" rule for weather — hide
         // the badge/bubble on the next apply_widget_defaults() rebuild
         // (triggered below), but keep the cached condition/temp numbers;
         // only the visibility gate needs to reset.
@@ -1332,6 +1330,23 @@ void set_pc_connected(bool connected) {
     // OrionConnected event (before mark_orion_bonded → is_awaiting_sync) would
     // snap Step 2 "Connect on Orion" back to Welcome. The mode-toggle this
     // rebuild serves is a runtime-only affordance anyway.
+    if (changed && !ota_receiver::is_active() && !nvs::is_first_boot()) {
+        g_force_rebuild = true;
+        g_state = AppState::NO_MEETINGS;  // ensure evaluate() does a full rebuild
+        evaluate();
+    }
+}
+
+void set_pc_synced() {
+    bool changed = !g_pc_synced;
+    g_pc_synced = true;
+    // Same OTA/first-boot rebuild guards as set_pc_connected() above, PLUS a
+    // "changed" gate: handle_sync_end() also fires for small periodic
+    // in-session refreshes (Time Sync every 10 min, meeting list every 15
+    // min — ble-protocol.md §6.3) while already synced. Without this gate,
+    // every one of those would force a full screen rebuild for no visible
+    // change — exactly what state-machine.md's "periodic refreshes ...
+    // do not trigger the reconnecting overlay" is designed to avoid.
     if (changed && !ota_receiver::is_active() && !nvs::is_first_boot()) {
         g_force_rebuild = true;
         g_state = AppState::NO_MEETINGS;  // ensure evaluate() does a full rebuild

@@ -131,20 +131,26 @@ void register_runtime_calendar(lv_obj_t* screen, lv_obj_t* body, lv_obj_t* left)
 // Update whether the BLE PC link is currently up.
 void set_pc_connected(bool connected);
 
-// Cache the most recent Teams presence pushed by Orion via the Presence
-// Status characteristic (0x00 Available .. 0x03 Offline — ble-protocol.md
-// §3). apply_widget_defaults() reflects this value (instead of a hardcoded
-// one) on every screen rebuild while the PC link is up, and falls back to
-// Offline while it's down.
-void set_presence(uint8_t presence_byte);
+// Mark that a full sync (SyncControl{END}) has just landed — the real
+// "green flag" for the mode-toggle button, as opposed to merely being BLE
+// connected (which set_pc_connected() above already tracks separately for
+// weather/other uses). Call from handle_sync_end() only; every
+// set_pc_connected() call — connect or disconnect — resets this back to
+// false, so a fresh (re)connect hides the toggle again until it resyncs.
+void set_pc_synced();
 
-// Cache the most recent weather condition + temperature + unit pushed by Orion
-// via the Device Settings characteristic ("w"/"d"/"u" fields — ble-protocol.md
-// §3/§4, §6.4). Ephemeral, like presence: apply_widget_defaults() reflects it
-// while the PC link is up and hides the icon/text entirely (no "unverified"
-// enum value, unlike presence's Offline) while it's down. unit is 0=Fahrenheit
-// 1=Celsius (widget_profile_card::TemperatureUnit).
-void set_weather(uint8_t condition, int16_t temp_f, uint8_t unit);
+// Cache the most recent weather condition + temperature + unit + day/night +
+// precipitation intensity pushed by Orion via the Device Settings
+// characteristic ("w"/"d"/"u"/"n"/"i" fields — ble-protocol.md §3/§4, §6.4).
+// Ephemeral: apply_widget_defaults() reflects it while the PC link is up and
+// hides the icon/text entirely (no "unverified" state to fall back to) while
+// it's down. unit is 0=Fahrenheit 1=Celsius (widget_profile_card::TemperatureUnit).
+// is_night is passed straight through; intensity stays a raw uint8_t at this
+// layer (widget_profile_card::WeatherIntensity) — same treatment as
+// condition/unit, only widget_profile_card's own API uses the strongly-typed
+// enums.
+void set_weather(uint8_t condition, int16_t temp_f, uint8_t unit,
+                  bool is_night, uint8_t intensity);
 
 // Update whether a phone BLE bond / link exists.
 void set_phone_connected(bool connected);

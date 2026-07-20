@@ -24,21 +24,25 @@ struct CardState {
     bool suppress_click = false;
 };
 
-// Default presence applied to newly-created cards. screen_manager sets
-// this before each load() so the profile photo border colour stays consistent.
-widget_profile_card::Presence g_default_presence =
-    widget_profile_card::Presence::Offline;
+// Default connection status applied to newly-created cards. screen_manager
+// sets this before each load() so the profile photo border colour stays
+// consistent.
+widget_profile_card::ConnStatus g_default_conn_status =
+    widget_profile_card::ConnStatus::Disconnected;
 
 // Default weather applied to newly-created cards — same pattern as
-// g_default_presence. Freshly-booted devices (no weather ever received over
+// g_default_conn_status. Freshly-booted devices (no weather ever received over
 // BLE) must default to hidden, so the card never flashes a stale reading
-// before the first Device Settings "w"/"d"/"u" write (ble-protocol.md §6.4).
+// before the first Device Settings "w"/"n"/"i"/"d"/"u" write (ble-protocol.md §6.4).
 widget_profile_card::WeatherCondition g_default_weather_condition =
     widget_profile_card::WeatherCondition::Clear;
 int  g_default_weather_temp_f = 0;
 widget_profile_card::TemperatureUnit g_default_weather_unit =
     widget_profile_card::TemperatureUnit::Fahrenheit;
-bool g_default_weather_visible = false;
+bool g_default_weather_visible  = false;
+bool g_default_weather_is_night = false;
+widget_profile_card::WeatherIntensity g_default_weather_intensity =
+    widget_profile_card::WeatherIntensity::None;
 
 // Cached photo descriptor — set by set_photo() so new cards created after a
 // photo arrives (e.g. screen transitions) start with the photo already loaded.
@@ -50,8 +54,8 @@ const lv_image_dsc_t* g_default_photo = nullptr;
 lv_obj_t* g_active_card = nullptr;
 
 // Optional live photo object registered by modal_profile. Receives border-colour
-// updates alongside g_active_card so presence toggles reflect immediately inside
-// the overlay without closing and reopening it.
+// updates alongside g_active_card so connection-status changes reflect
+// immediately inside the overlay without closing and reopening it.
 lv_obj_t* g_modal_photo = nullptr;
 
 // Optional live photo IMAGE (lv_image) inside the modal_profile overlay. Updated
@@ -79,38 +83,37 @@ char g_phone[33]  = {};
 static const char* display_name()  { return g_name[0]  ? g_name  : "No name"; }
 static const char* display_title() { return g_title[0] ? g_title : "No position"; }
 
-// Presence enum values are 0..3 (widget_profile_card.h), matching the BLE
-// wire byte (ble-protocol.md §4 DeviceSettings "p") — a table indexed by the
-// raw value replaces a switch statement.
-constexpr uint32_t PRESENCE_COLOR_TABLE[4] = {
-    theme::COLOR_PRESENCE_AVAILABLE,
-    theme::COLOR_PRESENCE_BUSY,
-    theme::COLOR_PRESENCE_AWAY,
-    theme::COLOR_PRESENCE_OFFLINE,
+// ConnStatus enum values are 0..2 (widget_profile_card.h) — a table indexed
+// by the raw value replaces a switch statement.
+constexpr uint32_t CONN_STATUS_COLOR_TABLE[3] = {
+    theme::COLOR_CONN_DISCONNECTED,
+    theme::COLOR_CONN_SYNCING,
+    theme::COLOR_CONN_CONNECTED,
 };
 
-// Out-of-range values (shouldn't happen — Presence is an enum class with only
-// these 4 values) fall back to Offline, matching the switch statement's old
-// `default:` case.
-uint32_t color_for_presence(widget_profile_card::Presence p) {
-    uint8_t idx = static_cast<uint8_t>(p);
-    return PRESENCE_COLOR_TABLE[idx < 4 ? idx : 3];
+// Out-of-range values (shouldn't happen — ConnStatus is an enum class with
+// only these 3 values) fall back to Disconnected, matching the switch
+// statement's old `default:` case.
+uint32_t color_for_conn_status(widget_profile_card::ConnStatus s) {
+    uint8_t idx = static_cast<uint8_t>(s);
+    return CONN_STATUS_COLOR_TABLE[idx < 3 ? idx : 0];
 }
 
-// Offline gets no glow — it's the "nothing to report" / fallback state, and a
-// grey glow reads as a render glitch rather than a deliberate status signal.
-lv_opa_t shadow_opa_for_presence(widget_profile_card::Presence p) {
-    return p == widget_profile_card::Presence::Offline ? LV_OPA_TRANSP : LV_OPA_50;
+// Disconnected gets no glow — it's the "nothing to report" / fallback state,
+// and a grey glow reads as a render glitch rather than a deliberate status
+// signal.
+lv_opa_t shadow_opa_for_conn_status(widget_profile_card::ConnStatus s) {
+    return s == widget_profile_card::ConnStatus::Disconnected ? LV_OPA_TRANSP : LV_OPA_50;
 }
 
-// Applies the presence colour + glow to any presence-ring-shaped object —
-// shared by set_presence() (the live card's photo_ring) and
-// set_default_presence() (the modal_profile overlay's own ring, when open).
-void apply_presence_ring_style(lv_obj_t* ring, widget_profile_card::Presence p) {
+// Applies the connection-status colour + glow to any status-ring-shaped
+// object — shared by set_conn_status() (the live card's photo_ring) and
+// set_default_conn_status() (the modal_profile overlay's own ring, when open).
+void apply_conn_status_ring_style(lv_obj_t* ring, widget_profile_card::ConnStatus s) {
     if (!ring) return;
-    lv_obj_set_style_bg_color(ring, theme::color(color_for_presence(p)), LV_PART_MAIN);
-    lv_obj_set_style_shadow_color(ring, theme::color(color_for_presence(p)), LV_PART_MAIN);
-    lv_obj_set_style_shadow_opa(ring, shadow_opa_for_presence(p), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(ring, theme::color(color_for_conn_status(s)), LV_PART_MAIN);
+    lv_obj_set_style_shadow_color(ring, theme::color(color_for_conn_status(s)), LV_PART_MAIN);
+    lv_obj_set_style_shadow_opa(ring, shadow_opa_for_conn_status(s), LV_PART_MAIN);
 }
 
 // The name label's box is sized in whole lines (1 or 2) of font_time() so
@@ -246,10 +249,88 @@ void add_wcloud(lv_obj_t* parent, uint32_t fill, float dx = 0, float dy = 0) {
     add_wcircle(parent, 19.5f + dx, 12.5f + dy, 5, fill);
 }
 
-void build_weather_icon(lv_obj_t* badge, widget_profile_card::WeatherCondition cond) {
+// Night-sky dots — ports starsSvg()/STAR_POSITIONS in Ori_UI_Prototype.js.
+// Drawn before the cloud/sun/precipitation shapes so a star that happens to
+// land under a cloud's edge is naturally covered rather than poking through.
+struct StarPt { float cx, cy, r; };
+void add_wstars(lv_obj_t* parent, const StarPt* pts, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        add_wcircle(parent, pts[i].cx, pts[i].cy, pts[i].r, theme::COLOR_WEATHER_STAR);
+    }
+}
+constexpr StarPt STARS_CLEAR[]         = {{5, 5, 0.9f}, {27, 6, 0.7f}, {6, 27, 0.6f}, {26, 26, 0.8f}};
+constexpr StarPt STARS_PARTLY_CLOUDY[] = {{4, 4, 0.7f}, {28, 5, 0.6f}};
+constexpr StarPt STARS_CLOUDY[]        = {{2.5f, 6, 0.7f}, {2.5f, 27, 0.6f}};
+constexpr StarPt STARS_CLOUD_TOP[]     = {{3, 4, 0.7f}, {29, 4, 0.6f}};  // Rain/Thunderstorm/Snow
+constexpr StarPt STARS_FOG[]           = {{4, 4, 0.6f}, {28, 4, 0.6f}};
+
+// Rain: ports rainDropsSvg() — count/length/stroke scale with intensity,
+// always centred on x=16 regardless of count so the icon doesn't drift.
+void add_wraindrops(lv_obj_t* parent, int count, float len, float stroke_w) {
+    const float spacing = 6, start_x = 16 - ((count - 1) * spacing) / 2;
+    for (int i = 0; i < count; i++) {
+        float x = start_x + i * spacing;
+        add_wline(parent, {x, 24, x - 2, 24 + len}, theme::COLOR_WEATHER_RAIN_DROP, stroke_w);
+    }
+}
+
+// Snow: ports snowflakeSvg()/snowflakesSvg() — one flake is a 3-line asterisk
+// through a shared centre point; count scales with intensity, size does not.
+void add_wsnowflake(lv_obj_t* parent, float cx, float stroke_w) {
+    const float cy = 26, vlen = 2.4f, dx = 2.2f, dy = 1.4f;
+    const uint32_t snow = theme::COLOR_WEATHER_SNOW;
+    add_wline(parent, {cx, cy - vlen, cx, cy + vlen}, snow, stroke_w);
+    add_wline(parent, {cx - dx, cy - dy, cx + dx, cy + dy}, snow, stroke_w);
+    add_wline(parent, {cx + dx, cy - dy, cx - dx, cy + dy}, snow, stroke_w);
+}
+void add_wsnowflakes(lv_obj_t* parent, int count, float stroke_w) {
+    const float spacing = 7, start_x = 16 - ((count - 1) * spacing) / 2;
+    for (int i = 0; i < count; i++) add_wsnowflake(parent, start_x + i * spacing, stroke_w);
+}
+
+// Thunderbolt: ports boltSvg() — scaled/shifted from its own top anchor point
+// so Heavy can draw two side by side instead of one enlarged bolt.
+void add_wbolt(lv_obj_t* parent, float scale, float dx, float stroke_w) {
+    // Shifted -2.5 in x from the original {{18.5,20},{14,26.5},{17,26.5},{13.5,31.5}}
+    // so the bolt's top/anchor point (x=16) sits under the cloud's own centre
+    // instead of visibly right of it.
+    constexpr float base[4][2] = {{16, 20}, {11.5f, 26.5f}, {14.5f, 26.5f}, {11, 31.5f}};
+    const float ax = base[0][0], ay = base[0][1];
+    add_wline(parent, {
+        ax + (base[0][0] - ax) * scale + dx, ay + (base[0][1] - ay) * scale,
+        ax + (base[1][0] - ax) * scale + dx, ay + (base[1][1] - ay) * scale,
+        ax + (base[2][0] - ax) * scale + dx, ay + (base[2][1] - ay) * scale,
+        ax + (base[3][0] - ax) * scale + dx, ay + (base[3][1] - ay) * scale,
+    }, theme::COLOR_WEATHER_BOLT, stroke_w);
+}
+
+// Fog: ports fogLinesSvg() — Light is a couple of short, thin wisps; Heavy is
+// the original dense 4-band pattern (unchanged from the pre-intensity icon).
+void add_wfog(lv_obj_t* parent, bool heavy, bool is_night) {
+    const uint32_t fog = is_night ? theme::COLOR_WEATHER_FOG_NIGHT : theme::COLOR_WEATHER_FOG;
+    const float stroke_w = heavy ? 2.2f : 1.6f;
+    if (heavy) {
+        add_wline(parent, {5, 7.5f, 27, 7.5f}, fog, stroke_w);
+        add_wline(parent, {8, 13.5f, 27, 13.5f}, fog, stroke_w);
+        add_wline(parent, {5, 19.5f, 24, 19.5f}, fog, stroke_w);
+        add_wline(parent, {9, 24.5f, 27, 24.5f}, fog, stroke_w);
+    } else {
+        add_wline(parent, {7, 12, 23, 12}, fog, stroke_w);
+        add_wline(parent, {9, 20, 25, 20}, fog, stroke_w);
+    }
+}
+
+void build_weather_icon(lv_obj_t* badge, widget_profile_card::WeatherCondition cond,
+                         bool is_night, widget_profile_card::WeatherIntensity intensity) {
     using WC = widget_profile_card::WeatherCondition;
+    using WI = widget_profile_card::WeatherIntensity;
     switch (cond) {
         case WC::Clear: {
+            if (is_night) {
+                add_wstars(badge, STARS_CLEAR, sizeof(STARS_CLEAR) / sizeof(StarPt));
+                add_wcircle(badge, 16, 16, 7.5f, theme::COLOR_WEATHER_MOON);
+                break;
+            }
             const uint32_t sun = theme::COLOR_ACCENT;
             add_wline(badge, {16, 2, 16, 6}, sun, 1.8f);
             add_wline(badge, {16, 26, 16, 30}, sun, 1.8f);
@@ -263,77 +344,100 @@ void build_weather_icon(lv_obj_t* badge, widget_profile_card::WeatherCondition c
             break;
         }
         case WC::PartlyCloudy: {
-            const uint32_t sun = theme::COLOR_ACCENT;
-            add_wline(badge, {8, 0.3f, 8, 2.6f}, sun, 1.6f);
-            add_wline(badge, {0.8f, 1, 2.7f, 2.8f}, sun, 1.6f);
-            add_wline(badge, {0.3f, 8, 2.6f, 8}, sun, 1.6f);
-            add_wcircle(badge, 8, 8, 5.2f, sun);
-            // Cloud painted last (on top), partially covering the sun.
-            add_wcloud(badge, theme::COLOR_WEATHER_CLOUD_FRONT, 3, 2);
+            if (is_night) {
+                add_wstars(badge, STARS_PARTLY_CLOUDY, sizeof(STARS_PARTLY_CLOUDY) / sizeof(StarPt));
+                add_wcircle(badge, 8, 8, 5.2f, theme::COLOR_WEATHER_MOON);
+            } else {
+                const uint32_t sun = theme::COLOR_ACCENT;
+                add_wline(badge, {8, 0.3f, 8, 2.6f}, sun, 1.6f);
+                add_wline(badge, {0.8f, 1, 2.7f, 2.8f}, sun, 1.6f);
+                add_wline(badge, {0.3f, 8, 2.6f, 8}, sun, 1.6f);
+                add_wcircle(badge, 8, 8, 5.2f, sun);
+            }
+            // Cloud painted last (on top), partially covering the sun/moon.
+            add_wcloud(badge, is_night ? theme::COLOR_WEATHER_CLOUD_FRONT_NIGHT
+                                        : theme::COLOR_WEATHER_CLOUD_FRONT, 3, 2);
             break;
         }
         case WC::Cloudy: {
+            if (is_night) add_wstars(badge, STARS_CLOUDY, sizeof(STARS_CLOUDY) / sizeof(StarPt));
             // Whole composition nudged right 2.25 units to centre in the badge
             // (front + back cloud shifted equally so their overlap is preserved).
             // Smaller "back" cloud peeking up-right behind the front cloud.
-            add_wrect(badge, 14.25f, 8, 14, 6.5f, 3.2f, theme::COLOR_WEATHER_CLOUD_BACK);
-            add_wcircle(badge, 18.25f, 7.3f, 3.6f, theme::COLOR_WEATHER_CLOUD_BACK);
-            add_wcircle(badge, 21.95f, 5.4f, 4.4f, theme::COLOR_WEATHER_CLOUD_BACK);
-            add_wcircle(badge, 25.55f, 7.6f, 3.6f, theme::COLOR_WEATHER_CLOUD_BACK);
-            add_wcloud(badge, theme::COLOR_WEATHER_CLOUD_FRONT, 2.25f, 0);
+            const uint32_t back = is_night ? theme::COLOR_WEATHER_CLOUD_BACK_NIGHT
+                                            : theme::COLOR_WEATHER_CLOUD_BACK;
+            add_wrect(badge, 14.25f, 8, 14, 6.5f, 3.2f, back);
+            add_wcircle(badge, 18.25f, 7.3f, 3.6f, back);
+            add_wcircle(badge, 21.95f, 5.4f, 4.4f, back);
+            add_wcircle(badge, 25.55f, 7.6f, 3.6f, back);
+            add_wcloud(badge, is_night ? theme::COLOR_WEATHER_CLOUD_FRONT_NIGHT
+                                        : theme::COLOR_WEATHER_CLOUD_FRONT, 2.25f, 0);
             break;
         }
         case WC::Rain: {
+            if (is_night) add_wstars(badge, STARS_CLOUD_TOP, sizeof(STARS_CLOUD_TOP) / sizeof(StarPt));
             // Cloud nudged right ~2.25 units so its silhouette centres in the
             // badge; raindrops below are deliberately left where they are.
-            add_wcloud(badge, theme::COLOR_WEATHER_CLOUD_LIGHT, 2.25f, 0);
-            add_wline(badge, {10, 24, 8, 29}, theme::COLOR_WEATHER_RAIN_DROP, 1.8f);
-            add_wline(badge, {16, 24, 14, 29}, theme::COLOR_WEATHER_RAIN_DROP, 1.8f);
-            add_wline(badge, {22, 24, 20, 29}, theme::COLOR_WEATHER_RAIN_DROP, 1.8f);
+            add_wcloud(badge, is_night ? theme::COLOR_WEATHER_CLOUD_LIGHT_NIGHT
+                                        : theme::COLOR_WEATHER_CLOUD_LIGHT, 2.25f, 0);
+            switch (intensity) {
+                case WI::Light: add_wraindrops(badge, 1, 4, 1.5f); break;
+                case WI::Heavy: add_wraindrops(badge, 3, 6, 2.2f); break;
+                default:        add_wraindrops(badge, 2, 5, 1.8f); break;  // Moderate/None
+            }
             break;
         }
         case WC::Thunderstorm: {
-            // Cloud nudged right to centre; bolt below is left where it is.
-            add_wcloud(badge, theme::COLOR_WEATHER_CLOUD_STORM, 2.25f, 0);
-            // Bolt: unfilled polyline stroke, matching the SVG.
-            add_wline(badge, {18.5f, 20, 14, 26.5f, 17, 26.5f, 13.5f, 31.5f},
-                      theme::COLOR_WEATHER_BOLT, 2.1f);
+            if (is_night) add_wstars(badge, STARS_CLOUD_TOP, sizeof(STARS_CLOUD_TOP) / sizeof(StarPt));
+            // Cloud nudged right to centre; bolt(s) below left where they are.
+            // Day cloud uses the same regular light-grey fill as Rain/Snow (not
+            // a special darker "storm" tone) — only the bolt marks this a storm.
+            // Night keeps a distinct, further-darkened tone.
+            add_wcloud(badge, is_night ? theme::COLOR_WEATHER_CLOUD_STORM_NIGHT
+                                        : theme::COLOR_WEATHER_CLOUD_LIGHT, 2.25f, 0);
+            switch (intensity) {
+                case WI::Light:
+                    add_wbolt(badge, 0.72f, 0, 1.6f);
+                    break;
+                case WI::Heavy:
+                    add_wbolt(badge, 0.85f, -5, 1.9f);
+                    add_wbolt(badge, 0.85f, 0, 1.9f);
+                    add_wbolt(badge, 0.85f, 5, 1.9f);
+                    break;
+                default:  // Moderate/None
+                    add_wbolt(badge, 1, -3, 2.0f);
+                    add_wbolt(badge, 1, 3, 2.0f);
+                    break;
+            }
             break;
         }
         case WC::Snow: {
+            if (is_night) add_wstars(badge, STARS_CLOUD_TOP, sizeof(STARS_CLOUD_TOP) / sizeof(StarPt));
             // Cloud nudged right to centre; snowflakes below are left as-is.
-            add_wcloud(badge, theme::COLOR_WEATHER_CLOUD_LIGHT, 2.25f, 0);
-            const uint32_t snow = theme::COLOR_WEATHER_SNOW;
-            // Flake 1 (cx=9)
-            add_wline(badge, {9, 23.6f, 9, 28.4f}, snow, 1.3f);
-            add_wline(badge, {6.8f, 24.6f, 11.2f, 27.4f}, snow, 1.3f);
-            add_wline(badge, {11.2f, 24.6f, 6.8f, 27.4f}, snow, 1.3f);
-            // Flake 2 (cx=16)
-            add_wline(badge, {16, 24.6f, 16, 29.4f}, snow, 1.3f);
-            add_wline(badge, {13.8f, 25.6f, 18.2f, 28.4f}, snow, 1.3f);
-            add_wline(badge, {18.2f, 25.6f, 13.8f, 28.4f}, snow, 1.3f);
-            // Flake 3 (cx=23)
-            add_wline(badge, {23, 23.6f, 23, 28.4f}, snow, 1.3f);
-            add_wline(badge, {20.8f, 24.6f, 25.2f, 27.4f}, snow, 1.3f);
-            add_wline(badge, {25.2f, 24.6f, 20.8f, 27.4f}, snow, 1.3f);
+            add_wcloud(badge, is_night ? theme::COLOR_WEATHER_CLOUD_LIGHT_NIGHT
+                                        : theme::COLOR_WEATHER_CLOUD_LIGHT, 2.25f, 0);
+            switch (intensity) {
+                case WI::Light: add_wsnowflakes(badge, 1, 1.3f); break;
+                case WI::Heavy: add_wsnowflakes(badge, 3, 1.3f); break;
+                default:        add_wsnowflakes(badge, 2, 1.3f); break;
+            }
             break;
         }
         case WC::Fog: {
+            if (is_night) add_wstars(badge, STARS_FOG, sizeof(STARS_FOG) / sizeof(StarPt));
             // Lines shifted up 2.5 units — they spanned y 10..27 (centre 18.5),
-            // a bit low; now y 7.5..24.5 centres them in the badge.
-            const uint32_t fog = theme::COLOR_WEATHER_FOG;
-            add_wline(badge, {5, 7.5f, 27, 7.5f}, fog, 2.2f);
-            add_wline(badge, {8, 13.5f, 27, 13.5f}, fog, 2.2f);
-            add_wline(badge, {5, 19.5f, 24, 19.5f}, fog, 2.2f);
-            add_wline(badge, {9, 24.5f, 27, 24.5f}, fog, 2.2f);
+            // a bit low; now y 7.5..24.5 centres them in the badge (Heavy).
+            add_wfog(badge, intensity != WI::Light, is_night);
             break;
         }
     }
 }
 
-// Applies condition/temp_f/unit/visible to one already-built card's icon + text.
+// Applies condition/temp_f/unit/visible/is_night/intensity to one already-built
+// card's icon + text.
 void apply_weather_to(CardState* s, widget_profile_card::WeatherCondition condition,
-                       int temp_f, widget_profile_card::TemperatureUnit unit, bool visible) {
+                       int temp_f, widget_profile_card::TemperatureUnit unit, bool visible,
+                       bool is_night, widget_profile_card::WeatherIntensity intensity) {
     if (!s || !s->weather_badge || !s->temp_label) return;
     if (!visible) {
         lv_obj_add_flag(s->weather_badge, LV_OBJ_FLAG_HIDDEN);
@@ -341,7 +445,7 @@ void apply_weather_to(CardState* s, widget_profile_card::WeatherCondition condit
         return;
     }
     lv_obj_clean(s->weather_badge);
-    build_weather_icon(s->weather_badge, condition);
+    build_weather_icon(s->weather_badge, condition, is_night, intensity);
     char buf[10];
     char unit_ch = (unit == widget_profile_card::TemperatureUnit::Celsius) ? 'C' : 'F';
     // U+00B0 DEGREE SIGN (UTF-8) followed by the unit letter, e.g. "72\xC2\xB0F".
@@ -400,9 +504,9 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_style_pad_left(card, 8, LV_PART_MAIN);
     lv_obj_set_style_pad_right(card, 8, LV_PART_MAIN);
     lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
-    // OVERFLOW_VISIBLE so the presence ring's glow (drawn outside the ring's
-    // own box) isn't clipped to the card bounds — LVGL clips a child's draw,
-    // including its shadow, to its parent's box by default.
+    // OVERFLOW_VISIBLE so the connection-status ring's glow (drawn outside
+    // the ring's own box) isn't clipped to the card bounds — LVGL clips a
+    // child's draw, including its shadow, to its parent's box by default.
     lv_obj_add_flag(card, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
 
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
@@ -414,35 +518,36 @@ lv_obj_t* create(lv_obj_t* parent) {
     // Track the live card so set_photo() can update it without a screen rebuild.
     g_active_card = card;
 
-    // ── Presence ring ────────────────────────────────────────────────────────
+    // ── Connection-status ring ─────────────────────────────────────────────────
     // A circle 12 px larger than the photo (PHOTO_SIZE + 12 = 6 px each side).
-    // Its solid background IS the "border" — a single flat presence colour.
-    // (Previously a top-light/bottom-dark vertical gradient, which made the
-    // ring — and the glow together with it — read as growing bottom-to-top
-    // instead of radiating evenly outward from the photo; a flat fill lets
-    // the shadow below be the sole "glow" cue, symmetric in every direction.)
+    // Its solid background IS the "border" — a single flat connection-status
+    // colour. (Previously a top-light/bottom-dark vertical gradient, which
+    // made the ring — and the glow together with it — read as growing
+    // bottom-to-top instead of radiating evenly outward from the photo; a
+    // flat fill lets the shadow below be the sole "glow" cue, symmetric in
+    // every direction.)
     // Tap / long-press events are on the inner photo; the ring is non-clickable.
     s->photo_ring = lv_obj_create(card);
     lv_obj_set_size(s->photo_ring, PHOTO_SIZE + 12, PHOTO_SIZE + 12);
     lv_obj_set_style_radius(s->photo_ring, LV_RADIUS_CIRCLE, LV_PART_MAIN);
     lv_obj_set_style_bg_color(s->photo_ring,
-        theme::color(color_for_presence(g_default_presence)), LV_PART_MAIN);
+        theme::color(color_for_conn_status(g_default_conn_status)), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(s->photo_ring, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_border_width(s->photo_ring, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(s->photo_ring, 0, LV_PART_MAIN);
     lv_obj_clear_flag(s->photo_ring, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(s->photo_ring, LV_OBJ_FLAG_CLICKABLE);
 
-    // Static presence glow — a fixed (non-animated) soft shadow in the
-    // presence colour, sitting outside the ring. Offset (0,0) + spread makes
-    // it radiate evenly outward from the ring's edge in every direction — the
-    // "grows from inside the circle to outward" effect. No breathing/pulse
-    // anim, unlike the setup-screen button glow in ui_helpers.cpp.
+    // Static connection-status glow — a fixed (non-animated) soft shadow in
+    // the status colour, sitting outside the ring. Offset (0,0) + spread
+    // makes it radiate evenly outward from the ring's edge in every
+    // direction — the "grows from inside the circle to outward" effect. No
+    // breathing/pulse anim, unlike the setup-screen button glow in ui_helpers.cpp.
     lv_obj_set_style_shadow_color(s->photo_ring,
-        theme::color(color_for_presence(g_default_presence)), LV_PART_MAIN);
+        theme::color(color_for_conn_status(g_default_conn_status)), LV_PART_MAIN);
     lv_obj_set_style_shadow_width(s->photo_ring, 40, LV_PART_MAIN);
     lv_obj_set_style_shadow_spread(s->photo_ring, 8, LV_PART_MAIN);
-    lv_obj_set_style_shadow_opa(s->photo_ring, shadow_opa_for_presence(g_default_presence), LV_PART_MAIN);
+    lv_obj_set_style_shadow_opa(s->photo_ring, shadow_opa_for_conn_status(g_default_conn_status), LV_PART_MAIN);
     lv_obj_set_style_shadow_ofs_x(s->photo_ring, 0, LV_PART_MAIN);
     lv_obj_set_style_shadow_ofs_y(s->photo_ring, 0, LV_PART_MAIN);
     // The weather icon + temperature text (added below) sit outside photo_ring's
@@ -459,7 +564,7 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_add_flag(s->photo_ring, LV_OBJ_FLAG_OVERFLOW_VISIBLE);
 
     // ── Inner photo circle ────────────────────────────────────────────────────
-    // The presence ring peeks 6 px around all edges of this circle.
+    // The connection-status ring peeks 6 px around all edges of this circle.
     // Tap opens the profile detail overlay; long-press (3 s) opens factory reset.
     s->photo = lv_obj_create(s->photo_ring);
     lv_obj_set_size(s->photo, PHOTO_SIZE, PHOTO_SIZE);
@@ -513,7 +618,7 @@ lv_obj_t* create(lv_obj_t* parent) {
     // No bubble/background — a transparent container that just holds and
     // positions the condition glyph (see build_weather_icon()), sitting fully
     // off the top-left corner of photo_ring (never overlapping the photo or
-    // its presence ring — see CORNER_OFFSET_X/Y). Children of this container
+    // its connection-status ring — see CORNER_OFFSET_X/Y). Children of this container
     // are rebuilt from scratch on every set_weather() call — cheap, since
     // weather changes at most every 15-30 min (ble-protocol.md §6.3).
     s->weather_badge = lv_obj_create(s->photo_ring);
@@ -543,7 +648,8 @@ lv_obj_t* create(lv_obj_t* parent) {
     // freshly-booted device — see g_default_weather_visible). Also sets
     // temp_label's actual position (CORNER_OFFSET_X/Y + bearing correction).
     apply_weather_to(s, g_default_weather_condition, g_default_weather_temp_f,
-                      g_default_weather_unit, g_default_weather_visible);
+                      g_default_weather_unit, g_default_weather_visible,
+                      g_default_weather_is_night, g_default_weather_intensity);
 
     // Name. Uses font_time() (30 px). Single line with ellipsis per
     // screen-layout.md ("Full name — single line, ellipsis on overflow").
@@ -580,23 +686,16 @@ lv_obj_t* create(lv_obj_t* parent) {
     return card;
 }
 
-void set_presence(lv_obj_t* card, Presence p) {
+void set_conn_status(lv_obj_t* card, ConnStatus s_status) {
     auto* s = static_cast<CardState*>(lv_obj_get_user_data(card));
     if (!s) return;
-    apply_presence_ring_style(s->photo_ring, p);
+    apply_conn_status_ring_style(s->photo_ring, s_status);
 }
 
-void set_default_presence(Presence p) {
-    g_default_presence = p;
-    if (g_active_card) set_presence(g_active_card, p);
-    apply_presence_ring_style(g_modal_photo, p);
-    if (g_modal_labels.status_lbl) {
-        lv_label_set_text(g_modal_labels.status_lbl, presence_label(p));
-        lv_obj_set_style_text_color(g_modal_labels.status_lbl,
-            theme::color(color_for_presence(p)), LV_PART_MAIN);
-    }
-    // Presence dot beside the status word — track colour + glow with presence.
-    apply_presence_ring_style(g_modal_labels.status_dot, p);
+void set_default_conn_status(ConnStatus s) {
+    g_default_conn_status = s;
+    if (g_active_card) set_conn_status(g_active_card, s);
+    apply_conn_status_ring_style(g_modal_photo, s);
 }
 
 void register_modal_photo(lv_obj_t* photo_obj) { g_modal_photo = photo_obj; }
@@ -608,34 +707,29 @@ void unregister_modal_photo_img()                { g_modal_photo_img = nullptr; 
 void register_modal_labels(const ModalLabels& labels) { g_modal_labels = labels; }
 void unregister_modal_labels()                         { g_modal_labels = {}; }
 
-Presence get_default_presence() {
-    return g_default_presence;
+ConnStatus get_default_conn_status() {
+    return g_default_conn_status;
 }
 
-uint32_t presence_color(Presence p) { return color_for_presence(p); }
-
-const char* presence_label(Presence p) {
-    switch (p) {
-        case Presence::Available: return "Available";
-        case Presence::Busy:      return "Busy";
-        case Presence::Away:      return "Away";
-        default:                  return "Offline";
-    }
-}
+uint32_t conn_status_color(ConnStatus s) { return color_for_conn_status(s); }
 
 void set_weather(lv_obj_t* card, WeatherCondition condition, int temp_f,
-                  TemperatureUnit unit, bool visible) {
+                  TemperatureUnit unit, bool visible, bool is_night,
+                  WeatherIntensity intensity) {
     auto* s = static_cast<CardState*>(lv_obj_get_user_data(card));
-    apply_weather_to(s, condition, temp_f, unit, visible);
+    apply_weather_to(s, condition, temp_f, unit, visible, is_night, intensity);
 }
 
 void set_default_weather(WeatherCondition condition, int temp_f,
-                          TemperatureUnit unit, bool visible) {
+                          TemperatureUnit unit, bool visible, bool is_night,
+                          WeatherIntensity intensity) {
     g_default_weather_condition = condition;
     g_default_weather_temp_f = temp_f;
     g_default_weather_unit = unit;
     g_default_weather_visible = visible;
-    if (g_active_card) set_weather(g_active_card, condition, temp_f, unit, visible);
+    g_default_weather_is_night = is_night;
+    g_default_weather_intensity = intensity;
+    if (g_active_card) set_weather(g_active_card, condition, temp_f, unit, visible, is_night, intensity);
 }
 
 // Apply a photo descriptor to one image object: show it with the given source,

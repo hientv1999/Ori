@@ -1,4 +1,4 @@
-// Ori GATT Server — 18 characteristics, ble-protocol.md v1.0.
+// Ori GATT Server — 19 characteristics, ble-protocol.md v1.0.
 //
 // Service UUID: 6F726900-0000-4F72-9F00-000000000000
 // Each char UUID replaces bytes 4-5 with the offset:
@@ -15,11 +15,12 @@
 //   000B Host Volume State       Read+Write (enc)
 //   000C Media Metadata          Write+Notify (enc)
 //   000D Media Album Art         Write no-rsp (enc, chunked)
-//   000E Device Settings         Read+Write (enc) — presence | shortcuts | clock face | ANCS filter
+//   000E Device Settings         Read+Write (enc) — shortcuts | clock face | ANCS filter
 //   000F Phone Bond Status       Read+Notify (enc)
 //   0010 ANCS Notification       Read+Notify (enc)
 //   0011 ANCS Call State         Read+Notify (enc)
 //   0012 ANCS Notification Action Write (enc)
+//   0013 Lunar Holiday List      Write no-rsp (enc, chunked) — no Notify (no CCCD slot)
 //
 // Firmware version no longer rides this service — it's exposed via the BLE
 // SIG standard Device Information Service (0x180A) / Firmware Revision
@@ -35,16 +36,15 @@
 
 // These functions are defined in ble_manager.cpp and called from the
 // GATT write callbacks to post events to the main-task event queue.
-// widget_profile_card must be included first for the Presence type.
+// widget_profile_card must be included first for the WeatherCondition type.
 #include "widgets/widget_profile_card.h"
 
 void ble_post_factory_reset_event();
-void ble_post_presence_event(widget_profile_card::Presence p);
 void ble_post_clock_face_event(uint8_t face);
 void ble_post_time_format_event(uint8_t fmt);
 void ble_post_unpair_phone_event();
 void ble_post_ancs_filter_event(uint8_t level);
-void ble_post_weather_event(uint8_t condition, int16_t temp_f, uint8_t unit);
+void ble_post_weather_event(uint8_t condition, int16_t temp_f, uint8_t unit, bool is_night, uint8_t intensity);
 void ble_post_shortcut_update_event();
 void ble_post_media_meta_event();
 void ble_post_seek_step_event(uint8_t seconds);
@@ -52,6 +52,9 @@ void ble_post_host_volume_event(uint8_t level, bool show_toast);
 void ble_post_album_art_started_event();
 void ble_post_album_art_progress_event(uint8_t pct);
 void ble_post_album_art_event(uint8_t* buf, size_t len);
+void ble_post_lunar_holidays_event(uint16_t* days, size_t count);
+void ble_post_holiday_country_event(uint8_t country);
+void ble_post_holiday_region_event(uint8_t region);
 void ble_post_photo_event(uint8_t* buf, size_t len);
 void ble_post_sync_begin_event(uint32_t total_bytes);
 void ble_post_sync_commit_event();
@@ -77,6 +80,7 @@ void ble_post_ancs_resubscribed_event(bool call_state);
 // Header-only style included via lib_deps.
 #include <cbor.h>
 
+#include "holiday_data.h"
 #include "nvs_store.h"
 #include "nvs_sync.h"
 #include "state_machine.h"
@@ -135,6 +139,7 @@ NimBLECharacteristic* c_phone_status = nullptr; // 000F
 NimBLECharacteristic* c_ancs_notif   = nullptr; // 0010
 NimBLECharacteristic* c_ancs_call    = nullptr; // 0011
 NimBLECharacteristic* c_ancs_action  = nullptr; // 0012
+NimBLECharacteristic* c_lunar_holidays = nullptr; // 0013
 
 // Last-encoded Phone Bond Status fields. The characteristic carries all
 // nine fields in one CBOR blob, but bond/connection-state changes
@@ -166,6 +171,7 @@ chunked_transfer::Context g_photo_ctx;
 chunked_transfer::Context g_meetings_ctx;
 chunked_transfer::Context g_time_off_ctx;
 chunked_transfer::Context g_art_ctx;
+chunked_transfer::Context g_lunar_ctx;
 // Debounce for the album-art loading ring's percentage — only post a
 // progress event when the integer percent actually changes (same pattern as
 // stage_add_bytes()'s g_stage.last_pct_sent below). 0xFF (never a valid
@@ -348,7 +354,6 @@ static void apply_time_off_cbor(uint8_t* buf, size_t n);
 // range (ble-protocol.md §10) before being recorded here. Nothing in `apply`
 // runs until the whole map has parsed cleanly — see parse_device_settings().
 struct DeviceSettingsWrite {
-    bool    has_presence = false; uint8_t presence_val = 0;
     bool    has_slots    = false;
     char    slot1[20] = {}, slot2[20] = {}, slot3[20] = {};
     bool    has_clock    = false; uint8_t clock_val = 0;
@@ -357,14 +362,18 @@ struct DeviceSettingsWrite {
     bool    has_weather_cond = false; uint8_t weather_cond_val = 0;
     bool    has_weather_temp = false; int16_t weather_temp_val = 0;
     bool    has_weather_unit = false; uint8_t weather_unit_val = 0;
+    bool    has_weather_night = false; uint8_t weather_night_val = 0;
+    bool    has_weather_intensity = false; uint8_t weather_intensity_val = 0;
     bool    has_seek_step = false; uint8_t seek_step_val = 0;
+    bool    has_holiday_country = false; uint8_t holiday_country_val = 0;
+    bool    has_holiday_region = false; uint8_t holiday_region_val = 0;
 };
 // Decodes+validates the Device Settings CBOR map into `out`. Returns false
 // if the payload isn't a map, or any present field fails its range check —
 // callers must NACK and must not call apply_device_settings() in that case.
 static bool parse_device_settings(const uint8_t* data, uint16_t len, DeviceSettingsWrite& out);
 // Applies whichever fields were present, in the same fixed order the
-// original inline handler used (presence, shortcuts, clock face, time
+// original inline handler used (shortcuts, clock face, time
 // format, ANCS filter, weather, seek step) — independent of wire order.
 static void apply_device_settings(const DeviceSettingsWrite& w);
 
@@ -493,7 +502,7 @@ static void stage_commit() {
 //     "s": signal_bars (0-4), "l": battery_level (0-100) }
 // Stats/signal/battery are always encoded as 0 when connected==false — a
 // disconnected iPhone leaves nothing left to verify (same "don't show a
-// stale reading" policy as presence/weather, ble-protocol.md §6.4).
+// stale reading" policy as weather, ble-protocol.md §6.4).
 // device_type follows name's own treatment (empty string, not zeroed to a
 // sentinel) since it's a string field read once per connection, same as name.
 static size_t encode_phone_status(uint8_t* buf, size_t buf_sz,
@@ -702,6 +711,8 @@ public:
             handle_media_metadata(data, len, info);
         } else if (c == c_album_art) {
             handle_album_art(data, len, info);
+        } else if (c == c_lunar_holidays) {
+            handle_lunar_holidays(data, len, info);
         } else if (c == c_dev_settings) {
             handle_device_settings(data, len, info);
         } else if (c == c_ancs_action) {
@@ -972,7 +983,7 @@ private:
         CborValue  root, map_val;
         if (!cbor_open_map(data, len, parser, root, map_val)) return;
 
-        // Received hashes from Orion. Device Settings (shortcuts + presence) has
+        // Received hashes from Orion. Device Settings (shortcuts) has
         // no entry here — written outside BEGIN/END, never staged (§6.0/§6.4).
         uint8_t recv_profile[32]   = {};
         uint8_t recv_photo[32]     = {};
@@ -1229,11 +1240,58 @@ private:
         chunked_transfer::feed(&g_art_ctx, data, len);
     }
 
+    // -- Lunar Holiday List (char 0013) — chunked CBOR {"e": [uint, ...]} ---
+    // No BEGIN/END staging (like Media Album Art) — Orion pushes this once at
+    // startup/reconnect and it commits directly on reassembly. CBOR decode
+    // happens here on the NimBLE task (pure computation, safe); the actual
+    // NVS write is deferred to the main task via ble_post_lunar_holidays_event(),
+    // since NVS flash writes disable ICache/DCache briefly (hardware.md) and
+    // must never run on the NimBLE host task.
+    void handle_lunar_holidays(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
+        if (!check_write_allowed(info, "LunarHolidays")) return;
+
+        if (!g_lunar_ctx.on_complete) {
+            g_lunar_ctx.on_complete = [](uint8_t* buf, size_t n, const char* nack) {
+                if (nack) {
+                    LOG("[gatt] LunarHolidays NACK: %s\n", nack);
+                    return;
+                }
+                constexpr size_t MAX_ENTRIES = 200;
+                uint16_t days[MAX_ENTRIES];
+                size_t count = 0;
+
+                CborParser parser;
+                CborValue  root, map_val;
+                if (cbor_open_map(buf, n, parser, root, map_val)) {
+                    for_each_cbor_key(map_val, [&](const char* key, CborValue& val) {
+                        if (strcmp(key, "e") == 0 && cbor_value_is_array(&val)) {
+                            CborValue arr;
+                            cbor_value_enter_container(&val, &arr);
+                            while (!cbor_value_at_end(&arr) && count < MAX_ENTRIES) {
+                                if (cbor_value_is_unsigned_integer(&arr)) {
+                                    uint64_t v = 0;
+                                    cbor_value_get_uint64(&arr, &v);
+                                    days[count++] = (uint16_t)v;
+                                }
+                                cbor_value_advance(&arr);
+                            }
+                            cbor_value_leave_container(&val, &arr);
+                        }
+                    });
+                }
+                heap_caps_free(buf);
+                LOG("[gatt] LunarHolidays received: %u entries\n", (unsigned)count);
+                ble_post_lunar_holidays_event(days, count);
+            };
+        }
+        chunked_transfer::feed(&g_lunar_ctx, data, len);
+    }
+
     // -- Device Settings read ----------------------------------------------------
     // Returns all NVS-persisted fields: "c" (clock_face), "h" (time_format),
-    // "f" (ancs_filter), "1"/"2"/"3" (shortcut slot tokens), and "k"
-    // (seek_step_s). Presence and weather are not returned — ephemeral,
-    // Orion is the source of truth.
+    // "f" (ancs_filter), "1"/"2"/"3" (shortcut slot tokens), "k"
+    // (seek_step_s), and "g" (holiday_country). Weather is not returned —
+    // ephemeral, Orion is the source of truth.
     // Also returns three read-only fields, never accepted on a write:
     // "s" (serial_number)/"b" (manufacture_date), from the separate
     // write-once "factory" NVS partition, and "r" (signal_bars), Ori's own
@@ -1265,7 +1323,7 @@ private:
         CborEncoder enc, map;
         uint8_t buf[192];
         cbor_encoder_init(&enc, buf, sizeof(buf), 0);
-        cbor_encoder_create_map(&enc, &map, 10);
+        cbor_encoder_create_map(&enc, &map, 12);
         cbor_encode_text_stringz(&map, "c");
         cbor_encode_uint(&map, (uint64_t)nvs::get_clock_face());
         cbor_encode_text_stringz(&map, "h");
@@ -1281,6 +1339,10 @@ private:
         cbor_encode_text_stringz(&map, slots[2].icon_token ? slots[2].icon_token : "");
         cbor_encode_text_stringz(&map, "k");
         cbor_encode_uint(&map, (uint64_t)app_state::seek_step_s());
+        cbor_encode_text_stringz(&map, "g");
+        cbor_encode_uint(&map, (uint64_t)nvs::get_holiday_country());
+        cbor_encode_text_stringz(&map, "j");
+        cbor_encode_uint(&map, (uint64_t)nvs::get_holiday_region());
         // Read-only device-identity/link fields — "s"/"b" come from the
         // write-once "factory" NVS partition (factory_info.h, never touched
         // by nvs::factory_reset()); "r" is sampled live above. None of the
@@ -1299,13 +1361,13 @@ private:
     }
 
     // -- Device Settings (char 000E) — CBOR map, partial-update ---------------
-    // Merges Presence Status, Shortcut Config, Clock Face, Time Format, ANCS
+    // Merges Shortcut Config, Clock Face, Time Format, ANCS
     // Filter, Weather, and the double-tap Seek Step into one characteristic.
     // All fields are optional; absent
     // keys leave state unchanged. All present fields are validated before any are
     // applied (atomic).
     // Applied immediately, outside the BEGIN/END staging pipeline — same treatment
-    // as Clock Face (persisted) and Presence (not persisted) individually.
+    // as Clock Face individually.
     void handle_device_settings(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
         if (!check_write_allowed(info, "DeviceSettings")) return;
         if (len == 0) return;
@@ -1386,11 +1448,7 @@ static bool parse_device_settings(const uint8_t* data, uint16_t len, DeviceSetti
     bool valid = true;
     for_each_cbor_key<4>(map_val, [&](const char* key, CborValue& val) {
         if (!valid) return;  // a prior field already failed validation
-        if (strcmp(key, "p") == 0 && cbor_value_is_unsigned_integer(&val)) {
-            uint64_t v; cbor_value_get_uint64(&val, &v);
-            if (v > 3) { valid = false; return; }
-            out.presence_val = (uint8_t)v; out.has_presence = true;
-        } else if (strcmp(key, "1") == 0 && cbor_value_is_text_string(&val)) {
+        if (strcmp(key, "1") == 0 && cbor_value_is_text_string(&val)) {
             size_t sz = sizeof(out.slot1) - 1;
             cbor_value_copy_text_string(&val, out.slot1, &sz, nullptr);
             out.has_slots = true;
@@ -1426,28 +1484,36 @@ static bool parse_device_settings(const uint8_t* data, uint16_t len, DeviceSetti
             uint64_t v; cbor_value_get_uint64(&val, &v);
             if (v > 1) { valid = false; return; }
             out.weather_unit_val = (uint8_t)v; out.has_weather_unit = true;
+        } else if (strcmp(key, "n") == 0 && cbor_value_is_unsigned_integer(&val)) {
+            uint64_t v; cbor_value_get_uint64(&val, &v);
+            if (v > 1) { valid = false; return; }
+            out.weather_night_val = (uint8_t)v; out.has_weather_night = true;
+        } else if (strcmp(key, "i") == 0 && cbor_value_is_unsigned_integer(&val)) {
+            uint64_t v; cbor_value_get_uint64(&val, &v);
+            if (v > 3) { valid = false; return; }
+            out.weather_intensity_val = (uint8_t)v; out.has_weather_intensity = true;
         } else if (strcmp(key, "k") == 0 && cbor_value_is_unsigned_integer(&val)) {
             uint64_t v; cbor_value_get_uint64(&val, &v);
             if (v < 1 || v > 60) { valid = false; return; }
             out.seek_step_val = (uint8_t)v; out.has_seek_step = true;
+        } else if (strcmp(key, "g") == 0 && cbor_value_is_unsigned_integer(&val)) {
+            uint64_t v; cbor_value_get_uint64(&val, &v);
+            if (v > 8) { valid = false; return; }  // holiday_data::Country: 0=None 1=US 2=VN 3=CA 4=GB 5=AU 6=ES 7=MX 8=FR
+            out.holiday_country_val = (uint8_t)v; out.has_holiday_country = true;
+        } else if (strcmp(key, "j") == 0 && cbor_value_is_unsigned_integer(&val)) {
+            uint64_t v; cbor_value_get_uint64(&val, &v);
+            // Generous upper bound (Spain's largest region code, Melilla=19)
+            // — the specific value's validity within the current country
+            // isn't checked here, per holiday_data.h's own "no meaning under
+            // this country is just never matched" design.
+            if (v > 19) { valid = false; return; }
+            out.holiday_region_val = (uint8_t)v; out.has_holiday_region = true;
         }
     });
     return valid;
 }
 
 static void apply_device_settings(const DeviceSettingsWrite& w) {
-    if (w.has_presence) {
-        widget_profile_card::Presence p;
-        switch (w.presence_val) {
-            case 0x00: p = widget_profile_card::Presence::Available; break;
-            case 0x01: p = widget_profile_card::Presence::Busy;      break;
-            case 0x02: p = widget_profile_card::Presence::Away;      break;
-            default:   p = widget_profile_card::Presence::Offline;   break;
-        }
-        widget_profile_card::set_default_presence(p);
-        ble_post_presence_event(p);
-        LOG("[gatt] DeviceSettings: presence=0x%02X\n", (unsigned)w.presence_val);
-    }
     if (w.has_slots) {
         // app_state write is safe from NimBLE host task (plain struct copy);
         // screen_media_mode::update_shortcuts() touches LVGL — deferred.
@@ -1470,17 +1536,22 @@ static void apply_device_settings(const DeviceSettingsWrite& w) {
         ble_post_ancs_filter_event(w.filter_val);
         LOG("[gatt] DeviceSettings: ancs_filter=0x%02X\n", (unsigned)w.filter_val);
     }
-    if (w.has_weather_cond && w.has_weather_temp && w.has_weather_unit) {
-        // Ephemeral, like presence — not persisted, not read back. Only
-        // applied when ALL THREE fields are present in this write
-        // (defensive: a message with just some of the three shouldn't
+    if (w.has_weather_cond && w.has_weather_temp && w.has_weather_unit &&
+        w.has_weather_night && w.has_weather_intensity) {
+        // Ephemeral — not persisted, not read back. Only
+        // applied when ALL FIVE fields are present in this write
+        // (defensive: a message with just some of the five shouldn't
         // half-apply).
-        ble_post_weather_event(w.weather_cond_val, w.weather_temp_val, w.weather_unit_val);
-        LOG("[gatt] DeviceSettings: weather condition=%u temp_f=%d unit=%u\n",
-            (unsigned)w.weather_cond_val, (int)w.weather_temp_val, (unsigned)w.weather_unit_val);
-    } else if (w.has_weather_cond || w.has_weather_temp || w.has_weather_unit) {
-        LOG("[gatt] DeviceSettings: weather partial write ignored (w=%d d=%d u=%d)\n",
-            (int)w.has_weather_cond, (int)w.has_weather_temp, (int)w.has_weather_unit);
+        ble_post_weather_event(w.weather_cond_val, w.weather_temp_val, w.weather_unit_val,
+                                (bool)w.weather_night_val, w.weather_intensity_val);
+        LOG("[gatt] DeviceSettings: weather condition=%u temp_f=%d unit=%u night=%u intensity=%u\n",
+            (unsigned)w.weather_cond_val, (int)w.weather_temp_val, (unsigned)w.weather_unit_val,
+            (unsigned)w.weather_night_val, (unsigned)w.weather_intensity_val);
+    } else if (w.has_weather_cond || w.has_weather_temp || w.has_weather_unit ||
+               w.has_weather_night || w.has_weather_intensity) {
+        LOG("[gatt] DeviceSettings: weather partial write ignored (w=%d d=%d u=%d n=%d i=%d)\n",
+            (int)w.has_weather_cond, (int)w.has_weather_temp, (int)w.has_weather_unit,
+            (int)w.has_weather_night, (int)w.has_weather_intensity);
     }
     if (w.has_seek_step) {
         // app_state write deferred to main task via event, same as shortcuts —
@@ -1488,6 +1559,20 @@ static void apply_device_settings(const DeviceSettingsWrite& w) {
         // task (see handle_seek_step_update() in ble_manager.cpp).
         ble_post_seek_step_event(w.seek_step_val);
         LOG("[gatt] DeviceSettings: seek_step_s=%u\n", (unsigned)w.seek_step_val);
+    }
+    if (w.has_holiday_country) {
+        // Independent field (unlike the weather group above) — applied
+        // whenever present, same treatment as clock_face/ancs_filter. NVS
+        // write deferred to the main task, same reasoning as every other
+        // NVS-backed Device Settings field.
+        ble_post_holiday_country_event(w.holiday_country_val);
+        LOG("[gatt] DeviceSettings: holiday_country=%u\n", (unsigned)w.holiday_country_val);
+    }
+    if (w.has_holiday_region) {
+        // Same independent, always-applied treatment as holiday_country
+        // above — Orion sends both together every (re)connect.
+        ble_post_holiday_region_event(w.holiday_region_val);
+        LOG("[gatt] DeviceSettings: holiday_region=%u\n", (unsigned)w.holiday_region_val);
     }
 }
 
@@ -1791,6 +1876,17 @@ void init() {
         "6F726900-000D-4F72-9F00-000000000000",
         NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_AUTHEN);
     c_album_art->setCallbacks(&s_char_cb);
+
+    // 0013 Lunar Holiday List — Write no response, MITM-authenticated (chunked
+    // CBOR). Same treatment as Media Album Art: no Notify (no CCCD slot
+    // consumed — firmware.md's global CCCD-store cap only applies to
+    // characteristics a peer subscribes to), no BEGIN/END staging — Orion
+    // pushes this once at startup/reconnect (it changes essentially never
+    // once computed) and it commits directly to NVS on reassembly.
+    c_lunar_holidays = svc->createCharacteristic(
+        "6F726900-0013-4F72-9F00-000000000000",
+        NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_AUTHEN);
+    c_lunar_holidays->setCallbacks(&s_char_cb);
 
     // 000E Device Settings — Read + Write + Notify, MITM-authenticated.
     // Notify added 2026-07-13 (ble-protocol.md §4/§6.4) so Orion's Ori Info
@@ -2122,6 +2218,7 @@ void abort_sync_stage() {
     chunked_transfer::reset(&g_meetings_ctx);
     chunked_transfer::reset(&g_time_off_ctx);
     chunked_transfer::reset(&g_art_ctx);
+    chunked_transfer::reset(&g_lunar_ctx);
 
     if (!g_stage.active && !g_sync_in_progress) return;
     LOG("[gatt] Sync aborted (disconnect) — discarding staged data\n");
@@ -2135,9 +2232,9 @@ void abort_sync_stage() {
 // the disconnect case). Call once per second from ble_manager::poll().
 void poll_chunk_timeouts() {
     chunked_transfer::Context* ctxs[] = {
-        &g_photo_ctx, &g_meetings_ctx, &g_time_off_ctx, &g_art_ctx,
+        &g_photo_ctx, &g_meetings_ctx, &g_time_off_ctx, &g_art_ctx, &g_lunar_ctx,
     };
-    chunked_transfer::poll_timeouts(ctxs, 4);
+    chunked_transfer::poll_timeouts(ctxs, 5);
 }
 
 // Notifies Device Settings (char 000E) whenever Ori's own live signal_bars

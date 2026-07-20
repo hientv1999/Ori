@@ -7,6 +7,7 @@
 
 #include "factory_reset.h"
 #include "app_state.h"
+#include "holiday_data.h"
 #include "ota_receiver.h"
 #include "state_machine.h"
 #include "time_format.h"
@@ -36,16 +37,63 @@ namespace {
 
 // Runtime state for the debug cycler. State machine is authoritative;
 // these are only used here when cycling screens manually.
-
-widget_profile_card::Presence g_presence    = widget_profile_card::Presence::Offline;
-bool                          g_pc_connected = true;
+//
+// Both default to the real "nothing connected yet" boot state — this same
+// pair also feeds apply_default_widget_state(), which apply_state_defaults()
+// (called unconditionally from screen_manager::init(), not gated by
+// ORI_DEBUG_SERIAL) uses to set the profile-photo border color on every real
+// boot. Defaulting these to Connected/true previously made the border flash
+// green at cold boot before BLE had done anything, contradicting
+// widget_profile_card.h's documented "defaults to Disconnected so the device
+// never flashes a stale Connected green" intent. The 'P'/'X' debug keys still
+// cycle these up to Connected/true for hand-testing after boot.
+widget_profile_card::ConnStatus g_conn_status  = widget_profile_card::ConnStatus::Disconnected;
+bool                          g_pc_connected = false;
 widget_status_bar::Mode       g_status_mode  = widget_status_bar::Mode::Calendar;
 
-// 'W' debug-cycler state — see debug_handle_key() case 'W'. Starts hidden
-// (g_weather_shown = false) to mirror the real device's pre-first-sync
+// 'W'/'N' debug-cycler state — see debug_handle_key() cases 'W'/'N'. Starts
+// hidden (g_weather_shown = false) to mirror the real device's pre-first-sync
 // default (widget_profile_card's own g_default_weather_visible).
-widget_profile_card::WeatherCondition g_weather_cond = widget_profile_card::WeatherCondition::Clear;
-bool                                  g_weather_shown = false;
+//
+// Fixed ordered (condition, intensity) presets 'W' cycles through — every
+// intensity level a condition can actually report, skipping the intensity
+// axis (None) for conditions that don't have one. 'N' independently toggles
+// day/night for whichever preset is currently selected, re-applying the same
+// condition/intensity with the flipped is_night.
+struct WeatherPreset {
+    widget_profile_card::WeatherCondition cond;
+    widget_profile_card::WeatherIntensity intensity;
+};
+constexpr WeatherPreset kWeatherPresets[] = {
+    { widget_profile_card::WeatherCondition::Clear,        widget_profile_card::WeatherIntensity::None },
+    { widget_profile_card::WeatherCondition::PartlyCloudy, widget_profile_card::WeatherIntensity::None },
+    { widget_profile_card::WeatherCondition::Cloudy,       widget_profile_card::WeatherIntensity::None },
+    { widget_profile_card::WeatherCondition::Rain,         widget_profile_card::WeatherIntensity::Light },
+    { widget_profile_card::WeatherCondition::Rain,         widget_profile_card::WeatherIntensity::Moderate },
+    { widget_profile_card::WeatherCondition::Rain,         widget_profile_card::WeatherIntensity::Heavy },
+    { widget_profile_card::WeatherCondition::Thunderstorm, widget_profile_card::WeatherIntensity::Light },
+    { widget_profile_card::WeatherCondition::Thunderstorm, widget_profile_card::WeatherIntensity::Moderate },
+    { widget_profile_card::WeatherCondition::Thunderstorm, widget_profile_card::WeatherIntensity::Heavy },
+    { widget_profile_card::WeatherCondition::Snow,         widget_profile_card::WeatherIntensity::Light },
+    { widget_profile_card::WeatherCondition::Snow,         widget_profile_card::WeatherIntensity::Moderate },
+    { widget_profile_card::WeatherCondition::Snow,         widget_profile_card::WeatherIntensity::Heavy },
+    { widget_profile_card::WeatherCondition::Fog,          widget_profile_card::WeatherIntensity::Light },
+    { widget_profile_card::WeatherCondition::Fog,          widget_profile_card::WeatherIntensity::Heavy },
+};
+constexpr size_t kWeatherPresetCount = sizeof(kWeatherPresets) / sizeof(kWeatherPresets[0]);
+
+size_t g_weather_preset_idx = 0;
+bool   g_weather_shown      = false;
+bool   g_weather_is_night   = false;
+
+// 'h' debug-cycler state — mirrors holiday_data::set_debug_override()'s own
+// default (off), tracked here only so the key can toggle and log it (the
+// module itself has no getter). No real holiday data source exists yet; this
+// just lets the ring/text-color/subtitle treatment on the calendar month view
+// ('v') and no-meetings glyph ('n') be hand-tested against illustrative demo
+// dates (day 3 / day 20 of every month) without one. Press 'n' or 'v' again
+// after toggling to see the effect — this key doesn't force-navigate there.
+bool g_holiday_debug = false;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // apply_state_defaults — set widget defaults to current runtime values before
@@ -56,13 +104,13 @@ bool                                  g_weather_shown = false;
 // machine's own AppState.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Presence/PC-link/mode fields shared by apply_state_defaults() (production)
-// and debug_apply_defaults() (ORI_DEBUG_SERIAL cycler below) — the two differ
-// only in what the mode-toggle button does, so only that callback is set by
-// each caller individually.
+// Connection-status/PC-link/mode fields shared by apply_state_defaults()
+// (production) and debug_apply_defaults() (ORI_DEBUG_SERIAL cycler below) —
+// the two differ only in what the mode-toggle button does, so only that
+// callback is set by each caller individually.
 void apply_default_widget_state() {
-    auto eff = g_pc_connected ? g_presence : widget_profile_card::Presence::Offline;
-    widget_profile_card::set_default_presence(eff);
+    auto eff = g_pc_connected ? g_conn_status : widget_profile_card::ConnStatus::Disconnected;
+    widget_profile_card::set_default_conn_status(eff);
     widget_status_bar::set_default_pc_connected(g_pc_connected);
     widget_status_bar::set_default_mode(g_status_mode);
 }
@@ -154,8 +202,12 @@ void print_keymap() {
     LOG("  p   Time Off scenic\n");
     LOG("  k   Media mode\n");
     LOG("  C   5-minute countdown modal\n");
-    LOG("  P   Cycle Teams presence\n");
-    LOG("  W   Cycle weather badge (Clear -> ... -> Fog, 72F)\n");
+    LOG("  P   Cycle connection-status border (Disconnected -> Syncing -> Connected)\n");
+    LOG("  W   Cycle weather badge (Clear -> PartlyCloudy -> Cloudy -> Rain L/M/H ->\n");
+    LOG("      Thunderstorm L/M/H -> Snow L/M/H -> Fog L/H, 72F)\n");
+    LOG("  N   Toggle day/night for the current weather preset\n");
+    LOG("  h   Toggle illustrative holiday demo data (day 3/20 of any month) —\n");
+    LOG("      no real data source exists yet; affects 'n' and 'v' screens\n");
     LOG("  X   Toggle PC link state\n");
     LOG("  f   Factory reset modal\n");
     LOG("  F   FACTORY RESET — wipe NVS + BLE bonds + reboot (no confirmation)\n");
@@ -229,31 +281,47 @@ void debug_handle_key(char c) {
             break;
         }
         case 'P': {
-            using P = widget_profile_card::Presence;
-            switch (g_presence) {
-                case P::Available: g_presence = P::Busy;      break;
-                case P::Busy:      g_presence = P::Away;      break;
-                case P::Away:      g_presence = P::Offline;   break;
-                default:           g_presence = P::Available; break;
+            using CS = widget_profile_card::ConnStatus;
+            switch (g_conn_status) {
+                case CS::Disconnected: g_conn_status = CS::Syncing;      break;
+                case CS::Syncing:      g_conn_status = CS::Connected;    break;
+                default:                g_conn_status = CS::Disconnected; break;
             }
-            auto eff = g_pc_connected ? g_presence : P::Offline;
-            widget_profile_card::set_default_presence(eff);
-            LOG("[scr] presence -> %d\n", (int)eff);
+            auto eff = g_pc_connected ? g_conn_status : CS::Disconnected;
+            widget_profile_card::set_default_conn_status(eff);
+            LOG("[scr] conn_status -> %d\n", (int)eff);
             break;
         }
         case 'W': {
-            using WC = widget_profile_card::WeatherCondition;
             if (g_weather_shown) {
-                g_weather_cond = (g_weather_cond == WC::Fog)
-                    ? WC::Clear
-                    : static_cast<WC>(static_cast<uint8_t>(g_weather_cond) + 1);
+                g_weather_preset_idx = (g_weather_preset_idx + 1) % kWeatherPresetCount;
             }
             g_weather_shown = true;
+            const auto& preset = kWeatherPresets[g_weather_preset_idx];
             widget_profile_card::set_default_weather(
-                g_weather_cond, 72, widget_profile_card::TemperatureUnit::Fahrenheit, true);
-            LOG("[scr] weather -> condition=%d (72F)\n", (int)g_weather_cond);
+                preset.cond, 72, widget_profile_card::TemperatureUnit::Fahrenheit, true,
+                g_weather_is_night, preset.intensity);
+            LOG("[scr] weather -> condition=%d intensity=%d night=%d (72F)\n",
+                (int)preset.cond, (int)preset.intensity, (int)g_weather_is_night);
             break;
         }
+        case 'N': {
+            g_weather_is_night = !g_weather_is_night;
+            g_weather_shown = true;
+            const auto& preset = kWeatherPresets[g_weather_preset_idx];
+            widget_profile_card::set_default_weather(
+                preset.cond, 72, widget_profile_card::TemperatureUnit::Fahrenheit, true,
+                g_weather_is_night, preset.intensity);
+            LOG("[scr] weather -> %s (condition=%d intensity=%d)\n",
+                g_weather_is_night ? "night" : "day", (int)preset.cond, (int)preset.intensity);
+            break;
+        }
+        case 'h':
+            g_holiday_debug = !g_holiday_debug;
+            holiday_data::set_debug_override(g_holiday_debug);
+            LOG("[scr] holiday debug data -> %s (day 3 / day 20 of any month; press 'n' or 'v' again to see it)\n",
+                g_holiday_debug ? "ON" : "off");
+            break;
         case 'X':
             g_pc_connected = !g_pc_connected;
             LOG("[scr] PC link -> %s\n", g_pc_connected ? "connected" : "OFFLINE");

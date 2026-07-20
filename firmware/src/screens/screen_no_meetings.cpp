@@ -4,6 +4,7 @@
 #include <time.h>
 
 #include "app_state.h"
+#include "holiday_data.h"
 #include "state_machine.h"
 #include "theme.h"
 #include "ui_helpers.h"
@@ -23,7 +24,10 @@
 
 namespace {
 
-lv_obj_t* make_cal_glyph(lv_obj_t* parent) {
+// out_holiday_name is set to today's holiday name, or nullptr if today isn't
+// one (or the clock isn't set yet, so "today" isn't known at all) — lets
+// build_left() swap the subtitle without re-deriving today's date itself.
+lv_obj_t* make_cal_glyph(lv_obj_t* parent, const char** out_holiday_name) {
     // Calendar glyph, drawn from LVGL primitives (no symbol font available).
     // 297 wide; the empty band above the binding tabs is trimmed and the frame
     // height is cropped to the calendar body's bottom edge (234) so there's no
@@ -85,6 +89,7 @@ lv_obj_t* make_cal_glyph(lv_obj_t* parent) {
     int days_in_month = 35;  // cold-boot fallback: a full 5-row block
     int today_day = 0;       // 0 = no highlight (fallback)
     char title_buf[24] = {0};// "Month YYYY" — stays empty when the clock isn't set
+    *out_holiday_name = nullptr;
 
     if (app_state::clock_is_set()) {
         time_t now = time(nullptr);
@@ -92,6 +97,10 @@ lv_obj_t* make_cal_glyph(lv_obj_t* parent) {
         localtime_r(&now, &now_tm);
         today_day = now_tm.tm_mday;
         strftime(title_buf, sizeof(title_buf), "%b %Y", &now_tm);  // abbreviated → fits at 30px
+        // tm_mon is 0-based; holiday_data::name_for() takes a 1-based month.
+        const holiday_data::Info* holiday = holiday_data::name_for(
+            holiday_data::country(), holiday_data::region(), now_tm.tm_year + 1900, now_tm.tm_mon + 1, today_day);
+        *out_holiday_name = holiday ? holiday->name : nullptr;
 
         // Weekday of the 1st of this month (Monday = column 0).
         struct tm first_tm = now_tm;
@@ -127,7 +136,13 @@ lv_obj_t* make_cal_glyph(lv_obj_t* parent) {
         int row = idx / 7;
         int16_t x = FIRST_X + (idx % 7) * PX;
         int16_t y = start_y + row * PY;
-        uint32_t cell_col = (day == today_day) ? theme::COLOR_ACCENT
+        // Today's cell swaps to holiday-red in place of accent gold when
+        // today is a holiday — at this cell's tiny (12x8) scale a hollow ring
+        // like the month view's wouldn't read clearly, so this uses the same
+        // solid-swap treatment as the "no meetings" screen's headline/
+        // subtitle below (COLOR_DANGER, matching --holiday's prototype value).
+        uint32_t cell_col = (day == today_day)
+                          ? (*out_holiday_name ? theme::COLOR_DANGER : theme::COLOR_ACCENT)
                           : (row == today_row) ? theme::COLOR_ACCENT_FAINT
                                                : line;
         box(glyph, x, y, CW, CH, cell_col, 2, /*filled=*/true);
@@ -162,7 +177,8 @@ lv_obj_t* build_left(lv_obj_t* body) {
     lv_obj_set_flex_flow(left, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(left, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    lv_obj_t* glyph = make_cal_glyph(left);
+    const char* holiday_name = nullptr;
+    lv_obj_t* glyph = make_cal_glyph(left, &holiday_name);
     lv_obj_set_style_pad_bottom(glyph, 0, 0);
     // Tapping the calendar symbol opens the month (Calendar) view — same entry
     // point as long-pressing the status-bar time. The glyph's child shapes are
@@ -179,8 +195,12 @@ lv_obj_t* build_left(lv_obj_t* body) {
     lv_obj_set_style_text_font(headline, theme::font_display(), 0);
     lv_obj_set_style_pad_top(headline, 9, 0);  // tightened 60% (was 22)
 
+    // Names the holiday instead of the generic line when today is one —
+    // color stays the same (COLOR_TEXT_TERTIARY); only the glyph's today-cell
+    // color change (above) and this text carry the signal, matching the
+    // prototype's .empty .sub treatment (content changes, color doesn't).
     lv_obj_t* sub = lv_label_create(left);
-    lv_label_set_text_static(sub, "Enjoy the focus time");
+    lv_label_set_text(sub, holiday_name ? holiday_name : "Enjoy the focus time");
     lv_obj_set_style_text_color(sub, theme::color(theme::COLOR_TEXT_TERTIARY), 0);
     lv_obj_set_style_text_font(sub, theme::font_title(), 0);  // 26px (font_meta 24 + 2)
 

@@ -31,7 +31,7 @@
 //
 // Counts/signal come from ancs_client::phone_stats() — all zero while
 // disconnected, same "don't show what can't be verified" policy as
-// presence/weather (ble-protocol.md §6.4). A zero count dims its icon
+// weather (ble-protocol.md §6.4). A zero count dims its icon
 // (recolor to tertiary) and hides its badge entirely rather than showing a
 // "0" — the icons stay visible/laid out either way, just look disabled.
 // LIVE while open (2026-07-11 — previously "mostly a snapshot," which has
@@ -249,7 +249,7 @@ constexpr int16_t BATT_GLYPH_GAP = 1;  // body→nub — nearly flush, a real ba
 constexpr uint8_t  BATT_LOW_THRESHOLD = 20;  // % at/below which the fill reads COLOR_DANGER
 
 uint32_t battery_fill_color(uint8_t level) {
-    return level <= BATT_LOW_THRESHOLD ? theme::COLOR_DANGER : theme::COLOR_PRESENCE_AVAILABLE;
+    return level <= BATT_LOW_THRESHOLD ? theme::COLOR_DANGER : theme::COLOR_CONN_CONNECTED;
 }
 
 // Builds [outline+fill icon] [percentage label] as one row, returns the row.
@@ -423,7 +423,7 @@ lv_obj_t* create(lv_obj_t* base_screen, bool connected) {
     lv_obj_set_size(dot, 10, 10);
     lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(dot, theme::color(
-        connected ? theme::COLOR_PRESENCE_AVAILABLE : theme::COLOR_PRESENCE_OFFLINE), 0);
+        connected ? theme::COLOR_CONN_CONNECTED : theme::COLOR_CONN_DISCONNECTED), 0);
     lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
 
     lv_obj_t* status_lbl = lv_label_create(status_left);
@@ -458,7 +458,7 @@ lv_obj_t* create(lv_obj_t* base_screen, bool connected) {
         lv_obj_set_size(bar, 8, bar_h[i]);
         lv_obj_set_style_radius(bar, 3, 0);
         lv_obj_set_style_bg_color(bar, theme::color(
-            i < stats.signal_bars ? theme::COLOR_PRESENCE_AVAILABLE : theme::COLOR_DIVIDER_STRONG), 0);
+            i < stats.signal_bars ? theme::COLOR_CONN_CONNECTED : theme::COLOR_DIVIDER_STRONG), 0);
         lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
         info->sig_bars[i] = bar;
     }
@@ -520,7 +520,7 @@ void set_connected(bool connected) {
     g_active->connected = connected;
 
     lv_obj_set_style_bg_color(g_active->dot, theme::color(
-        connected ? theme::COLOR_PRESENCE_AVAILABLE : theme::COLOR_PRESENCE_OFFLINE), 0);
+        connected ? theme::COLOR_CONN_CONNECTED : theme::COLOR_CONN_DISCONNECTED), 0);
     lv_label_set_text(g_active->status_lbl, connected ? "Connected" : "Disconnected");
 
     // Title always reflects whichever phone is CURRENTLY connected — re-read
@@ -563,7 +563,7 @@ void set_signal_bars(uint8_t bars) {
     if (!g_active) return;  // no instance currently open
     for (int i = 0; i < 4; ++i) {
         lv_obj_set_style_bg_color(g_active->sig_bars[i], theme::color(
-            i < bars ? theme::COLOR_PRESENCE_AVAILABLE : theme::COLOR_DIVIDER_STRONG), 0);
+            i < bars ? theme::COLOR_CONN_CONNECTED : theme::COLOR_DIVIDER_STRONG), 0);
     }
 }
 

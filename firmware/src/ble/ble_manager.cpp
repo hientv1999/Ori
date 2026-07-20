@@ -21,9 +21,11 @@
 #include <Preferences.h>
 #include <esp_heap_caps.h>  // heap_caps_free — owned-buffer events dropped on a full queue
 #include <string.h>
+#include <new> // std::nothrow — LunarHolidaysUpdate's small heap copy (see ble_post_lunar_holidays_event)
 
 #include "nvs_store.h"
 #include "photo_cache.h"
+#include "holiday_data.h"
 #include "state_machine.h"
 #include "factory_reset.h"
 #include "screens/screen_setup.h"
@@ -46,7 +48,6 @@
 enum class BleEventType : uint8_t {
     None = 0,
     FactoryReset,
-    PresenceUpdate,
     ClockFaceUpdate,   // Clock Face char write — 0=Digital, 1=Analog (state_machine::set_clock_face)
     TimeFormatUpdate,  // Device Settings "h" — 0=24-hour, 1=12-hour (state_machine::set_time_format)
     MediaMetaUpdated,  // MediaMetadata write applied to app_state — repaint media screen
@@ -83,13 +84,17 @@ enum class BleEventType : uint8_t {
                        // onSubscribe() and ancs_client.h's resync_orion_relay()/
                        // resync_orion_call_state() doc comments for why OrionConnected fires
                        // too early for this.
+    LunarHolidaysUpdate, // Orion finished pushing the Lunar Holiday List (char 0013) —
+                         // deferred so the NVS write (holiday_data::set_lunar_days()) never
+                         // runs on the NimBLE host task (hardware.md's ICache/DCache-disable hazard)
+    HolidayCountryUpdate, // Orion wrote holiday_country via Device Settings (char 000E, key "g")
+    HolidayRegionUpdate,  // Orion wrote holiday_region via Device Settings (char 000E, key "j")
 };
 
 struct BleEvent {
     BleEventType type;
     union {
         uint32_t passkey;
-        widget_profile_card::Presence presence;
         uint8_t  clock_face;     // ClockFaceUpdate — 0=Digital, 1=Analog
         uint8_t  time_format;    // TimeFormatUpdate — 0=24-hour, 1=12-hour
         uint8_t  ancs_filter;   // AncsFilterUpdate — 0=Disabled..3=All
@@ -97,10 +102,16 @@ struct BleEvent {
         struct { uint8_t* buf; size_t len; } art;
         uint16_t conn_handle;
         uint32_t total_bytes;    // SyncBegin — declared total from SyncControl{BEGIN}
-        struct { uint8_t condition; int16_t temp_f; uint8_t unit; } weather; // WeatherUpdate
+        struct { uint8_t condition; int16_t temp_f; uint8_t unit; bool is_night; uint8_t intensity; } weather; // WeatherUpdate
         struct { uint32_t uid; uint8_t action; } ancs_action; // AncsAction — 0=Positive, 1=Negative
         bool     ancs_resubscribed_call_state; // AncsResubscribed — true=char 0011, false=char 0010
         struct { uint8_t level; bool show_toast; } host_volume; // HostVolumeUpdate
+        struct { uint16_t* days; size_t count; } lunar_holidays; // LunarHolidaysUpdate —
+                                                                  // days is a heap-allocated
+                                                                  // copy, owned by the event
+                                                                  // until the handler frees it
+        uint8_t  holiday_country; // HolidayCountryUpdate — holiday_data::Country
+        uint8_t  holiday_region;  // HolidayRegionUpdate — region within that country
     } data;
     uint8_t peer_addr[6]; // populated for bonded events
 };
@@ -808,14 +819,6 @@ static void handle_factory_reset() {
     factory_reset::execute();
 }
 
-static void handle_presence_update(const BleEvent& ev) {
-    // Cache the value in state_machine so apply_widget_defaults()
-    // reflects it on future screen rebuilds instead of clobbering it
-    // back to a hardcoded value. set_presence() also updates the
-    // active card immediately.
-    state_machine::set_presence(static_cast<uint8_t>(ev.data.presence));
-}
-
 static void handle_clock_face_update(const BleEvent& ev) {
     // set_clock_face() writes NVS and (if the Clock state is on
     // screen) rebuilds it — both must run on the main task.
@@ -829,11 +832,26 @@ static void handle_time_format_update(const BleEvent& ev) {
 }
 
 static void handle_weather_update(const BleEvent& ev) {
-    // Cache in state_machine (mirrors PresenceUpdate) so
-    // apply_widget_defaults() reflects it on future screen
-    // rebuilds and the PC-link-down fallback can hide it.
+    // Cache in state_machine so apply_widget_defaults() reflects it on
+    // future screen rebuilds and the PC-link-down fallback can hide it.
     state_machine::set_weather(ev.data.weather.condition, ev.data.weather.temp_f,
-                                ev.data.weather.unit);
+                                ev.data.weather.unit, ev.data.weather.is_night,
+                                ev.data.weather.intensity);
+}
+
+static void handle_lunar_holidays_update(const BleEvent& ev) {
+    // NVS write happens here (main task) — never on the NimBLE host task
+    // that decoded the CBOR (hardware.md's ICache/DCache-disable hazard).
+    holiday_data::set_lunar_days(ev.data.lunar_holidays.days, ev.data.lunar_holidays.count);
+    delete[] ev.data.lunar_holidays.days; // event owned this heap copy until now
+}
+
+static void handle_holiday_region_update(const BleEvent& ev) {
+    holiday_data::set_region(ev.data.holiday_region);
+}
+
+static void handle_holiday_country_update(const BleEvent& ev) {
+    holiday_data::set_country(static_cast<holiday_data::Country>(ev.data.holiday_country));
 }
 
 static void handle_media_meta_updated() {
@@ -908,10 +926,10 @@ static void handle_orion_connected() {
     // It's triggered instead by SyncBegin below, on the real
     // SyncControl{BEGIN} frame.
     gatt_server::set_device_status(0x11); // RUNTIME_RECONNECTING
-    // Read Presence Status from Orion (source of truth on reconnect).
-    // Orion will push it; until then show Offline.
-    widget_profile_card::set_default_presence(
-        widget_profile_card::Presence::Offline);
+    // Connected but not yet synced — border shows Syncing (yellow) until
+    // the reconnect's SyncControl{END} lands and flips it to Connected.
+    widget_profile_card::set_default_conn_status(
+        widget_profile_card::ConnStatus::Syncing);
     // The ANCS relay resync (chars 0010/0011) does NOT happen
     // here — this event fires on encryption complete, well before
     // Orion has even started run_sync, let alone spawned the
@@ -979,6 +997,14 @@ static void handle_orion_confirmed() {
 
 static void handle_sync_begin(const BleEvent& ev) {
     LOG("[ble:poll] sync begin (total=%u)\n", (unsigned)ev.data.total_bytes);
+    // Covers periodic in-session refreshes too (state-machine.md: "Periodic
+    // refreshes set RUNTIME_SYNCING briefly") — a small sync while already
+    // RUNTIME_READY has no OrionConnected event of its own to flip the
+    // border, only this one. Safe to call here (main task); the raw
+    // SyncControl{BEGIN} handler in gatt_server.cpp cannot touch LVGL
+    // directly, which is why this is deferred through the event queue.
+    widget_profile_card::set_default_conn_status(
+        widget_profile_card::ConnStatus::Syncing);
     if (nvs::is_first_boot()) {
         // Setup only: defer the Orioning modal so the "Connect on
         // Orion" screen gets its guaranteed beat (poll() shows it
@@ -1006,6 +1032,16 @@ static void handle_sync_commit() {
 
 static void handle_sync_end() {
     LOG("[ble:poll] sync end\n");
+    // Sync completed successfully (setup or runtime) — border flips to
+    // Connected. A disconnect before this point never reaches here at all
+    // (handle_orion_disconnected() already forced Disconnected), so this
+    // unconditionally means a real, current sync just finished.
+    widget_profile_card::set_default_conn_status(
+        widget_profile_card::ConnStatus::Connected);
+    // Same "green flag" as the border above — the mode-toggle button waits
+    // for this too now, not just the raw BLE connect set_pc_connected()
+    // already saw (media-mode.md/gestures.md).
+    state_machine::set_pc_synced();
     g_orioning_pending = false;  // don't pop the modal after we advance
     if (nvs::is_first_boot()) {
         // Persist "at phone pairing step" before advancing the UI so
@@ -1131,9 +1167,10 @@ static void handle_orion_disconnected() {
     if (nvs::is_first_boot() && nvs::is_awaiting_sync()) {
         revert_unconfirmed_orion_bond();
     }
-    // Force presence to Offline immediately (never show stale presence).
-    widget_profile_card::set_default_presence(
-        widget_profile_card::Presence::Offline);
+    // Force the border to Disconnected immediately (never show a stale
+    // Connected/Syncing state once the link is actually down).
+    widget_profile_card::set_default_conn_status(
+        widget_profile_card::ConnStatus::Disconnected);
     gatt_server::set_device_status(0xF0); // ERROR_GENERIC until reconnect
     // Discard any in-progress sync staging — link dropped before END.
     gatt_server::abort_sync_stage();
@@ -1342,10 +1379,6 @@ void poll() {
                 handle_factory_reset();
                 break;
 
-            case BleEventType::PresenceUpdate:
-                handle_presence_update(ev);
-                break;
-
             case BleEventType::ClockFaceUpdate:
                 handle_clock_face_update(ev);
                 break;
@@ -1356,6 +1389,18 @@ void poll() {
 
             case BleEventType::WeatherUpdate:
                 handle_weather_update(ev);
+                break;
+
+            case BleEventType::LunarHolidaysUpdate:
+                handle_lunar_holidays_update(ev);
+                break;
+
+            case BleEventType::HolidayCountryUpdate:
+                handle_holiday_country_update(ev);
+                break;
+
+            case BleEventType::HolidayRegionUpdate:
+                handle_holiday_region_update(ev);
                 break;
 
             case BleEventType::MediaMetaUpdated:
@@ -1959,13 +2004,6 @@ void ble_post_factory_reset_event() {
     // The event pump in ble_manager::poll() handles the actual wipe+restart.
 }
 
-// Deferred presence update (from PresenceStatus write handler).
-void ble_post_presence_event(widget_profile_card::Presence p) {
-    BleEvent ev = {};
-    ev.type = BleEventType::PresenceUpdate;
-    ev.data.presence = p;
-    eq_push(ev);
-}
 
 // Deferred clock-face update (from Clock Face write handler).
 void ble_post_clock_face_event(uint8_t face) {
@@ -1984,13 +2022,54 @@ void ble_post_time_format_event(uint8_t fmt) {
 }
 
 // Deferred weather update (from Device Settings write handler — only posted
-// when "w", "d", and "u" were all present in the same write, ble-protocol.md §6.4).
-void ble_post_weather_event(uint8_t condition, int16_t temp_f, uint8_t unit) {
+// when "w", "d", "u", "n", and "i" were all present in the same write, ble-protocol.md §6.4).
+void ble_post_weather_event(uint8_t condition, int16_t temp_f, uint8_t unit, bool is_night, uint8_t intensity) {
     BleEvent ev = {};
     ev.type = BleEventType::WeatherUpdate;
     ev.data.weather.condition = condition;
     ev.data.weather.temp_f    = temp_f;
     ev.data.weather.unit      = unit;
+    ev.data.weather.is_night  = is_night;
+    ev.data.weather.intensity = intensity;
+    eq_push(ev);
+}
+
+// Deferred Lunar Holiday List completion (from gatt_server's chunked-reassembly
+// on_complete callback). Takes its own heap copy of `days` — the caller's array
+// is stack/local and goes out of scope once this returns — ownership then
+// transfers to the event; handle_lunar_holidays_update() frees it after the
+// NVS write. On allocation failure, drops the update rather than posting a
+// null pointer downstream (rare — this device has no allocator pressure
+// remotely comparable to a 512 KB Time Off image, but never trust `new`
+// blindly on an embedded target).
+void ble_post_lunar_holidays_event(uint16_t* days, size_t count) {
+    if (count == 0) return;
+    uint16_t* copy = new (std::nothrow) uint16_t[count];
+    if (!copy) {
+        LOG("[ble] LunarHolidays: allocation failed, dropping %u entries\n", (unsigned)count);
+        return;
+    }
+    memcpy(copy, days, count * sizeof(uint16_t));
+    BleEvent ev = {};
+    ev.type = BleEventType::LunarHolidaysUpdate;
+    ev.data.lunar_holidays.days  = copy;
+    ev.data.lunar_holidays.count = count;
+    if (!eq_push(ev)) delete[] copy; // queue full — free rather than leak
+}
+
+// Deferred holiday-country update (from Device Settings "g" write handler).
+void ble_post_holiday_country_event(uint8_t country) {
+    BleEvent ev = {};
+    ev.type = BleEventType::HolidayCountryUpdate;
+    ev.data.holiday_country = country;
+    eq_push(ev);
+}
+
+// Deferred holiday-region update (from Device Settings "j" write handler).
+void ble_post_holiday_region_event(uint8_t region) {
+    BleEvent ev = {};
+    ev.type = BleEventType::HolidayRegionUpdate;
+    ev.data.holiday_region = region;
     eq_push(ev);
 }
 
