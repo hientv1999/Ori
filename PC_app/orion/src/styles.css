@@ -16,8 +16,8 @@
   --away:#FFAA44;
   --muted:#8A8884;
   /* Header call chip ring — deliberately its own pair, NOT --danger/--away
-     above (those are already used for other things — presence Busy/Away —
-     at slightly different hex values). Pixel-matched to Ori firmware's
+     above (those are already used for other things, at slightly different
+     hex values). Pixel-matched to Ori firmware's
      theme.h COLOR_CALL_RINGING / COLOR_DANGER so the same call reads with
      the identical ring color on both screens (pc-app.md). */
   --call-ring-ringing:#F2C94C;
@@ -168,10 +168,9 @@ body{font-family:var(--fn);overflow:hidden;user-select:none;}
 .row-div{height:1px;background:var(--div);margin:0 14px;}
 .row-gap{height:8px;}
 
-/* presence indicator in row */
+/* status dot in row — reused by Ori/iPhone Info modal connection indicators */
 .p-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
 .p-dot.available{background:var(--success);}
-.p-dot.busy{background:var(--danger);}
 .p-dot.away{background:var(--away);}
 .p-dot.offline{background:var(--muted);}
 
@@ -187,6 +186,24 @@ body{font-family:var(--fn);overflow:hidden;user-select:none;}
 .finp::placeholder{color:var(--t3);}
 .finp option{background:#1e1e22;}
 
+/* Custom HH:MM stepper (Working Hours start/end) — replaces the native
+   <input type="time">, whose internal segment/spinner shadow parts can't be
+   themed to match the app's dark palette. Hour wraps 23->0 independently of
+   minute, which wraps 55->0 in 5-min steps — mirrors how a native time
+   input's own segments each wrap independently. */
+/* .time-picker-row holds both start/end pickers plus the dash between
+   them on one line — sized a bit more compactly than a single standalone
+   picker would need, so the pair fits the panel's width. */
+.time-picker-row{display:flex;align-items:center;justify-content:center;gap:8px;}
+.time-picker{display:flex;align-items:center;gap:6px;}
+.tp-seg{display:flex;flex-direction:column;align-items:center;gap:2px;background:var(--elev);border:1px solid var(--brd);border-radius:9px;padding:4px 0;width:52px;user-select:none;}
+.tp-val{font-size:18px;font-weight:600;color:var(--t1);font-variant-numeric:tabular-nums;padding:2px 0;}
+.tp-chev{font-size:9px;line-height:1;color:var(--t3);padding:6px 12px;cursor:pointer;border-radius:6px;transition:color .12s,background .12s;}
+.tp-chev:hover{color:var(--accent);background:var(--elev2);}
+.tp-chev:active{color:var(--accent-b);}
+.tp-colon{font-size:18px;font-weight:600;color:var(--t2);margin-top:-2px;}
+.tp-dash{font-size:16px;font-weight:600;color:var(--t3);}
+
 /* photo */
 
 /* calendar options */
@@ -194,6 +211,7 @@ body{font-family:var(--fn);overflow:hidden;user-select:none;}
 .cal-opt{display:flex;align-items:center;gap:11px;padding:10px 11px;border-radius:8px;margin-bottom:6px;cursor:pointer;transition:background .12s;border:1px solid transparent;}
 .cal-opt.sel{background:var(--accent-s);border-color:var(--accent-b);}
 .cal-opt:not(.dis):not(.sel):hover{background:rgba(255,255,255,.04);}
+.cal-opt.dis{cursor:not-allowed;opacity:.55;pointer-events:none;}
 .co-ico{width:22px;height:22px;flex-shrink:0;display:flex;align-items:center;justify-content:center;}
 .co-ico svg{width:22px;height:22px;display:block;}
 .co-info{flex:1;}
@@ -248,6 +266,45 @@ body{font-family:var(--fn);overflow:hidden;user-select:none;}
 .clock-opt.sel .co-r-inner{display:block;}
 .co-label{font-size:15.5px;font-weight:500;color:var(--t1);}
 .co-sub{font-size:13.5px;color:var(--t2);margin-top:2px;}
+
+/* Notification Filter's Work Hours / Off Hours group split (s-ancs,
+   notif_filter.rs) — .ancs-group-lbl mirrors .pg-lbl's eyebrow treatment
+   (Settings section headers) so the two groups read as distinct sections
+   within one screen rather than one long list. */
+.ancs-hint{font-size:12.5px;line-height:1.4;color:var(--t3);padding:10px 14px 0;}
+.ancs-group-lbl{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.7px;color:var(--t3);padding:16px 14px 2px;}
+.ancs-row-sep{font-size:13px;color:var(--t3);}
+
+/* Working Hours day-of-week picker (s-workhours) — 7 independently
+   toggleable pills, same selected-state visual language as .clock-opt.sel
+   (accent-soft fill + accent border) but compact/inline instead of stacked
+   rows, since a day only needs a 2-letter label. */
+.wh-days{display:flex;gap:6px;}
+.wh-day{flex:1;text-align:center;padding:9px 0;border-radius:7px;cursor:pointer;border:1px solid var(--brd);background:var(--elev);color:var(--t2);font-size:13.5px;font-weight:500;transition:all .14s;}
+/* Solid accent fill (not the usual 10%-opacity .accent-s wash .clock-opt.sel/
+   .cal-opt.sel use) — a compact 7-up pill row needs a stronger selected/
+   unselected split than a single-select list does, since the eye is
+   scanning all 7 at once rather than looking for the one checked row. */
+.wh-day.sel{background:var(--accent);border-color:var(--accent);color:#16161a;font-weight:700;}
+.wh-day:not(.sel):hover{background:rgba(255,255,255,.04);}
+
+/* ── Alert section screens (Weather Alert / Low Battery Alert) ───────────── */
+.alert-desc{font-size:12.5px;color:var(--t3);line-height:1.45;margin:-4px 0 14px;}
+.alert-toggle-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;}
+.alert-toggle-lbl{font-size:13px;font-weight:400;color:var(--t2);}
+.alert-slider-row{transition:opacity .15s;}
+.alert-slider-row.disabled{opacity:.4;pointer-events:none;}
+.alert-slider-hdr{display:flex;align-items:center;justify-content:space-between;font-size:13px;color:var(--t2);margin-bottom:8px;}
+.alert-slider-val{color:var(--t1);font-weight:700;font-variant-numeric:tabular-nums;}
+.alert-slider{-webkit-appearance:none;appearance:none;width:100%;height:4px;border-radius:2px;background:var(--elev2);outline:none;cursor:pointer;margin:0;}
+.alert-slider::-webkit-slider-runnable-track{height:4px;border-radius:2px;}
+.alert-slider::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:var(--accent);cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.4);margin-top:-6px;}
+/* `-webkit-appearance:none` above also suppresses the browser's native
+   datalist tick marks, so the step stops are redrawn by hand here — one
+   span per <option> in the paired <datalist>, evenly spaced to line up
+   with the slider's own evenly-spaced steps. */
+.alert-slider-ticks{display:flex;justify-content:space-between;margin-top:7px;padding:0 1px;}
+.alert-slider-ticks span{width:2px;height:5px;border-radius:1px;background:var(--elev2);}
 
 /* settings */
 .pg-section{padding:14px 14px 4px;}
@@ -447,6 +504,11 @@ body{font-family:var(--fn);overflow:hidden;user-select:none;}
 .btn-sec{background:var(--elev);color:var(--t1);border:1px solid var(--brd);}
 .btn-sec:hover{background:rgba(255,255,255,.06);}
 .btn-full{width:124px;}
+/* Spans the whole panel width — distinct from .btn-full's fixed 124px
+   (used for side-by-side Cancel/Save-style pairs in a .btn-row) — for a
+   single button that should fill the available content width on its own,
+   e.g. Calendar Source's Import/Disconnect/Coming-soon rows. */
+.btn-block{width:100%;}
 
 @keyframes btn-glow-pulse{0%,100%{opacity:0;}50%{opacity:1;}}
 .btn-row{display:flex;gap:7px;margin-top:10px;justify-content:center;}
@@ -459,12 +521,25 @@ body{font-family:var(--fn);overflow:hidden;user-select:none;}
    stay sharp or it visibly floats free of the titlebar's straight edge. */
 .modal-bg{position:absolute;inset:0;background:rgba(0,0,0,.7);backdrop-filter:blur(12px);z-index:50;display:flex;align-items:center;justify-content:center;border-radius:0 0 var(--r) var(--r);opacity:0;pointer-events:none;transition:opacity .18s;}
 .modal-bg.show{opacity:1;pointer-events:auto;}
+/* Bluetooth-guard modal (pc-app.md) — always above every other modal/screen
+   (including a deep setup-wizard stack, whose .screen elements get a
+   dynamic z-index from show()) since Bluetooth being off blocks the whole
+   app regardless of what's currently on screen. Never gains a Cancel/OK
+   button — see index.html's own comment on why that already makes it
+   non-dismissable with no extra JS. */
+#m-bluetooth-off{z-index:500;}
 .modal{width:300px;background:rgba(22,22,26,.99);border:1px solid var(--brd);border-radius:12px;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,.6);text-align:center;}
 .modal-title{font-size:17px;font-weight:700;color:var(--t1);margin-bottom:6px;}
 .modal-body{font-size:15px;color:var(--t2);line-height:1.6;}
 .fw-changelog{text-align:left;list-style:disc;margin:12px 0 0;padding-left:20px;font-size:14px;color:var(--t2);line-height:1.55;}
 .fw-changelog li{margin-bottom:4px;}
 .fw-changelog li:last-child{margin-bottom:0;}
+/* Numbered how-to steps (m-cal-help) — same shape as .fw-changelog, just
+   decimal instead of disc since these are sequential, not a flat list. */
+.modal-steps{text-align:left;list-style:decimal;margin:12px 0 0;padding-left:20px;font-size:14px;color:var(--t2);line-height:1.55;}
+.modal-steps li{margin-bottom:8px;}
+.modal-steps li:last-child{margin-bottom:0;}
+.modal-steps b{color:var(--t1);font-weight:600;}
 .pk-row{display:flex;gap:5px;justify-content:center;margin:16px 0;}
 .pk-d{width:32px;height:40px;background:var(--elev);border:1px solid var(--brd);border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;color:var(--t1);}
 .pk-inp{text-align:center;font-family:var(--fn);outline:none;transition:border-color .15s;-webkit-appearance:none;}
@@ -486,11 +561,7 @@ body{font-family:var(--fn);overflow:hidden;user-select:none;}
 .profile-card{padding:20px 14px 16px;display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer;position:relative;transition:background .1s;}
 .profile-card:hover{background:rgba(255,255,255,.025);}
 .profile-card:active{background:rgba(255,255,255,.04);}
-.prof-photo{width:120px;height:120px;border-radius:50%;background:var(--elev2);display:flex;align-items:center;justify-content:center;font-size:40px;font-weight:700;color:var(--t1);border:3px solid var(--muted);transition:border-color .3s;overflow:hidden;background-size:cover;background-position:center;flex-shrink:0;}
-.prof-photo.available{border-color:var(--success);}
-.prof-photo.busy{border-color:var(--danger);}
-.prof-photo.away{border-color:var(--away);}
-.prof-photo.offline{border-color:var(--muted);}
+.prof-photo{width:120px;height:120px;border-radius:50%;background:var(--elev2);display:flex;align-items:center;justify-content:center;font-size:40px;font-weight:700;color:var(--t1);border:3px solid var(--muted);overflow:hidden;background-size:cover;background-position:center;flex-shrink:0;}
 .prof-name{font-size:17px;font-weight:600;color:var(--t1);}
 .prof-pres{display:flex;align-items:center;gap:5px;font-size:14px;color:var(--t2);}
 .card-chev{position:absolute;top:12px;right:14px;color:var(--t3);font-size:18px;}
@@ -571,6 +642,48 @@ body{font-family:var(--fn);overflow:hidden;user-select:none;}
 .su-dots{display:flex;gap:5px;justify-content:center;padding:12px 0 14px;flex-shrink:0;}
 .su-dot{width:6px;height:6px;border-radius:50%;background:var(--elev2);}
 .su-dot.active{background:var(--accent);}
+
+/* Calendar Source import card (setup wizard's profile step) — styled after
+   the app's own file-target idiom: the dashed photo dropzone
+   (.pfDropZone/.timeOffDzEmpty), just rectangular, since this too is
+   "click to hand me a file." The done state reuses the accent-tinted
+   selected-state treatment every picker row already uses (.cal-opt.sel /
+   .clock-opt.sel), and the spinner reuses the shared `sp` keyframes.
+   States toggled by adding/removing .busy / .done / .err on the card
+   root; idle is the default (no modifier). */
+.cal-import-card{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:11px;width:100%;padding:30px 18px;border-radius:12px;background:var(--elev);border:1.5px dashed rgba(255,255,255,.12);cursor:pointer;text-align:center;transition:border-color .16s,background .16s;}
+.cal-import-card:not(.busy):not(.done):hover{border-color:rgba(224,184,106,.35);background:rgba(255,255,255,.03);}
+.cal-import-card.busy{cursor:default;pointer-events:none;}
+.cal-import-card.done{border-style:solid;background:var(--accent-s);border-color:var(--accent-b);}
+.cal-import-card.err{border-color:rgba(196,49,75,.45);}
+.cal-import-ico{height:34px;display:flex;align-items:center;justify-content:center;}
+.cal-import-ico svg{width:26px;height:26px;}
+.cal-import-ico .cal-import-spin{width:26px;height:26px;border-radius:50%;border:2.5px solid var(--elev2);border-top-color:var(--accent);animation:sp .8s linear infinite;display:none;}
+.cal-import-ico .cal-import-check{display:none;width:28px;height:28px;border-radius:50%;background:var(--accent);color:#16161a;font-size:15px;font-weight:700;align-items:center;justify-content:center;line-height:1;}
+.cal-import-card.busy .cal-import-ico svg,.cal-import-card.done .cal-import-ico svg{display:none;}
+.cal-import-card.busy .cal-import-ico .cal-import-spin{display:block;}
+.cal-import-card.done .cal-import-ico .cal-import-check{display:flex;}
+.cal-import-title{font-size:15px;font-weight:600;color:var(--t1);}
+.cal-import-sub{font-size:13px;color:var(--t2);margin-top:3px;line-height:1.45;}
+.cal-import-sub:empty{display:none;}
+.cal-import-card.err .cal-import-sub{color:var(--danger);}
+
+/* Setup-time "couldn't reach the internet" banners (pc-app.md's network-
+   health indicator) — informational only, amber (not --danger) since these
+   never block Next/proceeding, just warn that a fetch will be retried once
+   online. Hidden by default; shown via inline style/class toggle in app.js. */
+.su-net-warn{display:none;align-items:center;gap:8px;padding:9px 11px;border-radius:8px;background:rgba(255,170,68,.1);border:1px solid rgba(255,170,68,.3);color:var(--away);font-size:12.5px;line-height:1.4;margin-top:12px;text-align:left;}
+.su-net-warn.show{display:flex;}
+
+/* Location-permission explainer (setup wizard step 3) — a plain centered
+   priming screen, not a card/dropzone like the calendar step: there's
+   nothing to click-to-act on here besides the two Allow/Skip buttons in
+   .su-foot, so no button-shaped surface is needed in the body itself. The
+   icon badge reuses the calendar card's "done" accent-soft treatment
+   (.cal-import-card.done .cal-import-ico) for the same inviting tone. */
+.loc-permit-ico{width:64px;height:64px;border-radius:50%;background:var(--accent-s);border:1px solid var(--accent-b);color:var(--accent);display:flex;align-items:center;justify-content:center;}
+.loc-permit-title{font-size:16px;font-weight:600;color:var(--t1);margin-bottom:6px;}
+.loc-permit-desc{font-size:13.5px;color:var(--t2);line-height:1.5;max-width:260px;margin:0 auto;}
 
 /* welcome screen language picker — sits just above the Start button */
 .su-lang-picker{margin-top:22px;}
