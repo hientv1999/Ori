@@ -34,6 +34,7 @@ pub const CHR_ANCS_NOTIFICATION: &str = "6f726900-0010-4f72-9f00-000000000000";
 pub const CHR_ANCS_CALL_STATE: &str = "6f726900-0011-4f72-9f00-000000000000";
 /// ANCS relay to Orion (§13) — Orion writes Answer/Decline/End-call/Dismiss.
 pub const CHR_ANCS_NOTIFICATION_ACTION: &str = "6f726900-0012-4f72-9f00-000000000000";
+pub const CHR_LUNAR_HOLIDAY_LIST: &str = "6f726900-0013-4f72-9f00-000000000000";
 
 /// Device Information Service (BLE SIG standard, 0x180A) — Firmware Revision
 /// String (0x2A26). Separate service from Ori Sync Service — see §3.1.

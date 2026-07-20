@@ -46,6 +46,35 @@ pub struct InitialState {
     // profile/time_off above, just for the iPhone Info modal instead of the
     // main panel. `None` when never learned or cleared by a reset/unpair.
     phone_device_type: Option<String>,
+    // Whether a Calendar Source XML import has already completed in a
+    // previous session (store::SavedState::calendar_ics_url) — same
+    // "nothing re-applies this on a plain relaunch" hazard as profile/
+    // time_off above, just for the Calendar Source settings row's connected/
+    // not-connected status instead of a BLE-facing field.
+    calendar_connected: bool,
+    // Working Hours / Weather Alert / Low Battery Alert (store::SavedState) —
+    // same "nothing re-applies this on a plain relaunch" hazard as the
+    // fields above, just for the Settings > Alert section's three rows/
+    // subscreens instead of a BLE-facing field (none of these are ever
+    // pushed to Ori — Working Hours and Weather Alert drive reminders.rs;
+    // Low Battery Alert's threshold/enable are read straight into app.js's
+    // checkLowBattery()).
+    work_hours: crate::store::WorkHours,
+    weather_alert: crate::store::WeatherAlert,
+    low_battery_alert: crate::store::LowBatteryAlert,
+    // Notification Filter's two-level schedule (store::NotificationFilterSchedule,
+    // notif_filter.rs) — same "nothing re-applies this on a plain relaunch"
+    // hazard as work_hours/weather_alert/low_battery_alert above, just for
+    // the main panel's Notification Filter row/subscreen. Orion computes
+    // and pushes the actual live BLE value on its own (notif_filter.rs);
+    // this is only what seeds the Settings UI.
+    notif_filter: crate::store::NotificationFilterSchedule,
+    // Bluetooth-radio state (ble/bt_radio.rs), checked once synchronously
+    // here so the blocking modal can appear immediately on a cold launch
+    // with Bluetooth already off, without waiting for the monitor's first
+    // ~3s poll tick — same "avoid a flash of interactive UI" reasoning as
+    // `#s-main`'s `pending-init` class.
+    bluetooth_available: bool,
 }
 
 /// Initial backoff before retrying a failed reconnect, doubling up to
@@ -171,6 +200,24 @@ async fn supervise_connection_loop(app: &AppHandle, already_connected: bool) {
             // so this old loop is now the live supervisor and must not fight
             // the connection it inherited).
             if !crate::ble::is_connected(&state).await {
+                // Bluetooth guard (pc-app.md, `ble/bt_radio.rs`) — don't even
+                // attempt a scan/connect while the radio is off. Waiting here
+                // (rather than letting `reconnect()` fail its usual way)
+                // keeps a Bluetooth-off period from ever reaching the stale-
+                // bond detection below (`ORI_POST_DISCOVERY_FAILURE_PREFIX`),
+                // which exists for a *reachable-but-rejecting* Ori, not an
+                // unusable local radio — and avoids spamming failed attempts
+                // the whole time the blocking modal (app.js) is up anyway.
+                let mut bt_rx = state.bluetooth_available.subscribe();
+                loop {
+                    if *bt_rx.borrow() {
+                        break;
+                    }
+                    if bt_rx.changed().await.is_err() {
+                        break; // sender dropped — fall through, reconnect() fails normally
+                    }
+                }
+
                 // Brackets the *entire* attempt — scanning included, not just
                 // the found-and-connecting sub-phase `conn-state: "connecting"`
                 // covers. Scanning (discover_named_device, inside reconnect())
@@ -199,7 +246,7 @@ async fn supervise_connection_loop(app: &AppHandle, already_connected: bool) {
                     if let Some(addr) = e.strip_prefix(crate::ble::ORI_FACTORY_RESET_PREFIX) {
                         let address: u64 = addr.parse().unwrap_or(0);
                         let _ = crate::ble::unpair_bluetooth_bond(address).await;
-                        give_up_on_bond(app, saved).await;
+                        give_up_on_bond(app).await;
                         return;
                     }
                     if let Some(rest) = e.strip_prefix(crate::ble::ORI_POST_DISCOVERY_FAILURE_PREFIX) {
@@ -210,7 +257,7 @@ async fn supervise_connection_loop(app: &AppHandle, already_connected: bool) {
                                     let _ = crate::ble::unpair_bluetooth_bond(address).await;
                                 }
                             }
-                            give_up_on_bond(app, saved).await;
+                            give_up_on_bond(app).await;
                             return;
                         }
                     } else {
@@ -270,24 +317,36 @@ async fn supervise_connection_loop(app: &AppHandle, already_connected: bool) {
 /// that trailing `back()` *after* the wizard is shown, popping it straight
 /// back off — the wizard would flash open and instantly vanish, leaving the
 /// user stuck on a dead main screen instead of on the wizard.
-async fn give_up_on_bond(app: &AppHandle, mut saved: crate::store::SavedState) {
-    saved.paired = false;
-    saved.device_name = String::new();
-    // Both callers (SETUP-flag-detected factory reset, and giving up after
-    // repeated post-discovery failures) already drop the OS-level Windows
-    // bond before reaching here — either way, re-establishing a connection
-    // to this device (the same physical unit or a different one entirely)
-    // needs a full re-pair ceremony from scratch, which re-learns these
-    // fresh. Clearing them here matches `paired`/`device_name` just above:
-    // same event (the bond truly ending), same treatment.
-    saved.address = None;
-    saved.serial_number = None;
-    saved.manufacture_date = None;
-    // Ori's own bond just ended, which per ble-protocol.md §2 takes its
-    // iPhone bond down with it — same event, same treatment as the three
-    // fields above.
-    saved.phone_device_type = None;
-    let _ = crate::store::save(app, saved).await;
+async fn give_up_on_bond(app: &AppHandle) {
+    // Loads its own fresh copy under the store lock rather than taking a
+    // `SavedState` handed down from the caller — the supervisor loop's own
+    // load (which fed the reconnect attempt this follows) can be many
+    // seconds stale by the time a reconnect actually fails, and saving that
+    // snapshot back here would silently revert any Settings edit made
+    // during that window. Scoped to just this load-mutate-save, released
+    // before the identity-cache clear/event emits below.
+    {
+        let _guard = app.state::<crate::store::StoreLock>().acquire().await;
+        let mut saved = crate::store::load(app).await.unwrap_or_default();
+        saved.paired = false;
+        saved.device_name = String::new();
+        // Both callers (SETUP-flag-detected factory reset, and giving up
+        // after repeated post-discovery failures) already drop the OS-level
+        // Windows bond before reaching here — either way, re-establishing a
+        // connection to this device (the same physical unit or a different
+        // one entirely) needs a full re-pair ceremony from scratch, which
+        // re-learns these fresh. Clearing them here matches `paired`/
+        // `device_name` just above: same event (the bond truly ending),
+        // same treatment.
+        saved.address = None;
+        saved.serial_number = None;
+        saved.manufacture_date = None;
+        // Ori's own bond just ended, which per ble-protocol.md §2 takes its
+        // iPhone bond down with it — same event, same treatment as the
+        // three fields above.
+        saved.phone_device_type = None;
+        let _ = crate::store::save(app, saved).await;
+    }
     crate::ble::clear_cached_identity(&app.state::<crate::ble::BleState>()).await;
     let _ = app.emit("conn-state", "off");
     let _ = app.emit("needs-repair", ());
@@ -295,6 +354,11 @@ async fn give_up_on_bond(app: &AppHandle, mut saved: crate::store::SavedState) {
 
 #[tauri::command]
 pub async fn get_initial_state(app: AppHandle) -> InitialState {
+    // Fails open (`unwrap_or(true)`) same as the monitor's own poll —
+    // an API hiccup on this one synchronous check shouldn't block the whole
+    // app from ever showing its main screen.
+    let bluetooth_available = crate::ble::bt_radio::bluetooth_radio_on().await.unwrap_or(true);
+
     let Some(saved) = crate::store::load(&app).await else {
         return InitialState {
             paired: false,
@@ -303,6 +367,12 @@ pub async fn get_initial_state(app: AppHandle) -> InitialState {
             time_off: TimeOffInput::default(),
             language: "en".to_string(),
             phone_device_type: None,
+            calendar_connected: false,
+            work_hours: crate::store::WorkHours::default(),
+            weather_alert: crate::store::WeatherAlert::default(),
+            low_battery_alert: crate::store::LowBatteryAlert::default(),
+            notif_filter: crate::store::NotificationFilterSchedule::default(),
+            bluetooth_available,
         };
     };
 
@@ -312,6 +382,13 @@ pub async fn get_initial_state(app: AppHandle) -> InitialState {
     // moment any connection completes, whether that's this launch's
     // reconnect below or a later (re)pair.
     let state = app.state::<crate::ble::BleState>();
+    // Seeds `BleState::bluetooth_available` from the synchronous check above
+    // — its `watch::Sender` otherwise defaults to `true` until
+    // `bt_radio::spawn_monitor`'s own first poll lands (up to ~3s later,
+    // `lib.rs`'s `.setup()`), which would let `try_claim_and_spawn_supervisor`
+    // below wave a reconnect attempt through despite Bluetooth already being
+    // off at this exact cold-launch moment. A no-op send when already `true`.
+    let _ = state.bluetooth_available.send(bluetooth_available);
     crate::ble::set_favorite_combos(&state, saved.combos.clone()).await;
     // Same idea, for device identity (pc-app.md's Ori Info modal) — lets it
     // show the last-known address/serial number/manufacture date, and the
@@ -320,8 +397,9 @@ pub async fn get_initial_state(app: AppHandle) -> InitialState {
     crate::ble::seed_cached_identity(&state, saved.address.clone(), saved.serial_number.clone(), saved.manufacture_date.clone(), saved.phone_device_type.clone()).await;
 
     let language = saved.language.clone().unwrap_or_else(|| "en".to_string());
+    let calendar_connected = saved.calendar_ics_url.is_some();
     if !saved.paired || saved.device_name.is_empty() {
-        return InitialState { paired: false, connection: "off", profile: saved.profile, time_off: saved.time_off, language, phone_device_type: saved.phone_device_type };
+        return InitialState { paired: false, connection: "off", profile: saved.profile, time_off: saved.time_off, language, phone_device_type: saved.phone_device_type, calendar_connected, work_hours: saved.work_hours, weather_alert: saved.weather_alert, low_battery_alert: saved.low_battery_alert, notif_filter: saved.notif_filter, bluetooth_available };
     }
 
     // Returns immediately so the UI can render the main screen right away
@@ -330,7 +408,67 @@ pub async fn get_initial_state(app: AppHandle) -> InitialState {
     // `setConn()` already listens for.
     try_claim_and_spawn_supervisor(&app, &state, false).await;
 
-    InitialState { paired: true, connection: "off", profile: saved.profile, time_off: saved.time_off, language, phone_device_type: saved.phone_device_type }
+    InitialState { paired: true, connection: "off", profile: saved.profile, time_off: saved.time_off, language, phone_device_type: saved.phone_device_type, calendar_connected, work_hours: saved.work_hours, weather_alert: saved.weather_alert, low_battery_alert: saved.low_battery_alert, notif_filter: saved.notif_filter, bluetooth_available }
+}
+
+/// Working Hours / Weather Alert / Low Battery Alert (pc-app.md's Settings >
+/// Alert section, reminders.rs) — all three are plain Orion-local persists,
+/// with no pending/dirty-tracking needed for an offline edit (there's no
+/// live link to eventually flush any of them to, unlike `save_device_settings`).
+/// `save_work_hours` is the one exception to "never pushed to Ori": Working
+/// Hours itself is never sent over BLE, but changing it can flip which
+/// Notification Filter level should be live right now, so it triggers a
+/// best-effort `notif_filter::push_now` after persisting (see below).
+#[tauri::command]
+pub async fn save_work_hours(app: AppHandle, work_hours: crate::store::WorkHours) -> Result<(), String> {
+    let _guard = app.state::<crate::store::StoreLock>().acquire().await;
+    let mut saved = crate::store::load(&app).await.unwrap_or_default();
+    saved.work_hours = work_hours;
+    crate::store::save(&app, saved).await?;
+    drop(_guard);
+    // Shifting the Working Hours window can itself flip which Notification
+    // Filter level should be active right now (e.g. moving the end time
+    // earlier than the current wall-clock time) — recompute and push
+    // immediately rather than waiting for notif_filter's own 60s tick.
+    crate::notif_filter::push_now(&app).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn save_weather_alert(app: AppHandle, weather_alert: crate::store::WeatherAlert) -> Result<(), String> {
+    let _guard = app.state::<crate::store::StoreLock>().acquire().await;
+    let mut saved = crate::store::load(&app).await.unwrap_or_default();
+    saved.weather_alert = weather_alert;
+    crate::store::save(&app, saved).await
+}
+
+#[tauri::command]
+pub async fn save_low_battery_alert(app: AppHandle, low_battery_alert: crate::store::LowBatteryAlert) -> Result<(), String> {
+    let _guard = app.state::<crate::store::StoreLock>().acquire().await;
+    let mut saved = crate::store::load(&app).await.unwrap_or_default();
+    saved.low_battery_alert = low_battery_alert;
+    crate::store::save(&app, saved).await
+}
+
+/// Auto Do-Not-Disturb schedule (Settings > Notification Filter, pc-app.md/
+/// notif_filter.rs) — the two ancs_filter levels Orion switches between on
+/// its own, based on Working Hours. Orion-local persistence only, same
+/// shape as save_work_hours/save_weather_alert/save_low_battery_alert
+/// above; the actual BLE write is a separate concern, pushed immediately
+/// after saving so a Settings change while connected takes effect right
+/// away rather than waiting for notif_filter's own 60s tick.
+#[tauri::command]
+pub async fn save_notif_filter_schedule(
+    app: AppHandle,
+    notif_filter: crate::store::NotificationFilterSchedule,
+) -> Result<(), String> {
+    let _guard = app.state::<crate::store::StoreLock>().acquire().await;
+    let mut saved = crate::store::load(&app).await.unwrap_or_default();
+    saved.notif_filter = notif_filter;
+    crate::store::save(&app, saved).await?;
+    drop(_guard);
+    crate::notif_filter::push_now(&app).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -350,24 +488,26 @@ pub fn show_and_focus_window(app: AppHandle) {
 
 /// Whether the panel is currently shown (`true`) or hidden — via the tray
 /// icon / in-app minimize button, both of which call `hide_panel` above, the
-/// only way this panel ever goes away short of quitting. app.js's low-battery
-/// warning (`showLowBatteryModal`) checks this first: visible → show the
-/// in-app modal as normal; hidden → fire a native OS notification instead
-/// (`show_low_battery_notification` below) rather than force the panel open,
-/// respecting the user's choice to keep Orion out of the way.
+/// only way this panel ever goes away short of quitting. Every "surface this
+/// while respecting panel visibility" flow checks this first: visible → show
+/// an in-app modal as normal; hidden → fire a native OS notification instead
+/// (`show_native_notification` below) rather than force the panel open,
+/// respecting the user's choice to keep Orion out of the way. Used by the
+/// low-battery warning and the Working Hours rain/snow reminder
+/// (`showLowBatteryModal`/`showWorkHoursReminder`, app.js).
 #[tauri::command]
 pub fn is_panel_visible(window: WebviewWindow) -> bool {
     window.is_visible().unwrap_or(false)
 }
 
-/// Native OS toast for the low-battery warning while the panel is hidden —
-/// Windows draws these bottom-right by default, so no manual positioning is
-/// needed. Returns the plugin's error (if any) as a string rather than
-/// swallowing it — there's no in-app fallback UI to show instead here (the
-/// whole point of this path is that the panel is intentionally hidden), but
-/// a silent failure was undiagnosable from outside; app.js logs whatever
-/// comes back to the devtools console. Also logged to stderr directly since
-/// devtools isn't always open.
+/// Native OS toast for any panel-hidden warning (low battery, the Working
+/// Hours rain/snow reminder) — Windows draws these bottom-right by default,
+/// so no manual positioning is needed. Returns the plugin's error (if any) as
+/// a string rather than swallowing it — there's no in-app fallback UI to show
+/// instead here (the whole point of this path is that the panel is
+/// intentionally hidden), but a silent failure was undiagnosable from
+/// outside; app.js logs whatever comes back to the devtools console. Also
+/// logged to stderr directly since devtools isn't always open.
 ///
 /// KNOWN WINDOWS LIMITATION (tauri-plugin-notification's own docs): toasts
 /// "only work for installed apps" — running via `tauri dev`'s unpackaged
@@ -378,7 +518,7 @@ pub fn is_panel_visible(window: WebviewWindow) -> bool {
 /// bundle (`tauri build`, then run the installed .exe, not the dev one) and
 /// re-test there before assuming the trigger logic itself is broken.
 #[tauri::command]
-pub fn show_low_battery_notification(app: AppHandle, title: String, body: String) -> Result<(), String> {
+pub fn show_native_notification(app: AppHandle, title: String, body: String) -> Result<(), String> {
     use tauri_plugin_notification::NotificationExt;
     app.notification()
         .builder()
@@ -386,7 +526,7 @@ pub fn show_low_battery_notification(app: AppHandle, title: String, body: String
         .body(body)
         .show()
         .map_err(|e| {
-            eprintln!("[low-battery notification] failed to show: {e}");
+            eprintln!("[native notification] failed to show: {e}");
             e.to_string()
         })
 }
@@ -458,11 +598,13 @@ pub async fn ble_submit_passkey(app: AppHandle, passkey: String, profile: Profil
     // On a genuine first-ever pair, `store::load` returns `None` and
     // `unwrap_or_default()` below reproduces the old all-zeroed behavior
     // exactly, so this changes nothing for that case.
+    let _guard = app.state::<crate::store::StoreLock>().acquire().await;
     let mut saved = crate::store::load(&app).await.unwrap_or_default();
     saved.paired = true;
     saved.device_name = device_name;
     saved.profile = profile;
     let _ = crate::store::save(&app, saved).await;
+    drop(_guard);
 
     // Hand off to the same supervisor that watches a launch-time reconnect
     // — if this first pairing's link ever drops, Orion should keep trying
@@ -505,6 +647,7 @@ pub async fn save_profile(app: AppHandle, input: ProfileInput) -> Result<(), Str
     // would hash an empty photo against Ori's real stored one and wipe it
     // out (same hazard `ble::reconnect`'s doc comment describes for the
     // text fields, just for the photo specifically).
+    let _guard = app.state::<crate::store::StoreLock>().acquire().await;
     let mut saved = crate::store::load(&app).await.unwrap_or_default();
     saved.paired = true;
     if let Some(name) = state.device_name.lock().await.clone() {
@@ -523,6 +666,7 @@ pub async fn save_profile(app: AppHandle, input: ProfileInput) -> Result<(), Str
     // to be silently discarded while the command still reported success, so
     // the UI showed "saved" for an edit that never actually persisted.
     crate::store::save(&app, saved).await?;
+    drop(_guard);
 
     // Best-effort immediate push, scoped to just Profile Info (+ Photo if
     // changed) — ble-protocol.md §6.0/§6.3. A failure here (most commonly
@@ -550,6 +694,7 @@ pub async fn save_timeoff(app: AppHandle, input: crate::ble::TimeOffInput) -> Re
     // untouched photo must keep whatever was cached before, or the next
     // reconnect's run_sync would hash an empty photo against Ori's real
     // stored one and wipe it out (see ble::reconnect's doc comment).
+    let _guard = app.state::<crate::store::StoreLock>().acquire().await;
     let mut saved = crate::store::load(&app).await.unwrap_or_default();
     saved.time_off.start = input.start;
     saved.time_off.end = input.end;
@@ -561,6 +706,7 @@ pub async fn save_timeoff(app: AppHandle, input: crate::ble::TimeOffInput) -> Re
     }
     // Propagated, not swallowed — see save_profile's comment on why.
     crate::store::save(&app, saved).await?;
+    drop(_guard);
 
     // Best-effort immediate push — a failure here just means Ori gets it on
     // the next reconnect's hash-manifest delta instead.
@@ -571,10 +717,12 @@ pub async fn save_timeoff(app: AppHandle, input: crate::ble::TimeOffInput) -> Re
 
 #[tauri::command]
 pub async fn clear_timeoff(app: AppHandle) -> Result<(), String> {
+    let _guard = app.state::<crate::store::StoreLock>().acquire().await;
     let mut saved = crate::store::load(&app).await.unwrap_or_default();
     saved.time_off = Default::default();
     // Propagated, not swallowed — see save_profile's comment on why.
     crate::store::save(&app, saved).await?;
+    drop(_guard);
 
     let state = app.state::<crate::ble::BleState>();
     let _ = crate::ble::clear_time_off(&state).await;
@@ -582,18 +730,20 @@ pub async fn clear_timeoff(app: AppHandle) -> Result<(), String> {
 }
 
 /// Mirrors ble-protocol.md §4's DeviceSettings CBOR map — every field
-/// optional, absent keys leave Ori's current state unchanged. Presence
-/// (`p`) and weather (`w`/`d`/`u`) have no caller yet — Teams/weather-API
-/// integration is Phase D — but the write path itself is real and ready.
+/// optional, absent keys leave Ori's current state unchanged. Weather
+/// (`w`/`d`/`u`) has no caller yet — weather-API integration is Phase D —
+/// but the write path itself is real and ready.
 /// Shortcut slot tokens ("1"/"2"/"3") aren't here — they ride their own
 /// `save_shortcuts` command below, which builds `DeviceSettingsWrite`
-/// directly, so this struct only needs the fields this command actually sets.
+/// directly, so this struct only needs the fields this command actually
+/// sets. `"f"` (ancs_filter) isn't here either — it's no longer a value the
+/// user picks directly; `notif_filter.rs` computes and pushes it on its own
+/// schedule, see `save_notif_filter_schedule` below.
 #[derive(Deserialize, Default)]
 pub struct DeviceSettingsInput {
-    p: Option<u8>,
     c: Option<u8>,
     h: Option<u8>,
-    f: Option<u8>,
+    k: Option<u8>,
     w: Option<u8>,
     d: Option<i32>,
     u: Option<u8>,
@@ -601,19 +751,21 @@ pub struct DeviceSettingsInput {
 
 #[tauri::command]
 pub async fn save_device_settings(app: AppHandle, settings: DeviceSettingsInput) -> Result<(), String> {
-    // Clock face / time format / notification filter must survive a save
-    // made while Ori isn't reachable (pc-app.md's Disconnected-screen
-    // settings) — persist locally first, same reasoning as save_shortcuts.
-    // Presence/weather/slots are excluded: presence and weather are
-    // ephemeral (never meaningfully "pending" — the next live push wins
-    // regardless), and slots already have their own always-on-reconnect
-    // push (run_sync) so they need no dirty-tracking of their own.
-    let touches_pending = settings.c.is_some() || settings.h.is_some() || settings.f.is_some();
+    // Clock face / time format / seek step must survive a save made while
+    // Ori isn't reachable (pc-app.md's Disconnected-screen settings) —
+    // persist locally first, same reasoning as save_shortcuts. Weather is
+    // excluded: it's ephemeral (never meaningfully "pending" — the next
+    // live push wins regardless).
+    let touches_pending = settings.c.is_some() || settings.h.is_some() || settings.k.is_some();
     if touches_pending {
+        // Scoped to just this load-mutate-save — released before the BLE
+        // write below, which can take a while and must not serialize every
+        // other Settings save behind it.
+        let _guard = app.state::<crate::store::StoreLock>().acquire().await;
         let mut saved = crate::store::load(&app).await.unwrap_or_default();
         if let Some(c) = settings.c { saved.pending_clock_face = Some(c); }
         if let Some(h) = settings.h { saved.pending_time_format = Some(h); }
-        if let Some(f) = settings.f { saved.pending_ancs_filter = Some(f); }
+        if let Some(k) = settings.k { saved.pending_seek_step_s = Some(k); }
         crate::store::save(&app, saved).await?;
     }
 
@@ -621,10 +773,9 @@ pub async fn save_device_settings(app: AppHandle, settings: DeviceSettingsInput)
     let result = crate::ble::set_device_settings(
         &state,
         crate::ble::cbor::DeviceSettingsWrite {
-            presence: settings.p,
             clock_face: settings.c,
             time_format: settings.h,
-            ancs_filter: settings.f,
+            seek_step_s: settings.k,
             weather_condition: settings.w,
             temperature: settings.d,
             temperature_unit: settings.u,
@@ -635,14 +786,31 @@ pub async fn save_device_settings(app: AppHandle, settings: DeviceSettingsInput)
 
     if touches_pending {
         if result.is_ok() {
-            // Delivered — clear whichever of the three this write covered so
-            // run_sync doesn't redundantly re-push an already-synced value
-            // on the next reconnect.
-            let mut saved = crate::store::load(&app).await.unwrap_or_default();
-            if settings.c.is_some() { saved.pending_clock_face = None; }
-            if settings.h.is_some() { saved.pending_time_format = None; }
-            if settings.f.is_some() { saved.pending_ancs_filter = None; }
-            crate::store::save(&app, saved).await?;
+            // Delivered — clear whichever of these this write covered, but
+            // only if the pending value on disk still matches exactly what
+            // was just delivered. A concurrent writer (most plausibly
+            // run_sync's own pending-flush on a reconnect racing this same
+            // Settings Save) could have already changed or cleared it in
+            // the meantime — re-loading fresh and checking before clearing
+            // avoids silently dropping whichever edit actually lost that
+            // race, instead of blindly nulling based on a stale in-memory
+            // assumption. run_sync's flush applies the identical check.
+            // Fresh guard, not the one from the persist block above (which
+            // was already released before the BLE write) — this is its own
+            // separate load-mutate-save critical section.
+            let _guard = app.state::<crate::store::StoreLock>().acquire().await;
+            if let Some(mut saved) = crate::store::load(&app).await {
+                if settings.c.is_some() && saved.pending_clock_face == settings.c {
+                    saved.pending_clock_face = None;
+                }
+                if settings.h.is_some() && saved.pending_time_format == settings.h {
+                    saved.pending_time_format = None;
+                }
+                if settings.k.is_some() && saved.pending_seek_step_s == settings.k {
+                    saved.pending_seek_step_s = None;
+                }
+                crate::store::save(&app, saved).await?;
+            }
         } else {
             // Not connected (or a transient failure) — the local edit is
             // already safely persisted above and run_sync flushes it on the
@@ -658,8 +826,8 @@ pub async fn save_device_settings(app: AppHandle, settings: DeviceSettingsInput)
 
 #[tauri::command]
 pub async fn read_device_settings(app: AppHandle) -> Result<crate::ble::cbor::DeviceSettingsRead, String> {
-    // Real read of char 000E on (re)connect (§6.4) — presence and weather
-    // are excluded, same as the real device response.
+    // Real read of char 000E on (re)connect (§6.4) — weather is excluded,
+    // same as the real device response.
     let state = app.state::<crate::ble::BleState>();
     crate::ble::read_device_settings(&app, &state).await
 }
@@ -700,11 +868,13 @@ pub async fn save_shortcuts(app: AppHandle, slots: Vec<String>, combos: Vec<Vec<
     // true here since shortcuts are pushed unconditionally on every sync
     // regardless of connection state right now (§6.3 "Shortcuts — always"),
     // so a deferred push isn't even a special case, just the normal path.
+    let _guard = app.state::<crate::store::StoreLock>().acquire().await;
     let mut saved = crate::store::load(&app).await.unwrap_or_default();
     saved.shortcuts = [slot1.clone(), slot2.clone(), slot3.clone()];
     saved.combos = [combo1.clone(), combo2.clone(), combo3.clone()];
     // Propagated, not swallowed — see save_profile's comment on why.
     crate::store::save(&app, saved).await?;
+    drop(_guard);
 
     // Favorite key combos never go over BLE (pc-app.md — host-side action
     // mapping is local to Orion) — just update the session cache
@@ -737,9 +907,12 @@ pub async fn unpair_phone(app: AppHandle) -> Result<(), String> {
     // address/serial_number/manufacture_date (store::SavedState::
     // phone_device_type's doc comment).
     crate::ble::clear_cached_phone_device_type(&state).await;
-    if let Some(mut saved) = crate::store::load(&app).await {
-        saved.phone_device_type = None;
-        let _ = crate::store::save(&app, saved).await;
+    {
+        let _guard = app.state::<crate::store::StoreLock>().acquire().await;
+        if let Some(mut saved) = crate::store::load(&app).await {
+            saved.phone_device_type = None;
+            let _ = crate::store::save(&app, saved).await;
+        }
     }
     result
 }
@@ -759,21 +932,142 @@ pub fn set_calendar_source(source: String) {
     let _ = source;
 }
 
-#[tauri::command]
-pub async fn oauth_google() {
-    // Phase D: system-browser OAuth + loopback redirect, token in Keychain/
-    // Credential Locker.
-    sleep(Duration::from_millis(1400)).await;
+/// Caps a field to `max_chars` Unicode scalar values (not bytes) — matches
+/// pc-app.md's "name/title/email ≤ 32 chars" UI-enforced limit, which
+/// `save_profile`'s frontend caller (`app.js`'s `cc()`) normally guarantees
+/// but this command bypasses entirely (its input is a file the user picked,
+/// not a form field) — so unlike `save_profile`, this needs its own
+/// enforcement rather than trusting the caller.
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    s.chars().take(max_chars).collect()
 }
 
-#[tauri::command]
-pub async fn oauth_microsoft() {
-    sleep(Duration::from_millis(1400)).await;
+/// Result of a successful `import_calendar_xml` — sent back to the frontend
+/// so the setup wizard / Calendar Source settings screen can show what was
+/// actually extracted and persisted, without a second round-trip read.
+#[derive(Serialize)]
+pub struct CalendarImportResult {
+    pub name: Option<String>,
+    pub email: Option<String>,
+    pub connected: bool,
+    pub meeting_count: usize,
+    // Whether the immediate post-import `calendar_import::refresh()` fetch
+    // actually succeeded — surfaced separately from `meeting_count` so a
+    // network failure (no internet during setup) reads as "couldn't check
+    // yet," not silently as "zero meetings today." The XML parse itself
+    // (name/email/ical_url extraction) is local and already succeeded by the
+    // time this field is set, so `connected` above stays true either way —
+    // Next isn't blocked, matching pc-app.md's "warn but let the user
+    // proceed" for setup-time network errors.
+    pub calendar_fetch_ok: bool,
 }
 
+/// Calendar Source — Outlook sharing-invitation XML import (pc-app.md's
+/// "Calendar data" section). Deliberately NOT Microsoft Graph/OAuth: Graph
+/// requires an Azure AD app registration, which needs tenant-admin consent
+/// this product can't assume every user's org will grant (the blocker that
+/// killed the originally-built Graph path, `tools/mock_orion_teams`) — the
+/// user shares their calendar via Outlook's own Share Calendar → "publish"
+/// mechanism instead, which hands back a `sharing_metadata.xml` requiring no
+/// app registration, no admin consent, and no OAuth token of any kind.
+///
+/// Opens a native file picker for that `.xml`, extracts Name/SmtpAddress/
+/// ICalUrl (`calendar_import::extract_xml_fields`), merges whatever fields
+/// it found into the persisted profile + calendar source (an XML missing a
+/// field — e.g. no ICalUrl — leaves that field as whatever was already
+/// there, same "don't overwrite with something we don't actually have"
+/// merge-carefully treatment `save_profile` uses for an untouched photo),
+/// then does one immediate `calendar_import::refresh()` so the caller gets a
+/// real `meeting_count` back rather than waiting up to 15 minutes for the
+/// next background poll tick.
+///
+/// Does NOT push the updated profile/meetings to Ori synchronously beyond
+/// the best-effort Profile Info write below — Meeting List specifically
+/// needs the full hash-manifest BEGIN/END session (`ble-protocol.md` §6.0),
+/// which today only runs at initial pairing and at reconnect (no live
+/// "resync while already connected" path exists yet for any field). The
+/// freshly-cached meetings this call populates are picked up automatically
+/// by the next `run_sync` regardless — same as any other pre-connect edit.
 #[tauri::command]
-pub fn oauth_signout(provider: String) {
-    let _ = provider;
+pub async fn import_calendar_xml(app: AppHandle) -> Result<CalendarImportResult, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("Sharing invitation XML", &["xml"])
+        .blocking_pick_file();
+    let Some(file_path) = picked else {
+        return Err("cancelled".into());
+    };
+    let path = file_path.into_path().map_err(|e| e.to_string())?;
+    let xml = std::fs::read_to_string(&path)
+        .map_err(|e| format!("couldn't read {}: {e}", path.display()))?;
+
+    let fields = crate::calendar_import::extract_xml_fields(&xml)?;
+
+    let _guard = app.state::<crate::store::StoreLock>().acquire().await;
+    let mut saved = crate::store::load(&app).await.unwrap_or_default();
+    if let Some(name) = &fields.name {
+        saved.profile.name = truncate_chars(name, 32);
+    }
+    if let Some(email) = &fields.email {
+        saved.profile.email = truncate_chars(email, 32);
+    }
+    if let Some(ical_url) = &fields.ical_url {
+        saved.calendar_ics_url = Some(ical_url.clone());
+    }
+
+    // Captured before store::save moves `saved` — avoids cloning the whole
+    // SavedState (which can carry up to ~950 KB of profile/Time Off photo
+    // data, store.rs's own doc comment) just to keep reading these four
+    // small string fields and one flag afterward. store::save() takes
+    // ownership specifically so callers aren't tempted to clone here.
+    let profile_input = ProfileInput {
+        name: saved.profile.name.clone(),
+        title: saved.profile.title.clone(),
+        email: saved.profile.email.clone(),
+        phone: saved.profile.phone.clone(),
+        photo_data_url: None,
+        photo_removed: false,
+    };
+    let calendar_connected = saved.calendar_ics_url.is_some();
+
+    // Propagated, not swallowed — see save_profile's identical comment on why.
+    crate::store::save(&app, saved).await?;
+    drop(_guard);
+
+    // Best-effort — a failure (most commonly "not connected yet," true for
+    // every first-run-setup call site) just means Ori gets it on the next
+    // (re)connect's sync instead, same as save_profile.
+    let state = app.state::<crate::ble::BleState>();
+    let _ = crate::ble::push_profile(&state, &profile_input).await;
+
+    let (meeting_count, calendar_fetch_ok) = match crate::calendar_import::refresh(&app).await {
+        Ok(n) => (n, true),
+        Err(_) => (0, false),
+    };
+
+    Ok(CalendarImportResult {
+        name: Some(profile_input.name).filter(|s| !s.is_empty()),
+        email: Some(profile_input.email).filter(|s| !s.is_empty()),
+        connected: calendar_connected,
+        calendar_fetch_ok,
+        meeting_count,
+    })
+}
+
+/// Reports the frontend's `navigator.geolocation` result (weather.rs) — called
+/// once per app launch, independent of pairing state (harmless before Ori is
+/// paired; the resolved location is just cached for whenever a connection
+/// exists). `lat`/`lon` are `Some` on a successful browser geolocation, or
+/// both `None` when the frontend's call was denied, timed out, or
+/// `navigator.geolocation` isn't available — weather.rs falls back to
+/// IP-based geolocation in that case. See `weather::set_location`'s own doc
+/// comment for the full resolution + immediate-fetch flow.
+#[tauri::command]
+pub async fn set_weather_location(app: AppHandle, lat: Option<f64>, lon: Option<f64>) -> Result<(), String> {
+    crate::weather::set_location(&app, lat, lon).await
 }
 
 /// Stops whichever `supervise_connection_loop` is currently running, if any
@@ -833,6 +1127,15 @@ pub async fn clear_all(app: AppHandle) {
     // is the only reset command the frontend calls.
     let state = app.state::<crate::ble::BleState>();
     abort_supervisor(&state).await;
+    // Held for this whole function, unlike every other command's tightly-
+    // scoped guard (which releases before any slow BLE/network step) —
+    // Clear All is a rare, deliberate, user-initiated "stop the world"
+    // action, and any Settings save that happened to be racing it would
+    // just get its data wiped a moment later anyway. Holding the lock the
+    // whole way through additionally guarantees no such save can land
+    // *after* `store::clear()` below and resurrect the file this was asked
+    // to wipe.
+    let _guard = app.state::<crate::store::StoreLock>().acquire().await;
     let saved_before = crate::store::load(&app).await;
     let _ = crate::ble::factory_reset(&state).await;
     if let Some(saved) = &saved_before {
@@ -924,6 +1227,7 @@ pub async fn set_autostart_enabled(app: AppHandle, enabled: bool) -> Result<(), 
 /// pending/offline-edit tracking needed, just a plain load-mutate-save.
 #[tauri::command]
 pub async fn set_language(app: AppHandle, code: String) -> Result<(), String> {
+    let _guard = app.state::<crate::store::StoreLock>().acquire().await;
     let mut saved = crate::store::load(&app).await.unwrap_or_default();
     saved.language = Some(code);
     crate::store::save(&app, saved).await

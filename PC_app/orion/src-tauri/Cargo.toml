@@ -18,12 +18,20 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+# "devtools" TEMPORARY DIAGNOSTIC (2026-07): release builds have no way to
+# open devtools without this feature, so there's been no visibility into
+# what's actually happening in the release-only zero-click bug — right-click
+# the panel (or Ctrl+Shift+I) once rebuilt and check the Console tab for
+# errors. Remove once the actual cause is confirmed.
+tauri = { version = "2", features = ["tray-icon", "image-png", "devtools"] }
 tauri-plugin-autostart = "2"
 # Native OS toast for the low-battery warning while the panel is hidden
 # (commands.rs's show_low_battery_notification) — Windows draws these
 # bottom-right by default, no manual positioning needed.
 tauri-plugin-notification = "2"
+# Native "pick a file" dialog for the Calendar Source XML import
+# (commands.rs's import_calendar_xml) — pc-app.md.
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["time", "sync", "rt", "macros"] }
@@ -39,6 +47,27 @@ base64 = "0.22.1"
 # WebP, TIFF, etc. — Windows GSMTC thumbnails are JPEG or PNG in practice
 # (BMP kept as a cheap fallback); no need for the rest.
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "bmp"] }
+# Calendar Source (pc-app.md): fetch + parse the Outlook sharing-invitation
+# XML and the ICS feed it points at. No Microsoft Graph/OAuth anywhere in
+# this app by design — see pc-app.md's "Calendar data" section for why.
+reqwest = "0.12"
+roxmltree = "0.21"
+# "recurrence" pulls in `rrule` transitively (reachable as icalendar::rrule::*).
+icalendar = { version = "0.17", features = ["recurrence"] }
+# chrono itself DOES need its own direct line despite being transitively
+# pulled in above — cargo only lets a crate reference another crate by name
+# (`chrono::...`) if it's a direct dependency, not merely present in the
+# build graph via icalendar/rrule (confirmed by `cargo check`: "unresolved
+# import `chrono`" without this line, even though the icalendar/rrule APIs
+# themselves already return/accept chrono types).
+chrono = "0.4"
+# Local holiday support (holiday.rs, ble-protocol.md §3/§4 char 0013):
+# computes Vietnamese Tet (lunar New Year) dates 1970-2100. MIT-licensed,
+# range 1901-02-19 to 2101-01-28 — comfortably covers what we need. Chosen
+# over hand-rolling astronomical lunisolar math (unlike Easter's simplified
+# ecclesiastical approximation, a real lunar/solar-position computation is
+# not something to reimplement and self-verify from scratch).
+chinese-lunisolar-calendar = "0.2.5"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # 0.62 (bumped from 0.61 2026-07): btleplug 0.12 itself pins `windows = "0.62"`,
@@ -69,6 +98,12 @@ windows = { version = "0.62", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Devices_Bluetooth",
     "Devices_Enumeration",
+    # Bluetooth-guard (pc-app.md, ble/bt_radio.rs): real "is the Bluetooth
+    # radio switched on" detection. Distinct from Devices_Bluetooth above —
+    # toggling Bluetooth off in Windows Settings still leaves the adapter
+    # hardware enumerable (btleplug/Devices_Bluetooth would keep reporting it
+    # present), so only Devices.Radios' own on/off state is reliable here.
+    "Devices_Radios",
     "Foundation",
     "Media_Control",
     "Storage_Streams",

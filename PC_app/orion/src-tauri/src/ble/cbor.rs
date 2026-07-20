@@ -6,10 +6,7 @@
 // `#![allow(dead_code)]`: nearly every schema here is live (KeyboardCommand,
 // HostVolumeState, DeviceSettingsRead, and SyncControlNotify's NACK path are
 // all consumed — media bridge, Device Settings read-back, and chunk-transfer
-// NACK detection respectively). `Meeting` (the single-item schema, as
-// opposed to `MeetingList`) is the one genuine exception — meetings are
-// always sent as an empty list until Phase D's calendar integration lands,
-// so no `Meeting` ever actually gets constructed yet.
+// NACK detection respectively).
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
@@ -53,6 +50,17 @@ pub struct Meeting<'a> {
 pub struct MeetingList<'a> {
     pub d: u64,
     pub m: &'a [Meeting<'a>],
+}
+
+/// Lunar Holiday List (char 0013, ble-protocol.md §3/§4) — Orion → Ori,
+/// chunked Write-No-Response, no BEGIN/END staging (same simple treatment as
+/// Media Album Art — Ori commits straight to NVS on chunk reassembly, no
+/// atomicity-with-other-items requirement). `e` is every Vietnamese Tet
+/// (lunar New Year) date from 1970 through 2100 as epoch-days (days since
+/// 1970-01-01) — see holiday.rs for how these are computed.
+#[derive(Serialize)]
+pub struct LunarHolidayList<'a> {
+    pub e: &'a [u16],
 }
 
 #[derive(Serialize)]
@@ -99,8 +107,8 @@ pub struct SyncControlNotify {
 }
 
 /// Orion → Ori — every section's SHA-256 (§6.2). No Device Settings entry —
-/// shortcuts/presence/weather are written outside the BEGIN/END pipeline and
-/// have no hash.
+/// shortcuts/weather are written outside the BEGIN/END pipeline and have no
+/// hash.
 #[derive(Serialize)]
 pub struct SyncManifestWrite {
     #[serde(with = "serde_bytes")]
@@ -125,8 +133,6 @@ pub struct SyncManifestNotify {
 /// Ori's current state unchanged (§4/§6.4).
 #[derive(Serialize, Default)]
 pub struct DeviceSettingsWrite {
-    #[serde(rename = "p", skip_serializing_if = "Option::is_none")]
-    pub presence: Option<u8>,
     #[serde(rename = "1", skip_serializing_if = "Option::is_none")]
     pub slot1: Option<String>,
     #[serde(rename = "2", skip_serializing_if = "Option::is_none")]
@@ -145,11 +151,30 @@ pub struct DeviceSettingsWrite {
     pub temperature: Option<i32>,
     #[serde(rename = "u", skip_serializing_if = "Option::is_none")]
     pub temperature_unit: Option<u8>,
+    #[serde(rename = "n", skip_serializing_if = "Option::is_none")]
+    pub is_night: Option<u8>,
+    #[serde(rename = "i", skip_serializing_if = "Option::is_none")]
+    pub intensity: Option<u8>,
+    /// holiday_data::Country on Ori's side: 0=None 1=US 2=VN 3=CA 4=GB 5=AU
+    /// 6=ES 7=MX 8=FR. Independent field (unlike the weather group above) —
+    /// applied whenever present.
+    #[serde(rename = "g", skip_serializing_if = "Option::is_none")]
+    pub holiday_country: Option<u8>,
+    /// Region within `holiday_country` (holiday_data.h's per-country region
+    /// code table) — 0=None. Same independent-field treatment as
+    /// holiday_country above.
+    #[serde(rename = "j", skip_serializing_if = "Option::is_none")]
+    pub holiday_region: Option<u8>,
+    /// Double-tap-seek step, in seconds (1-60, default 10, media-mode.md) —
+    /// NVS-persisted on Ori, write-only-on-change like clock_face/
+    /// time_format above.
+    #[serde(rename = "k", skip_serializing_if = "Option::is_none")]
+    pub seek_step_s: Option<u8>,
 }
 
 /// Ori → Orion, read result — only the NVS-persisted fields come back
-/// (presence/weather are ephemeral and excluded — Orion is their source of
-/// truth, §6.4). Also re-serialized as-is back to the frontend (Tauri IPC
+/// (weather is ephemeral and excluded — Orion is its source of truth, §6.4).
+/// Also re-serialized as-is back to the frontend (Tauri IPC
 /// response for the `read_device_settings` command) — `skip_serializing_if`
 /// keeps an absent field genuinely `undefined` on the JS side rather than
 /// `null`, matching app.js's `s.c!==undefined` checks.
@@ -175,6 +200,8 @@ pub struct DeviceSettingsRead {
     pub slot2: Option<String>,
     #[serde(rename = "3", skip_serializing_if = "Option::is_none")]
     pub slot3: Option<String>,
+    #[serde(rename = "k", skip_serializing_if = "Option::is_none")]
+    pub seek_step_s: Option<u8>,
     #[serde(rename = "s", skip_serializing_if = "Option::is_none")]
     pub serial_number: Option<String>,
     #[serde(rename = "b", skip_serializing_if = "Option::is_none")]

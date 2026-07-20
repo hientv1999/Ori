@@ -9,11 +9,12 @@
 // see the comment above `run_sync` below for why that's correct, not just
 // convenient).
 //
-// Presence and weather push have a real, working write path
-// (`set_device_settings`/`write_device_settings`) but no caller yet — Teams
-// presence and a weather-API poll are Phase D (pc-app.md), which hasn't
-// started. Ori's own documented fallback (Offline / hidden weather) is the
-// honest state in the meantime (ble-protocol.md §6.4).
+// Weather (weather.rs), local holidays (holiday.rs), and the Auto Do-Not-
+// Disturb schedule (notif_filter.rs) all ride this same Device Settings
+// write path (`set_device_settings`/`write_device_settings`) outside the
+// BEGIN/END pipeline, each on its own background poll — see
+// `start_post_sync_tasks` below for where every one of them pushes its
+// current value on every (re)connect.
 
 use crate::ble::{cbor, chunk, gatt, media, pairing};
 use btleplug::api::{
@@ -149,7 +150,7 @@ pub struct BleState {
     // meaningless across a restart — so they stay unpersisted: showing
     // "unknown"/blank for the few seconds before the next connect repopulates
     // them is honest rather than a real gap, same "don't show what you can't
-    // verify" policy the device itself uses for presence.
+    // verify" policy used elsewhere in this app.
     //
     // `cached_address`/`cached_serial_number`/`cached_manufacture_date` are
     // different: none of the three ever change for a given bond, so they're
@@ -208,6 +209,27 @@ pub struct BleState {
     // connection is never sent to whatever connects next).
     album_art_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     media_meta_push: Mutex<MediaMetaPushState>,
+    // Today's meetings as last fetched from the Calendar Source ICS feed
+    // (`calendar_import.rs`) — session memory only, same treatment as
+    // `shortcut_slots` above: populated by the periodic ICS poll task
+    // (independent of Ori's own connection state, so this is already fresh
+    // whenever a sync actually happens) and read by `run_sync` when building
+    // `MeetingList` instead of the placeholder empty list. Not persisted —
+    // there's nothing to gain from surviving an app restart when the next
+    // poll tick repopulates it within minutes, and Ori's own meeting list is
+    // RAM-only for the identical reason (meeting-list.md). Changes are also
+    // pushed live via `push_meetings` (pc-app.md's "resync whenever calendar
+    // data changes") — see `replace_cached_meetings`'s own doc comment.
+    cached_meetings: Mutex<Vec<crate::calendar_import::CachedMeeting>>,
+    // Live Bluetooth-radio state (`bt_radio::spawn_monitor`), `true` unless
+    // that monitor has observed the radio off/disabled. `supervise_connection_
+    // loop` (commands.rs) subscribes to this to pause reconnect attempts
+    // while it's `false` — a `watch` channel specifically so the loop can
+    // `.changed().await` rather than poll, same reasoning as `disconnect_tx`
+    // above. Starts `true` (optimistic) so a normal launch with Bluetooth
+    // already on never waits on the monitor's first tick before attempting
+    // its first reconnect.
+    pub bluetooth_available: tokio::sync::watch::Sender<bool>,
 }
 
 #[derive(Default)]
@@ -271,7 +293,29 @@ impl Default for BleState {
             last_synced: Mutex::default(),
             album_art_task: Mutex::default(),
             media_meta_push: Mutex::default(),
+            cached_meetings: Mutex::default(),
+            bluetooth_available: tokio::sync::watch::channel(true).0,
         }
+    }
+}
+
+impl BleState {
+    // Cross-module setter for `cached_meetings` — `calendar_import`'s
+    // periodic ICS poll task lives in a separate module and has no other
+    // way to reach this private field. `run_sync` below reads the field
+    // directly (same module, no accessor needed there).
+    //
+    // Returns whether the replacement actually changed anything (via
+    // `CachedMeeting`'s `PartialEq`) — `calendar_import::refresh()` uses
+    // this to decide whether a live `push_meetings` is worth attempting.
+    // Comparing under the same lock that performs the swap (rather than a
+    // separate read-then-write) means a concurrent caller can never
+    // observe — or race against — a half-updated cache.
+    pub async fn replace_cached_meetings(&self, meetings: Vec<crate::calendar_import::CachedMeeting>) -> bool {
+        let mut guard = self.cached_meetings.lock().await;
+        let changed = *guard != meetings;
+        *guard = meetings;
+        changed
     }
 }
 
@@ -326,10 +370,20 @@ pub async fn seed_cached_identity(state: &BleState, address: Option<String>, ser
 /// app session would make `run_sync` push the previous owner's shortcut
 /// tokens to Ori while the freshly-cleared store says firmware defaults,
 /// leaving the two disagreeing until the next reconnect flip-flops it back.
+///
+/// Same reasoning extends to `cached_meetings` (`calendar_import.rs`):
+/// `store::clear()` wipes `calendar_ics_url` from disk, but the *in-memory*
+/// cache calendar_import's poll task already fetched is a separate copy —
+/// without clearing it here too, a re-pair in this same app session would
+/// have `run_sync` push the previous owner's stale meeting list to the
+/// freshly-reset Ori, and it would sit there unnoticed until the next poll
+/// tick happens to find a genuine change to overwrite it with (or forever,
+/// if no calendar source is ever reconnected).
 pub async fn reset_session_caches(state: &BleState) {
     *state.shortcut_slots.lock().await = default_shortcut_slots();
     *state.favorite_combos.lock().await = [Vec::new(), Vec::new(), Vec::new()];
     clear_cached_identity(state).await;
+    state.replace_cached_meetings(Vec::new()).await;
 }
 
 /// Snapshot for the Ori Info/Stats modal (pc-app.md). Deliberately serves
@@ -1211,6 +1265,26 @@ async fn start_post_sync_tasks(app: &AppHandle, state: &BleState, peripheral: Pe
     // steady state (see `set_connection_priority`'s doc comment).
     set_connection_priority(&peripheral, ConnectionParameterPreset::PowerOptimized).await;
 
+    // Weather rides outside the BEGIN/END pipeline entirely (§6.4) and
+    // `run_sync` never touches it, so every (re)connect needs its own push
+    // here — best-effort, and a no-op until `weather.rs` has resolved a
+    // reading at least once (see `push_last_known`'s own doc comment).
+    let _ = crate::weather::push_last_known(app, state).await;
+
+    // Lunar Holiday List also rides outside BEGIN/END and needs its own
+    // per-(re)connect push, same reasoning as weather just above — best-
+    // effort, and a no-op until `holiday.rs` has resolved a country/table at
+    // least once this session (mirrors `push_last_known`'s own guard).
+    let _ = crate::holiday::push_last_known(app, state).await;
+
+    // Auto Do-Not-Disturb (pc-app.md, notif_filter.rs) — also outside
+    // BEGIN/END, and also unconditional every (re)connect: Ori's actual
+    // ancs_filter may be stale after any amount of time disconnected (the
+    // schedule, Working Hours, or just the wall clock crossing a boundary
+    // could all have changed), so recompute and re-send regardless of
+    // whether it matches what was last computed.
+    let _ = crate::notif_filter::push_last_known(app, state).await;
+
     // Takes `AppHandle` (not `&BleState` — a Tauri-managed-state borrow
     // isn't `'static`) and re-reads `state.shortcut_slots` from it on every
     // `shortcut` dispatch, so a slot changed mid-connection is picked up
@@ -1346,6 +1420,18 @@ const ART_METADATA_WAIT_TIMEOUT: Duration = Duration::from_millis(1500);
 /// for the full stall.
 const METADATA_WRITE_TIMEOUT: Duration = Duration::from_millis(2000);
 
+/// Generic timeout for a one-shot characteristic read on an already-
+/// connected peripheral — same order of magnitude as
+/// `ENCRYPTION_PROBE_TIMEOUT`, guarding a failure mode this stack has
+/// already proven real (see `METADATA_WRITE_TIMEOUT`'s doc comment for the
+/// write-side equivalent). Bounds `check_firmware_version`'s and
+/// `phone_bond_watcher`'s initial reads, neither of which previously had any
+/// timeout at all — a hang in the former just misses a version check, but a
+/// hang in the latter previously blocked it from ever reaching its own
+/// subscribe/notify loop, silently losing every live Phone Bond Status
+/// update (calls, messages, battery, signal bars) for the whole connection.
+const DEVICE_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Per-connection now-playing state `check_and_push_now_playing` tracks
 /// across calls, however it's triggered (a GSMTC change ping or, absent
 /// that, the fallback poll) — pulled into its own struct so `media_bridge`
@@ -1393,8 +1479,11 @@ async fn check_and_push_now_playing(
     match media::now_playing().await {
         Ok(Some(now)) => {
             let identity_changed = (now.title.as_str(), now.artist.as_str()) != (np.last_track.0.as_str(), np.last_track.1.as_str());
-            let track = (now.title.clone(), now.artist.clone(), now.playing);
-            if track != np.last_track {
+            // Compared borrowed, not cloned, so the common "nothing changed"
+            // tick costs no allocation — only clone into np.last_track once
+            // this confirms a real change (track OR play/pause state).
+            let track_changed = identity_changed || now.playing != np.last_track.2;
+            if track_changed {
                 if identity_changed {
                     // Kill any transfer still streaming the track we're
                     // LEAVING right now — before the metadata push, and
@@ -1404,7 +1493,7 @@ async fn check_and_push_now_playing(
                     // can't just wait for that function to get around to it.
                     abort_album_art_task(app).await;
                 }
-                np.last_track = track;
+                np.last_track = (now.title.clone(), now.artist.clone(), now.playing);
                 np.last_pushed_position = now.position_s.map(|p| (p, now_epoch_secs()));
                 let payload = encode_media_metadata_payload(&now, true);
                 // Metadata (mailbox-coalesced, `spawn_metadata_push`) and art
@@ -1951,6 +2040,29 @@ async fn run_album_art_push(state: &BleState, peripheral: &Peripheral, chr_art: 
     let _ = write_chunked_no_response(peripheral, chr_art, &jpeg).await;
 }
 
+/// Pushes the Lunar Holiday List (char 0013, ble-protocol.md §3/§4/§6.4) —
+/// `holiday.rs`'s computed Vietnamese Tet epoch-day table. No BEGIN/END
+/// staging, no manifest — same simple treatment as Media Album Art. Called
+/// once from `start_post_sync_tasks` on every (re)connect, re-sending the
+/// same session-cached table each time (holiday.rs computes it once, not
+/// per push) — Ori caches it in NVS, so this only needs to land successfully
+/// once for Tet to render fully offline forever after. Best-effort: a
+/// failure here (most commonly "not connected right now") just means the
+/// next reconnect's push tries again with the same data.
+pub async fn push_lunar_holidays(state: &BleState, epoch_days: &[u16]) -> Result<(), String> {
+    let peripheral = require_peripheral(state).await?;
+    let chr = find_char(&peripheral, gatt::CHR_LUNAR_HOLIDAY_LIST)?;
+    let payload = cbor::encode(&cbor::LunarHolidayList { e: epoch_days });
+
+    // Same "don't let two chunk streams race on the same link" guard as
+    // spawn_album_art_push — a chunk-gap NACK (§5/§8) carries no
+    // characteristic identifier, so this must not overlap another
+    // chunked/BEGIN-END write. Payload is a few hundred bytes at most
+    // (ble-protocol.md §10), so holding the lock briefly here is harmless.
+    let _sync_guard = state.sync_lock.lock().await;
+    write_chunked_no_response(&peripheral, &chr, &payload).await
+}
+
 #[derive(Serialize, Clone)]
 struct FwUpdateAvailableEvent {
     version: &'static str,
@@ -1969,7 +2081,7 @@ const LATEST_FIRMWARE_VERSION: &str = "1.0.0";
 /// `listen('fw-update-available', ...)` hook.
 async fn check_firmware_version(app: AppHandle, peripheral: Peripheral) {
     let Ok(chr) = find_char(&peripheral, gatt::CHR_FW_REVISION) else { return };
-    let Ok(raw) = peripheral.read(&chr).await else { return };
+    let Ok(Ok(raw)) = tokio::time::timeout(DEVICE_READ_TIMEOUT, peripheral.read(&chr)).await else { return };
     let Ok(version) = String::from_utf8(raw) else { return };
     let version = version.trim().to_string();
     // Cached for the Ori Info/Stats modal (`get_ori_info`) — this is the
@@ -2014,6 +2126,7 @@ async fn maybe_persist_phone_device_type(app: &AppHandle, status: &cbor::PhoneBo
     }
     *cached = Some(status.d.clone());
     drop(cached);
+    let _guard = app.state::<crate::store::StoreLock>().acquire().await;
     if let Some(mut saved) = crate::store::load(app).await {
         saved.phone_device_type = Some(status.d.clone());
         let _ = crate::store::save(app, saved).await;
@@ -2030,7 +2143,7 @@ async fn phone_bond_watcher(app: AppHandle, peripheral: Peripheral) {
     if peripheral.subscribe(&chr).await.is_err() {
         return;
     }
-    if let Ok(raw) = peripheral.read(&chr).await {
+    if let Ok(Ok(raw)) = tokio::time::timeout(DEVICE_READ_TIMEOUT, peripheral.read(&chr)).await {
         if let Ok(status) = cbor::decode::<cbor::PhoneBondStatus>(&raw) {
             maybe_persist_phone_device_type(&app, &status).await;
             let _ = app.emit("phone-bond-status", status);
@@ -2422,36 +2535,66 @@ async fn run_sync(
     )
     .await?;
 
-    // Flush any clock-face/time-format/notification-filter edit made while
-    // Ori was unreachable (pc-app.md's Disconnected-screen settings,
-    // store::SavedState::pending_clock_face/pending_time_format/
-    // pending_ancs_filter) — this is the first point after reconnecting
-    // where a BLE write can land. Unlike shortcuts above, which are always
-    // pushed regardless of local state, these three are normally
-    // push-on-change-only (§6.3); a pending value here IS that change,
-    // simply deferred from when the user made it to now that Ori can hear
-    // it. Ordinary "nothing pending" reconnects skip this entirely — the
-    // three fields keep whatever Ori itself already has, read back by the
-    // frontend's own read_device_settings call once this sync completes.
-    if let Some(mut saved) = crate::store::load(app).await {
-        let has_pending = saved.pending_clock_face.is_some()
-            || saved.pending_time_format.is_some()
-            || saved.pending_ancs_filter.is_some();
+    // Flush any clock-face/time-format/seek-step edit made while Ori was
+    // unreachable (pc-app.md's Disconnected-screen settings, store::
+    // SavedState::pending_clock_face/pending_time_format/pending_seek_step_s)
+    // — this is the first point after reconnecting where a BLE write can
+    // land. Unlike shortcuts above, which are always pushed regardless of
+    // local state, these three are normally push-on-change-only (§6.3); a
+    // pending value here IS that change, simply deferred from when the user
+    // made it to now that Ori can hear it. Ordinary "nothing pending"
+    // reconnects skip this entirely — the fields keep whatever Ori itself
+    // already has, read back by the frontend's own read_device_settings
+    // call once this sync completes. Notification filter is no longer part
+    // of this flush — `notif_filter::push_last_known` (start_post_sync_tasks)
+    // always recomputes and pushes its own current value unconditionally,
+    // so there's no pending edit to carry across a disconnect for it anymore.
+    if let Some(saved) = crate::store::load(app).await {
+        let pending_clock_face = saved.pending_clock_face;
+        let pending_time_format = saved.pending_time_format;
+        let pending_seek_step_s = saved.pending_seek_step_s;
+        let has_pending = pending_clock_face.is_some() || pending_time_format.is_some() || pending_seek_step_s.is_some();
         if has_pending {
-            write_device_settings(
+            // Best-effort (not `?`) — a failure pushing these inconsequential
+            // background settings must not abort the rest of this sync
+            // (profile/meetings/Time Off), consistent with weather/holiday/
+            // notif_filter's already best-effort treatment of their own
+            // outside-BEGIN/END pushes a few lines up in start_post_sync_tasks.
+            let write_result = write_device_settings(
                 peripheral,
                 &cbor::DeviceSettingsWrite {
-                    clock_face: saved.pending_clock_face,
-                    time_format: saved.pending_time_format,
-                    ancs_filter: saved.pending_ancs_filter,
+                    clock_face: pending_clock_face,
+                    time_format: pending_time_format,
+                    seek_step_s: pending_seek_step_s,
                     ..Default::default()
                 },
             )
-            .await?;
-            saved.pending_clock_face = None;
-            saved.pending_time_format = None;
-            saved.pending_ancs_filter = None;
-            let _ = crate::store::save(app, saved).await;
+            .await;
+            if write_result.is_ok() {
+                // Re-load fresh and clear only whichever field still holds
+                // exactly the value just delivered — a concurrent Settings
+                // Save (save_device_settings, commands.rs) could have queued
+                // a NEWER edit while this write was in flight; blindly
+                // nulling based on the snapshot taken before the write risks
+                // silently dropping that newer edit (and, since store::save
+                // writes the whole struct, reverting any other field changed
+                // in the meantime too). save_device_settings's own clear-on-
+                // success path applies the identical check and the identical
+                // lock (`StoreLock`) around it.
+                let _guard = app.state::<crate::store::StoreLock>().acquire().await;
+                if let Some(mut fresh) = crate::store::load(app).await {
+                    if fresh.pending_clock_face == pending_clock_face {
+                        fresh.pending_clock_face = None;
+                    }
+                    if fresh.pending_time_format == pending_time_format {
+                        fresh.pending_time_format = None;
+                    }
+                    if fresh.pending_seek_step_s == pending_seek_step_s {
+                        fresh.pending_seek_step_s = None;
+                    }
+                    let _ = crate::store::save(app, fresh).await;
+                }
+            }
         }
     }
 
@@ -2465,11 +2608,10 @@ async fn run_sync(
         e: &profile.email,
         p: &profile.phone,
     });
-    // No calendar source connected yet at this point in the flow — honestly
-    // empty, not filled with placeholder data (meeting-list.md's own
-    // fallback for an empty list is "No meetings today", which is the truth
-    // here). The photo, though, is real if the user picked one in the
-    // wizard's crop tool.
+    // The profile photo is real if the user picked one (wizard's crop tool
+    // or Settings > Profile) — see the meetings comment a few lines below
+    // for the equivalent "honestly empty until a calendar source exists"
+    // treatment on that side.
     //
     // `decode_cached_photo` self-heals rather than aborting the whole sync
     // (the old `decode_profile_photo(url)?`) on a bad decode here: unlike a
@@ -2484,12 +2626,20 @@ async fn run_sync(
     // (and clearing the persisted copy just below) lets the rest of
     // profile/meetings/Time Off still sync successfully.
     let (photo_bytes, photo_corrupted) = decode_cached_photo(decode_profile_photo, &profile.photo_data_url).await;
-    // Still honestly empty — no calendar source exists yet to have real
-    // data from (Phase D). Once it does, this needs the same "use cached/
-    // fresh real data, not a hardcoded placeholder" treatment Time Off
-    // just got below, or a reconnect would silently erase real meetings
-    // the same way it used to erase Time Off.
-    let meetings_bytes = cbor::encode(&cbor::MeetingList { d: local_midnight_epoch(), m: &[] });
+    // Whatever calendar_import's periodic ICS poll last cached — empty
+    // (never polled yet, no calendar source configured, or the last poll
+    // found nothing today) is honestly represented as an empty list, same
+    // as Time Off's "nothing set" default just below. `o` (organizer) is
+    // always "" — pc-app.md's Calendar data section: published/shared
+    // Exchange ICS feeds strip organizer/attendee data entirely, there is
+    // no source for this field on this calendar path.
+    let cached = state.cached_meetings.lock().await;
+    let meetings: Vec<cbor::Meeting> = cached
+        .iter()
+        .map(|m| cbor::Meeting { i: &m.uid, s: m.start, e: m.end, t: &m.title, l: &m.location, o: "" })
+        .collect();
+    let meetings_bytes = cbor::encode(&cbor::MeetingList { d: local_midnight_epoch(), m: &meetings });
+    drop(cached);
 
     let (time_off_photo_bytes, time_off_photo_corrupted) =
         decode_cached_photo(decode_time_off_photo, &time_off.photo_data_url).await;
@@ -2506,6 +2656,7 @@ async fn run_sync(
     // identically. A `None` load (nothing on disk yet, e.g. mid first-pair,
     // or the file was already cleared) just means there's nothing to correct.
     if photo_corrupted || time_off_photo_corrupted {
+        let _guard = app.state::<crate::store::StoreLock>().acquire().await;
         if let Some(mut saved) = crate::store::load(app).await {
             if photo_corrupted {
                 saved.profile.photo_data_url = None;
@@ -2598,6 +2749,7 @@ async fn run_sync(
     // after the first successful sync each session this is just an
     // equality check, not a disk write (`BleState`'s own doc comment).
     if address_changed {
+        let _guard = app.state::<crate::store::StoreLock>().acquire().await;
         if let Some(mut saved) = crate::store::load(app).await {
             saved.address = Some(address);
             let _ = crate::store::save(app, saved).await;
@@ -2606,10 +2758,15 @@ async fn run_sync(
     Ok(())
 }
 
-/// Live-reads Device Settings from Ori (char 000E) to recover the six
-/// NVS-persisted fields — clock_face, time_format, ancs_filter, and the
-/// three shortcut slot tokens (ble-protocol.md §6.4). Presence/weather are
-/// excluded from Ori's own read response — Orion is their source of truth.
+/// Live-reads Device Settings from Ori (char 000E) to recover the NVS-
+/// persisted fields the frontend actually consumes — clock_face,
+/// time_format, seek_step_s, and the three shortcut slot tokens
+/// (ble-protocol.md §6.4). `ancs_filter` still comes back too (it's part of
+/// the same wire struct, returned generically below), but nothing on the
+/// frontend reads it anymore — `notif_filter.rs` decides that value on its
+/// own schedule now, so there's no "current setting" left to restore into
+/// the UI. Weather is excluded from Ori's own read response entirely —
+/// Orion is its source of truth.
 /// The frontend calls this on every `setConn('on')` transition
 /// (`readSlotsFromDevice()` in app.js) and once when the Ori Info modal opens
 /// (`refreshOriInfoModal()`) — live signal bars *while the modal stays open*
@@ -2643,6 +2800,7 @@ pub async fn read_device_settings(app: &AppHandle, state: &BleState) -> Result<c
         }
     }
     if let Some((sn, mfg)) = to_persist {
+        let _guard = app.state::<crate::store::StoreLock>().acquire().await;
         if let Some(mut saved) = crate::store::load(app).await {
             if sn.is_some() {
                 saved.serial_number = sn;
@@ -2667,17 +2825,38 @@ async fn write_device_settings(peripheral: &Peripheral, settings: &cbor::DeviceS
 
 /// Writes Device Settings (char 000E) to Ori outside the BEGIN/END pipeline
 /// — applied immediately (ble-protocol.md §6.4). Orion can write any subset
-/// of fields in one call: presence and weather are ephemeral (pushed on
-/// every (re)connect and on every change once a real source exists);
-/// shortcuts/clock face/time format/ANCS filter are user-changed and
-/// NVS-persisted on Ori. Used by the `save_device_settings` command — ready
-/// for Phase D's Teams-presence and weather-API polling to call with real
-/// values once those sources exist; until then, simply never being called
-/// for `p`/`w`/`d`/`u` leaves Ori on its own honest fallback (Offline /
-/// hidden weather), matching §6.4's "don't show what can't be verified"
+/// of fields in one call: weather is ephemeral (pushed on every (re)connect
+/// and on every change once a real source exists); shortcuts/clock face/time
+/// format/ANCS filter are user-changed and NVS-persisted on Ori. Used by the
+/// `save_device_settings` command — ready for Phase D's weather-API polling
+/// to call with real values once that source exists; until then, simply
+/// never being called for `w`/`d`/`u` leaves Ori on its own honest fallback
+/// (hidden weather), matching §6.4's "don't show what can't be verified"
 /// policy.
 pub async fn set_device_settings(state: &BleState, settings: cbor::DeviceSettingsWrite) -> Result<(), String> {
     let peripheral = require_peripheral(state).await?;
+
+    // try_lock, not lock().await — same reasoning as push_profile/
+    // push_time_off/push_meetings' identical guard. This characteristic
+    // backs several independent background pushes (weather's 15-min poll,
+    // notif_filter's 60s tick, holiday's connect-time push) plus every
+    // Settings Save, previously with NO serialization against a bulk
+    // BEGIN/END sync using the same link — a write landing mid-sync could
+    // error out and (via run_sync's own `?` on its pending-flush call)
+    // abort an entire reconnect over an inconsequential background push.
+    // Returning Err (not push_profile's silent Ok) on contention matters
+    // here specifically because save_device_settings (commands.rs) branches
+    // on this Result to decide whether to clear a pending clock-face/time-
+    // format edit — treating a skipped write as success would silently drop
+    // that edit. Every field this characteristic carries is re-sent on its
+    // own schedule regardless (clock_face/time_format via the pending-flush
+    // + read-back path; weather/holiday_country/holiday_region/
+    // notif_filter's effective level via their own push_last_known), so a
+    // caller that ignores this error (most do) loses nothing either way.
+    let Ok(_sync_guard) = state.sync_lock.try_lock() else {
+        return Err("sync in progress".to_string());
+    };
+
     write_device_settings(&peripheral, &settings).await?;
 
     // Session memory for the media bridge's `shortcut` dispatch (§12) — no
@@ -2851,6 +3030,79 @@ pub async fn clear_time_off(state: &BleState) -> Result<(), String> {
         &TimeOffInput { start: 0, end: 0, destination: String::new(), photo_data_url: None, photo_removed: true },
     )
     .await
+}
+
+/// Pushes an updated Meeting List the same way `push_time_off` pushes a
+/// Time Off update — its own BEGIN/END session scoped to just Meeting List
+/// (+ Time Sync, always). Called from `calendar_import::refresh()` only
+/// after it has already determined the cache actually changed
+/// (`BleState::replace_cached_meetings`), so — same reasoning as
+/// `push_profile`'s doc comment — there's no manifest round-trip here
+/// either: the caller already knows this push is needed.
+///
+/// Reads `state.cached_meetings` directly rather than taking the meetings
+/// as a parameter — `refresh()` had already moved its own copy into that
+/// cache via `replace_cached_meetings` by the time this is called, so
+/// accepting a separate parameter here only ever meant the caller had to
+/// clone its list first to keep a copy for itself. Reading the
+/// just-stored cache back costs a lock, not an allocation.
+///
+/// `o` (organizer) is always sent as `""` — published/shared Exchange ICS
+/// feeds strip organizer data entirely; see `calendar_import.rs`'s own doc
+/// comment on `fetch_meetings`.
+pub async fn push_meetings(state: &BleState) -> Result<(), String> {
+    let peripheral = require_peripheral(state).await?;
+
+    let chr_status = find_char(&peripheral, gatt::CHR_DEVICE_STATUS)?;
+    let chr_time = find_char(&peripheral, gatt::CHR_TIME_SYNC)?;
+    let chr_meetings = find_char(&peripheral, gatt::CHR_MEETING_LIST)?;
+    let chr_syncctl = find_char(&peripheral, gatt::CHR_SYNC_CONTROL)?;
+
+    // try_lock, not lock().await — see push_profile's identical comment.
+    // The cache is already updated regardless of whether this push lands
+    // (calendar_import::refresh() updates it before calling this), so
+    // skipping cleanly when a bulk sync already holds the link costs
+    // nothing: the next reconnect's `run_sync` reads the same fresh cache.
+    let Ok(_sync_guard) = state.sync_lock.try_lock() else {
+        return Ok(());
+    };
+
+    peripheral.subscribe(&chr_status).await.map_err(|e| e.to_string())?;
+    let mut notifications: NotifyStream = peripheral.notifications().await.map_err(|e| e.to_string())?;
+
+    let time_sync_bytes = cbor::encode(&cbor::TimeSync {
+        u: now_epoch_secs(),
+        z: &local_posix_tz(),
+        x: process_clock_ms(),
+    });
+    // Bound to a variable (not chained inline) — cbor::Meeting borrows
+    // &str slices out of the cached CachedMeeting values, so the guard has
+    // to outlive meeting_items/meetings_bytes, not just the .collect() call.
+    let cached_meetings = state.cached_meetings.lock().await;
+    let meeting_items: Vec<cbor::Meeting> = cached_meetings
+        .iter()
+        .map(|m| cbor::Meeting { i: &m.uid, s: m.start, e: m.end, t: &m.title, l: &m.location, o: "" })
+        .collect();
+    let meetings_bytes = cbor::encode(&cbor::MeetingList { d: local_midnight_epoch(), m: &meeting_items });
+    drop(cached_meetings);
+
+    let total = time_sync_bytes.len() as u64 + meetings_bytes.len() as u64;
+
+    peripheral
+        .write(&chr_syncctl, &cbor::encode(&cbor::SyncControlBegin::new(MID_SESSION_SEQ, total)), WriteType::WithResponse)
+        .await
+        .map_err(|e| e.to_string())?;
+    peripheral
+        .write(&chr_time, &time_sync_bytes, WriteType::WithResponse)
+        .await
+        .map_err(|e| e.to_string())?;
+    write_chunked(&peripheral, &chr_meetings, &meetings_bytes, &mut notifications, &chr_syncctl).await?;
+    peripheral
+        .write(&chr_syncctl, &cbor::encode(&cbor::SyncControlEnd::new(MID_SESSION_SEQ)), WriteType::WithResponse)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    wait_for_sync_complete(&mut notifications, &chr_status, SYNC_COMPLETE_TIMEOUT).await
 }
 
 /// Drains any Sync Control notification already queued on `notifications`
@@ -3203,11 +3455,65 @@ fn local_posix_tz() -> String {
 
 /// Epoch (UTC) of this machine's local midnight, today — see
 /// tools/mock_orion_ble.py's `_local_midnight_epoch()` for why this must be
-/// local-wall-clock midnight, not UTC midnight.
-fn local_midnight_epoch() -> u64 {
+/// local-wall-clock midnight, not UTC midnight. `pub(crate)`: also used by
+/// `calendar_import`'s poll task to compute the same "today" window
+/// `MeetingList.d` uses, so a meeting just inside/outside local midnight is
+/// judged consistently by both.
+pub(crate) fn local_midnight_epoch() -> u64 {
     let offset_secs = i64::from(utc_offset_minutes()) * 60; // UTC = local + offset_secs
     let now = now_epoch_secs() as i64;
     let local_now = now - offset_secs;
     let local_midnight = local_now - local_now.rem_euclid(86400);
     (local_midnight + offset_secs) as u64
+}
+
+/// (minutes since local midnight, weekday Mon=0..Sun=6) for right now —
+/// `reminders.rs`'s Working Hours check needs local wall-clock time and a
+/// local weekday, computed the same offset-subtraction way
+/// `local_midnight_epoch()` does rather than pulling in `chrono::Local`
+/// (which nothing else in this codebase uses for local time). 1970-01-01 was
+/// a Thursday (Mon=0..Sun=6 index 3), so `epoch_day + 3` rebases the weekday
+/// origin from Thursday to Monday before reducing mod 7.
+pub(crate) fn local_now_minutes_and_weekday() -> (u16, u8) {
+    let epoch_day = local_epoch_day();
+    let offset_secs = i64::from(utc_offset_minutes()) * 60;
+    let local_now = now_epoch_secs() as i64 - offset_secs;
+    let minutes_of_day = (local_now.rem_euclid(86400) / 60) as u16;
+    let weekday_mon0 = (epoch_day + 3).rem_euclid(7) as u8;
+    (minutes_of_day, weekday_mon0)
+}
+
+/// Local calendar day, as a plain days-since-1970-01-01 count — `reminders.rs`
+/// uses this (not the epoch second) to dedupe "already handled today,"
+/// since it's stable across the whole local calendar day regardless of what
+/// time within it the check runs.
+pub(crate) fn local_epoch_day() -> i64 {
+    let offset_secs = i64::from(utc_offset_minutes()) * 60;
+    let local_now = now_epoch_secs() as i64 - offset_secs;
+    local_now.div_euclid(86400)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::calendar_import::CachedMeeting;
+
+    fn meeting(uid: &str, start: u64) -> CachedMeeting {
+        CachedMeeting { uid: uid.into(), start, end: start + 1800, title: "Standup".into(), location: String::new() }
+    }
+
+    // BleState::replace_cached_meetings gates whether calendar_import::
+    // refresh() bothers attempting a live push_meetings — these pin down
+    // exactly what counts as "changed" so that gate can't silently start
+    // pushing on every poll tick (defeating the point of comparing first)
+    // or silently stop pushing on a real change.
+    #[tokio::test]
+    async fn replace_cached_meetings_detects_change() {
+        let state = BleState::default();
+        assert!(state.replace_cached_meetings(vec![meeting("a", 100)]).await, "empty -> non-empty must be a change");
+        assert!(!state.replace_cached_meetings(vec![meeting("a", 100)]).await, "identical content must not be a change");
+        assert!(state.replace_cached_meetings(vec![meeting("a", 200)]).await, "same uid, different start must be a change");
+        assert!(state.replace_cached_meetings(Vec::new()).await, "non-empty -> empty must be a change");
+        assert!(!state.replace_cached_meetings(Vec::new()).await, "empty -> empty must not be a change");
+    }
 }

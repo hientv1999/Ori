@@ -690,7 +690,14 @@ mod imp {
         let last_session_id = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
 
         if let Ok(session) = mgr.GetCurrentSession() {
-            *last_session_id.lock().unwrap() = session_identity(&session);
+            // `unwrap_or_else(PoisonError::into_inner)` recovers the guard
+            // even if some other holder of this lock ever panicked — this
+            // Mutex only ever wraps a plain `Option<String>` behind a
+            // trivial assignment/comparison (no I/O, nothing expected to
+            // panic), so poisoning would be surprising, but there's no
+            // reason to propagate an unrelated panic into this WinRT event
+            // callback when recovering the last-known value is just as valid.
+            *last_session_id.lock().unwrap_or_else(|e| e.into_inner()) = session_identity(&session);
             subscribe_session_events(&session, &tx);
         }
 
@@ -701,7 +708,8 @@ mod imp {
             move |_, _| {
                 if let Ok(session) = mgr_for_handler.GetCurrentSession() {
                     let id = session_identity(&session);
-                    let mut last = last_session_id_for_handler.lock().unwrap();
+                    // See the identical PoisonError recovery above.
+                    let mut last = last_session_id_for_handler.lock().unwrap_or_else(|e| e.into_inner());
                     // `id.is_none()` falls back to always re-subscribing —
                     // if the identity can't be read this time, we can't
                     // safely claim "same session, skip," and silently never

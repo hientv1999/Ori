@@ -11,9 +11,8 @@
 // sync, ble-protocol.md §6.3, so a blank/default cache here would silently
 // reset the user's chosen icons on every reconnect).
 //
-// Deliberately small otherwise: no calendar sign-in — that's a separate,
-// later piece (pc-app.md's "Clear All" describes a broader local cache this
-// will eventually grow into). Bond address/serial number/manufacture date
+// Deliberately small otherwise (pc-app.md's "Clear All" describes a broader
+// local cache this will eventually grow into). Bond address/serial number/manufacture date
 // (below) were added once the Ori Info modal needed to show them without a
 // live connection — see those fields' own doc comment.
 
@@ -23,6 +22,90 @@ use tauri::{AppHandle, Manager};
 
 fn default_shortcuts() -> [String; 3] {
     ["vol-mute".into(), "mic-mute".into(), "screenshot".into()]
+}
+
+/// Working Hours (pc-app.md) — purely an Orion-local setting, never pushed
+/// to Ori over BLE: schedule data only, no enable of its own. Drives both
+/// Weather Alert's (`WeatherAlert` below) end-of-day rain/snow reminder
+/// (`reminders.rs`) and Notification Filter's Auto Do-Not-Disturb schedule
+/// (`NotificationFilterSchedule` below, `notif_filter.rs`) — a settings-
+/// screen row on its own, but not a standalone alert.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct WorkHours {
+    pub start_minutes: u16, // minutes since local midnight
+    pub end_minutes: u16,
+    pub days: [bool; 7], // Mon=0 .. Sun=6 — matches central.rs's local_now_minutes_and_weekday()
+}
+
+impl Default for WorkHours {
+    fn default() -> Self {
+        Self {
+            start_minutes: 8 * 60,       // 8:00 AM
+            end_minutes: 16 * 60 + 30,   // 4:30 PM
+            days: [true, true, true, true, true, false, false], // Mon-Fri
+        }
+    }
+}
+
+/// Weather Alert (pc-app.md) — the rain/snow reminder's own enable +
+/// timing, split out from `WorkHours` so Working Hours can be pure schedule
+/// data. `enabled` starts `true` — every Alert defaults on (matches
+/// `LowBatteryAlert` below), using `WorkHours`'s own already-sensible
+/// Mon-Fri 8:00 AM-4:30 PM default rather than requiring the user to opt in first.
+/// `offset_minutes` is 0-30 in 5-minute steps (Settings slider), how long
+/// before `WorkHours.end_minutes` to check the weather.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct WeatherAlert {
+    pub enabled: bool,
+    pub offset_minutes: u16,
+}
+
+impl Default for WeatherAlert {
+    fn default() -> Self {
+        Self { enabled: true, offset_minutes: 15 }
+    }
+}
+
+/// Low Battery Alert (pc-app.md) — the iPhone-battery warning's enable +
+/// threshold. This warning already existed (app.js's `checkLowBattery`,
+/// hardcoded at a 20% threshold, always on) before it had a Settings screen
+/// of its own; `enabled: true, threshold_pct: 20` is that exact prior
+/// behavior, so giving it a real Settings row here doesn't silently change
+/// anything for an existing install until the user actually touches it —
+/// unlike `WeatherAlert` above, which really is new and defaults off.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct LowBatteryAlert {
+    pub enabled: bool,
+    pub threshold_pct: u8,
+}
+
+impl Default for LowBatteryAlert {
+    fn default() -> Self {
+        Self { enabled: true, threshold_pct: 20 }
+    }
+}
+
+/// Auto Do-Not-Disturb (pc-app.md, `notif_filter.rs`) — replaces the old
+/// single flat `ancs_filter` setting entirely. There is no longer one "the"
+/// notification filter level the user picks directly; instead Orion itself
+/// decides which of these two configured levels is active on Ori at any
+/// given moment, switching automatically as `WorkHours`' start/end boundary
+/// is crossed — `work_filter` while inside a configured working day's
+/// window, `off_filter` everywhere else (including non-working days, all
+/// day). Defaults: `work_filter` Important (2) — a sensible focus-time
+/// default now that this narrows automatically rather than needing the user
+/// to opt in — and `off_filter` All (3), matching the old flat setting's own
+/// default for every other hour of the day.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct NotificationFilterSchedule {
+    pub work_filter: u8,
+    pub off_filter: u8,
+}
+
+impl Default for NotificationFilterSchedule {
+    fn default() -> Self {
+        Self { work_filter: 2, off_filter: 3 }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -47,23 +130,28 @@ pub struct SavedState {
     // session that recorded it.
     #[serde(default)]
     pub combos: [Vec<String>; 3],
-    // Clock face / time format / notification filter changed while Ori
-    // wasn't reachable (pc-app.md's Disconnected-screen settings) — `None`
-    // means no unsynced local edit for that field (defer to whatever Ori
-    // itself reports on next read). Unlike `shortcuts` above, these three
-    // are normally push-ON-CHANGE-only (ble-protocol.md §6.3), not pushed
-    // unconditionally on every reconnect — so without this, an offline edit
-    // would have no path back to Ori at all once the app moved on from the
-    // settings screen. Flushed and cleared by `run_sync`'s first successful
-    // write after reconnecting; survives an app restart in the meantime
-    // since it's just an ordinary persisted field like the rest of this
-    // struct.
+    // Clock face / time format changed while Ori wasn't reachable
+    // (pc-app.md's Disconnected-screen settings) — `None` means no unsynced
+    // local edit for that field (defer to whatever Ori itself reports on
+    // next read). These are normally push-ON-CHANGE-only (ble-protocol.md
+    // §6.3), not pushed unconditionally on every reconnect — so without
+    // this, an offline edit would have no path back to Ori at all once the
+    // app moved on from the settings screen. Flushed and cleared by
+    // `run_sync`'s first successful write after reconnecting; survives an
+    // app restart in the meantime since it's just an ordinary persisted
+    // field like the rest of this struct. Notification filter no longer
+    // needs an entry here — `notif_filter.rs` recomputes and pushes its
+    // current value on every (re)connect unconditionally (same idempotent
+    // "resending costs nothing" treatment as weather/holiday), so there's
+    // nothing to queue.
     #[serde(default)]
     pub pending_clock_face: Option<u8>,
     #[serde(default)]
     pub pending_time_format: Option<u8>,
+    // Double-tap-seek step (media-mode.md) — same pending/flush treatment
+    // as clock_face/time_format above.
     #[serde(default)]
-    pub pending_ancs_filter: Option<u8>,
+    pub pending_seek_step_s: Option<u8>,
     // Device identity — Bluetooth address, serial number, manufacture date
     // (provisioning.md). Unlike everything else in this struct, these never
     // change for a given bond, so they're written through to disk the first
@@ -104,6 +192,29 @@ pub struct SavedState {
     // `state.json` written before this field existed (`#[serde(default)]`).
     #[serde(default)]
     pub language: Option<String>,
+    // Calendar Source (pc-app.md) — the ICS feed URL extracted from an
+    // imported Outlook sharing-invitation XML's Invitation/Providers/
+    // Provider/ICalUrl. Deliberately NOT an OAuth token: this URL itself is
+    // the entire access control (unauthenticated GET), so it's persisted in
+    // plain state.json like everything else here, not any kind of secure
+    // credential store. `None` until the user completes an import; also
+    // `None` for every state.json written before this field existed.
+    #[serde(default)]
+    pub calendar_ics_url: Option<String>,
+    // Working Hours (see WorkHours's own doc comment) — Orion-local only,
+    // schedule data Weather Alert reads. `#[serde(default)]` covers every
+    // state.json written before this field existed, and also every
+    // state.json written while WorkHours still carried its own now-removed
+    // `enabled` field (serde silently drops unknown JSON keys, so an old
+    // `{"enabled":true,...}` blob just loses that key on next load/save).
+    #[serde(default)]
+    pub work_hours: WorkHours,
+    #[serde(default)]
+    pub weather_alert: WeatherAlert,
+    #[serde(default)]
+    pub low_battery_alert: LowBatteryAlert,
+    #[serde(default)]
+    pub notif_filter: NotificationFilterSchedule,
 }
 
 impl Default for SavedState {
@@ -117,12 +228,17 @@ impl Default for SavedState {
             combos: [Vec::new(), Vec::new(), Vec::new()],
             pending_clock_face: None,
             pending_time_format: None,
-            pending_ancs_filter: None,
+            pending_seek_step_s: None,
             address: None,
             serial_number: None,
             manufacture_date: None,
             phone_device_type: None,
             language: None,
+            calendar_ics_url: None,
+            work_hours: WorkHours::default(),
+            weather_alert: WeatherAlert::default(),
+            low_battery_alert: LowBatteryAlert::default(),
+            notif_filter: NotificationFilterSchedule::default(),
         }
     }
 }
@@ -187,4 +303,36 @@ pub async fn save(app: &AppHandle, state: SavedState) -> Result<(), String> {
 pub async fn clear(app: &AppHandle) {
     let app = app.clone();
     let _ = tokio::task::spawn_blocking(move || clear_blocking(&app)).await;
+}
+
+/// Serializes every load-modify-save cycle against every other one.
+/// `load()`/`save()` are each individually safe (one atomic disk op), but
+/// nothing previously stopped two concurrent callers from each loading a
+/// stale snapshot, mutating their own field, and then one `save()` fully
+/// overwriting the other's — `save()` always writes the WHOLE struct, so
+/// the loser's edit (to a field the winner's snapshot predates) is silently
+/// dropped. `ble::central`'s `run_sync` pending-settings flush had a
+/// concrete, narrow instance of this (fixed by re-loading fresh right
+/// before its own final clear-and-save); this lock closes the general case
+/// for every other read-modify-write call site.
+///
+/// Wraps `Arc<Mutex<()>>` (not a bare Tauri-managed `Mutex<()>`) so
+/// `acquire()` can hand back an owned, `'static` guard via `lock_owned()` —
+/// a guard borrowed from `app.state::<StoreLock>()`'s own temporary
+/// wouldn't outlive the expression that fetched it, the same lifetime
+/// problem `ble::central`'s cached-meetings lock hit earlier this session.
+///
+/// Every function that does load -> mutate -> save should hold this for
+/// that whole sequence: `let _guard = app.state::<StoreLock>().acquire().await;`
+/// right before the first `load()` call, dropped (explicitly, or by falling
+/// out of scope) once the matching `save()` has returned — never held
+/// across a slow operation like a BLE write or network fetch that follows,
+/// which would otherwise serialize unrelated Settings edits behind it.
+#[derive(Clone, Default)]
+pub struct StoreLock(std::sync::Arc<tokio::sync::Mutex<()>>);
+
+impl StoreLock {
+    pub async fn acquire(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.0.clone().lock_owned().await
+    }
 }
