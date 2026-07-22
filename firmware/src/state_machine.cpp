@@ -15,6 +15,7 @@
 #include "nvs_sync.h"
 #include <cbor.h>
 #include "screens/modal_countdown.h"
+#include "screens/modal_device_alert.h"
 #include "screens/modal_iphone_info.h"
 #include "screens/screen_calendar.h"
 #include "screens/screen_clock.h"
@@ -46,6 +47,10 @@ namespace {
 constexpr int ALERT_WINDOW_S      = 300;  // 5 minutes in seconds
 constexpr uint32_t TICK_MS        = 1000;
 constexpr uint32_t RECONNECT_MIN_MS = 300; // minimum overlay visibility
+constexpr uint32_t ALERT_CHECK_TICKS = 60; // Weather/Low-Battery Alert cadence
+                                            // (~60s, matching Orion's own
+                                            // reminders.rs/checkLowBattery()
+                                            // poll interval — pc-app.md)
 
 // ─── Module state ─────────────────────────────────────────────────────────
 
@@ -83,6 +88,18 @@ uint8_t  g_weather_unit_byte      = 0;  // 0=Fahrenheit 1=Celsius
 bool     g_weather_is_night       = false;
 uint8_t  g_weather_intensity      = 0;  // widget_profile_card::WeatherIntensity, 0=None
 bool     g_weather_valid          = false;
+
+// Weather Alert / Low Battery Alert latch state (state-machine.md's "Weather
+// Alert / Low Battery Alert overlays" section) — plain RAM globals, not NVS
+// (both reset on reboot, matching Orion's own in-memory latch state).
+// g_weather_alert_fired_today: cleared on day rollover (check_day_rollover()
+// below, alongside g_alerted_mins) so the alert can fire again the next
+// qualifying day. g_low_battery_alert_latched: cleared on recovery above
+// low_battery_threshold_pct (check_device_alerts() below) OR the phone
+// reconnecting (set_phone_connected()) — mirrors pc-app.md's
+// checkLowBattery() semantics exactly.
+bool     g_weather_alert_fired_today = false;
+bool     g_low_battery_alert_latched = false;
 
 // Post-OTA acknowledgement (read from NVS at init). When pending, the boot
 // screen is the "Firmware updated" ack and stays sticky until the user taps
@@ -499,6 +516,9 @@ static bool check_day_rollover(bool clock_now, struct tm* out_lt) {
             // correcting a badly seeded date) lands here too — also correct:
             // the alert history belonged to a day we were never really in.
             memset(g_alerted_mins, 0, sizeof(g_alerted_mins));
+            // Weather Alert is also a once-per-day flag — same day-boundary
+            // reasoning as g_alerted_mins above (state-machine.md).
+            g_weather_alert_fired_today = false;
             LOG("[sm] day rollover — alert flags cleared\n");
             if (g_state == AppState::CALENDAR_VIEW) {
                 screen_calendar::refresh_today();
@@ -565,6 +585,72 @@ static void check_meeting_content_changed(bool clock_now) {
     }
 }
 
+// Weather Alert / Low Battery Alert trigger-eval (state-machine.md's
+// "Weather Alert / Low Battery Alert overlays" section). Building the
+// overlay itself is modal_device_alert.cpp; this function ONLY decides
+// when to call it — the same split modal_incoming_call.cpp keeps from
+// ancs_client.cpp's call-state logic. Neither alert is part of AppState —
+// both overlay whatever's currently on screen directly, so this runs
+// independently of compute_target_state()/evaluate().
+//
+// Gated to ALERT_CHECK_TICKS (~60s) — evaluated far less often than the 1 s
+// tick that calls it, since both triggers are minute-granularity by nature
+// (a work-hours boundary, a battery percentage) and Orion's own mirrored
+// reminders poll on roughly the same cadence (pc-app.md).
+static void check_device_alerts(bool have_lt, const struct tm* lt) {
+    static uint32_t s_alert_check_ticks = 0;
+    if (++s_alert_check_ticks < ALERT_CHECK_TICKS) return;
+    s_alert_check_ticks = 0;
+
+    // Weather Alert: needs a valid local clock (work-day/time-of-day math)
+    // and Orion's live weather condition — g_weather_valid gates this the
+    // same "don't show what can't be verified" way the profile card's own
+    // icon does (cleared on PC disconnect, set_pc_connected() above).
+    if (have_lt && g_weather_valid && !g_weather_alert_fired_today &&
+        nvs::get_weather_alert_enabled()) {
+        using WC = widget_profile_card::WeatherCondition;
+        auto cond = static_cast<WC>(g_weather_condition_byte);
+        bool is_rain_snow_storm = (cond == WC::Rain || cond == WC::Thunderstorm || cond == WC::Snow);
+
+        if (is_rain_snow_storm) {
+            uint8_t day_mask   = nvs::get_work_hours_days();
+            int     wday_bit   = (lt->tm_wday + 6) % 7;  // tm_wday: Sun=0..Sat=6 -> bit0=Mon..bit6=Sun
+            bool    is_work_day = (day_mask & (1 << wday_bit)) != 0;
+
+            if (is_work_day) {
+                int end_min = (int)nvs::get_work_hours_end_min();
+                int offset  = (int)nvs::get_weather_alert_offset_min();
+                int now_min = lt->tm_hour * 60 + lt->tm_min;
+                if (now_min >= end_min - offset && now_min < end_min) {
+                    char end_str[16];
+                    time_format::hhmm(end_str, sizeof(end_str), end_min / 60, end_min % 60);
+                    modal_device_alert::show_weather_alert(cond, end_str);
+                    g_weather_alert_fired_today = true;
+                    LOG("[sm] weather alert fired (condition=%u, end=%s)\n",
+                        (unsigned)g_weather_condition_byte, end_str);
+                }
+            }
+        }
+    }
+
+    // Low Battery Alert: needs the iPhone actually connected —
+    // ancs_client::phone_stats() is all-zero otherwise (same "don't show
+    // what can't be verified" policy, ble-protocol.md).
+    if (g_phone_connected && nvs::get_low_battery_alert_enabled()) {
+        ancs_client::PhoneStats stats = ancs_client::phone_stats();
+        uint8_t threshold = nvs::get_low_battery_threshold_pct();
+        if (!g_low_battery_alert_latched && stats.battery <= threshold) {
+            modal_device_alert::show_low_battery_alert(
+                ancs_client::phone_kind_word(), ancs_client::phone_name(), stats.battery);
+            g_low_battery_alert_latched = true;
+            LOG("[sm] low battery alert fired (battery=%u%%)\n", (unsigned)stats.battery);
+        } else if (g_low_battery_alert_latched && stats.battery > threshold) {
+            // Recovered above the threshold — un-latch so a future dip fires again.
+            g_low_battery_alert_latched = false;
+        }
+    }
+}
+
 static void tick_cb(lv_timer_t* /*t*/) {
     bool clock_now = check_clock_just_set();
 
@@ -574,6 +660,8 @@ static void tick_cb(lv_timer_t* /*t*/) {
     if (check_meeting_alert(have_lt, &lt)) return;  // screen already updated; skip re-evaluate below
 
     check_meeting_content_changed(clock_now);
+
+    check_device_alerts(have_lt, &lt);
 
     state_machine::evaluate();
 }
@@ -1414,6 +1502,10 @@ void set_phone_connected(bool connected) {
         // rather than the pairing screen.
         g_phone_bonded = true;
         widget_status_bar::set_all_phone_bonded(true);
+        // Low Battery Alert latch clears on the phone reconnecting, not just
+        // on recovering above the threshold — mirrors pc-app.md's
+        // checkLowBattery() semantics exactly (state-machine.md).
+        g_low_battery_alert_latched = false;
     }
     // On disconnect don't clear g_phone_bonded — the bond still exists in NVS.
     // The flag is cleared only when the user explicitly unpairs (on_unpair_phone).

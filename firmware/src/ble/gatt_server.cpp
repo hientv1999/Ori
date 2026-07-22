@@ -367,6 +367,12 @@ struct DeviceSettingsWrite {
     bool    has_seek_step = false; uint8_t seek_step_val = 0;
     bool    has_holiday_country = false; uint8_t holiday_country_val = 0;
     bool    has_holiday_region = false; uint8_t holiday_region_val = 0;
+    bool    has_work_hours_end = false; uint16_t work_hours_end_val = 0;
+    bool    has_work_hours_days = false; uint8_t work_hours_days_val = 0;
+    bool    has_weather_alert_en = false; uint8_t weather_alert_en_val = 0;
+    bool    has_weather_alert_offset = false; uint8_t weather_alert_offset_val = 0;
+    bool    has_low_batt_alert_en = false; uint8_t low_batt_alert_en_val = 0;
+    bool    has_low_batt_threshold = false; uint8_t low_batt_threshold_val = 0;
 };
 // Decodes+validates the Device Settings CBOR map into `out`. Returns false
 // if the payload isn't a map, or any present field fails its range check —
@@ -376,6 +382,37 @@ static bool parse_device_settings(const uint8_t* data, uint16_t len, DeviceSetti
 // original inline handler used (shortcuts, clock face, time
 // format, ANCS filter, weather, seek step) — independent of wire order.
 static void apply_device_settings(const DeviceSettingsWrite& w);
+
+// -- Working Hours / Weather Alert / Low Battery Alert config latch --------
+// Device Settings keys "o","p","q","t","v","x" (ble-protocol.md §4/§6.4)
+// need nothing but a deferred nvs::set_*() call — unlike clock_face/
+// holiday_country/etc, there's no LVGL rebuild or app_state reaction tied to
+// any of these six, so a dedicated BleEventType per field would be pure
+// boilerplate. Mirrors ble_manager.cpp's own progress latches
+// (s_art_pct_pending/s_orioning_pct_pending): each field gets its own plain
+// "pending" flag + value, written here (NimBLE host task, inside
+// apply_device_settings()) and drained by poll_alert_settings() (main task,
+// called every tick from ble_manager::poll(), same as
+// poll_chunk_timeouts()/poll_orion_signal_bars()) — keeps the NVS flash
+// write off the host task (hardware.md's ICache/DCache-disable hazard).
+// Six independent flags (not one shared "any pending" bool) so two
+// back-to-back writes touching different keys can't clobber each other
+// before poll_alert_settings() next drains.
+struct AlertSettingsLatch {
+    volatile bool work_hours_end_pending      = false;
+    uint16_t      work_hours_end_val          = 0;
+    volatile bool work_hours_days_pending     = false;
+    uint8_t       work_hours_days_val         = 0;
+    volatile bool weather_alert_en_pending    = false;
+    uint8_t       weather_alert_en_val        = 0;
+    volatile bool weather_alert_offset_pending = false;
+    uint8_t       weather_alert_offset_val    = 0;
+    volatile bool low_batt_alert_en_pending   = false;
+    uint8_t       low_batt_alert_en_val       = 0;
+    volatile bool low_batt_threshold_pending  = false;
+    uint8_t       low_batt_threshold_val      = 0;
+};
+static AlertSettingsLatch g_alert_latch;
 
 // Free any owned staging buffers and zero the struct.
 static void stage_reset() {
@@ -1290,7 +1327,9 @@ private:
     // -- Device Settings read ----------------------------------------------------
     // Returns all NVS-persisted fields: "c" (clock_face), "h" (time_format),
     // "f" (ancs_filter), "1"/"2"/"3" (shortcut slot tokens), "k"
-    // (seek_step_s), and "g" (holiday_country). Weather is not returned —
+    // (seek_step_s), "g"/"j" (holiday_country/region), and "o"/"p"/"q"/"t"/
+    // "v"/"x" (Working Hours end+days, Weather Alert enable+offset, Low
+    // Battery Alert enable+threshold). Weather is not returned —
     // ephemeral, Orion is the source of truth.
     // Also returns three read-only fields, never accepted on a write:
     // "s" (serial_number)/"b" (manufacture_date), from the separate
@@ -1321,9 +1360,9 @@ private:
 
     void handle_device_settings_read(NimBLECharacteristic* c) {
         CborEncoder enc, map;
-        uint8_t buf[192];
+        uint8_t buf[256];
         cbor_encoder_init(&enc, buf, sizeof(buf), 0);
-        cbor_encoder_create_map(&enc, &map, 12);
+        cbor_encoder_create_map(&enc, &map, 18);
         cbor_encode_text_stringz(&map, "c");
         cbor_encode_uint(&map, (uint64_t)nvs::get_clock_face());
         cbor_encode_text_stringz(&map, "h");
@@ -1343,6 +1382,22 @@ private:
         cbor_encode_uint(&map, (uint64_t)nvs::get_holiday_country());
         cbor_encode_text_stringz(&map, "j");
         cbor_encode_uint(&map, (uint64_t)nvs::get_holiday_region());
+        // Working Hours end/days + Weather Alert + Low Battery Alert config —
+        // NVS-persisted, safe to read directly here (same as every other
+        // NVS-backed field above): only WRITES need deferral off the NimBLE
+        // host task (poll_alert_settings() below), reads don't touch flash.
+        cbor_encode_text_stringz(&map, "o");
+        cbor_encode_uint(&map, (uint64_t)nvs::get_work_hours_end_min());
+        cbor_encode_text_stringz(&map, "p");
+        cbor_encode_uint(&map, (uint64_t)nvs::get_work_hours_days());
+        cbor_encode_text_stringz(&map, "q");
+        cbor_encode_uint(&map, (uint64_t)nvs::get_weather_alert_enabled());
+        cbor_encode_text_stringz(&map, "t");
+        cbor_encode_uint(&map, (uint64_t)nvs::get_weather_alert_offset_min());
+        cbor_encode_text_stringz(&map, "v");
+        cbor_encode_uint(&map, (uint64_t)nvs::get_low_battery_alert_enabled());
+        cbor_encode_text_stringz(&map, "x");
+        cbor_encode_uint(&map, (uint64_t)nvs::get_low_battery_threshold_pct());
         // Read-only device-identity/link fields — "s"/"b" come from the
         // write-once "factory" NVS partition (factory_info.h, never touched
         // by nvs::factory_reset()); "r" is sampled live above. None of the
@@ -1508,6 +1563,30 @@ static bool parse_device_settings(const uint8_t* data, uint16_t len, DeviceSetti
             // this country is just never matched" design.
             if (v > 19) { valid = false; return; }
             out.holiday_region_val = (uint8_t)v; out.has_holiday_region = true;
+        } else if (strcmp(key, "o") == 0 && cbor_value_is_unsigned_integer(&val)) {
+            uint64_t v; cbor_value_get_uint64(&val, &v);
+            if (v > 1439) { valid = false; return; }  // work_hours_end_min: minutes since local midnight
+            out.work_hours_end_val = (uint16_t)v; out.has_work_hours_end = true;
+        } else if (strcmp(key, "p") == 0 && cbor_value_is_unsigned_integer(&val)) {
+            uint64_t v; cbor_value_get_uint64(&val, &v);
+            if (v > 127) { valid = false; return; }  // work_hours_days: 7-bit mask, bit0=Mon..bit6=Sun
+            out.work_hours_days_val = (uint8_t)v; out.has_work_hours_days = true;
+        } else if (strcmp(key, "q") == 0 && cbor_value_is_unsigned_integer(&val)) {
+            uint64_t v; cbor_value_get_uint64(&val, &v);
+            if (v > 1) { valid = false; return; }  // weather_alert_enabled
+            out.weather_alert_en_val = (uint8_t)v; out.has_weather_alert_en = true;
+        } else if (strcmp(key, "t") == 0 && cbor_value_is_unsigned_integer(&val)) {
+            uint64_t v; cbor_value_get_uint64(&val, &v);
+            if (v > 30) { valid = false; return; }  // weather_alert_offset_min
+            out.weather_alert_offset_val = (uint8_t)v; out.has_weather_alert_offset = true;
+        } else if (strcmp(key, "v") == 0 && cbor_value_is_unsigned_integer(&val)) {
+            uint64_t v; cbor_value_get_uint64(&val, &v);
+            if (v > 1) { valid = false; return; }  // low_battery_alert_enabled
+            out.low_batt_alert_en_val = (uint8_t)v; out.has_low_batt_alert_en = true;
+        } else if (strcmp(key, "x") == 0 && cbor_value_is_unsigned_integer(&val)) {
+            uint64_t v; cbor_value_get_uint64(&val, &v);
+            if (v < 5 || v > 30) { valid = false; return; }  // low_battery_threshold_pct
+            out.low_batt_threshold_val = (uint8_t)v; out.has_low_batt_threshold = true;
         }
     });
     return valid;
@@ -1573,6 +1652,42 @@ static void apply_device_settings(const DeviceSettingsWrite& w) {
         // above — Orion sends both together every (re)connect.
         ble_post_holiday_region_event(w.holiday_region_val);
         LOG("[gatt] DeviceSettings: holiday_region=%u\n", (unsigned)w.holiday_region_val);
+    }
+    // Working Hours / Weather Alert / Low Battery Alert config — six
+    // independent fields, each only ever needing a deferred NVS write (no
+    // LVGL/app_state reaction), so they ride the alert-settings latch
+    // (poll_alert_settings(), below) instead of a dedicated BleEventType per
+    // field. "Value first, then pending flag" — same publish order
+    // ble_manager.cpp's progress latches use.
+    if (w.has_work_hours_end) {
+        g_alert_latch.work_hours_end_val = w.work_hours_end_val;
+        g_alert_latch.work_hours_end_pending = true;
+        LOG("[gatt] DeviceSettings: work_hours_end_min=%u\n", (unsigned)w.work_hours_end_val);
+    }
+    if (w.has_work_hours_days) {
+        g_alert_latch.work_hours_days_val = w.work_hours_days_val;
+        g_alert_latch.work_hours_days_pending = true;
+        LOG("[gatt] DeviceSettings: work_hours_days=0x%02X\n", (unsigned)w.work_hours_days_val);
+    }
+    if (w.has_weather_alert_en) {
+        g_alert_latch.weather_alert_en_val = w.weather_alert_en_val;
+        g_alert_latch.weather_alert_en_pending = true;
+        LOG("[gatt] DeviceSettings: weather_alert_enabled=%u\n", (unsigned)w.weather_alert_en_val);
+    }
+    if (w.has_weather_alert_offset) {
+        g_alert_latch.weather_alert_offset_val = w.weather_alert_offset_val;
+        g_alert_latch.weather_alert_offset_pending = true;
+        LOG("[gatt] DeviceSettings: weather_alert_offset_min=%u\n", (unsigned)w.weather_alert_offset_val);
+    }
+    if (w.has_low_batt_alert_en) {
+        g_alert_latch.low_batt_alert_en_val = w.low_batt_alert_en_val;
+        g_alert_latch.low_batt_alert_en_pending = true;
+        LOG("[gatt] DeviceSettings: low_battery_alert_enabled=%u\n", (unsigned)w.low_batt_alert_en_val);
+    }
+    if (w.has_low_batt_threshold) {
+        g_alert_latch.low_batt_threshold_val = w.low_batt_threshold_val;
+        g_alert_latch.low_batt_threshold_pending = true;
+        LOG("[gatt] DeviceSettings: low_battery_threshold_pct=%u\n", (unsigned)w.low_batt_threshold_val);
     }
 }
 
@@ -2246,6 +2361,37 @@ void poll_chunk_timeouts() {
 // ble_manager::poll() calls every tick.
 void poll_orion_signal_bars() {
     s_char_cb.poll_orion_signal_bars();
+}
+
+// Drains the alert-settings latch (g_alert_latch, near DeviceSettingsWrite
+// above) onto NVS — one nvs::set_*() per pending field. Call once per tick
+// from ble_manager::poll() (main task); see gatt_server.h's doc comment for
+// why this exists instead of six more BleEventType entries.
+void poll_alert_settings() {
+    if (g_alert_latch.work_hours_end_pending) {
+        g_alert_latch.work_hours_end_pending = false;
+        nvs::set_work_hours_end_min(g_alert_latch.work_hours_end_val);
+    }
+    if (g_alert_latch.work_hours_days_pending) {
+        g_alert_latch.work_hours_days_pending = false;
+        nvs::set_work_hours_days(g_alert_latch.work_hours_days_val);
+    }
+    if (g_alert_latch.weather_alert_en_pending) {
+        g_alert_latch.weather_alert_en_pending = false;
+        nvs::set_weather_alert_enabled(g_alert_latch.weather_alert_en_val);
+    }
+    if (g_alert_latch.weather_alert_offset_pending) {
+        g_alert_latch.weather_alert_offset_pending = false;
+        nvs::set_weather_alert_offset_min(g_alert_latch.weather_alert_offset_val);
+    }
+    if (g_alert_latch.low_batt_alert_en_pending) {
+        g_alert_latch.low_batt_alert_en_pending = false;
+        nvs::set_low_battery_alert_enabled(g_alert_latch.low_batt_alert_en_val);
+    }
+    if (g_alert_latch.low_batt_threshold_pending) {
+        g_alert_latch.low_batt_threshold_pending = false;
+        nvs::set_low_battery_threshold_pct(g_alert_latch.low_batt_threshold_val);
+    }
 }
 
 // Called from ble_manager::poll() (main task) in response to

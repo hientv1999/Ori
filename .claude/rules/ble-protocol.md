@@ -271,6 +271,30 @@ DeviceSettings = {          // Orion → Ori, write (response). Fields optional;
                  // the same country its weather.rs location lookup already resolved (no
                  // second geolocation call) and pushes it on every (re)connect alongside the
                  // Lunar Holiday List below — see pc-app.md's holiday.rs section.
+  "o": uint,     // work_hours_end_min. Minutes since local midnight (0-1439) the user's
+                 // configured Working Hours end at (pc-app.md's store::WorkHours — the
+                 // SAME schedule Orion's own Auto Do-Not-Disturb and end-of-day reminders
+                 // already read). Ori uses only the end time, not the start — all it needs
+                 // to independently arm the Weather Alert below is "how close is the end of
+                 // the work day." NVS-persisted, write-only-on-change, read back on
+                 // (re)connect — same treatment as seek_step_s.
+  "p": uint,     // work_hours_days. 7-bit mask, bit 0=Monday .. bit 6=Sunday (1=configured
+                 // work day). Lets Ori independently tell "today is a work day" without a
+                 // second copy of Orion's own day-picker UI — just the resulting mask.
+                 // NVS-persisted, write-only-on-change.
+  "q": uint,     // weather_alert_enabled. 0=Off 1=On. Mirrors store::WeatherAlert.enabled.
+                 // NVS-persisted, write-only-on-change.
+  "t": uint,     // weather_alert_offset_min. 0-30, default 15 — minutes before
+                 // work_hours_end_min the alert fires. Mirrors store::WeatherAlert's own
+                 // offset_minutes (pc-app.md), same value Orion uses for its own local
+                 // reminder. NVS-persisted, write-only-on-change.
+  "v": uint,     // low_battery_alert_enabled. 0=Off 1=On. Mirrors store::LowBatteryAlert.enabled.
+                 // NVS-persisted, write-only-on-change.
+  "x": uint,     // low_battery_threshold_pct. 5-30, default 20 — mirrors
+                 // store::LowBatteryAlert's own threshold_pct (pc-app.md). Compared against
+                 // the SAME live bonded-phone battery reading Ori already has from the
+                 // phone's own Battery Service (0x180F) — no new data needed to evaluate
+                 // this, just the threshold. NVS-persisted, write-only-on-change.
   "j": uint      // holiday_region. Region within holiday_country — 0=None (national
                  // only), else a per-country code (holiday_data.h's own table: e.g.
                  // under CA, 1=BC 2=ON ... 10=QC 13=NU; under GB, 1=Scotland
@@ -293,7 +317,7 @@ DeviceSettings = {          // Orion → Ori, write (response). Fields optional;
 }
 // Out-of-range field value → NACK_CBOR_DECODE via SyncControl notify.
 //
-// Read (Orion → Ori): returns all NVS-persisted fields ("c","h","f","1","2","3","k","g","j") plus three
+// Read (Orion → Ori): returns all NVS-persisted fields ("c","h","f","1","2","3","k","g","j","o","p","q","t","v","x") plus three
 // read-only identity/link fields (an incoming write simply never looks for these keys —
 // §4's "unknown keys ignored" gives them read-only semantics for free):
 //   "s": serial_number, "b": manufacture_date (ISO-8601 "YYYY-MM-DD") — from the write-once
@@ -650,6 +674,7 @@ Device Settings (char `000E`) is outside the BEGIN/END pipeline. Each field is e
 - **ANCS Filter** (`"f"`): NVS-persisted, write-only-on-change.
 - **Seek Step** (`"k"`): NVS-persisted, write-only-on-change. 1-60 seconds, default 10; how far double-tapping the left/right third of the album art seeks — `media-mode.md`.
 - **Holiday Country** (`"g"`) **and Holiday Region** (`"j"`): both NVS-persisted on Ori, but — unlike Shortcuts/Clock Face/Time Format/ANCS Filter/Seek Step above — Orion doesn't track a "did this change" state for either and simply re-sends both on every (re)connect, same as Weather; the values only ever change if the user's resolved location genuinely changes country/region mid-session (rare for a desk-based PC), so the redundant resend costs two bytes and needs no dirty-tracking. No user-facing setting drives either — Orion derives both automatically from the same location its weather.rs lookup resolves (country from the ISO 3166-1 code, region from the ISO 3166-2 subdivision code the SAME reverse-geocode/IP-lookup response already carries — no second network call). Always sent alongside the Lunar Holiday List (char 0013) — see `pc-app.md`.
+- **Working Hours end + days** (`"o"`/`"p"`), **Weather Alert config** (`"q"`/`"t"`), **Low Battery Alert config** (`"v"`/`"x"`): NVS-persisted, write-only-on-change, mirroring pc-app.md's `store::WorkHours`/`store::WeatherAlert`/`store::LowBatteryAlert`. Orion keeps firing its OWN local copy of these two reminders exactly as before (pc-app.md's `reminders.rs`/`checkLowBattery()`) — these fields don't replace that, they let Ori independently arm the **same** two reminders on-device, the same way Ori already computes its own 5-minute meeting countdown from data it holds rather than waiting for an explicit "show countdown now" push. Ori needs no new live data to evaluate either trigger: weather condition is already in the Weather group above, and the bonded phone's battery level is already read directly from the phone's own Battery Service (`connectivity.md`) — these six fields are the only missing inputs. Ori and Orion's trigger evaluations can't meaningfully disagree (both read the same underlying values) but are two independent implementations, not one shared evaluation — accepted, since a several-second offset between "Orion showed its toast" and "Ori showed its overlay" is immaterial for a UX nudge like this.
 
 Orion can write any subset of fields in one Device Settings write (e.g. clock-face-only on a user setting change).
 
@@ -740,6 +765,12 @@ No wire-level protocol version negotiation or compatibility gate — Ori and Ori
 | `DeviceSettings.signal_bars` | uint 0–4 — read-only, live |
 | `DeviceSettings.holiday_country` | uint 0–8 (0=None 1=US 2=VN 3=CA 4=GB 5=AU 6=ES 7=MX 8=FR) |
 | `DeviceSettings.holiday_region` | uint 0–19 (0=None/national-only; meaning of 1+ depends on `holiday_country` — holiday_data.h's per-country table) |
+| `DeviceSettings.work_hours_end_min` | uint 0–1439 |
+| `DeviceSettings.work_hours_days` | uint 0–127 (7-bit mask, bit 0=Monday .. bit 6=Sunday) |
+| `DeviceSettings.weather_alert_enabled` | uint 0–1 |
+| `DeviceSettings.weather_alert_offset_min` | uint 0–30 (default 15) |
+| `DeviceSettings.low_battery_alert_enabled` | uint 0–1 |
+| `DeviceSettings.low_battery_threshold_pct` | uint 5–30 (default 20) |
 | `LunarHolidayList.epoch_days` | ≤ 200 entries (firmware `MAX_LUNAR_DAYS`), each a uint16 epoch-day covering 1970–2100 |
 | `PhoneBondStatus.name` | ≤ 63 UTF-8 bytes (firmware `g_phone_name[64]` minus null terminator) |
 | `PhoneBondStatus.device_type` | ≤ 63 UTF-8 bytes (firmware `g_phone_device_type[64]` minus null terminator) — widened from 32 so `iphone_model_map.h`'s connectivity/region suffixes fit (e.g. "iPad Pro 12.9-inch (5th gen) — Wi-Fi + Cellular (Global)", the longest current entry at 58 bytes) |

@@ -66,6 +66,17 @@ void poll_chunk_timeouts();
 // unconditionally, every tick, from ble_manager::poll().
 void poll_orion_signal_bars();
 
+// Drains the Working-Hours/Weather-Alert/Low-Battery-Alert config latch
+// (Device Settings keys "o","p","q","t","v","x" — ble-protocol.md §4/§6.4)
+// onto NVS. Call once per tick from ble_manager::poll() (main task), same as
+// poll_chunk_timeouts()/poll_orion_signal_bars() above — keeps every flash
+// write off the NimBLE host task (hardware.md's ICache/DCache-disable
+// hazard) without needing a dedicated BleEventType per field: these six
+// values need no LVGL/app_state reaction of their own, only a deferred
+// nvs::set_*() call, so a lightweight latch (mirrors ble_manager.cpp's own
+// progress latches) is enough.
+void poll_alert_settings();
+
 // Apply all staged sync data to NVS/UI in one burst (§6.0), then transition
 // Device Status and signal SyncEnd. Must run on the main task — call only
 // from ble_manager::poll() in response to a deferred SyncCommit event.

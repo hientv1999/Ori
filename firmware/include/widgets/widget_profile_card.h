@@ -146,4 +146,15 @@ void set_default_weather(WeatherCondition condition, int temp_f,
                           TemperatureUnit unit, bool visible, bool is_night,
                           WeatherIntensity intensity);
 
+// Builds a standalone weather-condition glyph — the SAME composition
+// helpers the profile card's own badge uses internally (build_weather_icon()
+// in widget_profile_card.cpp), just not wired to the card's corner position.
+// For contexts outside the profile card that want the identical icon — e.g.
+// modal_device_alert.cpp's Weather Alert overlay. Creates a fresh
+// BADGE_SIZE (60x60) container, centered in `parent` (lv_obj_center()) —
+// size `parent` generously (a ~64-76px circle works well) so the glyph isn't
+// clipped. Returns the built container.
+lv_obj_t* create_weather_glyph(lv_obj_t* parent, WeatherCondition condition,
+                                bool is_night, WeatherIntensity intensity);
+
 } // namespace widget_profile_card

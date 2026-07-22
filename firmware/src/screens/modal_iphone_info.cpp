@@ -233,30 +233,16 @@ struct ActiveInfo {
 };
 ActiveInfo* g_active = nullptr;
 
-// Battery icon geometry — a plain LVGL-primitives outline (body rect + nub),
-// same "no bitmap asset needed" approach as the weather icons
-// (screen-layout.md), since it's simple shapes and the fill needs to resize
-// live from set_battery_level() same as a progress bar would. Body is an
-// 18:10 (1.8:1) proportion — an actual battery silhouette, not a near-square
-// — sized so its height reads next to the 33px-tall sig_bars (bar_h[3]
-// above) the same way the UI-prototype reference design does.
-constexpr int16_t BATT_BODY_W = 43;
-constexpr int16_t BATT_BODY_H = 24;
-constexpr int16_t BATT_NUB_W  = 6;
-constexpr int16_t BATT_NUB_H  = 9;
-constexpr int16_t BATT_BORDER = 4;
-constexpr int16_t BATT_GLYPH_GAP = 1;  // body→nub — nearly flush, a real battery's nub touches its body
-constexpr uint8_t  BATT_LOW_THRESHOLD = 20;  // % at/below which the fill reads COLOR_DANGER
-
-uint32_t battery_fill_color(uint8_t level) {
-    return level <= BATT_LOW_THRESHOLD ? theme::COLOR_DANGER : theme::COLOR_CONN_CONNECTED;
-}
+// Battery icon — built from ui::make_battery_glyph() (ui_helpers.h/.cpp),
+// the shared "outline + live fill bar" shape this modal used to keep its own
+// near-identical copy of. `level` is 0-100; 0 while disconnected, same
+// "don't show what can't be verified" convention as everywhere else in this
+// modal — the fill just reads empty in that case, no special-cased
+// placeholder.
 
 // Builds [outline+fill icon] [percentage label] as one row, returns the row.
 // Populates info->battery_fill/battery_pct_lbl for later live updates
-// (set_battery_level()). `level` is 0-100; 0 while disconnected, same "don't
-// show what can't be verified" convention as everywhere else in this modal —
-// the fill just reads empty in that case, no special-cased placeholder.
+// (set_battery_level()).
 lv_obj_t* make_battery_icon(lv_obj_t* parent, ActiveInfo* info, uint8_t level) {
     lv_obj_t* row = lv_obj_create(parent);
     ui::clear_container(row);
@@ -265,51 +251,9 @@ lv_obj_t* make_battery_icon(lv_obj_t* parent, ActiveInfo* info, uint8_t level) {
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(row, 8, 0);
 
-    // Body+nub live in their own tight sub-row (BATT_GLYPH_GAP apart) so the
-    // nub reads as flush against the body — the outer row's wider gap only
-    // separates the whole glyph from the percentage label.
-    lv_obj_t* glyph = lv_obj_create(row);
-    ui::clear_container(glyph);
-    lv_obj_set_size(glyph, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(glyph, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(glyph, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(glyph, BATT_GLYPH_GAP, 0);
-
-    // Body outline (border only, transparent fill) + nub, matching the
-    // classic battery glyph silhouette.
-    lv_obj_t* body = lv_obj_create(glyph);
-    ui::clear_container(body);
-    lv_obj_set_size(body, BATT_BODY_W, BATT_BODY_H);
-    lv_obj_set_style_radius(body, 4, 0);
-    lv_obj_set_style_border_width(body, BATT_BORDER, 0);
-    lv_obj_set_style_border_color(body, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
-    lv_obj_set_style_bg_opa(body, LV_OPA_TRANSP, 0);
-    // 1px padding beyond the border itself — without it the fill (which
-    // already stops at the border via LVGL's own content-area inset, see
-    // below) reads as touching the border with no breathing room at all.
-    lv_obj_set_style_pad_all(body, 1, 0);
-
-    // LVGL insets a child's content area by the parent's border width AND
-    // padding automatically (border isn't just decoration drawn over
-    // children, same as CSS box-sizing:border-box) — lv_pct(level) sizing
-    // this fill against `body` already keeps it clear of both, no manual
-    // x-inset needed.
-    lv_obj_t* fill = lv_obj_create(body);
-    ui::clear_container(fill);
-    lv_obj_set_height(fill, lv_pct(100));
-    lv_obj_set_width(fill, lv_pct(level));
-    lv_obj_align(fill, LV_ALIGN_LEFT_MID, 0, 0);
-    lv_obj_set_style_radius(fill, 2, 0);
-    lv_obj_set_style_bg_color(fill, theme::color(battery_fill_color(level)), 0);
-    lv_obj_set_style_bg_opa(fill, LV_OPA_COVER, 0);
+    lv_obj_t* fill = nullptr;
+    ui::make_battery_glyph(row, level, &fill);
     info->battery_fill = fill;
-
-    lv_obj_t* nub = lv_obj_create(glyph);
-    ui::clear_container(nub);
-    lv_obj_set_size(nub, BATT_NUB_W, BATT_NUB_H);
-    lv_obj_set_style_radius(nub, 1, 0);
-    lv_obj_set_style_bg_color(nub, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
-    lv_obj_set_style_bg_opa(nub, LV_OPA_COVER, 0);
 
     lv_obj_t* pct = lv_label_create(row);
     char buf[8];
@@ -572,7 +516,7 @@ void set_battery_level(uint8_t level) {
     if (level > 100) level = 100;
     lv_obj_set_width(g_active->battery_fill, lv_pct(level));
     lv_obj_set_style_bg_color(g_active->battery_fill,
-        theme::color(battery_fill_color(level)), 0);
+        theme::color(ui::battery_fill_color(level)), 0);
     char buf[8];
     lv_snprintf(buf, sizeof(buf), "%u%%", (unsigned)level);
     lv_label_set_text(g_active->battery_pct_lbl, buf);

@@ -103,6 +103,39 @@ void    set_holiday_country(uint8_t country);
 uint8_t get_holiday_region();
 void    set_holiday_region(uint8_t region);
 
+// Working Hours end time, in minutes since local midnight (0-1439). Default
+// 1020 (17:00) — only matters until Orion's first real push, since both
+// alerts below default to Off. Set by Orion via Device Settings (char 000E,
+// key "o"); persisted so Ori can independently arm the Weather Alert without
+// a live BLE connection once set at least once — ble-protocol.md §4/§6.4,
+// state-machine.md.
+uint16_t get_work_hours_end_min();
+void     set_work_hours_end_min(uint16_t minutes);
+
+// Working Hours day mask — bit 0=Monday .. bit 6=Sunday, 1=configured work
+// day. Default 0x1F (Monday-Friday). Set by Orion via Device Settings (char
+// 000E, key "p").
+uint8_t get_work_hours_days();
+void    set_work_hours_days(uint8_t mask);
+
+// Weather Alert enable (0=Off default, 1=On) — Device Settings key "q".
+uint8_t get_weather_alert_enabled();
+void    set_weather_alert_enabled(uint8_t enabled);
+
+// Weather Alert offset, in minutes before work_hours_end_min the alert fires
+// (0-30, default 15) — Device Settings key "t".
+uint8_t get_weather_alert_offset_min();
+void    set_weather_alert_offset_min(uint8_t minutes);
+
+// Low Battery Alert enable (0=Off default, 1=On) — Device Settings key "v".
+uint8_t get_low_battery_alert_enabled();
+void    set_low_battery_alert_enabled(uint8_t enabled);
+
+// Low Battery Alert threshold percent (5-30, default 20) — the bonded
+// phone's battery %, at or below which the alert fires — Device Settings key "x".
+uint8_t get_low_battery_threshold_pct();
+void    set_low_battery_threshold_pct(uint8_t pct);
+
 // Lunar-holiday date cache (Vietnam's Tet) — a raw array of uint16_t epoch-day
 // values (days since 1970-01-01 UTC), pushed by Orion once via the Lunar
 // Holiday List characteristic and persisted so it survives power cycles and

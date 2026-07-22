@@ -70,6 +70,25 @@ lv_obj_t* make_scrim(lv_obj_t* parent, bool absorb_taps = true);
 // confirmation modals (identical in both).
 lv_obj_t* make_alert_glyph_circle(lv_obj_t* parent);
 
+// Classic battery glyph — body outline (border rect) + nub + a live fill bar
+// reading `level` (0-100), colored via battery_fill_color() below. Shared by
+// modal_iphone_info's iPhone battery row and modal_device_alert's Low
+// Battery Alert icon (ported out of modal_iphone_info.cpp, which kept its
+// own near-identical copy before this). Returns the built glyph container
+// (body+nub) — caller positions/aligns it; this makes no assumption about
+// the parent's layout mode (flex row vs. a plain centered circle). `fill_out`,
+// if non-null, receives the inner fill-bar object so a caller that mutates it
+// live later (modal_iphone_info::set_battery_level()) doesn't have to
+// re-derive it from the returned object's children.
+lv_obj_t* make_battery_glyph(lv_obj_t* parent, uint8_t level, lv_obj_t** fill_out = nullptr);
+
+// level (0-100) -> COLOR_DANGER at/below the low threshold (20%), else
+// COLOR_CONN_CONNECTED — the exact rule make_battery_glyph() applies at
+// build time. Exposed so a caller holding a live fill handle
+// (modal_iphone_info::set_battery_level()) can recolor on a later update
+// using the identical rule.
+uint32_t battery_fill_color(uint8_t level);
+
 // Ori wordmark — flanking gradient lines + "ori" label (lowercase, "r" in
 // accent gold, theme::font_time()). Used on every setup-flow screen and the
 // boot splash; mirrors brandMarkHTML() in the UI prototype.

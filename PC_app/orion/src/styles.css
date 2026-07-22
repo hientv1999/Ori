@@ -125,6 +125,14 @@ body{font-family:var(--fn);overflow:hidden;user-select:none;}
    button wobbling rather than a spinning icon. */
 .h-ico.reconnect-btn.is-retrying svg{animation:reconnect-spin 1.5s linear infinite;}
 @keyframes reconnect-spin{to{transform:rotate(360deg);}}
+/* Network-warning icon (#netWarnIco) — same is-retrying treatment as the
+   reconnect button above (pointer-events guard + spin), reusing the exact
+   same keyframes, while a user-triggered retryNetworkFetch() is in flight.
+   Its glyph is swapped to the reconnect arrows SVG for the duration
+   (app.js) since spinning the resting warning-triangle glyph would read as
+   a rendering glitch, not a loading state. */
+.h-ico.net-warn-btn.is-retrying{pointer-events:none;opacity:.5;}
+.h-ico.net-warn-btn.is-retrying svg{animation:reconnect-spin 1.5s linear infinite;}
 /* Disconnected state is conveyed by the slash line inside #phoneIco (see
    HTML), not a colour change — legible regardless of red/grey perception.
    The icon stays the same neutral colour as any other header icon. */

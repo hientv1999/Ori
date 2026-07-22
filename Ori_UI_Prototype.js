@@ -478,6 +478,20 @@ const SCREENS = {
     leftRender: () => meetingListHTML(TODAY_MEETINGS),
     modal: () => factoryResetHTML(),
   },
+  'weather-alert': {
+    label: 'Modal popup', title: 'Weather Alert (rain/snow reminder)',
+    desc: 'NEW — mirrors Orion\'s own end-of-day rain/snow/thunderstorm reminder (pc-app.md\'s reminders.rs), now also shown on Ori itself rather than staying Orion-local-only. Fires once per day, offset_minutes before the configured Working Hours end time, when the most recently polled weather condition is Rain/Thunderstorm/Snow. Notice-tinted (accent gold, not danger-red) since this is informational, not a destructive confirm. Dismissed via the OK button only.',
+    statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
+    leftRender: () => meetingListHTML(TODAY_MEETINGS),
+    modal: () => weatherAlertHTML('rain', '17:30'),
+  },
+  'low-battery-alert': {
+    label: 'Modal popup', title: 'Low Battery Alert (bonded phone)',
+    desc: 'NEW — mirrors Orion\'s own low-battery warning (pc-app.md\'s checkLowBattery()), now also shown on Ori. This is the BONDED PHONE\'s battery, never Ori\'s own — Ori is wall-powered and has no battery UI of any kind (hardware.md). Title explicitly names "iPhone"/"iPad" so there\'s no ambiguity about whose battery this is. Fires once per dip below the configured threshold (default 20%), latching until the level recovers or the phone reconnects. Dismissed via the OK button only.',
+    statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
+    leftRender: () => meetingListHTML(TODAY_MEETINGS),
+    modal: () => lowBatteryAlertHTML(IPHONE_INFO.name, 18),
+  },
   'meeting-detail': {
     label: 'Modal popup', title: 'Meeting detail overlay',
     desc: 'Tap any meeting row in the list to open this overlay. Shows the full title, location, and time. Tap anywhere on the scrim to dismiss.',
@@ -1079,6 +1093,53 @@ function factoryResetHTML() {
     '<h3>Factory reset Ori?</h3><p>All data and paired devices will be removed</p>' +
     '<div class="actions"><button class="btn btn-danger" onclick="closeModal()">Reset</button>' +
     '<button class="btn btn-tertiary" onclick="closeModal()">Cancel</button></div></div>';
+}
+
+// Weather Alert (Orion's end-of-day rain/snow/thunderstorm reminder,
+// pc-app.md's reminders.rs) — same title/body copy Orion's own in-app
+// modal uses (app.js's workHoursReminder I18N block), now also surfaced
+// on Ori itself rather than staying Orion-local-only. Single "OK" — this
+// is an FYI, not a confirm/cancel choice, so it gets the notice tint, not
+// the factory-reset card's danger-red. Icon reuses the exact same
+// weatherIconSvg() the profile-card badge draws from (screen-layout.md) —
+// showing the actual forecasted condition is more useful here than a
+// generic warning triangle, and keeps the glyph visually identical to
+// wherever else that condition already appears on screen.
+const WEATHER_ALERT_COPY = {
+  rain: { title: 'Rain expected', noun: 'Rain' },
+  thunderstorm: { title: 'Thunderstorm expected', noun: 'A thunderstorm' },
+  snow: { title: 'Snow expected', noun: 'Snow' },
+};
+function weatherAlertHTML(condition, endTime) {
+  const c = WEATHER_ALERT_COPY[condition] || WEATHER_ALERT_COPY.rain;
+  const icon = weatherIconSvg(condition, false, 'moderate').replace('<svg ', '<svg width="42" height="42" ');
+  return '<div class="alert-card notice"><div class="icon-circle">' + icon + '</div>' +
+    '<h3>' + escapeHtml(c.title) + '</h3>' +
+    '<p>' + c.noun + ' is expected around the time your work day ends at ' + escapeHtml(endTime) + '.</p>' +
+    '<div class="actions"><button class="btn btn-tertiary" onclick="closeModal()">OK</button></div></div>';
+}
+
+// Low Battery Alert (pc-app.md's checkLowBattery(), phone battery only) —
+// this is the BONDED PHONE's battery, never Ori's own (Ori has no battery
+// UI of any kind — hardware.md — it's wall-powered). Title explicitly
+// names "iPhone"/"iPad" (phoneKindWord(), same resolution iPhone Info
+// already uses) rather than a bare "Low Battery", so there's no ambiguity
+// about whose battery this is. Icon is the same battery glyph as
+// battIconHTML() (iPhone Info modal) minus its percentage label — the
+// number belongs in the sentence, matching Orion's own
+// "{name} is at {level}% battery." copy, not crammed into the icon.
+function lowBatteryAlertHTML(name, pct) {
+  const fillColor = pct <= BATT_LOW_THRESHOLD ? 'var(--danger)' : 'var(--presence-available)';
+  const fillW = (14 * pct / 100).toFixed(1);
+  const icon = '<svg width="44" height="26" viewBox="0 0 24 14" fill="none">' +
+    '<rect x="1" y="2" width="18" height="10" rx="2.5" stroke="currentColor" stroke-width="1.5"/>' +
+    '<rect x="20" y="5" width="2.5" height="4" rx="1" fill="currentColor"/>' +
+    '<rect x="3" y="4" width="' + fillW + '" height="6" rx="1" fill="' + fillColor + '"/>' +
+    '</svg>';
+  return '<div class="alert-card notice"><div class="icon-circle">' + icon + '</div>' +
+    '<h3>' + phoneKindWord() + ' Battery Low</h3>' +
+    '<p>' + escapeHtml(name) + ' is at ' + pct + '% battery.</p>' +
+    '<div class="actions"><button class="btn btn-tertiary" onclick="closeModal()">OK</button></div></div>';
 }
 
 function passkeyHTML(passkey) {

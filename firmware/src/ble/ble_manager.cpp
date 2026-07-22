@@ -1513,6 +1513,7 @@ void poll() {
     drain_ancs_notifications();
     check_chunk_reassembly_timeouts();
     gatt_server::poll_orion_signal_bars();
+    gatt_server::poll_alert_settings();
 }
 
 void set_ota_transfer_quiet(bool quiet) {

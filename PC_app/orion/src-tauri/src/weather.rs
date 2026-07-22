@@ -294,7 +294,7 @@ pub async fn region_code(app: &tauri::AppHandle) -> Option<String> {
 /// Device Settings needs no manifest at all, §6.4). A no-op, not an error,
 /// when no location has been resolved yet (`set_location` hasn't completed,
 /// or hasn't been called at all).
-async fn refresh(app: &tauri::AppHandle) -> Result<(), String> {
+pub async fn refresh(app: &tauri::AppHandle) -> Result<(), String> {
     use tauri::Emitter;
 
     let state = app.state::<WeatherState>();

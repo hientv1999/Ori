@@ -51,6 +51,20 @@ static bool font_has_glyph(uint32_t cp) {
     return lv_font_get_glyph_dsc(theme::font_meta(), &dsc, cp, 0);
 }
 
+// ── Battery glyph geometry — ported out of modal_iphone_info.cpp, which kept
+// its own near-identical copy before this dedup (screens/modal_device_alert.cpp
+// needs the same shape for the Low Battery Alert icon). Plain LVGL-primitives
+// outline (body rect + nub) — no bitmap asset needed, same "simple shapes"
+// approach as the profile card's weather icons. Body is an 18:10 (1.8:1)
+// proportion — an actual battery silhouette, not a near-square.
+constexpr int16_t BATT_BODY_W = 43;
+constexpr int16_t BATT_BODY_H = 24;
+constexpr int16_t BATT_NUB_W  = 6;
+constexpr int16_t BATT_NUB_H  = 9;
+constexpr int16_t BATT_BORDER = 4;
+constexpr int16_t BATT_GLYPH_GAP = 1;  // body→nub — nearly flush, a real battery's nub touches its body
+constexpr uint8_t  BATT_LOW_THRESHOLD = 20;  // % at/below which the fill reads COLOR_DANGER
+
 } // namespace
 
 const char* sanitize_text(const char* in, char* out, size_t out_sz) {
@@ -200,6 +214,57 @@ lv_obj_t* make_scrim(lv_obj_t* parent, bool absorb_taps) {
     if (absorb_taps) lv_obj_add_flag(scrim, LV_OBJ_FLAG_CLICKABLE);
     else              lv_obj_clear_flag(scrim, LV_OBJ_FLAG_CLICKABLE);
     return scrim;
+}
+
+uint32_t battery_fill_color(uint8_t level) {
+    return level <= BATT_LOW_THRESHOLD ? theme::COLOR_DANGER : theme::COLOR_CONN_CONNECTED;
+}
+
+lv_obj_t* make_battery_glyph(lv_obj_t* parent, uint8_t level, lv_obj_t** fill_out) {
+    // Body+nub live in their own tight sub-container (BATT_GLYPH_GAP apart)
+    // so the nub reads as flush against the body.
+    lv_obj_t* glyph = lv_obj_create(parent);
+    clear_container(glyph);
+    lv_obj_set_size(glyph, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(glyph, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(glyph, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(glyph, BATT_GLYPH_GAP, 0);
+
+    // Body outline (border only, transparent fill) + nub, matching the
+    // classic battery glyph silhouette.
+    lv_obj_t* body = lv_obj_create(glyph);
+    clear_container(body);
+    lv_obj_set_size(body, BATT_BODY_W, BATT_BODY_H);
+    lv_obj_set_style_radius(body, 4, 0);
+    lv_obj_set_style_border_width(body, BATT_BORDER, 0);
+    lv_obj_set_style_border_color(body, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
+    lv_obj_set_style_bg_opa(body, LV_OPA_TRANSP, 0);
+    // 1px padding beyond the border itself — without it the fill (which
+    // already stops at the border via LVGL's own content-area inset) reads
+    // as touching the border with no breathing room at all.
+    lv_obj_set_style_pad_all(body, 1, 0);
+
+    // LVGL insets a child's content area by the parent's border width AND
+    // padding automatically, so lv_pct(level) sizing this fill against `body`
+    // already keeps it clear of both, no manual x-inset needed.
+    lv_obj_t* fill = lv_obj_create(body);
+    clear_container(fill);
+    lv_obj_set_height(fill, lv_pct(100));
+    lv_obj_set_width(fill, lv_pct(level));
+    lv_obj_align(fill, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_radius(fill, 2, 0);
+    lv_obj_set_style_bg_color(fill, theme::color(battery_fill_color(level)), 0);
+    lv_obj_set_style_bg_opa(fill, LV_OPA_COVER, 0);
+    if (fill_out) *fill_out = fill;
+
+    lv_obj_t* nub = lv_obj_create(glyph);
+    clear_container(nub);
+    lv_obj_set_size(nub, BATT_NUB_W, BATT_NUB_H);
+    lv_obj_set_style_radius(nub, 1, 0);
+    lv_obj_set_style_bg_color(nub, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
+    lv_obj_set_style_bg_opa(nub, LV_OPA_COVER, 0);
+
+    return glyph;
 }
 
 lv_obj_t* make_alert_glyph_circle(lv_obj_t* parent) {

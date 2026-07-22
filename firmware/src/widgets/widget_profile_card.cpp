@@ -732,6 +732,25 @@ void set_default_weather(WeatherCondition condition, int temp_f,
     if (g_active_card) set_weather(g_active_card, condition, temp_f, unit, visible, is_night, intensity);
 }
 
+lv_obj_t* create_weather_glyph(lv_obj_t* parent, WeatherCondition condition,
+                                bool is_night, WeatherIntensity intensity) {
+    // Same BADGE_SIZE (60x60) transparent container the profile card's own
+    // weather_badge uses (create(), above) — build_weather_icon()'s wsc()/
+    // wix() helpers draw at a fixed 60px-based coordinate scale regardless of
+    // the container's actual size, so this must stay 60x60 for the glyph to
+    // land correctly; center it in whatever (larger) parent the caller sizes.
+    lv_obj_t* badge = lv_obj_create(parent);
+    lv_obj_set_size(badge, BADGE_SIZE, BADGE_SIZE);
+    lv_obj_set_style_bg_opa(badge, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(badge, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(badge, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(badge, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(badge, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_center(badge);
+    build_weather_icon(badge, condition, is_night, intensity);
+    return badge;
+}
+
 // Apply a photo descriptor to one image object: show it with the given source,
 // or hide it when the descriptor is null.
 static void apply_photo_to(lv_obj_t* img, const lv_image_dsc_t* img_dsc) {

@@ -24,6 +24,12 @@ constexpr const char* k_ota_ack      = "ota_ack";     // string: post-update ver
 constexpr const char* k_holiday_ctry = "hol_ctry";    // uint8: holiday_data::Country
 constexpr const char* k_holiday_region = "hol_region"; // uint8: region within that country
 constexpr const char* k_holiday_lunar = "hol_lunar";  // bytes: uint16_t[] epoch-day array
+constexpr const char* k_wh_end_min   = "wh_end";      // uint16: work hours end, minutes since midnight
+constexpr const char* k_wh_days      = "wh_days";     // uint8: work-day bitmask, bit0=Mon..bit6=Sun
+constexpr const char* k_wx_alert_en  = "wx_alert_en"; // uint8: weather alert enabled
+constexpr const char* k_wx_alert_off = "wx_alert_off"; // uint8: weather alert offset minutes
+constexpr const char* k_batt_alert_en = "batt_alert_en"; // uint8: low battery alert enabled
+constexpr const char* k_batt_thresh   = "batt_thresh";   // uint8: low battery threshold pct
 
 Preferences prefs;
 
@@ -57,6 +63,25 @@ void set_uchar(const char* key, uint8_t val, const char* log_name) {
         prefs.end();
     }
     LOG("[nvs] %s=%d\n", log_name, (int)val);
+}
+
+// Same shape as get_uchar()/set_uchar() above, for the one preference that
+// needs the fuller 0-1439 range (work_hours_end_min) — doesn't fit uint8_t.
+uint16_t get_ushort(const char* key, uint16_t dflt) {
+    uint16_t v = dflt;
+    if (prefs.begin(NAMESPACE, /*readOnly=*/true)) {
+        v = prefs.getUShort(key, dflt);
+        prefs.end();
+    }
+    return v;
+}
+
+void set_ushort(const char* key, uint16_t val, const char* log_name) {
+    if (prefs.begin(NAMESPACE, /*readOnly=*/false)) {
+        prefs.putUShort(key, val);
+        prefs.end();
+    }
+    LOG("[nvs] %s=%u\n", log_name, (unsigned)val);
 }
 
 } // namespace
@@ -238,6 +263,60 @@ uint8_t get_holiday_region() {
 
 void set_holiday_region(uint8_t region) {
     set_uchar(k_holiday_region, region, "holiday_region");
+}
+
+// ── Working Hours end time + day mask ──────────────────────────────────────
+
+uint16_t get_work_hours_end_min() {
+    return get_ushort(k_wh_end_min, 1020);  // default: 17:00
+}
+
+void set_work_hours_end_min(uint16_t minutes) {
+    set_ushort(k_wh_end_min, minutes, "work_hours_end_min");
+}
+
+uint8_t get_work_hours_days() {
+    return get_uchar(k_wh_days, 0x1F);  // default: Monday-Friday
+}
+
+void set_work_hours_days(uint8_t mask) {
+    set_uchar(k_wh_days, mask, "work_hours_days");
+}
+
+// ── Weather Alert config ────────────────────────────────────────────────────
+
+uint8_t get_weather_alert_enabled() {
+    return get_uchar(k_wx_alert_en, 0);  // default: Off
+}
+
+void set_weather_alert_enabled(uint8_t enabled) {
+    set_uchar(k_wx_alert_en, enabled, "weather_alert_enabled");
+}
+
+uint8_t get_weather_alert_offset_min() {
+    return get_uchar(k_wx_alert_off, 15);  // default: 15 min
+}
+
+void set_weather_alert_offset_min(uint8_t minutes) {
+    set_uchar(k_wx_alert_off, minutes, "weather_alert_offset_min");
+}
+
+// ── Low Battery Alert config ────────────────────────────────────────────────
+
+uint8_t get_low_battery_alert_enabled() {
+    return get_uchar(k_batt_alert_en, 0);  // default: Off
+}
+
+void set_low_battery_alert_enabled(uint8_t enabled) {
+    set_uchar(k_batt_alert_en, enabled, "low_battery_alert_enabled");
+}
+
+uint8_t get_low_battery_threshold_pct() {
+    return get_uchar(k_batt_thresh, 20);  // default: 20%
+}
+
+void set_low_battery_threshold_pct(uint8_t pct) {
+    set_uchar(k_batt_thresh, pct, "low_battery_threshold_pct");
 }
 
 // ── Lunar-holiday date cache (raw bytes, not a scalar — doesn't fit the

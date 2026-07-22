@@ -1173,6 +1173,15 @@
       justify-content: center;
     }
 
+    /* Non-destructive notice variant (Weather Alert / Low Battery Alert) —
+       same card shape as the factory-reset confirmation above, but tinted
+       accent-gold instead of danger-red: these are informational nudges,
+       not a destructive action to confirm. */
+    .alert-card.notice .icon-circle {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
     /* iPhone info / stats modal */
     .ip-card {
       width: 560px;
@@ -2650,6 +2659,8 @@
         <div class="group-title">Modal popups</div>
         <button data-screen="countdown">5-min meeting countdown</button>
         <button data-screen="factory-reset">Factory reset confirm</button>
+        <button data-screen="weather-alert">Weather Alert (NEW)</button>
+        <button data-screen="low-battery-alert">Low Battery Alert (NEW)</button>
         <button data-screen="meeting-detail">Meeting detail overlay</button>
         <button data-screen="timeOffDetail">Time Off detail overlay</button>
         <button data-screen="ancs-notification">ANCS notification detail</button>
