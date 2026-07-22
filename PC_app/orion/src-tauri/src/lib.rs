@@ -3,6 +3,7 @@ mod calendar_import;
 mod commands;
 mod holiday;
 mod notif_filter;
+mod ota;
 mod reminders;
 mod store;
 mod weather;
@@ -428,6 +429,7 @@ pub fn run() {
             commands::set_calendar_source,
             commands::import_calendar_xml,
             commands::set_weather_location,
+            commands::retry_network_fetch,
             commands::clear_all,
             commands::firmware_install,
             commands::orion_update_install,

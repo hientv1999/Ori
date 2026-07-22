@@ -47,6 +47,11 @@ base64 = "0.22.1"
 # WebP, TIFF, etc. — Windows GSMTC thumbnails are JPEG or PNG in practice
 # (BMP kept as a cheap fallback); no need for the rest.
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "bmp"] }
+# USB CDC firmware-update sender (ota.md) — wraps the same native serial
+# APIs a platform-specific implementation would (Windows serial APIs / macOS
+# IOKit), matching `tools/mock_orion_ota.py`'s use of pyserial. Driverless on
+# Win 10+/macOS since Ori's ESP32-S3 uses its native USB peripheral.
+serialport = "4"
 # Calendar Source (pc-app.md): fetch + parse the Outlook sharing-invitation
 # XML and the ICS feed it points at. No Microsoft Graph/OAuth anywhere in
 # this app by design — see pc-app.md's "Calendar data" section for why.

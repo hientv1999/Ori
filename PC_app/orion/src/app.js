@@ -42,6 +42,7 @@ function wireStaticHandlers(){
   $('appMinimizeIco').addEventListener('click',minimizePanel);
   $('hDevice').addEventListener('click',openOriInfoModal);
   $('reconnectIco').addEventListener('click',doForceReconnect);
+  $('netWarnIco').addEventListener('click',retryNetworkFetch);
   $('callIco').addEventListener('click',openCallFromChip);
   $('phoneIco').addEventListener('click',openIphoneInfoModal);
   $('fwIco').addEventListener('click',clickFw);
@@ -175,6 +176,16 @@ function wireStaticHandlers(){
   $('settingsResetBtn').addEventListener('click',()=>showModal('m-reset'));
 
   $('oriInfoCloseBtn').addEventListener('click',closeOriInfoModal);
+  // Manual re-flash for local dev testing (ota.md) — bypasses the "genuinely
+  // newer version" gate `check_firmware_version` normally requires, since
+  // same-version reinstall/downgrade is protocol-legal and there's no
+  // hosted release to compare against yet (Phase C interim). Reuses the
+  // exact same m-fw progress UI/pipeline the real update banner does.
+  $('oriInfoReinstallBtn').addEventListener('click',()=>{
+    closeOriInfoModal();
+    showModal('m-fw');
+    startFwInstall();
+  });
   $('ipInfoCancelBtn').addEventListener('click',()=>hideModal('m-iphone-info'));
   $('ipInfoUnpairBtn').addEventListener('click',ipInfoToUnpair);
   $('ancsListBackBtn').addEventListener('click',ancsListBack);
@@ -453,6 +464,34 @@ let orionAppVersion='1.0.0';
 let calendarNetOk=true,weatherNetOk=true;
 function renderNetWarnIco(){
   $('netWarnIco').style.display=(!calendarNetOk||!weatherNetOk)?'':'none';
+}
+// Swapped in over netWarnIco's resting warning-triangle glyph while a
+// user-triggered retry is in flight — same reconnect-arrows SVG reconnectIco
+// itself uses (index.html), so "this icon is refreshing" always looks the
+// same regardless of which header icon it's happening on.
+const NET_WARN_ICON_SVG='<svg width="15" height="15" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M10 6v5"/><circle cx="10" cy="14" r="0.75" fill="currentColor" stroke="none"/><path d="M8.7 3.3a1.5 1.5 0 012.6 0l6.3 11a1.5 1.5 0 01-1.3 2.2H3.7a1.5 1.5 0 01-1.3-2.2l6.3-11z"/></svg>';
+const NET_RETRY_ICON_SVG='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" /><polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" /></svg>';
+let netWarnRetrying=false;
+// Fires an on-demand calendar+weather refetch (commands.rs's
+// retry_network_fetch, which just re-runs the same refresh() calls the
+// background polls already do each tick). Both sources' actual ok/fail
+// state still arrives through the existing 'network-health' listener —
+// this function only owns the spinner glyph and the click-guard; whether
+// the icon ends up hidden (resolved) or back to the warning triangle
+// (still failing) falls out of that listener's own renderNetWarnIco() calls,
+// same as it already does for the automatic background polls.
+async function retryNetworkFetch(){
+  if(netWarnRetrying) return;
+  netWarnRetrying=true;
+  $('netWarnIco').classList.add('is-retrying');
+  $('netWarnIco').innerHTML=NET_RETRY_ICON_SVG;
+  $('netWarnIco').title=I18N[appLang].main.netWarnRetrying;
+  await invoke('retry_network_fetch').catch(()=>{});
+  netWarnRetrying=false;
+  $('netWarnIco').classList.remove('is-retrying');
+  $('netWarnIco').innerHTML=NET_WARN_ICON_SVG;
+  $('netWarnIco').title=I18N[appLang].main.netWarnTitle;
+  renderNetWarnIco();
 }
 let orionUpdateAvail=false;
 let orionUpdateVersion='1.1.0';
@@ -1719,6 +1758,7 @@ function renderOriInfoModal(info,settings,live){
   $('oriInfoSync').textContent = secs==null ? t.unknown : secs<60 ? t.justNow : t.minAgo.replace('{n}',Math.round(secs/60));
 
   $('oriInfoCloseBtn').textContent=I18N[appLang].pairfail.close;
+  $('oriInfoReinstallBtn').textContent=t.reinstall;
 }
 
 // Fresh get_ori_info (cheap — cached, no BLE) + a live char-000E read, then
@@ -2760,17 +2800,22 @@ function discardShortcuts(){
 function _renderMainSeekStepPreview(){
   $('mainSeekStepPreview').textContent=seekStepS+'s';
 }
+function _updateSeekStepSave(){
+  if(ssDirty)$('ssSaveBtn').removeAttribute('disabled');else $('ssSaveBtn').setAttribute('disabled','');
+}
 function openSeekStep(){
   seekStepPending=seekStepS;
   $('ssStepSlider').value=seekStepS;
   $('ssStepVal').textContent=seekStepS+' '+I18N[appLang].seekStep.secUnit;
   ssDirty=false;
+  _updateSeekStepSave();
   show('s-seekstep');
 }
 function onSeekStepInput(){
   seekStepPending=+$('ssStepSlider').value;
   $('ssStepVal').textContent=seekStepPending+' '+I18N[appLang].seekStep.secUnit;
   ssDirty=seekStepPending!==seekStepS;
+  _updateSeekStepSave();
 }
 function saveSeekStep(){
   seekStepS=seekStepPending;
@@ -2814,7 +2859,10 @@ function _whComputeDirty(){
   whDirty=whStartPending!==whStartMin||whEndPending!==whEndMin||
     whDaysPending.some((d,i)=>d!==whDays[i]);
 }
-function toggleWhDay(i){whDaysPending[i]=!whDaysPending[i];_renderWhDays();_whComputeDirty();}
+function _updateWorkHoursSave(){
+  if(whDirty)$('whSaveBtn').removeAttribute('disabled');else $('whSaveBtn').setAttribute('disabled','');
+}
+function toggleWhDay(i){whDaysPending[i]=!whDaysPending[i];_renderWhDays();_whComputeDirty();_updateWorkHoursSave();}
 
 function _renderMainWorkHoursSub(){
   const t=I18N[appLang].workingHours;
@@ -2850,6 +2898,7 @@ function adjustWorkHoursTime(which,unit,dir){
   if(which==='whStart')whStartPending=next;else whEndPending=next;
   _renderTimePicker(which,next);
   _whComputeDirty();
+  _updateWorkHoursSave();
 }
 function openWorkingHours(){
   whStartPending=whStartMin;whEndPending=whEndMin;whDaysPending=whDays.slice();
@@ -2857,6 +2906,7 @@ function openWorkingHours(){
   _renderTimePicker('whEnd',whEndPending);
   _renderWhDays();
   whDirty=false;
+  _updateWorkHoursSave();
   show('s-workinghours');
 }
 function saveWorkingHours(){
@@ -2888,16 +2938,21 @@ function discardWorkingHours(){
 function _waComputeDirty(){
   waDirty=waEnabledPending!==waEnabled||(+$('waOffsetSlider').value)!==waOffsetMin;
 }
+function _updateWeatherAlertSave(){
+  if(waDirty)$('waSaveBtn').removeAttribute('disabled');else $('waSaveBtn').setAttribute('disabled','');
+}
 function toggleWaEnabled(){
   waEnabledPending=!waEnabledPending;
   $('waEnabledToggle').classList.toggle('on',waEnabledPending);
   $('waSliderRow').classList.toggle('disabled',!waEnabledPending);
   $('waOffsetSlider').disabled=!waEnabledPending;
   _waComputeDirty();
+  _updateWeatherAlertSave();
 }
 function onWaOffsetInput(){
   $('waOffsetVal').textContent=$('waOffsetSlider').value+' '+I18N[appLang].weatherAlert.minUnit;
   _waComputeDirty();
+  _updateWeatherAlertSave();
 }
 function _renderMainWeatherAlertSub(){
   const t=I18N[appLang].weatherAlert;
@@ -2916,6 +2971,7 @@ function openWeatherAlert(){
   $('waOffsetSlider').value=waOffsetMin;
   $('waOffsetVal').textContent=waOffsetMin+' '+I18N[appLang].weatherAlert.minUnit;
   waDirty=false;
+  _updateWeatherAlertSave();
   show('s-weatheralert');
 }
 function saveWeatherAlert(){
@@ -2949,16 +3005,21 @@ function discardWeatherAlert(){
 function _lbComputeDirty(){
   lbDirty=lbEnabledPending!==lbEnabled||(+$('lbThresholdSlider').value)!==lbThresholdPct;
 }
+function _updateLowBatteryAlertSave(){
+  if(lbDirty)$('lbSaveBtn').removeAttribute('disabled');else $('lbSaveBtn').setAttribute('disabled','');
+}
 function toggleLbEnabled(){
   lbEnabledPending=!lbEnabledPending;
   $('lbEnabledToggle').classList.toggle('on',lbEnabledPending);
   $('lbSliderRow').classList.toggle('disabled',!lbEnabledPending);
   $('lbThresholdSlider').disabled=!lbEnabledPending;
   _lbComputeDirty();
+  _updateLowBatteryAlertSave();
 }
 function onLbThresholdInput(){
   $('lbThresholdVal').textContent=$('lbThresholdSlider').value+'%';
   _lbComputeDirty();
+  _updateLowBatteryAlertSave();
 }
 function _renderMainLowBatteryAlertSub(){
   const t=I18N[appLang].lowBatteryAlert;
@@ -2988,6 +3049,7 @@ function openLowBatteryAlert(){
   $('lbThresholdSlider').value=lbThresholdPct;
   $('lbThresholdVal').textContent=lbThresholdPct+'%';
   lbDirty=false;
+  _updateLowBatteryAlertSave();
   show('s-lowbatteryalert');
 }
 function saveLowBatteryAlert(){
@@ -3109,10 +3171,23 @@ function startFwInstall(){
   invoke('firmware_install').catch(()=>{});
 }
 // Driven by 'fw-progress' events from the USB CDC OTA sender (ota.md) — phase
-// is one of "downloading"/"verifying"/"installing"/"done".
-function fwApplyProgress({pct,phase,version}){
+// is one of "downloading"/"verifying"/"installing"/"done"/"failed". Every
+// failure path on the Rust side (port not found, REJECT/FAILED from Ori,
+// timeout, cancelled file picker) funnels through "failed" with a
+// human-readable `reason` — never leaves the ring spinning forever.
+function fwApplyProgress({pct,phase,version,reason}){
   const t=I18N[appLang].fwModal;
   const ring=$('fwRing'),pctEl=$('fwPct'),lbl=$('fwLbl'),title=$('fwMTitle');
+  if(phase==='failed'){
+    ring.style.strokeDashoffset=358;pctEl.textContent='!';
+    title.textContent=t.updateFailedTitle;lbl.textContent=reason||'';
+    setTimeout(()=>{
+      hideModal('m-fw');
+      $('fw-c').style.display='';$('fw-i').style.display='none';
+      ring.style.strokeDashoffset=358;pctEl.textContent='0%';title.textContent=t.updatingFirmware;
+    },4000);
+    return;
+  }
   if(phase==='done'){
     ring.style.strokeDashoffset=0;pctEl.textContent='✓';
     lbl.textContent=t.nowRunning.replace('{v}',version||'');title.textContent=t.done;
@@ -3210,7 +3285,7 @@ const I18N={
     syncing:{title:'Setting up Ori…',progressLabel:'A busy day ahead…',doneLabel:'Ori is set up!'},
     pairfail:{title:'Couldn’t pair with Ori',body:'The passkey didn’t match, or the request timed out on Ori. Pick a device to try again.',close:'Close'},
     oriInfoModal:{fwLbl:'Firmware',addrLbl:'Address',snLbl:'Serial Number',mfgLbl:'Manufactured',sigLbl:'Signal',syncLbl:'Synced',
-      notSetup:'Not setup',justNow:'Just now',minAgo:'{n} min ago',unknown:'Unknown'},
+      notSetup:'Not setup',justNow:'Just now',minAgo:'{n} min ago',unknown:'Unknown',reinstall:'Reinstall Firmware…'},
     iphoneInfoModal:{missedLbl:'Missed Calls',unreadLbl:'Unread Messages',sigLbl:'Signal',notifLbl:'Notifications'},
     ancsList:{titles:{missed:'Missed Calls',unread:'Unread Messages',other:'Notifications'},
       empty:{missed:'No missed calls',unread:'No unread messages',other:'No notifications'},
@@ -3227,7 +3302,7 @@ const I18N={
       clockFaceRow:'Clock Face',timeFormatRow:'Time Format',quickActionsRow:'Quick Actions',seekStepRow:'Seek Step',
       settingsIcoTitle:'Settings',minimizeIcoTitle:'Minimize',fwUpToDate:'Firmware up to date',fwAvailable:'Firmware update available',
       phoneConnectedTitle:'{name} — Connected',phoneDisconnectedTitle:'{kind} disconnected',phoneKindGeneric:'iPhone or iPad',
-      reconnectTitle:'Reconnect',netWarnTitle:"Calendar/weather couldn't be refreshed"},
+      reconnectTitle:'Reconnect',netWarnTitle:"Calendar/weather couldn't be refreshed — click to retry",netWarnRetrying:'Retrying…'},
     profileEditor:{title:'Profile'},
     timeOffEditor:{periodLbl:'Period',selectDates:'Select dates…',selectStartDate:'Select start date',
       selectEndDate:'Now select end date',destinationLbl:'Destination',destinationPh:'City, Country',
@@ -3276,7 +3351,7 @@ const I18N={
     bluetoothModal:{title:'Bluetooth is off',body:'Turn on Bluetooth to keep using Orion.'},
     fwModal:{title:'Ori Update Available',update:'Update',
       updatingFirmware:'Updating Ori…',keepPluggedIn:'Keep Ori plugged in',verifying:'Verifying…',
-      nowRunning:'Now running {v}',done:'Done',
+      nowRunning:'Now running {v}',done:'Done',updateFailedTitle:'Update failed',
       changelog:['Added Vietnamese, Spanish, and French language support','Faster reconnect after Ori goes to sleep','Fixed a rare crash when removing a Time Off photo']},
     orionUpdate:{title:'Orion Update Available',update:'Update',
       downloading:'Updating Orion…',installing:'Installing…',
@@ -3323,7 +3398,7 @@ const I18N={
     syncing:{title:'Đang thiết lập Ori…',progressLabel:'Một ngày bận rộn đang chờ…',doneLabel:'Ori đã thiết lập xong!'},
     pairfail:{title:'Không thể ghép nối với Ori',body:'Mã ghép nối không khớp, hoặc yêu cầu đã hết thời gian chờ trên Ori. Hãy chọn một thiết bị để thử lại.',close:'Đóng'},
     oriInfoModal:{fwLbl:'Firmware',addrLbl:'Địa chỉ',snLbl:'Số sê-ri',mfgLbl:'Ngày sản xuất',sigLbl:'Tín hiệu',syncLbl:'Đồng bộ',
-      notSetup:'Chưa thiết lập',justNow:'Vừa xong',minAgo:'{n} phút trước',unknown:'Chưa rõ'},
+      notSetup:'Chưa thiết lập',justNow:'Vừa xong',minAgo:'{n} phút trước',unknown:'Chưa rõ',reinstall:'Cài lại chương trình…'},
     iphoneInfoModal:{missedLbl:'Cuộc gọi nhỡ',unreadLbl:'Tin nhắn chưa đọc',sigLbl:'Tín hiệu',notifLbl:'Thông báo'},
     ancsList:{titles:{missed:'Cuộc gọi nhỡ',unread:'Tin nhắn chưa đọc',other:'Thông báo'},
       empty:{missed:'Không có cuộc gọi nhỡ',unread:'Không có tin nhắn chưa đọc',other:'Không có thông báo'},
@@ -3340,7 +3415,7 @@ const I18N={
       clockFaceRow:'Mặt đồng hồ',timeFormatRow:'Định dạng giờ',quickActionsRow:'Thao tác nhanh',seekStepRow:'Bước tua',
       settingsIcoTitle:'Cài đặt',minimizeIcoTitle:'Thu nhỏ',fwUpToDate:'Firmware đã mới nhất',fwAvailable:'Có bản cập nhật firmware',
       phoneConnectedTitle:'{name} — Đã kết nối',phoneDisconnectedTitle:'{kind} đã ngắt kết nối',phoneKindGeneric:'iPhone hoặc iPad',
-      reconnectTitle:'Kết nối lại',netWarnTitle:'Không thể làm mới lịch/thời tiết'},
+      reconnectTitle:'Kết nối lại',netWarnTitle:'Không thể làm mới lịch/thời tiết — nhấn để thử lại',netWarnRetrying:'Đang thử lại…'},
     profileEditor:{title:'Hồ sơ'},
     timeOffEditor:{periodLbl:'Khoảng thời gian',selectDates:'Chọn ngày…',selectStartDate:'Chọn ngày bắt đầu',
       selectEndDate:'Bây giờ chọn ngày kết thúc',destinationLbl:'Điểm đến',destinationPh:'Thành phố, Quốc gia',
@@ -3389,7 +3464,7 @@ const I18N={
     bluetoothModal:{title:'Bluetooth đang tắt',body:'Bật Bluetooth để tiếp tục sử dụng Orion.'},
     fwModal:{title:'Có bản cập nhật Ori',update:'Cập nhật',
       updatingFirmware:'Đang cập nhật Ori…',keepPluggedIn:'Giữ Ori được cắm điện',verifying:'Đang xác minh…',
-      nowRunning:'Đang chạy {v}',done:'Hoàn tất',
+      nowRunning:'Đang chạy {v}',done:'Hoàn tất',updateFailedTitle:'Cập nhật thất bại',
       changelog:['Đã thêm hỗ trợ tiếng Việt, tiếng Tây Ban Nha và tiếng Pháp','Kết nối lại nhanh hơn sau khi Ori vào chế độ ngủ','Đã sửa lỗi hiếm gặp gây treo khi xóa ảnh Nghỉ phép']},
     orionUpdate:{title:'Có bản cập nhật Orion',update:'Cập nhật',
       downloading:'Đang cập nhật Orion…',installing:'Đang cài đặt…',
@@ -3436,7 +3511,7 @@ const I18N={
     syncing:{title:'Configurando Ori…',progressLabel:'Un día ocupado por delante…',doneLabel:'¡Ori está listo!'},
     pairfail:{title:'No se pudo emparejar con Ori',body:'El código no coincidió, o la solicitud caducó en Ori. Elige un dispositivo para intentarlo de nuevo.',close:'Cerrar'},
     oriInfoModal:{fwLbl:'Firmware',addrLbl:'Dirección',snLbl:'Número de serie',mfgLbl:'Fabricado',sigLbl:'Señal',syncLbl:'Sincronizado',
-      notSetup:'Sin configurar',justNow:'Ahora mismo',minAgo:'Hace {n} min',unknown:'Desconocido'},
+      notSetup:'Sin configurar',justNow:'Ahora mismo',minAgo:'Hace {n} min',unknown:'Desconocido',reinstall:'Reinstalar firmware…'},
     iphoneInfoModal:{missedLbl:'Llamadas perdidas',unreadLbl:'Mensajes sin leer',sigLbl:'Señal',notifLbl:'Notificaciones'},
     ancsList:{titles:{missed:'Llamadas perdidas',unread:'Mensajes sin leer',other:'Notificaciones'},
       empty:{missed:'Sin llamadas perdidas',unread:'Sin mensajes sin leer',other:'Sin notificaciones'},
@@ -3453,7 +3528,7 @@ const I18N={
       clockFaceRow:'Esfera del reloj',timeFormatRow:'Formato de hora',quickActionsRow:'Acciones rápidas',seekStepRow:'Paso de salto',
       settingsIcoTitle:'Configuración',minimizeIcoTitle:'Minimizar',fwUpToDate:'Firmware actualizado',fwAvailable:'Actualización de firmware disponible',
       phoneConnectedTitle:'{name} — Conectado',phoneDisconnectedTitle:'{kind} desconectado',phoneKindGeneric:'iPhone o iPad',
-      reconnectTitle:'Reconectar',netWarnTitle:'No se pudo actualizar el calendario/clima'},
+      reconnectTitle:'Reconectar',netWarnTitle:'No se pudo actualizar el calendario/clima — haz clic para reintentar',netWarnRetrying:'Reintentando…'},
     profileEditor:{title:'Perfil'},
     timeOffEditor:{periodLbl:'Periodo',selectDates:'Selecciona fechas…',selectStartDate:'Selecciona la fecha de inicio',
       selectEndDate:'Ahora selecciona la fecha de fin',destinationLbl:'Destino',destinationPh:'Ciudad, país',
@@ -3502,7 +3577,7 @@ const I18N={
     bluetoothModal:{title:'Bluetooth está apagado',body:'Activa Bluetooth para seguir usando Orion.'},
     fwModal:{title:'Actualización de Ori disponible',update:'Actualizar',
       updatingFirmware:'Actualizando Ori…',keepPluggedIn:'Mantén Ori conectado',verifying:'Verificando…',
-      nowRunning:'Ahora ejecutando {v}',done:'Listo',
+      nowRunning:'Ahora ejecutando {v}',done:'Listo',updateFailedTitle:'Error al actualizar',
       changelog:['Se agregó soporte para vietnamita, español y francés','Reconexión más rápida cuando Ori sale del reposo','Se corrigió un error poco frecuente al eliminar una foto de Tiempo libre']},
     orionUpdate:{title:'Actualización de Orion disponible',update:'Actualizar',
       downloading:'Actualizando Orion…',installing:'Instalando…',
@@ -3549,7 +3624,7 @@ const I18N={
     syncing:{title:"Configuration d'Ori…",progressLabel:'Une journée bien remplie vous attend…',doneLabel:'Ori est configuré !'},
     pairfail:{title:"Impossible d'appairer avec Ori",body:'Le code ne correspondait pas, ou la demande a expiré sur Ori. Choisissez un appareil pour réessayer.',close:'Fermer'},
     oriInfoModal:{fwLbl:'Firmware',addrLbl:'Adresse',snLbl:'Numéro de série',mfgLbl:'Fabriqué',sigLbl:'Signal',syncLbl:'Synchronisé',
-      notSetup:'Non configuré',justNow:"À l'instant",minAgo:'Il y a {n} min',unknown:'Inconnu'},
+      notSetup:'Non configuré',justNow:"À l'instant",minAgo:'Il y a {n} min',unknown:'Inconnu',reinstall:'Réinstaller le firmware…'},
     iphoneInfoModal:{missedLbl:'Appels manqués',unreadLbl:'Messages non lus',sigLbl:'Signal',notifLbl:'Notifications'},
     ancsList:{titles:{missed:'Appels manqués',unread:'Messages non lus',other:'Notifications'},
       empty:{missed:'Aucun appel manqué',unread:'Aucun message non lu',other:'Aucune notification'},
@@ -3566,7 +3641,7 @@ const I18N={
       clockFaceRow:"Cadran de l'horloge",timeFormatRow:"Format de l'heure",quickActionsRow:'Actions rapides',seekStepRow:'Pas de saut',
       settingsIcoTitle:'Paramètres',minimizeIcoTitle:'Réduire',fwUpToDate:'Firmware à jour',fwAvailable:'Mise à jour du firmware disponible',
       phoneConnectedTitle:'{name} — Connecté',phoneDisconnectedTitle:'{kind} déconnecté',phoneKindGeneric:'iPhone ou iPad',
-      reconnectTitle:'Reconnecter',netWarnTitle:"Impossible d'actualiser le calendrier/la météo"},
+      reconnectTitle:'Reconnecter',netWarnTitle:"Impossible d'actualiser le calendrier/la météo — cliquez pour réessayer",netWarnRetrying:'Nouvelle tentative…'},
     profileEditor:{title:'Profil'},
     timeOffEditor:{periodLbl:'Période',selectDates:'Sélectionner les dates…',selectStartDate:'Sélectionner la date de début',
       selectEndDate:'Sélectionnez maintenant la date de fin',destinationLbl:'Destination',destinationPh:'Ville, pays',
@@ -3615,7 +3690,7 @@ const I18N={
     bluetoothModal:{title:'Le Bluetooth est désactivé',body:'Activez le Bluetooth pour continuer à utiliser Orion.'},
     fwModal:{title:"Mise à jour d'Ori disponible",update:'Mettre à jour',
       updatingFirmware:"Mise à jour d'Ori…",keepPluggedIn:'Gardez Ori branché',verifying:'Vérification…',
-      nowRunning:'Exécute maintenant {v}',done:'Terminé',
+      nowRunning:'Exécute maintenant {v}',done:'Terminé',updateFailedTitle:'Échec de la mise à jour',
       changelog:["Ajout de la prise en charge du vietnamien, de l'espagnol et du français","Reconnexion plus rapide après la mise en veille d'Ori","Correction d'un rare plantage lors de la suppression d'une photo de congé"]},
     orionUpdate:{title:"Mise à jour d'Orion disponible",update:'Mettre à jour',
       downloading:"Mise à jour d'Orion…",installing:'Installation…',

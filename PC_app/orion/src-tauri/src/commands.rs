@@ -1173,29 +1173,47 @@ struct FwProgress {
     pct: f32,
     phase: &'static str,
     version: Option<&'static str>,
+    reason: Option<String>,
 }
 
+/// Real USB CDC OTA sender (`ota::run_update`) — BEGIN/DATA windowed
+/// flow-control/END, driven by real PROGRESS/VALIDATED/FAILED frames from
+/// Ori over the serial port (`ota.md`). Interim (Phase C, pre-`orinari.net`
+/// hosting): rather than downloading the latest release, prompt for a local
+/// `.bin` — defaults to the firmware project's own build output when
+/// present, so testing against a freshly-built image needs no typing.
+/// Reachable either from the "Ori Update Available" banner (a genuinely
+/// newer version detected over BLE, `check_firmware_version`) or the Ori
+/// Info modal's "Reinstall Firmware" action (`clickOriInfoReinstall` in
+/// app.js) — the latter bypasses the newer-version gate entirely, since
+/// same-version reinstall/downgrade is protocol-legal (`ota.md` § "Version
+/// & rollback policy") and is how this gets tested without a hosted release
+/// to compare against yet.
 #[tauri::command]
 pub async fn firmware_install(app: AppHandle) {
-    // Phase C: real USB CDC OTA sender (ota.md) — BEGIN/DATA windowed
-    // flow-control/END, driven by real PROGRESS frames from Ori.
-    let mut pct: f32 = 0.0;
-    while pct < 100.0 {
-        pct = (pct + 3.0).min(100.0);
-        let phase = if pct < 55.0 {
-            "downloading"
-        } else if pct < 80.0 {
-            "verifying"
-        } else {
-            "installing"
-        };
-        let _ = app.emit("fw-progress", FwProgress { pct, phase, version: None });
-        sleep(Duration::from_millis(60)).await;
+    use tauri_plugin_dialog::DialogExt;
+
+    let mut builder = app.dialog().file().add_filter("Ori firmware image", &["bin"]);
+    let default_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../firmware/.pio/build/ori");
+    if default_dir.is_dir() {
+        builder = builder.set_directory(&default_dir);
     }
-    let _ = app.emit(
-        "fw-progress",
-        FwProgress { pct: 100.0, phase: "done", version: Some("1.1.0") },
-    );
+    let Some(picked) = builder.blocking_pick_file() else {
+        let _ = app.emit(
+            "fw-progress",
+            FwProgress { pct: 0.0, phase: "failed", version: None, reason: Some("No firmware file selected.".to_string()) },
+        );
+        return;
+    };
+    let Ok(path) = picked.into_path() else {
+        let _ = app.emit(
+            "fw-progress",
+            FwProgress { pct: 0.0, phase: "failed", version: None, reason: Some("Couldn't read the selected file's path.".to_string()) },
+        );
+        return;
+    };
+
+    let _ = tauri::async_runtime::spawn_blocking(move || crate::ota::run_update(&app, &path)).await;
 }
 
 #[tauri::command]
@@ -1204,12 +1222,12 @@ pub async fn orion_update_install(app: AppHandle) {
     while pct < 100.0 {
         pct = (pct + 4.0).min(100.0);
         let phase = if pct < 65.0 { "downloading" } else { "installing" };
-        let _ = app.emit("orion-update-progress", FwProgress { pct, phase, version: None });
+        let _ = app.emit("orion-update-progress", FwProgress { pct, phase, version: None, reason: None });
         sleep(Duration::from_millis(60)).await;
     }
     let _ = app.emit(
         "orion-update-progress",
-        FwProgress { pct: 100.0, phase: "ready", version: None },
+        FwProgress { pct: 100.0, phase: "ready", version: None, reason: None },
     );
 }
 
