@@ -1070,6 +1070,29 @@ pub async fn set_weather_location(app: AppHandle, lat: Option<f64>, lon: Option<
     crate::weather::set_location(&app, lat, lon).await
 }
 
+/// User-initiated retry for the header network-warning icon (pc-app.md) —
+/// re-runs the exact same `refresh()` calls the calendar/weather background
+/// poll loops already run each tick, for when a transient network blip
+/// hasn't cleared by itself yet and the user doesn't want to wait out the
+/// ~15-min poll interval. Run sequentially, NOT concurrently (`tokio::join!`,
+/// as this used to do) — each refresh's own device push (`push_meetings`/
+/// `set_device_settings`) takes `BleState::sync_lock` via `try_lock()` and
+/// silently no-ops on contention, by design, so a routine background push
+/// never blocks/aborts a real bulk sync in progress. That's harmless when
+/// the two poll loops' independent ~15/~15-30-min tickers rarely land in
+/// the same instant, but joining them here made the collision the COMMON
+/// case: after an outage clears, both fetches succeed together and both
+/// try to push at once, so whichever lost the `try_lock()` race silently
+/// never reached Ori. Both still report through the same `network-health`
+/// events the icon already listens for, so this command itself returns
+/// nothing — the frontend just awaits it to know when to stop showing its
+/// own retry spinner.
+#[tauri::command]
+pub async fn retry_network_fetch(app: AppHandle) {
+    let _ = crate::calendar_import::refresh(&app).await;
+    let _ = crate::weather::refresh(&app).await;
+}
+
 /// Stops whichever `supervise_connection_loop` is currently running, if any
 /// — see `BleState::supervisor_task`'s doc comment for why `clear_all`
 /// needs to do this explicitly rather than letting the loop notice the
