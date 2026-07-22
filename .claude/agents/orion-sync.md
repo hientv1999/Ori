@@ -18,7 +18,7 @@ You are the Orion Sync Agent. You are the PC-side counterpart to the firmware's 
 - **Errors/retries**: NACK and reconnect-from-`BEGIN` semantics are in `ble-protocol.md` §5/§8 — don't invent your own retry policy.
 
 ### Firmware update (USB CDC)
-You own the sender side end to end for the optional, user-initiated "Install update" flow — compare `fw_version` (read from the BLE SIG standard Firmware Revision String characteristic, `ble-protocol.md` §3/§9) against the latest release at `ori.app` and prompt when newer. `ota.md`'s "Orion (sender) implementation guide" is the source of truth (version-from-binary-marker, port discovery, windowed flow control, the full reject/fail reason table); `tools/mock_orion_ota.py` is a runnable reference covering all documented failure modes.
+You own the sender side end to end for the optional, user-initiated "Install update" flow — compare `fw_version` (read from the BLE SIG standard Firmware Revision String characteristic, `ble-protocol.md` §3/§9) against the latest release at `orinari.net` and prompt when newer. `ota.md`'s "Orion (sender) implementation guide" is the source of truth (version-from-binary-marker, port discovery, windowed flow control, the full reject/fail reason table); `tools/mock_orion_ota.py` is a runnable reference covering all documented failure modes.
 
 ### Media-mode OS bridge
 Bridge `Keyboard Command` notifies (play/pause, next/prev, seek, vol_set, shortcut) to OS actions, and mirror OS volume/track state back to Ori (`HostVolumeState`, `MediaMetadata`, `MediaAlbumArt`). Full command table, state-push triggers, and the swipe-vs-push race rule are in `ble-protocol.md` §12 and `pc-app.md`.

@@ -68,7 +68,7 @@ Ordered by dependency — each phase gates the next. Rough sequence, ~3–5 mont
 12. **Reward tiers:** early-bird (limited qty, lowest price) → standard → maybe a 2-pack. Keep SKUs minimal for a 100-unit run.
 
 ### Phase 4 — Pre-launch audience (start during Phase 2–3, weeks ahead)
-13. **Stand up a landing page + email waitlist** (`ori.app` already exists per the spec — add an email capture). **Campaigns that fund fast do it on day one from a pre-built list.** Aim for a few hundred emails before launch.
+13. **Stand up a landing page + email waitlist** (`orinari.net` — the Orinari/Ori/Orion domain, see `memory.md` — add an email capture). **Campaigns that fund fast do it on day one from a pre-built list.** Aim for a few hundred emails before launch.
 14. **Seed communities** where your buyer lives: r/ESP32, r/homelab, r/productivity, hardware/EE Discords, Hacker News (Show HN once live). Line up any press/newsletter contacts.
 15. **Run a "notify on launch" Kickstarter pre-launch page** to collect follows (converts to day-one pledges).
 

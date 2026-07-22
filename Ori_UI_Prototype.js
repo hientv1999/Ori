@@ -5,7 +5,7 @@
 
 // Long mock name exercises the 2-line wrap path now that the name font is
 // 30px (matching status-bar time + clock date). See `.profile-name` CSS.
-const PROFILE = { name: 'Everstorm Dominion', title: 'Founder, Ori', email: 'everstorm@ori.app', phone: '+1 (415) 555 0192' };
+const PROFILE = { name: 'Everstorm Dominion', title: 'Founder, Ori', email: 'everstorm@orinari.net', phone: '+1 (415) 555 0192' };
 // Demo-only mock weather data for the icon + text on the profile photo.
 // Mirrors the BLE Device Settings "w"/"n"/"i"/"d"/"u" fields (ble-protocol.md
 // §4/§6.4): condition, day/night, and (for rain/thunderstorm/snow/fog) an
@@ -507,7 +507,7 @@ const SCREENS = {
   },
   'setup-install': {
     label: 'Setup flow', title: 'Step 1 — Install Orion',
-    desc: 'Visit ori.app/orion on a PC. Next button advances.',
+    desc: 'Visit orinari.net/orion on a PC. Next button advances.',
     hideStatusBar: true,
     setup: () => setupInstallHTML(),
   },
@@ -1205,7 +1205,7 @@ function setupInstallHTML() {
   return setupShell(0,
     brandMarkHTML(132, -2) +
     '<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%">' +
-    '<p style="font-size:42px;color:var(--text-1);">Download Orion at <span style="color:var(--accent)">ori.app/orion</span></p>' +
+    '<p style="font-size:42px;color:var(--text-1);">Download Orion at <span style="color:var(--accent)">orinari.net/orion</span></p>' +
     '<p style="margin-top:10px;font-size:26px;color:var(--text-2);">Available on Windows and macOS</p>' +
     '</div>' +
     '<button class="btn btn-primary" onclick="setScreen(\'setup-link-orion\')">Next</button>',

@@ -2136,7 +2136,7 @@ struct FwUpdateAvailableEvent {
     version: &'static str,
 }
 
-/// Latest known firmware version — until Phase C's real `ori.app` polling
+/// Latest known firmware version — until Phase C's real `orinari.net` polling
 /// lands (ota.md), this is a hand-maintained stand-in for "the newest
 /// release." Update this constant when a new firmware version ships.
 const LATEST_FIRMWARE_VERSION: &str = "1.0.0";

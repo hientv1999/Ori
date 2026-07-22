@@ -28,7 +28,7 @@ Firmware updates run over **USB CDC** on the existing USB-C power cable. No BLE 
 ## Wire flow
 
 ```
-Orion checks ori.app for latest version vs fw_version read from the standard
+Orion checks orinari.net for latest version vs fw_version read from the standard
 Firmware Revision String characteristic (Device Information Service, BLE).
 If newer exists:
    Orion UI: Settings → "Update available · 1.2.3" → tap "Install update"

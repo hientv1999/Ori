@@ -11,7 +11,7 @@ A **3-dot** progress indicator is anchored at a fixed Y position near the bottom
 | Screen | Dot state | Notes |
 |---|---|---|
 | Welcome | All 3 dots inactive | Ori wordmark; "Start" button advances |
-| Step 1 — Install Orion | Dot 0 active | Visit `ori.app/orion` on PC; user taps Next after install |
+| Step 1 — Install Orion | Dot 0 active | Visit `orinari.net/orion` on PC; user taps Next after install |
 | Step 2 — Link Orion | Dot 1 active | Base: BLE name + spinner. **Passkey modal** overlays when Orion connects. **Orioning modal** overlays during sync (progress ring, "A busy day ahead…"). Both modals dismissed automatically by state transitions — not by the user. |
 | Step 3 — iPhone/iPad pairing | Dot 2 active | Optional; user may skip; pairing can be done later via long-press. Screen copy reads "Connect on iPhone or iPad" since the device isn't bonded yet — see `connectivity.md` §2 |
 | Setup complete | Dots **hidden** | Brief acknowledgement before transitioning to normal runtime |

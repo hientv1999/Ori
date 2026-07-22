@@ -728,7 +728,7 @@ Link-layer encryption failure (`BLE_HS_ENC_FAIL`) signals a stale bond — see �
 
 No wire-level protocol version negotiation or compatibility gate — Ori and Orion are developed and released together, and this contract is expected to stay stable. Unknown CBOR keys are always silently ignored (§4), so additive changes are non-breaking by construction; revisit this section only if a genuinely breaking change is ever needed.
 
-`fw_version` (semver, e.g. `"1.2.3"`) is read from the standard **Firmware Revision String** characteristic (§3.1) and drives exactly one thing: Orion polls `ori.app` for the latest release and offers a user-initiated "Install update" in Settings when newer exists (`ota.md`). Purely optional; never blocks or gates the sync flow.
+`fw_version` (semver, e.g. `"1.2.3"`) is read from the standard **Firmware Revision String** characteristic (§3.1) and drives exactly one thing: Orion polls `orinari.net` for the latest release and offers a user-initiated "Install update" in Settings when newer exists (`ota.md`). Purely optional; never blocks or gates the sync flow.
 
 ---
 

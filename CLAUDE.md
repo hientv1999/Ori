@@ -78,4 +78,4 @@ Open [Ori_UI_Prototype.html](Ori_UI_Prototype.html) directly in any modern brows
   Full loop: calendar → Orion → BLE → Ori → screen. Cross-subsystem tests, offline cache, factory-reset round-trip. Agent: `integration-qa`.
 
 - [ ] **M8 — Hardening & polish**
-  Memory/animation tuning, signed installers, ori.app landing, factory-provisioning docs, Orion media-mode OS bridge.
+  Memory/animation tuning, signed installers, orinari.net landing, factory-provisioning docs, Orion media-mode OS bridge.

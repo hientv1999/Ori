@@ -342,7 +342,7 @@ void build_install(lv_obj_t* content, SetupState* s, lv_obj_t* screen) {
     lv_obj_t* p1 = lv_label_create(mid);
     lv_label_set_long_mode(p1, LV_LABEL_LONG_WRAP);
     lv_label_set_recolor(p1, true);
-    lv_label_set_text(p1, "Download Orion at #E0B86A ori.app/orion#");
+    lv_label_set_text(p1, "Download Orion at #E0B86A orinari.net/orion#");
     lv_obj_set_width(p1, lv_pct(100));
     lv_obj_set_style_text_color(p1, theme::color(theme::COLOR_TEXT_PRIMARY), 0);
     lv_obj_set_style_text_font(p1, theme::font_display(), 0);
