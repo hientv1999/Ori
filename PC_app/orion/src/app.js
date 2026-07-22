@@ -210,6 +210,7 @@ function wireStaticHandlers(){
 
   $('fwCancelBtn').addEventListener('click',()=>hideModal('m-fw'));
   $('fwUpdateBtn').addEventListener('click',startFwInstall);
+  $('fwDoneCloseBtn').addEventListener('click',closeFwDone);
   $('ouCancelBtn').addEventListener('click',()=>hideModal('m-orion-update'));
   $('ouUpdateBtn').addEventListener('click',startOrionInstall);
   $('ouLaterBtn').addEventListener('click',()=>hideModal('m-orion-update'));
@@ -3189,20 +3190,32 @@ function fwApplyProgress({pct,phase,version,reason}){
     return;
   }
   if(phase==='done'){
-    ring.style.strokeDashoffset=0;pctEl.textContent='✓';
-    lbl.textContent=t.nowRunning.replace('{v}',version||'');title.textContent=t.done;
-    setTimeout(()=>{
-      hideModal('m-fw');fwAvail=false;
-      const d=$('fwIco');d.classList.remove('fw-on');d.title=I18N[appLang].main.fwUpToDate;d.style.display='none';
-      $('fw-c').style.display='';$('fw-i').style.display='none';
-      ring.style.strokeDashoffset=358;pctEl.textContent='0%';title.textContent=t.updatingFirmware;
-    },2000);
+    // Manual-close success screen (same "Close-only, no auto-dismiss"
+    // convention as every other Ori/Orion confirmation) rather than the
+    // old 2s-then-vanish ring — shows the new version and what changed,
+    // same changelog list the pre-install confirm screen already has.
+    $('fw-i').style.display='none';$('fw-d').style.display='';
+    $('fwDoneTitle').textContent=t.updatedTitle;
+    $('fwDoneVerLine').textContent=t.nowRunning.replace('{v}',version||'');
+    $('fwDoneChangelog').innerHTML=t.changelog.map(line=>'<li>'+escapeHtml(line)+'</li>').join('');
+    $('fwDoneCloseBtn').textContent=I18N[appLang].pairfail.close;
     return;
   }
   ring.style.strokeDashoffset=358-(358*Math.min(pct,100)/100);pctEl.textContent=Math.round(pct)+'%';
   if(phase==='verifying'){lbl.textContent=t.verifying;title.textContent=t.verifying;}
   else if(phase==='installing'){lbl.textContent=t.updatingFirmware;title.textContent=t.updatingFirmware;}
   else{lbl.textContent=t.keepPluggedIn;}
+}
+// Dismisses the post-update success screen (fw-d) and resets m-fw back to
+// its pre-install shape for next time — the only way out, since this
+// screen has no auto-dismiss (same convention as every other Ori/Orion
+// confirmation screen).
+function closeFwDone(){
+  hideModal('m-fw');fwAvail=false;
+  const d=$('fwIco');d.classList.remove('fw-on');d.title=I18N[appLang].main.fwUpToDate;d.style.display='none';
+  $('fw-d').style.display='none';$('fw-c').style.display='';
+  $('fwRing').style.strokeDashoffset=358;$('fwPct').textContent='0%';
+  $('fwMTitle').textContent=I18N[appLang].fwModal.updatingFirmware;
 }
 
 // ── Orion app self-update (separate from Ori firmware update above) ─────────
@@ -3351,7 +3364,7 @@ const I18N={
     bluetoothModal:{title:'Bluetooth is off',body:'Turn on Bluetooth to keep using Orion.'},
     fwModal:{title:'Ori Update Available',update:'Update',
       updatingFirmware:'Updating Ori…',keepPluggedIn:'Keep Ori plugged in',verifying:'Verifying…',
-      nowRunning:'Now running {v}',done:'Done',updateFailedTitle:'Update failed',
+      nowRunning:'Now running {v}',done:'Done',updateFailedTitle:'Update failed',updatedTitle:'Firmware Updated',
       changelog:['Added Vietnamese, Spanish, and French language support','Faster reconnect after Ori goes to sleep','Fixed a rare crash when removing a Time Off photo']},
     orionUpdate:{title:'Orion Update Available',update:'Update',
       downloading:'Updating Orion…',installing:'Installing…',
@@ -3464,7 +3477,7 @@ const I18N={
     bluetoothModal:{title:'Bluetooth đang tắt',body:'Bật Bluetooth để tiếp tục sử dụng Orion.'},
     fwModal:{title:'Có bản cập nhật Ori',update:'Cập nhật',
       updatingFirmware:'Đang cập nhật Ori…',keepPluggedIn:'Giữ Ori được cắm điện',verifying:'Đang xác minh…',
-      nowRunning:'Đang chạy {v}',done:'Hoàn tất',updateFailedTitle:'Cập nhật thất bại',
+      nowRunning:'Đang chạy {v}',done:'Hoàn tất',updateFailedTitle:'Cập nhật thất bại',updatedTitle:'Đã cập nhật chương trình',
       changelog:['Đã thêm hỗ trợ tiếng Việt, tiếng Tây Ban Nha và tiếng Pháp','Kết nối lại nhanh hơn sau khi Ori vào chế độ ngủ','Đã sửa lỗi hiếm gặp gây treo khi xóa ảnh Nghỉ phép']},
     orionUpdate:{title:'Có bản cập nhật Orion',update:'Cập nhật',
       downloading:'Đang cập nhật Orion…',installing:'Đang cài đặt…',
@@ -3577,7 +3590,7 @@ const I18N={
     bluetoothModal:{title:'Bluetooth está apagado',body:'Activa Bluetooth para seguir usando Orion.'},
     fwModal:{title:'Actualización de Ori disponible',update:'Actualizar',
       updatingFirmware:'Actualizando Ori…',keepPluggedIn:'Mantén Ori conectado',verifying:'Verificando…',
-      nowRunning:'Ahora ejecutando {v}',done:'Listo',updateFailedTitle:'Error al actualizar',
+      nowRunning:'Ahora ejecutando {v}',done:'Listo',updateFailedTitle:'Error al actualizar',updatedTitle:'Firmware actualizado',
       changelog:['Se agregó soporte para vietnamita, español y francés','Reconexión más rápida cuando Ori sale del reposo','Se corrigió un error poco frecuente al eliminar una foto de Tiempo libre']},
     orionUpdate:{title:'Actualización de Orion disponible',update:'Actualizar',
       downloading:'Actualizando Orion…',installing:'Instalando…',
@@ -3690,7 +3703,7 @@ const I18N={
     bluetoothModal:{title:'Le Bluetooth est désactivé',body:'Activez le Bluetooth pour continuer à utiliser Orion.'},
     fwModal:{title:"Mise à jour d'Ori disponible",update:'Mettre à jour',
       updatingFirmware:"Mise à jour d'Ori…",keepPluggedIn:'Gardez Ori branché',verifying:'Vérification…',
-      nowRunning:'Exécute maintenant {v}',done:'Terminé',updateFailedTitle:'Échec de la mise à jour',
+      nowRunning:'Exécute maintenant {v}',done:'Terminé',updateFailedTitle:'Échec de la mise à jour',updatedTitle:'Firmware mis à jour',
       changelog:["Ajout de la prise en charge du vietnamien, de l'espagnol et du français","Reconnexion plus rapide après la mise en veille d'Ori","Correction d'un rare plantage lors de la suppression d'une photo de congé"]},
     orionUpdate:{title:"Mise à jour d'Orion disponible",update:'Mettre à jour',
       downloading:"Mise à jour d'Orion…",installing:'Installation…',

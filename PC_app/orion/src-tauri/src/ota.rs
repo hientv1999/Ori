@@ -40,6 +40,11 @@ const CHUNK: usize = 4096;
 const BEGIN_TIMEOUT: Duration = Duration::from_secs(10);
 const STREAM_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 const END_TIMEOUT: Duration = Duration::from_secs(45);
+/// Per-read timeout on the serial port itself — bounds how long each
+/// `FrameReader::pump()` call can block. Short enough that calling it once
+/// per DATA chunk (hundreds of times over a multi-MB transfer) doesn't add
+/// up to meaningful delay, long enough to not busy-spin the CPU.
+const PORT_READ_TIMEOUT: Duration = Duration::from_millis(5);
 
 #[derive(Serialize, Clone)]
 struct FwProgress {
@@ -82,7 +87,7 @@ fn run_update_inner(app: &AppHandle, firmware_path: &Path) -> Result<(), String>
 
     let port_name = find_ori_port()?;
     let mut port = serialport::new(&port_name, 115_200)
-        .timeout(Duration::from_millis(20))
+        .timeout(PORT_READ_TIMEOUT)
         .open()
         .map_err(|e| format!("Couldn't open {port_name}: {e}"))?;
     // The ESP32-S3 native USB-Serial-JTAG (HWCDC) only transmits once the
@@ -126,19 +131,26 @@ fn run_update_inner(app: &AppHandle, firmware_path: &Path) -> Result<(), String>
         }
         port.write_all(&ota_frame(OP_DATA, chunk)).map_err(|e| e.to_string())?;
         sent += chunk.len() as u64;
+        // Drains whatever's arrived so far — updates `acked` for the flow
+        // control above, but does NOT drive the displayed percentage (see
+        // below): PROGRESS frames land in irregular, coarse bursts (~5% of
+        // total_size at a time), so gating the visible bar on them reads as
+        // stuck for long stretches even though the transfer is progressing
+        // fine underneath.
         while let Some((op, payload)) = try_read_frame(&mut *port, &mut reader)? {
             match op {
-                OP_PROGRESS => {
-                    acked = decode_progress(&payload);
-                    let pct = 90.0 * (acked as f32 / total_size as f32).min(1.0);
-                    if pct >= next_report_pct {
-                        emit(app, pct, "downloading", None, None);
-                        next_report_pct = pct + 2.0;
-                    }
-                }
+                OP_PROGRESS => acked = decode_progress(&payload),
                 OP_FAILED => return Err(friendly_reason(&decode_reason(&payload))),
                 _ => {}
             }
+        }
+        // Displayed progress tracks bytes WE'VE sent, not Ori's ack — updates
+        // every chunk (every 4 KB) instead of waiting on ~5%-granularity
+        // PROGRESS frames, and doesn't depend on them being parsed correctly.
+        let pct = 90.0 * (sent as f32 / total_size as f32).min(1.0);
+        if pct >= next_report_pct {
+            emit(app, pct, "downloading", None, None);
+            next_report_pct = pct + 2.0;
         }
     }
     port.flush().ok();
@@ -153,7 +165,14 @@ fn run_update_inner(app: &AppHandle, firmware_path: &Path) -> Result<(), String>
     port.write_all(&ota_frame(OP_END, &CBOR_EMPTY_MAP)).map_err(|e| e.to_string())?;
     port.flush().ok();
 
-    let deadline = Instant::now() + END_TIMEOUT;
+    let end_sent_at = Instant::now();
+    let deadline = end_sent_at + END_TIMEOUT;
+    // Ori's own screen moves to "Installing firmware" once its hash + version
+    // checks pass (near-instant for a multi-MB image) and stays there for
+    // COMMIT_LINGER_MS (~3.5s, ota.md) before the flash commit. 1.5s gives
+    // the checks a moment to finish while still tracking Ori's own screen
+    // for most of that linger.
+    let installing_at = end_sent_at + Duration::from_millis(1500);
     let mut announced_installing = false;
     loop {
         if let Some((op, payload)) = reader.extract() {
@@ -163,14 +182,14 @@ fn run_update_inner(app: &AppHandle, firmware_path: &Path) -> Result<(), String>
                 _ => continue,
             }
         }
-        if !announced_installing && Instant::now() >= deadline - END_TIMEOUT + Duration::from_secs(4) {
+        if !announced_installing && Instant::now() >= installing_at {
             emit(app, 96.0, "installing", None, None);
             announced_installing = true;
         }
         if Instant::now() >= deadline {
             return Err("Timed out waiting for Ori to finish installing.".to_string());
         }
-        reader.pump_blocking(&mut *port)?;
+        reader.pump(&mut *port)?;
     }
 
     emit(app, 100.0, "done", Some(fw_version), None);
@@ -230,31 +249,17 @@ impl FrameReader {
         Self { buf: Vec::new() }
     }
 
-    /// Non-blocking: only reads what the OS already has buffered, never
-    /// waits. Safe to call after every DATA chunk during streaming without
-    /// taxing throughput.
-    fn pump_nonblocking(&mut self, port: &mut dyn serialport::SerialPort) -> Result<(), String> {
-        let n = match port.bytes_to_read() {
-            Ok(n) => n as usize,
-            Err(_) => return Ok(()), // treat "can't query" as "nothing available"
-        };
-        if n == 0 {
-            return Ok(());
-        }
-        let mut tmp = vec![0u8; n.min(4096)];
-        match port.read(&mut tmp) {
-            Ok(read) => {
-                self.buf.extend_from_slice(&tmp[..read]);
-                Ok(())
-            }
-            Err(e) if e.kind() == ErrorKind::TimedOut => Ok(()),
-            Err(e) => Err(e.to_string()),
-        }
-    }
-
-    /// Blocks up to the port's own read timeout (short — see caller's
-    /// deadline loop for the real wait budget).
-    fn pump_blocking(&mut self, port: &mut dyn serialport::SerialPort) -> Result<(), String> {
+    /// Reads whatever the OS has available, blocking at most one port read
+    /// timeout (`PORT_READ_TIMEOUT`, a few ms — see caller's own deadline
+    /// loop for the real wait budget). Deliberately NOT gated on
+    /// `bytes_to_read()` first: that ioctl isn't reliably accurate on every
+    /// USB-CDC virtual COM port driver, and silently treating "can't tell"
+    /// as "nothing available" (an earlier version of this function did)
+    /// starves the parser — PROGRESS frames pile up unread in the OS buffer
+    /// until some later blocking wait happens to drain them, which reads on
+    /// the frontend as the transfer progress being stuck. A short real read
+    /// every call is slightly more overhead but always correct.
+    fn pump(&mut self, port: &mut dyn serialport::SerialPort) -> Result<(), String> {
         let mut tmp = [0u8; 512];
         match port.read(&mut tmp) {
             Ok(0) => Ok(()),
@@ -327,7 +332,7 @@ fn wait_frame(
         if Instant::now() >= deadline {
             return Err("No response from Ori — check the cable, and that Ori isn't already mid-update.".to_string());
         }
-        reader.pump_blocking(port)?;
+        reader.pump(port)?;
     }
 }
 
@@ -335,7 +340,7 @@ fn try_read_frame(port: &mut dyn serialport::SerialPort, reader: &mut FrameReade
     if let Some(f) = reader.extract() {
         return Ok(Some(f));
     }
-    reader.pump_nonblocking(port)?;
+    reader.pump(port)?;
     Ok(reader.extract())
 }
 
