@@ -127,11 +127,7 @@
  * Perf / mem monitors
  *-----------*/
 /* LV_USE_SYSMON is the LVGL 9 parent gate for perf / mem monitors. */
-#ifdef ESP_PLATFORM
-#define LV_USE_SYSMON           1
-#else
 #define LV_USE_SYSMON           0
-#endif
 #if LV_USE_SYSMON
     #define LV_SYSMON_GET_IDLE      lv_timer_get_idle
     #define LV_USE_PERF_MONITOR     1
