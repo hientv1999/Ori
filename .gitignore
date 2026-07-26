@@ -3,5 +3,6 @@
 __pycache__/
 *.pyc
 
-# Rust build artifacts (PC_app/orion/src-tauri, tools/mock_orion_teams, ...)
+# Rust build artifacts, in case any tooling here ever grows a Cargo project
+# (Orion's own src-tauri/target/ lives in the sibling ../Orion/ repo now)
 target/

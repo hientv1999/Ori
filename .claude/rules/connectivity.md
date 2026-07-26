@@ -20,7 +20,7 @@ Two bonded peer slots: one PC (Orion), one iPhone (ANCS). New bonds only in stat
 
 ## 1. PC ↔ Ori (Orion app)
 
-Source: `PC_app/`. See `pc-app.md` for app details.
+Source: the sibling `../Orion/` repo. See `../Orion/.claude/rules/pc-app.md` for app details.
 
 | Sub-state | What it means |
 |---|---|

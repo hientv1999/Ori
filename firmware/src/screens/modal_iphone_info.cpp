@@ -93,7 +93,7 @@ void on_unpair(lv_event_t* e) {
 // The compiled assets are the user's own icon art (bell.png / missed_call.png /
 // message.png dropped into iphone_info_icons/, replacing the rejected
 // generated placeholders) — outline-style glyphs matching Orion's own
-// iPhone Info modal icons (PC_app/orion/src/index.html's ipInfoMissedIco/
+// iPhone Info modal icons (../Orion/src/index.html's ipInfoMissedIco/
 // ipInfoUnreadIco/ipInfoNotifIco `<svg>` glyphs) so both sides of the sync
 // show visually consistent iconography. Baked at the box's native 70x70
 // (convert script SIZE) — drawn 1:1 with no LVGL scale transform. An

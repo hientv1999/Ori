@@ -246,7 +246,7 @@ uint32_t      g_orion_handshake_deadline  = 0;
 // silently undiscoverable for as long as that peer just sits there. Observed
 // in practice: Windows' own BLE stack silently reconnecting to a previously-
 // seen address after a factory reset, independent of any app (confirmed by
-// direct log evidence that PC_app/orion's own reconnect-supervisor never
+// direct log evidence that Orion's own reconnect-supervisor never
 // attempted anything) — never proceeds to pairing, so it would otherwise
 // block rediscovery indefinitely. Disconnect any unknown peer that hasn't
 // started bonding within UNKNOWN_PEER_BOND_TIMEOUT_MS; onDisconnect()

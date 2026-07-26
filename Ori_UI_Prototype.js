@@ -451,7 +451,7 @@ const SCREENS = {
   },
   'ancs-list': {
     label: 'Modal popup', title: 'ANCS drill-down list',
-    desc: 'Reached by tapping a missed-call / unread-message / notification tile in the iPhone Info modal. One row per app+title group (multiple notifications from the same sender stack into one row with a count badge); tap a row for its full detail. Swipe a row left past ~35% of its width to clear it (or its whole stacked group) — the row slides and fades with the drag, no revealed panel underneath. Same list + swipe-left design as the Orion PC app\'s own drill-down (PC_app/Orion_UI_Prototype.html) — this is the on-device mirror of it. "Back" returns to iPhone Info.',
+    desc: 'Reached by tapping a missed-call / unread-message / notification tile in the iPhone Info modal. One row per app+title group (multiple notifications from the same sender stack into one row with a count badge); tap a row for its full detail. Swipe a row left past ~35% of its width to clear it (or its whole stacked group) — the row slides and fades with the drag, no revealed panel underneath. Same list + swipe-left design as the Orion PC app\'s own drill-down (../Orion/Orion_UI_Prototype.html) — this is the on-device mirror of it. "Back" returns to iPhone Info.',
     statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
     leftRender: () => meetingListHTML(TODAY_MEETINGS),
     modal: () => ancsListModalHTML('unread'),
@@ -1521,7 +1521,7 @@ function iphoneInfoHTML() {
 // tile in the iPhone Info modal above to see the underlying notifications for
 // that one category, then tap a row for its detail. Same list + swipe-left-
 // to-delete design as the Orion PC app's own drill-down
-// (PC_app/Orion_UI_Prototype.js) — this is the on-device mirror of it.
+// (../Orion/Orion_UI_Prototype.js) — this is the on-device mirror of it.
 //
 // Mock data only for now — today's BLE contract (ble-protocol.md
 // PhoneBondStatus) only relays the four aggregate counts (m/u/t/s), not
