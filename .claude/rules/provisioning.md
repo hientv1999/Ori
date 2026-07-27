@@ -45,26 +45,51 @@ factory,   data, nvs,      0xFEC000, 0x4000,   # 16 KB, see below
 
 ## 2. Serial number format
 
+**One format across the whole Orinari ecosystem** — Ori, Origale and Orimat all
+use it (Orion's `.claude/rules/pc-app-usb-serial.md`). Twelve digits, nothing
+else: no product-code prefix, no separators.
+
 ```
-ORI - YYMM - NNNNNN - C
+DDMMYYNNNNCC
 ```
 
-| Segment | Meaning |
-|---|---|
-| `ORI` | fixed product code |
-| `YYMM` | 2-digit year + 2-digit month the unit was provisioned |
-| `NNNNNN` | 6-digit sequence number, zero-padded, scoped to that `YYMM` (each month gets its own 0-999999 range) |
-| `C` | one Luhn (mod 10) check digit over the preceding digits |
+| Segment | Width | Meaning |
+|---|---|---|
+| `DD` | 2 | day of the month the unit was programmed |
+| `MM` | 2 | month |
+| `YY` | 2 | 2-digit year |
+| `NNNN` | 4 | 0-based index of this unit among those programmed that same day, zero-padded |
+| `CC` | 2 | device type — `01` Ori, `02` Origale, `03` Orimat |
 
-Example: `ORI-2607-000123-4`.
+Example: the first Ori programmed on 2026-07-26 is `260726000001`.
 
-The check digit lets a human (support staff, an RMA form) catch a single
-mis-typed/transposed digit by eye/calculator without a live lookup — typo
-detection only, not cryptographic.
+**Why the prefix went away.** `CC` already says what the product is, and it
+says it in a form software can compare (it is the same value as the IDENTITY
+frame's `device_type`). A leading `ORI`/`ORIGALE`/`ORIMAT` string was a second
+encoding of the same fact, in a second place, that could disagree with the
+first — and it made the serial a different width per product for no gain.
 
-`YYMM` intentionally duplicates part of `manufacture_date` — the full date is
-for firmware/BLE consumers, the embedded `YYMM` is for a human glancing at a
-printed label without the full date field in front of them.
+**Scope of `NNNN` is the day, not the month**, and it is shared across the
+whole day's run for that device type — so the ledger's uniqueness constraint is
+`(date, device_type, index)`. 10,000 units of one product in one day is the
+ceiling; if a run ever approaches that, the format needs a real revision rather
+than a rollover.
+
+**There is no check digit.** The previous format carried a Luhn digit for
+catching a mis-typed serial by eye. It is gone because the serial is now
+machine-checked where it matters: Orion compares it byte-for-byte against the
+IDENTITY frame before a firmware update, and a wrong digit fails that
+comparison outright rather than being caught by arithmetic. Nothing in the
+system asks a human to validate a serial unaided.
+
+`DDMMYY` intentionally duplicates `manufacture_date` — the full ISO date is for
+firmware/BLE consumers, the embedded digits are for a human reading a printed
+label with no other field in front of them.
+
+**The stored string is exactly 12 ASCII digits.** `identify_responder.cpp`
+parses it to the u64 the wire carries and reports 0 for anything that isn't
+exactly that — a partially-parsed serial would be a plausible *wrong* answer,
+and Orion gates a destructive write on it.
 
 ## 3. Writing it at manufacturing time
 
@@ -88,22 +113,52 @@ already does — same tool, same station, nothing Ori-specific beyond
 esp-idf-nvs-partition-gen`). Order vs. the app firmware flash doesn't matter
 (independent partitions).
 
-**Reference implementation:** `tools/factory_provision.py`. It:
+**Reference implementation:** `tools/factory_provision.py`, which provisions
+**all three products** — it owns the shared ledger, so one tool is what keeps
+`(date, device_type, index)` unique across the ecosystem. It:
 
-- Generates the next serial number for a manufacture date, tracked in a
-  local append-only ledger (`tools/factory_serials.csv`) so re-running never
-  collides or reissues a number.
-- Builds the two-row NVS CSV and shells out to `nvs_partition_gen.py`.
-- Either flashes directly over USB (`--port COM9`) or generates a batch of
-  `.bin` images for an offline flashing station (`--count N --out-dir batch017/`).
+- Generates the next serial for a date and product, tracked in a local
+  append-only ledger (`tools/factory_serials.csv`) so re-running never
+  collides or reissues a number. Old `ORI-YYMM-NNNNNN-C` rows are retained as
+  history and skipped when computing the next index.
+- **Ori:** builds the two-row NVS CSV and shells out to `nvs_partition_gen.py`,
+  then either flashes over USB (`--port COM9`) or writes a batch of `.bin`
+  images for an offline station (`--count N --out-dir batch017/`).
+- **Origale/Orimat:** patches the serial straight into a built firmware image
+  (`--image`), finding the `ORISER01` magic that `serial_id.c` declares and
+  overwriting the 8 bytes after it with the serial as a little-endian u64. One
+  compile, N stamped copies — and no runtime flash write anywhere in that
+  firmware. It refuses to patch an image where the magic appears zero times
+  (firmware built without `serial_id.c`) or more than once (ambiguous).
 
 ```
 python tools/factory_provision.py --port COM9
 python tools/factory_provision.py --count 50 --out-dir batch017/ --note "order #4821"
+python tools/factory_provision.py --device origale --count 50        --image ../Origale/firmware/.pio/build/genericCH32V003F4P6/firmware.bin        --out-dir batch018/
 ```
+
+Origale/Orimat images are flashed with the WCH ISP tool, not esptool, so
+`--port` is rejected for those: generate the images and hand them to that
+station.
 
 **Keep the ledger file durable** — it's the only record of which serials
 have already been issued.
+
+### Firmware updates and the serial — Ori vs. the CH32 devices
+
+**Ori's serial survives a firmware update, and that is a property of where it lives**, not luck:
+USB CDC OTA (`ota.md`) writes only the `ota_0`/`ota_1` app slots, and the `factory` partition is a
+different partition entirely (§1). The same goes for a factory reset, which clears the `"ori"`
+namespace in the *main* NVS partition.
+
+**Origale and Orimat do not get this for free.** Their serial is a constant inside the application
+image (there is no NVS on a CH32V003), so flashing new firmware overwrites it and the unit comes
+back reporting `serial == 0`. Any updater for those devices must read the serial over IDENTIFY
+first, patch it into the replacement image — `patch_serial_into_image()` in
+`tools/factory_provision.py` is exactly that operation, and is meant to be reused here — and flash
+the patched result. Full rationale, including why a reserved flash page is the wrong answer, is in
+[`../Orimat/orimat_design.md`](../../../Orimat/orimat_design.md) § "Consequence: a firmware update
+destroys the serial unless it is carried forward".
 
 ### Verifying a unit after provisioning
 

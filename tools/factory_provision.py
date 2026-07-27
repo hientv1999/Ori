@@ -1,35 +1,53 @@
 #!/usr/bin/env python3
 """
-factory_provision.py — Mass-production identity provisioning for Ori
-(provisioning.md).
+factory_provision.py — Mass-production identity provisioning for the whole
+Orinari ecosystem: Ori, Origale and Orimat (provisioning.md).
 
-Writes exactly two facts into each unit's separate "factory" NVS partition
-(firmware/partitions.csv) BEFORE (or after) the firmware itself is flashed:
+Serial number format:  DDMMYYNNNNCC   (12 digits, no prefix, no separators)
+    DD    day of the month the unit was programmed
+    MM    month
+    YY    2-digit year
+    NNNN  0-based index of this unit among those programmed that same day,
+          for this same product
+    CC    device type — 01 Ori, 02 Origale, 03 Orimat. The same value the
+          IDENTITY frame carries as `device_type`, which is why no product
+          prefix is needed: the serial already says what it is, in a form
+          software compares directly.
 
-    sn   serial number,     e.g. "ORI-2607-000123-4"
-    mfg  manufacture date,  e.g. "2026-07-12"  (ISO-8601, defaults to today)
+    e.g. the first Ori programmed on 2026-07-26 is 260726000001.
 
-That partition is never written by firmware at runtime (factory_info.h has
-no setter) and is never touched by nvs::factory_reset() (firmware/src/
-factory_reset.cpp) — this script is the ONLY writer, and it only ever runs
-once per unit, at manufacturing time.
+There is no check digit. The previous format had one so a human could catch a
+mis-typed serial unaided; it is gone because the serial is now machine-checked
+where it matters — Orion compares it against the IDENTITY frame before a
+firmware update, and a wrong digit fails that outright.
 
-Serial number format:  ORI-YYMM-NNNNNN-C
-    ORI    fixed product code
-    YYMM   year+month this batch was provisioned (2-digit year, 2-digit month)
-    NNNNNN 6-digit sequence number within the ledger (see below), zero-padded
-    C      single check digit (Luhn mod 10 over the preceding digits) — lets
-           a human reading a serial off a label/RMA form catch a mis-typed
-           digit before it's looked up, without needing a live database.
+How the identity is written differs by product, because the silicon does:
+
+    ori               a separate "factory" NVS partition (firmware/
+                      partitions.csv), built with ESP-IDF's own
+                      nvs_partition_gen.py and flashed with esptool. Holds the
+                      serial AND the manufacture date.
+    origale, orimat   a magic-delimited constant patched straight into the
+                      built .bin (--image), because a CH32V003 has no NVS and
+                      its firmware deliberately has no ability to write its own
+                      flash. Serial only; there is no manufacture-date field on
+                      those parts.
+
+Either way the value is written ONCE, at manufacturing time, by this script and
+nothing else: no firmware anywhere in the ecosystem has a setter, and Ori's
+partition is additionally outside nvs::factory_reset()'s blast radius
+(firmware/src/factory_reset.cpp).
 
 Uniqueness ledger:
     Every issued serial is appended to --ledger (default
     tools/factory_serials.csv, one row per unit: serial, mfg_date, note).
-    This file is the source of truth for "next sequence number" — re-running
-    the script always continues from the highest sequence number already in
-    the ledger, so it's safe to run in multiple sessions/batches without
-    colliding. Keep this file (back it up / commit it somewhere durable) —
-    it's the only record of what's already been issued.
+    The constraint is (date, device_type, index) — which is just "the serial is
+    unique", since those three ARE the serial. Re-running always continues past
+    the highest index already recorded for that date and product, so multiple
+    sessions and batches can't collide. Rows in the old ORI-YYMM-NNNNNN-C
+    format are retained as history and skipped when computing the next index.
+    Keep this file (back it up / commit it somewhere durable) — it is the only
+    record of what has already been issued.
 
 Requirements:
     pip install esptool
@@ -80,48 +98,48 @@ FACTORY_PARTITION_OFFSET = "0xFEC000"
 FACTORY_PARTITION_SIZE = "0x4000"          # must match firmware/partitions.csv
 FACTORY_PARTITION_SIZE_BYTES = 0x4000
 NVS_NAMESPACE = "factory"                   # must match firmware/src/factory_info.cpp
-PRODUCT_CODE = "ORI"
+
+# Serial is DDMMYYNNNNCC (provisioning.md §2). CC is the IDENTITY frame's
+# device_type, so these two tables are the same fact and must not drift —
+# see Orion's .claude/rules/pc-app-usb-serial.md.
+DEVICE_TYPES = {"ori": 1, "origale": 2, "orimat": 3}
+
+# Origale/Orimat carry their serial in a magic-delimited constant that this
+# script patches directly in the .bin — there is no NVS on a CH32V003 and no
+# runtime flash write anywhere in that firmware. Must match
+# ../Origale/firmware/src/serial_id.c.
+SERIAL_BLOCK_MAGIC = b"ORISER01"
 ESP32S3_USB_VID = "303A"                    # native USB — same VID mock_orion_ota.py looks for
 
 
-def luhn_check_digit(digits: str) -> str:
-    """Standard Luhn (mod 10) check digit over an all-numeric string."""
-    total = 0
-    parity = len(digits) % 2
-    for i, ch in enumerate(digits):
-        d = int(ch)
-        if i % 2 == parity:
-            d *= 2
-            if d > 9:
-                d -= 9
-        total += d
-    return str((10 - (total % 10)) % 10)
-
-
 def load_ledger(path):
-    """Returns (rows, next_sequence). rows is the raw list of dict rows already
-    in the ledger (for --allow-reissue duplicate checks); next_sequence is one
-    past the highest NNNNNN seen for THIS YYMM prefix — sequence numbers are
-    scoped per year-month batch, not globally, so a busy month doesn't eat
-    into headroom future months don't need.
+    """Returns (existing_serials, next_index_by_scope).
+
+    A serial's index is scoped to (programming date, device type) — that pair
+    plus the index IS the serial, so the ledger's uniqueness constraint and the
+    format are the same statement. `next_index_by_scope` is keyed on the
+    DDMMYY+CC digits, i.e. everything in the serial except NNNN.
+
+    Rows in the OLD `ORI-YYMM-NNNNNN-C` format are kept (they are the issued
+    history and deleting them would let a number be reissued) but skipped for
+    index purposes — they cannot collide with the new format, which has no
+    hyphens.
     """
     if not os.path.exists(path):
-        return [], {}
-    rows = []
-    next_seq_by_prefix = {}
+        return set(), {}
+    serials = set()
+    next_index = {}
     with open(path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
-            rows.append(row)
             serial = row["serial"]
-            # ORI-YYMM-NNNNNN-C
-            parts = serial.split("-")
-            if len(parts) != 4:
-                continue
-            prefix, seq_str = parts[1], parts[2]
-            seq = int(seq_str) + 1
-            if seq > next_seq_by_prefix.get(prefix, 1):
-                next_seq_by_prefix[prefix] = seq
-    return rows, next_seq_by_prefix
+            serials.add(serial)
+            if len(serial) != 12 or not serial.isdigit():
+                continue                       # legacy row — history only
+            scope = serial[:6] + serial[10:]   # DDMMYY + CC
+            nxt = int(serial[6:10]) + 1
+            if nxt > next_index.get(scope, 0):
+                next_index[scope] = nxt
+    return serials, next_index
 
 
 def append_ledger(path, serial, mfg_date, note):
@@ -133,17 +151,56 @@ def append_ledger(path, serial, mfg_date, note):
         w.writerow([serial, mfg_date, note, datetime.datetime.now().isoformat(timespec="seconds")])
 
 
-def next_serial(next_seq_by_prefix, yymm, existing_serials):
-    seq = next_seq_by_prefix.get(yymm, 1)
+def next_serial(next_index, ddmmyy, cc, existing_serials):
+    """The next DDMMYYNNNNCC for this (date, device type), skipping anything the
+    ledger already has — a gap or a hand-added row must never be reissued."""
+    idx = next_index.get(ddmmyy + cc, 0)
     while True:
-        digits = f"{yymm}{seq:06d}"  # numeric portion only — PRODUCT_CODE ("ORI")
-                                      # isn't a digit and Luhn only checksums digits
-        check = luhn_check_digit(digits)
-        serial = f"{PRODUCT_CODE}-{yymm}-{seq:06d}-{check}"
+        if idx > 9999:
+            raise SystemExit(
+                f"ERROR: all 10000 indices for {ddmmyy}/{cc} are used. The format "
+                f"allows 10,000 units of one product per day; a run this large "
+                f"needs a format revision, not a rollover (provisioning.md §2)."
+            )
+        serial = f"{ddmmyy}{idx:04d}{cc}"
         if serial not in existing_serials:
-            next_seq_by_prefix[yymm] = seq + 1
+            next_index[ddmmyy + cc] = idx + 1
             return serial
-        seq += 1  # ledger had a gap/manual entry — skip past it
+        idx += 1
+
+
+def patch_serial_into_image(src_bin, out_bin, serial):
+    """Stamp `serial` into a CH32V003 image (Origale/Orimat).
+
+    Finds SERIAL_BLOCK_MAGIC and overwrites the 8 bytes after it with the serial
+    as a little-endian u64 — the layout serial_id.c declares. Patching a built
+    image rather than rebuilding means every unit in a batch shares one compile,
+    and firmware never needs the ability to write its own flash.
+
+    Requires exactly one occurrence: zero means the firmware predates
+    serial_id.c (or was built with it optimised away, which the `volatile`
+    there exists to prevent), and more than one means the magic string appears
+    somewhere it shouldn't and patching would be a guess.
+    """
+    image = bytearray(open(src_bin, "rb").read())
+    hits = []
+    start = image.find(SERIAL_BLOCK_MAGIC)
+    while start != -1:
+        hits.append(start)
+        start = image.find(SERIAL_BLOCK_MAGIC, start + 1)
+
+    if len(hits) != 1:
+        raise SystemExit(
+            f"ERROR: expected exactly one {SERIAL_BLOCK_MAGIC.decode()} block in "
+            f"{src_bin}, found {len(hits)}. "
+            + ("Is this firmware built with serial_id.c?" if not hits
+               else "The magic is ambiguous; refusing to guess which to patch.")
+        )
+
+    at = hits[0] + len(SERIAL_BLOCK_MAGIC)
+    image[at:at + 8] = int(serial).to_bytes(8, "little")
+    with open(out_bin, "wb") as f:
+        f.write(image)
 
 
 def find_nvs_partition_gen():
@@ -224,6 +281,10 @@ def find_esp32s3_port():
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--device", choices=sorted(DEVICE_TYPES), default="ori",
+                     help="Which product is being provisioned. Decides the serial's CC digits and "
+                          "how the identity is written: NVS partition for ori, .bin patch for the rest.")
+    ap.add_argument("--image", help="For origale/orimat: the built firmware .bin to stamp the serial into.")
     ap.add_argument("--port", help="Serial port to flash one unit now (e.g. COM9). Omit for --count batch mode.")
     ap.add_argument("--count", type=int, default=1, help="Number of identities to generate (batch mode, no --port).")
     ap.add_argument("--out-dir", default=None, help="Directory to write generated .bin images (batch mode).")
@@ -239,10 +300,21 @@ def main():
     except ValueError:
         print(f"ERROR: --mfg-date must be ISO-8601 (YYYY-MM-DD), got {mfg_date!r}", file=sys.stderr)
         sys.exit(1)
-    yymm = mfg_date[2:4] + mfg_date[5:7]
+    # DDMMYY — day first, unlike the ISO input and unlike the old YYMM scheme.
+    ddmmyy = mfg_date[8:10] + mfg_date[5:7] + mfg_date[2:4]
+    cc = f"{DEVICE_TYPES[args.device]:02d}"
 
-    rows, next_seq_by_prefix = load_ledger(args.ledger)
-    existing_serials = {r["serial"] for r in rows}
+    is_esp = args.device == "ori"
+    if not is_esp:
+        if not args.image:
+            print(f"ERROR: --image is required for {args.device} (the .bin to stamp).", file=sys.stderr)
+            sys.exit(1)
+        if args.port:
+            print(f"ERROR: --port flashing isn't implemented for {args.device}; generate images "
+                  f"with --count/--out-dir and flash them with the WCH ISP tool.", file=sys.stderr)
+            sys.exit(1)
+
+    existing_serials, next_index = load_ledger(args.ledger)
 
     if args.port:
         count = 1
@@ -256,7 +328,7 @@ def main():
     port = args.port
 
     for i in range(count):
-        serial = next_serial(next_seq_by_prefix, yymm, existing_serials)
+        serial = next_serial(next_index, ddmmyy, cc, existing_serials)
         existing_serials.add(serial)
 
         if args.port:
@@ -264,8 +336,12 @@ def main():
         else:
             bin_path = os.path.join(args.out_dir, f"{serial}.bin")
 
-        print(f"[{i + 1}/{count}] {serial}  mfg={mfg_date}")
-        build_factory_image(serial, mfg_date, bin_path)
+        print(f"[{i + 1}/{count}] {serial}  {args.device}  mfg={mfg_date}")
+        if is_esp:
+            build_factory_image(serial, mfg_date, bin_path)
+        else:
+            # One compile, N stamped copies.
+            patch_serial_into_image(args.image, bin_path, serial)
 
         if args.port:
             if port is None:

@@ -54,6 +54,7 @@
 #include "nvs_store.h"
 #include "nvs_sync.h"
 #include "ota_receiver.h"
+#include "identify_responder.h"
 #include "assets/profile_placeholder.h"
 #include "assets/time_off_placeholder.h"
 #include "photo_cache.h"
@@ -210,6 +211,13 @@ void loop() {
     // reflected in the current frame. ota_receiver polls USB CDC for OTA frames.
     ble_manager::poll();
     ota_receiver::poll();
+    // After ota_receiver (which claims 0x4F frames and leaves everything else)
+    // and before poll_serial (the debug console, which claims what's left).
+    // This one claims only 0xA5 — see identify_responder.h on why the three
+    // can share one USB CDC port.
+    if (!ota_receiver::is_active() && !ota_receiver::is_busy()) {
+        identify_responder::poll();
+    }
     state_machine::poll();  // drain deferred NVS writes before LVGL renders
 
     // ------------------------------------------------------------------

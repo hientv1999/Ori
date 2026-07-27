@@ -423,8 +423,11 @@ void poll_serial() {
     if (ota_receiver::is_active() || ota_receiver::is_busy()) return;
 
     while (Serial.available() > 0) {
-        // Don't consume the first byte of an inbound OTA frame either.
-        if ((uint8_t)Serial.peek() == 0x4F) break;
+        // Don't consume the first byte of a frame belonging to one of the two
+        // binary protocols sharing this port: 0x4F starts an OTA frame
+        // (ota_receiver), 0xA5 starts an Orinari IDENTIFY (identify_responder).
+        const uint8_t next = (uint8_t)Serial.peek();
+        if (next == 0x4F || next == 0xA5) break;
         int b = Serial.read();
         if (b > 0) debug_handle_key((char)b);
     }

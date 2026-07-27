@@ -11,8 +11,10 @@ constexpr const char* NAMESPACE = "factory";
 constexpr const char* k_serial  = "sn";   // string: serial number
 constexpr const char* k_mfg     = "mfg";  // string: manufacture date, "YYYY-MM-DD"
 
-// Cap matches the longest serial format proposed in provisioning.md
-// ("ORI-2607-000123-4", 18 chars) with headroom; mfg date is a fixed-width
+// Serial is a fixed 12 ASCII digits (provisioning.md's DDMMYYNNNNCC); the cap
+// keeps generous headroom rather than sizing to exactly 13, so a mis-provisioned
+// over-long value is truncated and then rejected by the 12-digit check in
+// identify_responder.cpp rather than overflowing. mfg date is a fixed-width
 // "YYYY-MM-DD" (10 chars).
 char g_serial[32] = "";
 char g_mfg[16]    = "";
