@@ -722,7 +722,23 @@ void poll() {
             if (got <= 0) break;
 
             g_last_rx_ms = millis();
-            if (!feed_data(rx, (uint32_t)got)) break;  // aborted inside
+            if (!feed_data(rx, (uint32_t)got)) {
+                // feed_data()'s size_overflow path already resets g_parse via
+                // fail_in_ota()->show_error_screen(). But its OTHER false
+                // path — g_ota_state != AwaitingData (a stray/duplicate DATA
+                // frame whose header arrived after we'd already left
+                // AwaitingData, e.g. Orion still draining its send window
+                // after Ori aborted, or a late retry) — returns false with
+                // no side effects at all. Without this, g_parse stays wedged
+                // in ReadDataStream forever: every future poll() tries to
+                // resume "the" data stream instead of ever seeing WaitMagic0
+                // again, so a genuine new BEGIN can never be parsed and the
+                // device needs a power cycle to accept another update. Reset
+                // unconditionally here — harmless when show_error_screen()
+                // already did it, load-bearing when it didn't.
+                g_parse = ParseState::WaitMagic0;
+                break;
+            }
             g_payload_read += (uint32_t)got;
             if (g_payload_read >= g_payload_len) g_parse = ParseState::WaitMagic0;
         } else {

@@ -1529,7 +1529,7 @@ void update_shortcuts() {
         if (!btn) continue;
         // Remove the existing icon/label child and recreate from the updated token.
         lv_obj_t* old_child = lv_obj_get_child(btn, 0);
-        if (old_child) lv_obj_del(old_child);
+        if (old_child) lv_obj_delete(old_child);
         apply_shortcut_icon(btn, slots[i].icon_token);
     }
 }

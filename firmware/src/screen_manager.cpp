@@ -138,7 +138,8 @@ void debug_load(lv_obj_t* scr) {
     // lv_timer_handler() in loop(), so the new screen renders this iteration.
     // Forcing a synchronous render from here runs esp_cache_msync() outside
     // lv_timer_handler() (undefined LCD_CAM DMA ownership) and adds ~500 B of
-    // extra caller frames, overflowing the 8 KB loopTask stack on heavy screens.
+    // extra caller frames, eating into the loopTask stack's headroom on heavy
+    // screens (main.cpp's getArduinoLoopTaskStackSize(), currently 16 KB).
     lv_scr_load_anim(scr, LV_SCR_LOAD_ANIM_NONE, 0, 0, /*auto_del=*/true);
 }
 

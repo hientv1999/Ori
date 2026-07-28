@@ -236,11 +236,29 @@ lv_obj_t* make_meeting_row(lv_obj_t* parent, const app_state::Meeting& m) {
     // Row click → meeting detail modal, unless the meeting starts within the
     // 5-minute countdown window, in which case the countdown screen (same one
     // the automatic pre-meeting alert uses) takes over instead.
+    //
+    // Own heap copy of the Meeting struct for this row's handler, rather than
+    // capturing &m directly: `m` typically references state_machine.cpp's
+    // filtered_meetings() scratch buffer, which that file documents as
+    // "static backing array — safe in single-threaded LVGL context; do not
+    // hold past the next call" — and it IS called again on every 1 s tick
+    // (check_meeting_content_changed) independent of whether this screen gets
+    // rebuilt. Copying the struct (five stable const-char* pointers into
+    // per-sync storage, plus two bools) decouples the row's tap handler from
+    // whatever that scratch buffer holds by the time the user actually taps,
+    // without relying on state_machine.cpp's rebuild-on-change timing to keep
+    // every existing row's captured pointer in sync. Freed on the row's own
+    // LV_EVENT_DELETE, same idiom as this file's PillCtx and the RowState/
+    // HolidayCellCtx/StatClickCtx contexts elsewhere in the codebase.
+    auto* row_meeting = new app_state::Meeting(m);
     lv_obj_add_event_cb(row, [](lv_event_t* e) {
         const auto* mp = static_cast<const app_state::Meeting*>(lv_event_get_user_data(e));
         if (state_machine::show_countdown_if_imminent(*mp)) return;
         show_meeting_detail(lv_obj_get_screen((lv_obj_t*)lv_event_get_target(e)), *mp);
-    }, LV_EVENT_CLICKED, (void*)&m);
+    }, LV_EVENT_CLICKED, row_meeting);
+    lv_obj_add_event_cb(row, [](lv_event_t* e) {
+        delete static_cast<app_state::Meeting*>(lv_event_get_user_data(e));
+    }, LV_EVENT_DELETE, row_meeting);
 
     return row;
 }

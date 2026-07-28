@@ -237,7 +237,8 @@ lv_obj_t* create() {
     lv_obj_set_style_pad_top(date, 22, 0);
 
     // Populate labels immediately with real time, then keep them live via a
-    // 1-second timer. The colon blink runs independently at 42 ms cadence.
+    // 1-second timer. The colon blink runs independently at BLINK_INTERVAL_MS
+    // (50 ms / 20 fps) cadence.
     auto* cf = new ClockFaceState{hour, minute, ampm, date, nullptr};
     update_clock_labels(cf);
     cf->update_timer = lv_timer_create([](lv_timer_t* t) {

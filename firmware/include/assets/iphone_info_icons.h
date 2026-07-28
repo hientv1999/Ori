@@ -3,7 +3,9 @@
 
 // Compiled-in raster icons for the iPhone Info/Stats overlay
 // (modal_iphone_info.cpp) — missed calls, unread messages, notifications.
-// 28x28 ARGB8888, same build pipeline as shortcut_icons.h
+// 70x70 ARGB8888 (modal_iphone_info.cpp's ICON_BOX — drawn 1:1 with no LVGL
+// scale transform; an earlier 28px-source + 2.5x-upscale attempt rendered
+// visibly soft), same build pipeline as shortcut_icons.h
 // (firmware/img/iphone_info_icons/convert_iphone_info_icons.py), separate
 // prefix since these aren't media-mode shortcut assets.
 

@@ -150,7 +150,14 @@ NimBLECharacteristic* c_lunar_holidays = nullptr; // 0013
 bool    g_phone_bonded        = false;
 bool    g_phone_connected     = false;
 char    g_phone_name_cache[64] = {};
-char    g_phone_device_type_cache[32] = {};
+// 64, not 32 — must match ancs_client.cpp's own g_phone_device_type[64] and
+// the ble-protocol.md §10 wire cap (63 bytes): iphone_model_map.h's
+// connectivity/region suffixes ("iPad Pro 12.9-inch (5th gen) — Wi-Fi +
+// Cellular (Global)", 58 bytes) don't fit in 32 and were silently truncated
+// before this was widened — PhoneBondStatus.d re-encoded from this cache
+// (notify_phone_stats()) sent a truncated device name to Orion for any long
+// model string, even though the value ancs_client passed in was correct.
+char    g_phone_device_type_cache[64] = {};
 uint8_t g_phone_missed        = 0;
 uint8_t g_phone_unread        = 0;
 uint8_t g_phone_total         = 0;
@@ -1331,19 +1338,23 @@ private:
     // "v"/"x" (Working Hours end+days, Weather Alert enable+offset, Low
     // Battery Alert enable+threshold). Weather is not returned —
     // ephemeral, Orion is the source of truth.
-    // Also returns three read-only fields, never accepted on a write:
-    // "s" (serial_number)/"b" (manufacture_date), from the separate
-    // write-once "factory" NVS partition, and "r" (signal_bars), Ori's own
-    // live RSSI to Orion — see ble-protocol.md §4/§6.4, provisioning.md.
+    // Also returns two read-only fields, never accepted on a write:
+    // "s" (serial_number), from the separate write-once "factory" NVS
+    // partition, and "r" (signal_bars), Ori's own live RSSI to Orion — see
+    // ble-protocol.md §4/§6.4, provisioning.md. Manufacture date is NOT a
+    // field here (or anywhere on-device): it's the serial's own leading
+    // DDMMYY digits, and Orion derives it from "s" instead of being sent a
+    // second, redundant copy of the same fact.
     // Live RSSI of the connection this read arrived on (Orion's own link to
     // Ori) — Orion's Windows backend (btleplug) can't read RSSI of an already-
     // connected peripheral, only from advertising packets, which stop the
     // moment Ori is connected (pc-app.md). Ori CAN read it, on either side of
-    // any of its own active connections, via the same primitive
-    // NimBLEClient::getRssi() wraps for the iPhone link (ancs_client.cpp) —
-    // so Ori samples its own link to Orion fresh on every Device Settings
-    // read and hands back the bucketed bar count, mirroring PhoneBondStatus's
-    // "s" field instead of adding a dedicated characteristic for it.
+    // any of its own active connections, via the same ble_gap_conn_rssi()
+    // primitive the iPhone link polls directly for its own signal bars
+    // (ancs_client.cpp) — so Ori samples its own link to Orion fresh on
+    // every Device Settings read and hands back the bucketed bar count,
+    // mirroring PhoneBondStatus's "s" field instead of adding a dedicated
+    // characteristic for it.
     uint8_t read_orion_signal_bars() {
         int8_t rssi = 0;
         int rc = ble_gap_conn_rssi(ble_manager::orion_conn_handle(), &rssi);
@@ -1362,7 +1373,7 @@ private:
         CborEncoder enc, map;
         uint8_t buf[256];
         cbor_encoder_init(&enc, buf, sizeof(buf), 0);
-        cbor_encoder_create_map(&enc, &map, 18);
+        cbor_encoder_create_map(&enc, &map, 17);
         cbor_encode_text_stringz(&map, "c");
         cbor_encode_uint(&map, (uint64_t)nvs::get_clock_face());
         cbor_encode_text_stringz(&map, "h");
@@ -1398,16 +1409,14 @@ private:
         cbor_encode_uint(&map, (uint64_t)nvs::get_low_battery_alert_enabled());
         cbor_encode_text_stringz(&map, "x");
         cbor_encode_uint(&map, (uint64_t)nvs::get_low_battery_threshold_pct());
-        // Read-only device-identity/link fields — "s"/"b" come from the
+        // Read-only device-identity/link fields — "s" comes from the
         // write-once "factory" NVS partition (factory_info.h, never touched
-        // by nvs::factory_reset()); "r" is sampled live above. None of the
-        // three are ever accepted on a Device Settings WRITE — the write
-        // handler below simply never looks for these keys, so a write that
-        // includes them is a no-op for them (§4's "unknown keys ignored").
+        // by nvs::factory_reset()); "r" is sampled live above. Neither is
+        // ever accepted on a Device Settings WRITE — the write handler below
+        // simply never looks for these keys, so a write that includes them
+        // is a no-op for them (§4's "unknown keys ignored").
         cbor_encode_text_stringz(&map, "s");
         cbor_encode_text_stringz(&map, factory_info::serial_number());
-        cbor_encode_text_stringz(&map, "b");
-        cbor_encode_text_stringz(&map, factory_info::manufacture_date());
         cbor_encode_text_stringz(&map, "r");
         cbor_encode_uint(&map, (uint64_t)read_orion_signal_bars());
         cbor_encoder_close_container(&enc, &map);
@@ -1936,9 +1945,16 @@ void init() {
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_AUTHEN);
     c_time_off->setCallbacks(&s_char_cb);
 
-    // 0007 Sync Control — Write + Notify, MITM-authenticated
+    // 0007 Sync Control — Write + Notify, MITM-authenticated. Also declares
+    // base READ (added alongside 0009 below) — see 000A's comment a few
+    // lines down for the full WinRT write-up. Orion subscribes to this
+    // characteristic's notify for NACKs (tools/mock_orion_ble.py's reference
+    // client does) exactly like 000A/0010/0011/000F, so it needs the same
+    // fix: without base READ, WinRT silently drops every NACK notify even
+    // though Ori sent it and Orion's subscribe() reported success.
     c_sync_ctrl = svc->createCharacteristic(
         "6F726900-0007-4F72-9F00-000000000000",
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_AUTHEN |
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_AUTHEN |
         NIMBLE_PROPERTY::NOTIFY);
     c_sync_ctrl->setCallbacks(&s_char_cb);
@@ -1949,9 +1965,15 @@ void init() {
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_AUTHEN);
     c_dev_cmd->setCallbacks(&s_char_cb);
 
-    // 0009 Sync Manifest — Write + Notify, MITM-authenticated
+    // 0009 Sync Manifest — Write + Notify, MITM-authenticated. Base READ
+    // added for the same reason as 0007 above — Orion subscribes to this
+    // characteristic's "needed" notify to drive the hash-manifest delta
+    // sync (ble-protocol.md §6.2); without base READ, WinRT drops that
+    // notify entirely and every reconnect silently falls back to resending
+    // everything instead of the intended cheap delta.
     c_manifest = svc->createCharacteristic(
         "6F726900-0009-4F72-9F00-000000000000",
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_AUTHEN |
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_AUTHEN |
         NIMBLE_PROPERTY::NOTIFY);
     c_manifest->setCallbacks(&s_char_cb);
@@ -1979,11 +2001,21 @@ void init() {
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_AUTHEN);
     c_host_vol->setCallbacks(&s_char_cb);
 
-    // 000C Media Metadata — Write + Notify, MITM-authenticated
+    // 000C Media Metadata — Write + Notify, MITM-authenticated. Already
+    // carried READ_AUTHEN but not base READ — READ_AUTHEN alone is a
+    // security *requirement* flag (BLE_GATT_CHR_F_READ_AUTHEN); it does not
+    // set the actual advertised READ property bit the way NIMBLE_PROPERTY::
+    // READ does (ble_gatts_chr_properties() only ORs in BLE_GATT_CHR_PROP_READ
+    // from BLE_GATT_CHR_F_READ). Without that bit this characteristic was in
+    // the same silently-broken state 000A/0010/0011 were in before their
+    // 2026-07-11 fix: WinRT drops ValueChanged for any Notify characteristic
+    // lacking base READ. Adding it here completes what READ_AUTHEN's
+    // presence already implied was intended.
     c_media_meta = svc->createCharacteristic(
         "6F726900-000C-4F72-9F00-000000000000",
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::READ_AUTHEN |
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_AUTHEN |
-        NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ_AUTHEN);
+        NIMBLE_PROPERTY::NOTIFY);
     c_media_meta->setCallbacks(&s_char_cb);
 
     // 000D Media Album Art — Write no response, MITM-authenticated (chunked JPEG)
@@ -2069,7 +2101,7 @@ void init() {
     // In NimBLE 2.5, services are started when NimBLEServer::start() is called.
     // svc->start() is deprecated and a no-op; omit it.
     // The server is started in ble_manager::init() after all characteristics are set up.
-    LOG("[gatt] Service registered: 18 characteristics + DIS Firmware Revision\n");
+    LOG("[gatt] Service registered: 19 characteristics + DIS Firmware Revision\n");
 }
 
 bool is_ota_active() { return g_ota_active; }
@@ -2235,9 +2267,21 @@ static bool notify_with_retry(NimBLECharacteristic* c, const uint8_t* frame, siz
 static void notify_chunked(NimBLECharacteristic* c, const uint8_t* payload, size_t payload_len) {
     if (!c) return;
     uint16_t mtu = ble_att_mtu(ble_manager::orion_conn_handle());
-    size_t frag_size = (mtu > 9) ? (size_t)(mtu - 3 - 6) : 20;
+    // Usable payload per fragment = ATT_MTU - 3 (ATT header) - 6 (frame
+    // header), same accounting as §5's 247-byte-MTU example. This used to be
+    // floored to a flat 20 bytes "for pathological small MTUs," but the one
+    // small MTU this protocol actually documents — §5's fallback of 23, used
+    // when the peer refuses 247 — computes to 14 bytes here, and that floor
+    // pushed it up to 20 anyway: a 6+20=26-byte frame written into a
+    // connection whose real ATT payload budget (mtu-3) is only 20 bytes.
+    // Every AncsNotification relayed on an MTU-23 connection was 6 bytes
+    // oversized and would be rejected or truncated by the BLE stack. Never
+    // round frag_size UP past what the negotiated MTU can actually carry —
+    // only clamp the upper bound (238, this file's existing wire convention)
+    // and guard the degenerate near-zero-MTU case.
+    size_t frag_size = (mtu > 9) ? (size_t)(mtu - 3 - 6) : 14;
     if (frag_size > 238) frag_size = 238;
-    if (frag_size < 20)  frag_size = 20;  // pathological floor — BLE's own spec MTU minimum (23) still leaves room
+    if (frag_size < 1)   frag_size = 1;  // pathological floor — never zero
 
     size_t total_frags = payload_len ? (payload_len + frag_size - 1) / frag_size : 1;
     uint8_t frame[6 + 238];

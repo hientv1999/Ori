@@ -5,7 +5,7 @@ Ori has **three logical channels**:
 | Channel | Direction | Carries |
 |---|---|---|
 | **USB CDC** (USB-C power cable) | Orion → Ori | Firmware update only — see `ota.md` |
-| **BLE Ori Sync Service** (custom UUID, encrypted+bonded, 18 chars) | bidirectional | Profile, photo, meetings, Time Off, time, backlight, factory reset, sync manifest, Controls-mode commands, host volume state, media metadata, media album art, filtered ANCS notification/call relay (`ble-protocol.md` §13) |
+| **BLE Ori Sync Service** (custom UUID, encrypted+bonded, 19 chars) | bidirectional | Profile, photo, meetings, Time Off, time, backlight, factory reset, sync manifest, Controls-mode commands, host volume state, media metadata, media album art, filtered ANCS notification/call relay, lunar holiday list (`ble-protocol.md` §13) |
 | **iPhone/iPad ANCS** (BLE, separate bond) | phone → Ori (+ call actions Ori → phone) | Notification-icon awareness (view-only) + incoming/active call control (Answer/Decline/End) |
 
 No standard BLE HOGP — all Controls-mode interactions ride the custom Ori Sync Service; Orion bridges to OS-level APIs. The mode-toggle is **hidden until Orion has fully synced** — not just whenever the BLE link is down; a bonded reconnect keeps it hidden through the Reconnect-Syncing window too. Full GATT contract: `ble-protocol.md`. Controls-mode UI: `media-mode.md`.

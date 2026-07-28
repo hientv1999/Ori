@@ -17,8 +17,12 @@ namespace app_state { struct Meeting; }
 // alert, Time Off window detection, and meeting expiry.
 //
 // Priority order (highest → lowest):
-//   1. SETUP             — first-boot / factory-reset setup flow
-//   2. OTA_UPDATING      — firmware update in progress
+//   1. OTA_UPDATING      — firmware update in progress. Outranks even SETUP:
+//                          USB CDC OTA works without a BLE bond (ota.md —
+//                          physical cable access is sufficient authority), so
+//                          a first-boot unit mid-transfer must not have its
+//                          screen yanked to the Setup wizard.
+//   2. SETUP             — first-boot / factory-reset setup flow
 //   3. TIME_OFF_ACTIVE   — current time within cached Time Off window
 //   4. COUNTDOWN         — 5-min pre-meeting alert modal
 //   5. RECONNECT_SYNCING — Orion reconnected, hash-manifest sync in progress

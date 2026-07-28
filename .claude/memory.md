@@ -12,7 +12,7 @@ Stable facts with no better home. Only update if a fundamental decision changes.
 | PC companion app name | **Orion** — own sibling repo, `../Orion/`, split out 2026-07-26. Full Orion implementation facts (tech stack, pairing UX, window model, background lifecycle, distribution channel, weather source) now live in `../Orion/.claude/memory.md`; only the rows below still matter from Ori's own side. |
 | Parent/company brand | **Orinari** — three-tier structure decided 2026-07-21: Orinari is the company ("Apple"), Ori is the hardware ("iPhone"), Orion is the companion software ("iOS"). Domain: `orinari.net` (`ori.app`/`ori.net`/`ori.ca` were all unavailable). |
 | Orion installation URL | `orinari.net/orion` (referenced from the firmware's own Setup Step 1 screen) |
-| BLE device name format | `Ori-XX-XX` (per-device suffix, e.g. `Ori-XT-9F`) |
+| BLE device name | `Ori` |
 | Phone icon disconnected-state design | **Neutral colour in both states (never red); a diagonal slash cut across the glyph is the sole "disconnected" signal.** Rationale: color-only status is a legibility gap for colorblind users, and a shape change reads correctly regardless of red/grey perception — same convention as "muted mic"/"no wifi" icons. Implemented identically across four surfaces: `firmware/src/widgets/widget_status_bar.cpp` (LVGL `lv_line` diagonal) and `Ori_UI_Prototype.html`'s `#i-phone-broken` (SVG mask-cut) here in Ori; `Orion_UI_Prototype.html/css` and `src/index.html`/`styles.css` (overlaid SVG `<line class="phone-slash">`, toggled via `.phone-disconnected`) in the sibling `../Orion/` repo. |
 
 ---
@@ -22,7 +22,7 @@ Stable facts with no better home. Only update if a fundamental decision changes.
 | Library | Pinned version |
 |---|---|
 | LVGL | **9.5.0** — `lvgl/lvgl@9.5.0` in `firmware/platformio.ini` |
-| NimBLE-Arduino | **2.5.0** — `h2zero/NimBLE-Arduino@2.5.0` (add to `lib_deps` at M5) |
+| NimBLE-Arduino | **2.5.0** — `h2zero/NimBLE-Arduino@2.5.0` |
 
 ---
 
@@ -55,8 +55,6 @@ All animated widgets use `lv_timer` (not `lv_anim`) for independent rate control
 | Setup spinners, re-pair spinner, `widget_progress_ring` indeterminate | 42 ms | 24 | 10°/step, 36 steps ≈ 1512 ms/rev |
 | Colon blink (`screen_clock`) | 42 ms | 24 | 36-tick linear fade, opacity 255 ↔ 64 |
 | OTA progress ring (`screen_ota_updating`) | 200 ms | 5 | Real PROGRESS frames arrive every 500 ms–1.5 s |
-
-**M5:** Remove the mock OTA tick timer in `screen_ota_updating.cpp`; replace with `widget_progress_ring::set_value(ring, pct)` called directly from the USB CDC PROGRESS frame handler.
 
 ---
 

@@ -247,31 +247,36 @@ static app_state::MeetingList filtered_meetings() {
 // Scan the runtime meeting list and return true if we just entered a 5-min
 // window for any un-alerted meeting. Populates out_* with the meeting data
 // if returning true.
+//
+// Diffs against g_rt[i].start_epoch directly (second-precision) rather than
+// re-deriving seconds-of-day from the formatted "HH:MM" string the way this
+// used to — same reasoning filtered_meetings() above already documents for
+// its own end-of-day math: parsing the pre-formatted string silently floors
+// to the minute, which could fire the alert up to 59 s early for a meeting
+// that doesn't start exactly on a minute boundary. The alerted-bitmap KEY is
+// still minute-of-day from the formatted string — that's just an index
+// scheme, not a timing computation, so the minute floor there is harmless.
 static bool check_countdown(const char** out_title,
                              const char** out_org,
                              const char** out_loc,
                              int*         out_diff_s,
-                             int*         out_key,
-                             const struct tm* now_tm = nullptr) {
-    long now_s = now_seconds(now_tm);
-    app_state::MeetingList list = { g_rt_display, g_rt_count };
+                             int*         out_key) {
+    uint32_t now_epoch = (uint32_t)time(nullptr);
 
-    for (size_t i = 0; i < list.count; ++i) {
-        const app_state::Meeting& m = list.items[i];
-        int start_mins = hhmm_to_mins(m.start);
-        if (start_mins < 0) continue;
-        long start_s = (long)start_mins * 60;
-
-        long diff = start_s - now_s;
+    for (size_t i = 0; i < g_rt_count; ++i) {
+        const RtMeeting& rt = g_rt[i];
+        long diff = (long)rt.start_epoch - (long)now_epoch;
         if (diff < 0 || diff > ALERT_WINDOW_S) continue;
-        if (start_mins >= MINUTES_PER_DAY) continue;  // defensive: keep the array index in bounds
+
+        int start_mins = hhmm_to_mins(g_rt_display[i].start);
+        if (start_mins < 0 || start_mins >= MINUTES_PER_DAY) continue;  // defensive: keep the array index in bounds
         if (g_alerted_mins[start_mins]) continue;     // already alerted this boot
 
-        *out_title = m.title;
-        *out_org   = m.org;
-        *out_loc   = m.loc;
+        *out_title  = g_rt_display[i].title;
+        *out_org    = g_rt_display[i].org;
+        *out_loc    = g_rt_display[i].loc;
         *out_diff_s = (int)diff;
-        *out_key = start_mins;
+        *out_key    = start_mins;
         return true;
     }
     return false;
@@ -411,12 +416,21 @@ lv_obj_t* build_reconnect_screen() {
     return screen_reconnect_syncing::create();
 }
 
+// True when Controls (Media) mode should actually render — requires both the
+// user's mode selection AND a live PC link (Controls mode has nothing to
+// show once Orion drops — media-mode.md). Shared by fire_countdown() and
+// both MEETING_LIST/NO_MEETINGS branches in evaluate() instead of repeating
+// the same two-part check three times.
+bool media_mode_active() {
+    return g_mode == 1 && g_pc_connected;
+}
+
 // Fire a countdown modal on top of the appropriate base screen.
 // The base screen is created fresh (or reused if it's already the current one).
 void fire_countdown(const char* title, const char* organizer, const char* location, int diff_s) {
     // Build the base screen that sits under the modal.
     lv_obj_t* base = nullptr;
-    if (g_mode == 1 && g_pc_connected) {
+    if (media_mode_active()) {
         base = build_controls_screen();
     } else {
         app_state::MeetingList list = filtered_meetings();
@@ -445,8 +459,17 @@ AppState compute_target_state() {
     if (g_has_ota_ack)               return AppState::OTA_ACK;
     if (nvs::is_first_boot())        return AppState::SETUP;
     if (g_state == AppState::OTA_UPDATING) return AppState::OTA_UPDATING;
-    if (g_state == AppState::RECONNECT_SYNCING) return AppState::RECONNECT_SYNCING;
+    // Time Off (priority 2) outranks Reconnect-Syncing (priority 4,
+    // state-machine.md) — checked BEFORE the RECONNECT_SYNCING sticky branch
+    // below so a Time Off window that opens mid-sync takes over the display
+    // immediately instead of waiting for the sync to finish. The sync itself
+    // keeps running in the background regardless; on_reconnect_end() /
+    // finish_reconnect_now() tolerate g_state having moved on to
+    // TIME_OFF_ACTIVE underneath them (screen_reconnect_syncing's overlay
+    // self-nulls on delete, so tearing down the calendar screen it was
+    // riding on is safe).
     if (is_time_off_active())        return AppState::TIME_OFF_ACTIVE;
+    if (g_state == AppState::RECONNECT_SYNCING) return AppState::RECONNECT_SYNCING;
     // Countdown is handled inline in tick() before evaluate() is called for
     // state changes, so if we reach here it has already been cleared.
     // Note: CLOCK and CALENDAR_VIEW are never returned here — they are
@@ -533,7 +556,7 @@ static bool check_day_rollover(bool clock_now, struct tm* out_lt) {
 
 // 5-minute pre-meeting alert. Returns true if an alert fired (fire_countdown()
 // already rebuilt the screen) — the caller should skip the rest of the tick.
-static bool check_meeting_alert(bool have_lt, const struct tm* lt) {
+static bool check_meeting_alert() {
     if (g_state != AppState::COUNTDOWN   &&
         g_state != AppState::SETUP       &&
         g_state != AppState::OTA_UPDATING &&
@@ -546,7 +569,7 @@ static bool check_meeting_alert(bool have_lt, const struct tm* lt) {
         int diff_s        = 0;
         int key           = -1;
 
-        if (check_countdown(&title, &org, &loc, &diff_s, &key, have_lt ? lt : nullptr)) {
+        if (check_countdown(&title, &org, &loc, &diff_s, &key)) {
             if (key >= 0 && key < MINUTES_PER_DAY) g_alerted_mins[key] = true;
             LOG("[sm] countdown alert for meeting key=%d\n", key);
             fire_countdown(title, org, loc, diff_s);
@@ -657,7 +680,7 @@ static void tick_cb(lv_timer_t* /*t*/) {
     struct tm lt;
     bool have_lt = check_day_rollover(clock_now, &lt);
 
-    if (check_meeting_alert(have_lt, &lt)) return;  // screen already updated; skip re-evaluate below
+    if (check_meeting_alert()) return;  // screen already updated; skip re-evaluate below
 
     check_meeting_content_changed(clock_now);
 
@@ -772,7 +795,7 @@ AppState evaluate() {
             break;
 
         case AppState::MEETING_LIST:
-            if (g_mode == 1 && g_pc_connected) {
+            if (media_mode_active()) {
                 new_screen = build_controls_screen();
             } else {
                 new_screen = build_meeting_list_screen();
@@ -780,7 +803,7 @@ AppState evaluate() {
             break;
 
         case AppState::NO_MEETINGS:
-            if (g_mode == 1 && g_pc_connected) {
+            if (media_mode_active()) {
                 new_screen = build_controls_screen();
             } else {
                 new_screen = build_no_meetings_screen();
@@ -853,6 +876,29 @@ static void copy_text_truncated(const CborValue* field, char* dst, size_t dst_sz
         dst[n] = '\0';
     }
     free(tmp);
+}
+
+// Sort g_rt[0..count) by start time ascending, tie-broken by end time
+// ascending, anything still tied keeping its original (calendar/arrival)
+// order — meeting-list.md's documented sort order. Orion doesn't guarantee
+// the "m" array arrives pre-sorted, and nothing else in the render path
+// (screen_meeting_list.cpp) sorts either, so without this the on-screen order
+// was whatever order Orion happened to send. Insertion sort: stable (needed
+// for the "else original order" tie-break) and O(n^2) worst case, which is
+// fine for the <=32-item cap and runs once per sync, not per tick.
+static void sort_rt_meetings(size_t count) {
+    for (size_t i = 1; i < count; ++i) {
+        RtMeeting key = g_rt[i];
+        size_t j = i;
+        while (j > 0 &&
+               (g_rt[j - 1].start_epoch > key.start_epoch ||
+                (g_rt[j - 1].start_epoch == key.start_epoch &&
+                 g_rt[j - 1].end_epoch > key.end_epoch))) {
+            g_rt[j] = g_rt[j - 1];
+            --j;
+        }
+        g_rt[j] = key;
+    }
 }
 
 void set_meetings_cbor(const uint8_t* buf, size_t len) {
@@ -937,17 +983,28 @@ void set_meetings_cbor(const uint8_t* buf, size_t len) {
         sanitize_inplace(rt.loc,   sizeof(rt.loc));
         sanitize_inplace(rt.org,   sizeof(rt.org));
 
-        // Build the app_state::Meeting view.
-        g_rt_display[count] = {
+        ++count;
+    }
+
+    g_rt_count = count;
+
+    // Sort BEFORE building g_rt_display — filtered_meetings() relies on
+    // g_rt[i] and g_rt_display[i] lining up 1:1 at the same index, so the
+    // display view is built fresh from the now-sorted g_rt below rather than
+    // reordering g_rt_display independently (which would desync the two
+    // arrays and hand filtered_meetings() the wrong epoch for a given row).
+    sort_rt_meetings(g_rt_count);
+
+    // Build the app_state::Meeting view from the sorted array.
+    for (size_t i = 0; i < g_rt_count; ++i) {
+        const RtMeeting& rt = g_rt[i];
+        g_rt_display[i] = {
             rt.start_str, rt.end_str,
             rt.title, rt.loc, rt.org,
             false,  // overlap — computed below
             false   // in_progress — computed in filtered_meetings()
         };
-        ++count;
     }
-
-    g_rt_count = count;
 
     // Compute overlap: two meetings overlap when one starts before the other ends.
     for (size_t i = 0; i < g_rt_count; ++i) {
@@ -1298,6 +1355,13 @@ static void finish_reconnect_now() {
 void on_reconnect_begin() {
     // Never overlay the reconnect-syncing UI on top of an OTA takeover.
     if (ota_receiver::is_active()) return;
+    // Never preempt Time Off (priority 2) — it strictly outranks
+    // Reconnect-Syncing's priority 4 (state-machine.md). Let the sync run
+    // silently underneath; the next tick's compute_target_state() already
+    // prefers TIME_OFF_ACTIVE over a sticky RECONNECT_SYNCING, so skipping
+    // the transition here just avoids ever showing the overlay in the first
+    // place when Time Off is already on screen.
+    if (is_time_off_active()) return;
     // Never preempt the 5-minute countdown modal — it's priority 3, strictly
     // above Reconnect-Syncing's priority 4 (state-machine.md), and must persist
     // until the user taps Close. Let the sync run silently underneath (same as

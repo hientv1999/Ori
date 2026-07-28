@@ -33,7 +33,9 @@ struct HolidayRule {
     // initializer list shorter than the struct zero-fills the rest), so none
     // of the pre-existing national entries needed editing to add regions.
     int         region;         // 0 = universal (every region of this country); N = only region N
-    uint16_t    exclude_mask;   // only meaningful when region==0: bit N set = region N does NOT get this rule
+    uint32_t    exclude_mask;   // only meaningful when region==0: bit N set = region N does NOT get this
+                                 // rule. uint32_t (not uint16_t) so a future universal rule can exclude
+                                 // a region numbered up to 31 — ES alone already defines regions up to 19.
 };
 
 // US public holidays (national) + a modest, well-documented set of state
@@ -131,7 +133,7 @@ constexpr HolidayRule CA_RULES[] = {
         "A territorial civic holiday observed the first Monday of August.", 12, 0},
     {RuleType::NthWeekday, 8, 0, 0, 1, 0, "Civic Holiday",
         "A territorial civic holiday observed the first Monday of August.", 13, 0},
-    {RuleType::NthWeekday, 8, 0, 0, 2, 0, "Discovery Day",
+    {RuleType::NthWeekday, 8, 0, 0, 3, 0, "Discovery Day",
         "Commemorates the 1896 discovery of gold that sparked the Klondike Gold Rush; observed the third Monday of August.", 11, 0},
     // National Day for Truth and Reconciliation — Sep 30, in the provinces/
     // territories that observe it as a statutory holiday.

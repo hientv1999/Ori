@@ -1051,21 +1051,36 @@ void poll(bool orion_connected) {
     }
 
     // Periodic RSSI poll — feeds the iPhone Info overlay's signal bars and
-    // Orion's relayed copy. getRssi() is a live HCI round-trip
-    // (ble_gap_conn_rssi on the actual connection, not a stale scan-time
-    // value), so this doesn't need to run every tick.
+    // Orion's relayed copy. ble_gap_conn_rssi() is a live HCI round-trip on
+    // the actual connection (not a stale scan-time value), so this doesn't
+    // need to run every tick.
     if (g_client) {
         uint32_t now = millis();
         if (s_last_rssi_poll_ms == 0 || (now - s_last_rssi_poll_ms) >= RSSI_POLL_INTERVAL_MS) {
             s_last_rssi_poll_ms = now;
-            uint8_t bars = ble::rssi_to_bars(g_client->getRssi());
-            if (bars != g_signal_bars) {
-                g_signal_bars = bars;
-                push_phone_stats();
-                // Recolour an already-open iPhone Info modal's bars too —
-                // previously only Orion heard about a bar change; this modal
-                // sat stale for up to its whole time on screen otherwise.
-                modal_iphone_info::set_signal_bars(g_signal_bars);
+            // NimBLEClient::getRssi() returns a plain int and conflates "the
+            // HCI read failed" with a literal 0 dBm reading — both come back
+            // as 0 (see NimBLEClient.cpp: `return 0;` on either the not-
+            // connected guard or a nonzero ble_gap_conn_rssi() rc). Piping
+            // that straight into rssi_to_bars() read a transient failure as
+            // 4 bars (0 >= -60, its best bucket) — a signal-read hiccup
+            // would flash "full signal" instead of leaving the last-known
+            // value alone. Read the connection RSSI directly instead, same
+            // primitive gatt_server.cpp's read_orion_signal_bars() already
+            // uses for the Orion link, so a failed read (rc != 0) can be
+            // told apart from a genuine 0 dBm and skipped this cycle.
+            int8_t rssi = 0;
+            int    rc   = ble_gap_conn_rssi(g_conn_handle, &rssi);
+            if (rc == 0) {
+                uint8_t bars = ble::rssi_to_bars(rssi);
+                if (bars != g_signal_bars) {
+                    g_signal_bars = bars;
+                    push_phone_stats();
+                    // Recolour an already-open iPhone Info modal's bars too —
+                    // previously only Orion heard about a bar change; this modal
+                    // sat stale for up to its whole time on screen otherwise.
+                    modal_iphone_info::set_signal_bars(g_signal_bars);
+                }
             }
         }
     }
