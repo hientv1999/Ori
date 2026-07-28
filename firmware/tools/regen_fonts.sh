@@ -58,18 +58,18 @@ lv_font_conv \
   --format lvgl -o "$out"
 
 # ori_font_hanken_48 (theme::font_large()) never renders prose — only the
-# countdown mm:ss ring, OTA/alert "!" glyphs, the "Ori-XX-XX" BLE pairing pill
-# (uppercase hex), the 6-digit setup passkey, and "0%".."100%" progress-ring
-# labels (grep every font_large() call site before touching this range — a
-# new call site with different characters needs its glyphs added here or it
-# silently renders blank). Full-Latin RANGE above would be wasteful at 48px,
-# the single most expensive font file; this narrow range keeps it small.
+# countdown mm:ss ring, OTA/alert "!" glyphs, the "Ori" BLE pairing pill,
+# the 6-digit setup passkey, and "0%".."100%" progress-ring labels (grep
+# every font_large() call site before touching this range — a new call site
+# with different characters needs its glyphs added here or it silently
+# renders blank). Full-Latin RANGE above would be wasteful at 48px, the
+# single most expensive font file; this narrow range keeps it small.
 out="$OUTDIR/ori_font_hanken_48.c"
-echo "  generating $out (size 48px, bpp 4, digits/hex/pairing-name-only, compressed)"
+echo "  generating $out (size 48px, bpp 4, digits/pairing-name-only, compressed)"
 lv_font_conv \
   --no-prefilter --bpp 4 --size 48 \
   --font "$FONT" \
-  -r "0x20,0x21,0x25,0x2D,0x3A,0x30-0x39,0x41-0x46,0x4F,0x69,0x72" \
+  -r "0x20,0x21,0x25,0x2D,0x3A,0x30-0x39,0x4F,0x69,0x72" \
   --format lvgl -o "$out"
 
 echo "done. Rebuild with: pio run -e ori"

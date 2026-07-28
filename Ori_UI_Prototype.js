@@ -270,7 +270,7 @@ function applyWeather(condition, tempF, unit, isNight, intensity) {
   if (bubble && tempF !== undefined) bubble.textContent = tempF + '°' + (unit || 'F');
 }
 
-const BLE_NAME = 'Ori-XT-9F';
+const BLE_NAME = 'Ori';
 const PASSKEY = '476 218';
 const FW_VERSION = '1.0.1'; // firmware version shown on the post-update ack screen
 

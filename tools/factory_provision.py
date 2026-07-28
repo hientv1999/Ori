@@ -26,12 +26,14 @@ How the identity is written differs by product, because the silicon does:
     ori               a separate "factory" NVS partition (firmware/
                       partitions.csv), built with ESP-IDF's own
                       nvs_partition_gen.py and flashed with esptool. Holds the
-                      serial AND the manufacture date.
+                      serial only — the manufacture date is not stored
+                      on-device anywhere; it's the serial's own leading
+                      DDMMYY digits, and any consumer derives it from that
+                      rather than being given a second, redundant copy.
     origale, orimat   a magic-delimited constant patched straight into the
                       built .bin (--image), because a CH32V003 has no NVS and
                       its firmware deliberately has no ability to write its own
-                      flash. Serial only; there is no manufacture-date field on
-                      those parts.
+                      flash. Serial only, same as ori.
 
 Either way the value is written ONCE, at manufacturing time, by this script and
 nothing else: no firmware anywhere in the ecosystem has a setter, and Ori's
@@ -219,11 +221,17 @@ def find_nvs_partition_gen():
         return None
 
 
-def build_factory_image(serial, mfg_date, out_bin):
-    """Writes the two-row NVS CSV and shells out to nvs_partition_gen.py to
+def build_factory_image(serial, out_bin):
+    """Writes the one-row NVS CSV and shells out to nvs_partition_gen.py to
     produce the binary image nvs_partition_gen expects: a CSV with a leading
     "key,type,encoding,value" header, one "namespace" row, then one row per
     key.
+
+    Only "sn" is written — the manufacture date is NOT stored on-device. It's
+    the serial's own leading DDMMYY digits (provisioning.md §2), so a second
+    on-device copy would just be the same fact twice with a chance to drift.
+    `mfg_date` is still recorded in the ledger (append_ledger) purely as
+    off-device factory bookkeeping, which is a different concern.
     """
     tool = find_nvs_partition_gen()
     if not tool:
@@ -243,7 +251,6 @@ def build_factory_image(serial, mfg_date, out_bin):
         w.writerow(["key", "type", "encoding", "value"])
         w.writerow([NVS_NAMESPACE, "namespace", "", ""])
         w.writerow(["sn", "data", "string", serial])
-        w.writerow(["mfg", "data", "string", mfg_date])
         csv_path = f.name
 
     try:
@@ -338,7 +345,7 @@ def main():
 
         print(f"[{i + 1}/{count}] {serial}  {args.device}  mfg={mfg_date}")
         if is_esp:
-            build_factory_image(serial, mfg_date, bin_path)
+            build_factory_image(serial, bin_path)
         else:
             # One compile, N stamped copies.
             patch_serial_into_image(args.image, bin_path, serial)

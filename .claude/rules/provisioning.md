@@ -1,19 +1,29 @@
 # Ori — Mass-Production Identity Provisioning
 
-Every Ori unit gets two facts burned in at manufacturing time: a **serial
-number** and a **manufacture date**. Both must survive everything short of a
-chip-level reflash — firmware updates, factory resets, years of ordinary use
-— since they back warranty/RMA lookups and batch investigations. Firmware
-side: `esp32-connectivity`/`firmware-core`. Manufacturing tooling: whoever
-runs the flashing station.
+Every Ori unit gets one fact burned in at manufacturing time: a **serial
+number**. It must survive everything short of a chip-level reflash —
+firmware updates, factory resets, years of ordinary use — since it backs
+warranty/RMA lookups and batch investigations. Firmware side:
+`esp32-connectivity`/`firmware-core`. Manufacturing tooling: whoever runs the
+flashing station.
+
+**There is deliberately no separate on-device manufacture-date field**
+(removed 2026-07-27). The serial's own leading `DDMMYY` digits (§2 below)
+already are the manufacture date — anything that wants one derives it from
+the serial it already has (Orion's Ori Info modal is the only consumer
+today) instead of being sent a second, independently-stored copy of the same
+fact that could in principle drift from the first. The factory ledger
+(`tools/factory_serials.csv`) still records the full ISO `mfg_date` per row
+— that's off-device bookkeeping for the flashing station's own records, a
+different concern from what's stored on the unit itself.
 
 ---
 
 ## 1. Why a separate NVS partition
 
 The main "nvs" partition (`firmware/partitions.csv`) is wiped wholesale by
-`nvs::factory_reset()` (`Preferences::clear()`) on every factory reset —
-serial number and manufacture date must NOT be in that blast radius.
+`nvs::factory_reset()` (`Preferences::clear()`) on every factory reset — the
+serial number must NOT be in that blast radius.
 
 **Chosen: a physically separate NVS partition**, not just a different
 namespace in the main one. A namespace would already survive today's
@@ -33,12 +43,11 @@ factory,   data, nvs,      0xFEC000, 0x4000,   # 16 KB, see below
 
 - **Type/subtype**: plain `nvs`, a second instance of the same format. Opened
   via `Preferences::begin(name, readOnly, "factory")` (`firmware/src/factory_info.cpp`).
-- **Namespace**: `"factory"`, keys `"sn"` (serial number) and `"mfg"`
-  (manufacture date, ISO-8601 `"YYYY-MM-DD"`).
-- **Firmware never writes to it.** `factory_info.h` exposes only
-  `serial_number()`/`manufacture_date()` read accessors — no setter anywhere
-  in firmware, BLE, or USB CDC. The only writer is the one-time manufacturing
-  flash below — smallest possible attack/bug surface for permanent data.
+- **Namespace**: `"factory"`, one key `"sn"` (serial number).
+- **Firmware never writes to it.** `factory_info.h` exposes only a
+  `serial_number()` read accessor — no setter anywhere in firmware, BLE, or
+  USB CDC. The only writer is the one-time manufacturing flash below —
+  smallest possible attack/bug surface for permanent data.
 - **Survives an OTA update**: USB CDC firmware updates (`ota.md`) only ever
   write the `ota_0`/`ota_1` app-slot partitions; every NVS partition is
   untouched by construction, same as bonds/profile today.
@@ -82,9 +91,14 @@ IDENTITY frame before a firmware update, and a wrong digit fails that
 comparison outright rather than being caught by arithmetic. Nothing in the
 system asks a human to validate a serial unaided.
 
-`DDMMYY` intentionally duplicates `manufacture_date` — the full ISO date is for
-firmware/BLE consumers, the embedded digits are for a human reading a printed
-label with no other field in front of them.
+**`DDMMYY` is the only manufacture-date representation anywhere in the
+system now** (revised 2026-07-27 — an earlier draft additionally stored a
+full ISO-8601 `manufacture_date` in the factory partition and exposed it
+over BLE as `"b"`; both are gone, see the top of this file). A consumer that
+wants a 4-digit year prefixes `20` — every unit provisioned by this format
+is a 21st-century one — rather than being sent a second, independently-set
+copy of the same date that could disagree with the first. Orion's Ori Info
+modal, the one place this is displayed, does exactly that (`pc-app-usb-serial.md`).
 
 **The stored string is exactly 12 ASCII digits.** `identify_responder.cpp`
 parses it to the u64 the wire carries and reports 0 for anything that isn't
@@ -97,7 +111,7 @@ and Orion gates a destructive write on it.
 directly, via ESP-IDF's own tooling:
 
 ```
-generate a 2-row NVS CSV (sn, mfg)
+generate a 1-row NVS CSV (sn)
         │
         ▼
 nvs_partition_gen.py generate <csv> <bin> 0x4000   ← ESP-IDF's own tool
@@ -121,9 +135,12 @@ esp-idf-nvs-partition-gen`). Order vs. the app firmware flash doesn't matter
   append-only ledger (`tools/factory_serials.csv`) so re-running never
   collides or reissues a number. Old `ORI-YYMM-NNNNNN-C` rows are retained as
   history and skipped when computing the next index.
-- **Ori:** builds the two-row NVS CSV and shells out to `nvs_partition_gen.py`,
+- **Ori:** builds the one-row NVS CSV and shells out to `nvs_partition_gen.py`,
   then either flashes over USB (`--port COM9`) or writes a batch of `.bin`
-  images for an offline station (`--count N --out-dir batch017/`).
+  images for an offline station (`--count N --out-dir batch017/`). `--mfg-date`
+  still exists as an input — it's what supplies the serial's own `DDMMYY`
+  digits — but nothing from it is written to the device beyond that; the
+  ledger records the full date too, for the factory's own bookkeeping.
 - **Origale/Orimat:** patches the serial straight into a built firmware image
   (`--image`), finding the `ORISER01` magic that `serial_id.c` declares and
   overwriting the 8 bytes after it with the serial as a little-endian u64. One
@@ -162,35 +179,37 @@ destroys the serial unless it is carried forward".
 
 ### Verifying a unit after provisioning
 
-Read char `000E` (Device Settings) back over BLE and confirm `"s"`/`"b"`
-match what was just written (Orion's own connect-time read path). Quick
-tools: `tools/mock_orion_ble.py`'s BLE test harness, or Orion's Ori Info
-modal once paired.
+Read char `000E` (Device Settings) back over BLE and confirm `"s"` matches
+what was just written (Orion's own connect-time read path). Quick tools:
+`tools/mock_orion_ble.py`'s BLE test harness, or Orion's Ori Info modal once
+paired.
 
 ## 4. Exposure to Orion — no new BLE characteristic
 
-Both fields ride the **existing** Device Settings characteristic (char
-`000E`) rather than a dedicated one, to avoid growing the GATT table for two
-static strings. Wire detail: `ble-protocol.md` §4/§6.4.
+The serial rides the **existing** Device Settings characteristic (char
+`000E`) rather than a dedicated one, to avoid growing the GATT table for one
+more static string. Wire detail: `ble-protocol.md` §4/§6.4.
 
-- On **Read**, Ori's response gains `"s"` (serial_number) and `"b"`
-  (manufacture_date), from `factory_info::serial_number()`/`manufacture_date()`.
-- On **Write**, Ori's parser never looks for `"s"`/`"b"` — an incoming write
-  that includes them is a no-op for those keys (§4's "unknown keys ignored"
-  rule), giving read-only semantics for free.
-- Orion surfaces both in its **Ori Info modal** (`pc-app.md`), alongside a
-  third piggybacked field, **live signal bars** (`"r"`) — Ori's own RSSI to
-  Orion, sampled fresh on every read. Different motivation (Windows can't
-  read a connected peripheral's RSSI locally, so Ori reports its own back)
-  but the same "no new characteristic for one more small field" reasoning.
+- On **Read**, Ori's response gains `"s"` (serial_number), from
+  `factory_info::serial_number()`.
+- On **Write**, Ori's parser never looks for `"s"` — an incoming write that
+  includes it is a no-op for that key (§4's "unknown keys ignored" rule),
+  giving read-only semantics for free.
+- Orion surfaces it in its **Ori Info modal** (`pc-app.md`), deriving a
+  displayed manufacture date from the serial's own leading `DDMMYY` digits
+  rather than reading a second field for it — alongside a piggybacked field,
+  **live signal bars** (`"r"`) — Ori's own RSSI to Orion, sampled fresh on
+  every read. Different motivation (Windows can't read a connected
+  peripheral's RSSI locally, so Ori reports its own back) but the same "no
+  new characteristic for one more small field" reasoning.
 
 ## 5. What this does NOT cover
 
-- **Authenticity.** Nothing proves a serial/date pair is genuine — same
-  caveat as `ota.md`'s firmware-integrity-vs-authenticity note. If ever
-  needed: ESP32-S3 Secure Boot v2 + Flash Encryption at provisioning time
-  (`ota.md`'s deferred-to-M8 plan), which would also encrypt the factory
-  partition at rest. Not needed for this threat model today.
+- **Authenticity.** Nothing proves a serial is genuine — same caveat as
+  `ota.md`'s firmware-integrity-vs-authenticity note. If ever needed:
+  ESP32-S3 Secure Boot v2 + Flash Encryption at provisioning time (`ota.md`'s
+  deferred-to-M8 plan), which would also encrypt the factory partition at
+  rest. Not needed for this threat model today.
 - **Hardware revision / calibration data.** Out of scope for this pass — the
   16 KB factory partition has headroom if wanted later, but nothing beyond
-  `"sn"`/`"mfg"` is defined yet.
+  `"sn"` is defined yet.

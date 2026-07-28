@@ -74,7 +74,7 @@ Factory reset zeroes both NVS entries and clears both NimBLE bond records.
 
 ### Advertising payload
 
-- **Device name:** `Ori-XX-XX` (e.g. `Ori-XT-9F`).
+- **Device name:** `Ori`.
 - **Service UUIDs** — two mutually-exclusive flavours (two 128-bit UUIDs don't fit one 31-byte packet):
   - **Orion-discovery (default):** `Ori Sync Service` UUID + mode flag in the primary packet.
   - **iPhone-pairing** (Setup Step 4 or runtime re-pair, `set_iphone_pairing_window(true)`): the **ANCS UUID** (`7905F431-B5CE-4E99-A40F-4B1E122D00D0`) as a **Service Solicitation** (AD type `0x15`, "I want a device that *provides* ANCS") — **not** a provided-service list (`0x06`/`0x07`); advertising it as provided made Ori visible in nRF but iOS never engaged it. Plus a generic Appearance (`0x0180`). Built by hand via `addData()` (NimBLE has no solicitation setter). Ori Sync UUID/mode flag are dropped during this window. Outside active pairing, the ANCS solicitation is omitted.
@@ -317,12 +317,13 @@ DeviceSettings = {          // Orion → Ori, write (response). Fields optional;
 }
 // Out-of-range field value → NACK_CBOR_DECODE via SyncControl notify.
 //
-// Read (Orion → Ori): returns all NVS-persisted fields ("c","h","f","1","2","3","k","g","j","o","p","q","t","v","x") plus three
+// Read (Orion → Ori): returns all NVS-persisted fields ("c","h","f","1","2","3","k","g","j","o","p","q","t","v","x") plus two
 // read-only identity/link fields (an incoming write simply never looks for these keys —
 // §4's "unknown keys ignored" gives them read-only semantics for free):
-//   "s": serial_number, "b": manufacture_date (ISO-8601 "YYYY-MM-DD") — from the write-once
-//     "factory" NVS partition (provisioning.md), untouched by nvs::factory_reset(). "" on an
-//     unprovisioned unit.
+//   "s": serial_number — from the write-once "factory" NVS partition (provisioning.md),
+//     untouched by nvs::factory_reset(). "" on an unprovisioned unit. There is no separate
+//     manufacture-date field: it's the serial's own leading DDMMYY digits (provisioning.md §2),
+//     and Orion derives a displayed date from "s" rather than being sent a second copy of it.
 //   "r": signal_bars, uint 0-4 — Ori's OWN live RSSI to Orion, bucketed on every read (same
 //     ladder as PhoneBondStatus's "s"). Windows' btleplug can only read a peripheral's RSSI
 //     from adverts, which stop once connected — Ori can read its live connection RSSI
@@ -383,7 +384,7 @@ PhoneBondStatus = {            // Ori → Orion, notify + readable (CBOR)
                  //              model never changes for a given bond, so Orion keeps showing
                  //              the last-known value across an Ori disconnect/app restart
                  //              instead of blanking it, same treatment as Ori's own serial
-                 //              number/manufacture date. Cleared only when the iPhone's bond
+                 //              number. Cleared only when the iPhone's bond
                  //              genuinely ends (unpair, or Ori's own factory reset taking the
                  //              iPhone bond down with it, §2).
   "m": uint,     // missed_calls.    live count of active ANCS notifications, CategoryID
@@ -577,7 +578,7 @@ For **every** sync session (initial pairing or reconnect delta), Ori stages inco
 
 ```
 Ori boots fresh → public undirected adv, mode=0x01 SETUP
-Orion scans → finds Ori-XT-9F → user taps "Pair"
+Orion scans → finds "Ori" → user taps "Pair"
 Orion connects → ATT MTU exchange → BLE bonding (LE SC, Passkey Entry)
   • Ori displays the 6-digit code (Step 2 passkey modal)
   • User confirms on Orion → LTK stored on both sides
@@ -678,9 +679,9 @@ Device Settings (char `000E`) is outside the BEGIN/END pipeline. Each field is e
 
 Orion can write any subset of fields in one Device Settings write (e.g. clock-face-only on a user setting change).
 
-**Read on (re)connect:** Orion reads Device Settings once per connection to recover the seven NVS-persisted fields (`"c"`, `"h"`, `"f"`, `"1"`/`"2"`/`"3"`, `"k"`), so its settings UI shows correct values without caching what it last wrote. `"g"`/`"j"` are excluded from this read-back — Orion is their own source of truth (same reasoning `"s"`/`"b"`/weather already establish for other read-only-from-Ori's-perspective or Orion-sourced fields), so there's no "pending edit" to reconcile.
+**Read on (re)connect:** Orion reads Device Settings once per connection to recover the seven NVS-persisted fields (`"c"`, `"h"`, `"f"`, `"1"`/`"2"`/`"3"`, `"k"`), so its settings UI shows correct values without caching what it last wrote. `"g"`/`"j"` are excluded from this read-back — Orion is their own source of truth (same reasoning `"s"`/weather already establish for other read-only-from-Ori's-perspective or Orion-sourced fields), so there's no "pending edit" to reconcile.
 
-**Notify (added 2026-07-13):** Ori also notifies the full Device Settings read-response payload whenever its own live `signal_bars` (`"r"`) bucket to Orion changes — sampled every 5 s while connected, notified only on an actual bucket change (0-4), mirroring Phone Bond Status's identical RSSI-poll-and-notify-on-change treatment for the iPhone link. This is the only field the notify exists for: the NVS-persisted fields above only ever change via an Orion write in the first place, so Orion already knows their new value the moment it sends one and gains nothing from being told again; `"s"`/`"b"` (serial/manufacture date) never change post-provisioning. Orion's Ori Info/Stats modal (`pc-app.md`) subscribes to this notify to show live signal bars while open, replacing an earlier fixed-interval poll on Orion's own side.
+**Notify (added 2026-07-13):** Ori also notifies the full Device Settings read-response payload whenever its own live `signal_bars` (`"r"`) bucket to Orion changes — sampled every 5 s while connected, notified only on an actual bucket change (0-4), mirroring Phone Bond Status's identical RSSI-poll-and-notify-on-change treatment for the iPhone link. This is the only field the notify exists for: the NVS-persisted fields above only ever change via an Orion write in the first place, so Orion already knows their new value the moment it sends one and gains nothing from being told again; `"s"` (serial) never changes post-provisioning. Orion's Ori Info/Stats modal (`pc-app.md`) subscribes to this notify to show live signal bars while open, replacing an earlier fixed-interval poll on Orion's own side.
 
 ---
 
@@ -760,8 +761,7 @@ No wire-level protocol version negotiation or compatibility gate — Ori and Ori
 | `DeviceSettings.is_night` | uint 0–1 |
 | `DeviceSettings.intensity` | uint 0–3 (only 0, 1, or 3 valid when `weather_condition` is Fog — no Moderate, it has just two real WMO codes; 0 always when `weather_condition` has no intensity axis — see §4) |
 | `DeviceSettings.seek_step_s` | uint 1–60 (default 10) |
-| `DeviceSettings.serial_number` | ≤ 32 chars (firmware `g_serial[32]`, `factory_info.cpp`) — read-only, provisioning.md |
-| `DeviceSettings.manufacture_date` | ≤ 16 chars, ISO-8601 "YYYY-MM-DD" (firmware `g_mfg[16]`) — read-only, provisioning.md |
+| `DeviceSettings.serial_number` | ≤ 32 chars (firmware `g_serial[32]`, `factory_info.cpp`) — read-only, provisioning.md. No separate manufacture-date field — it's this value's own leading DDMMYY digits |
 | `DeviceSettings.signal_bars` | uint 0–4 — read-only, live |
 | `DeviceSettings.holiday_country` | uint 0–8 (0=None 1=US 2=VN 3=CA 4=GB 5=AU 6=ES 7=MX 8=FR) |
 | `DeviceSettings.holiday_region` | uint 0–19 (0=None/national-only; meaning of 1+ depends on `holiday_country` — holiday_data.h's per-country table) |

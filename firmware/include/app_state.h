@@ -34,8 +34,7 @@ struct MeetingList {
     size_t count;
 };
 
-// Returns "Ori-XX-XX" where XX-XX is derived from the device's base MAC
-// (last 2 bytes, uppercase hex). Computed once and cached.
+// Returns the canonical BLE device name, "Ori".
 const char* ble_name();
 
 // Records the wall-clock time of the most recent successful BLE sync.
@@ -49,7 +48,9 @@ const char* synced_pill_text();
 // True once the wall clock has actually been set by an Orion Time Sync. After a
 // cold power cycle there is no battery-backed RTC, so time() returns a ~1970
 // value until the first sync — callers use this to avoid rendering a bogus time
-// (show "--:--" instead). Threshold = 2026-07-12 (any later real epoch passes).
+// (show "--:--" instead). Threshold = 2025-01-01 00:00:00 UTC (any later real
+// epoch passes) — see app_state.cpp's clock_is_set() for why it must sit
+// safely below "now" rather than at some later fixed date.
 bool clock_is_set();
 
 // Records that Orion's Time Sync has established a true-UTC clock + POSIX TZ this

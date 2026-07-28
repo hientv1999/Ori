@@ -89,7 +89,7 @@ Factory reset note:
     §2/§7.1) and tells you whether it saw SETUP (factory reset — remove the
     stale Windows pairing first) or RUNTIME (just a reboot — bond intact).
     After removing the stale pairing in Windows Bluetooth settings
-    (Settings → Bluetooth → find Ori-XX-XX → Remove device), re-run this
+    (Settings → Bluetooth → find "Ori" → Remove device), re-run this
     script to pair again.
 """
 
@@ -1209,7 +1209,7 @@ class MockOrion:
         print()
         print("  ── Next steps to re-run setup ──────────────────────────────")
         print("  1. Open Windows Settings → Bluetooth & devices")
-        print("     Find 'Ori-XX-XX' → click '...' → Remove device")
+        print("     Find 'Ori' → click '...' → Remove device")
         print("  2. Wait ~5 s for Ori to finish rebooting (Welcome screen)")
         print("  3. Press 's' here to run the setup sync")
         print("  ────────────────────────────────────────────────────────────")
@@ -1515,11 +1515,11 @@ async def find_ori(address: Optional[str]) -> Optional[str]:
     print("Scanning for Ori devices (10 s)…")
     found = await BleakScanner.discover(timeout=10.0, service_uuids=[SVC_ORI_SYNC])
     for d in found:
-        if d.name and d.name.startswith("Ori-"):
+        if d.name == "Ori":
             print(f"  Found: {d.name}  [{d.address}]")
             return d.address
     if found:
-        print("  No Ori-* device found. Nearby devices:")
+        print("  No 'Ori' device found. Nearby devices:")
         for d in found:
             print(f"    {d.name or '(unknown)'}  [{d.address}]")
     return None
@@ -1557,7 +1557,7 @@ async def report_disconnect_reason(address: str):
         print("\n  [info] Ori is advertising SETUP (0x01) — looks like a factory reset,")
         print("         not just a reboot/drop.")
         print("  ── To re-pair ────────────────────────────────────────────────")
-        print("  1. Windows Settings → Bluetooth & devices → find 'Ori-XX-XX'")
+        print("  1. Windows Settings → Bluetooth & devices → find 'Ori'")
         print("     → '...' → Remove device (your old bond is now stale)")
         print("  2. Re-run this script to pair fresh")
         print("  ──────────────────────────────────────────────────────────────\n")

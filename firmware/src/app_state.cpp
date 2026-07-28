@@ -64,11 +64,7 @@ static AncsNotification k_detail_view;  // const-char* view returned by ancs_not
 
 // Runtime ANCS state — starts empty (no phone connected). Populated by the
 // real ANCS client via set_ancs_config() when the iPhone connects.
-AncsConfig k_ancs = {
-    {},
-    0,
-    false,
-};
+AncsConfig k_ancs = {};
 
 // Runtime media state. Starts empty — populated by BLE MediaMetadata writes.
 static char k_media_title[193] = {};
@@ -135,16 +131,8 @@ void init() {
 
 const char* ble_name() {
     // Canonical Ori BLE name — single source of truth for both the advertised
-    // name (ble_manager) and the on-screen pairing pill. MUST use the BT MAC
-    // (ESP_MAC_BT): that's the address the BLE stack actually advertises, so it's
-    // what the iPhone/Orion see. The WiFi STA MAC differs (BT MAC = base + 2 on
-    // the last octet), which previously made the screen and the advert disagree.
-    static char buf[12] = {};
-    if (buf[0]) return buf;
-    uint8_t mac[6];
-    esp_read_mac(mac, ESP_MAC_BT);
-    snprintf(buf, sizeof(buf), "Ori-%02X-%02X", mac[4], mac[5]);
-    return buf;
+    // name (ble_manager) and the on-screen pairing pill.
+    return "Ori";
 }
 
 void set_last_sync_time(time_t t) {

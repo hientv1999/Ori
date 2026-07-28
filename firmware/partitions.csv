@@ -10,7 +10,7 @@
 #   app0 (ota_0)        : 0x010000 – 0x310000  (3 MB)
 #   app1 (ota_1)        : 0x310000 – 0x610000  (3 MB)
 #   spiffs              : 0x610000 – 0xFEC000  (~9.77 MB — fonts, images, assets)
-#   factory             : 0xFEC000 – 0xFF0000  (16 KB — write-once mfg identity NVS,
+#   factory             : 0xFEC000 – 0xFF0000  (16 KB — write-once serial identity NVS,
 #                          see provisioning.md. NEVER touched by nvs::factory_reset()
 #                          or app OTA — a physically separate NVS partition so no
 #                          future "wipe everything" bug can take it out.)

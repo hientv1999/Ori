@@ -34,9 +34,9 @@
 #include "widgets/widget_profile_card.h"
 
 // ── BLE device name ────────────────────────────────────────────────────────
-// Format: Ori-XX-XX (last 2 bytes of BT MAC, uppercase hex). The canonical
-// builder is app_state::ble_name(); init() copies it into g_ble_name so the
-// advertised name and the on-screen pairing pill share one source.
+// "Ori". The canonical builder is app_state::ble_name(); init() copies it
+// into g_ble_name so the advertised name and the on-screen pairing pill
+// share one source.
 #include "app_state.h"
 
 // ANCS service UUID (for advertising).
