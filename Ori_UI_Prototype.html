@@ -34,16 +34,18 @@
      appear on the same screen (calendar month view vs. meeting list) — no
      real risk of the two meanings being confused in context. */
       --holiday: var(--danger);
-      /* Teams-presence palette for the profile-photo border — colors match the
-     actual Microsoft Teams presence swatches so users get instant recognition. */
-      --presence-available: #92C353;
-      /* Teams green  — "Available" */
-      --presence-busy: #C4314B;
-      /* Teams red    — "Busy", "Do Not Disturb", "In a call/meeting", "Presenting" */
-      --presence-away: #FFAA44;
-      /* Teams amber  — "Be Right Back", "Appear Away" */
-      --presence-offline: #8A8884;
-      /* Teams grey   — "Appear Offline", OR Ori-side fallback when Orion is offline */
+      /* Profile-photo border colors — reflect Ori's OWN BLE connection status
+     to Orion (Device Status, ble-protocol.md §3), derived entirely on-device.
+     Nothing is pushed by Orion for this; there is no "presence" characteristic. */
+      --conn-ready: #92C353;
+      /* RUNTIME_READY — connected */
+      --conn-syncing: #FFAA44;
+      /* RECONNECTING / SYNCING */
+      --conn-offline: #8A8884;
+      /* No BLE connection to Orion (no glow in this state) */
+      --accent-dark: #927845;
+      /* ~65% brightness of --accent — media-mode volume-HUD fill only, so it
+     doesn't wash out against album art (screen_media_mode.cpp COLOR_ACCENT_DARK) */
       --font: 'Hanken Grotesk', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     }
 
@@ -197,7 +199,7 @@
       padding: 0 22px;
       display: flex;
       align-items: center;
-      border-bottom: 5px solid var(--divider);
+      border-bottom: 3px solid var(--divider);
       background: var(--screen-bg);
       position: relative;
       z-index: 5;
@@ -221,7 +223,7 @@
     .status-datetime .t-sep {
       font-size: 24px;
       color: var(--text-3);
-      margin: 0 12px;
+      margin: 0 6px;
     }
 
     .status-datetime .t-date {
@@ -266,6 +268,83 @@
       overflow: hidden;
       display: block;
       pointer-events: none;
+    }
+
+    /* Status-bar ANCS tile badges (widget_status_bar.cpp's make_ancs_tile) —
+   stacked-count (top-right, same app+title collapsed into one tile) and
+   silent (top-left, bell-off) are mutually exclusive corners so both can
+   appear on the same tile without overlapping. */
+    .ancs-icon-wrap {
+      position: relative;
+    }
+
+    .ancs-tile-count {
+      position: absolute;
+      top: -6px;
+      right: -6px;
+      min-width: 20px;
+      height: 20px;
+      padding: 0 5px;
+      border-radius: 999px;
+      background: var(--danger);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-variant-numeric: tabular-nums;
+      box-shadow: 0 0 0 2px var(--screen-bg);
+      pointer-events: none;
+    }
+
+    .ancs-tile-silent {
+      position: absolute;
+      top: -6px;
+      left: -6px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: var(--text-3);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0 0 2px var(--screen-bg);
+      pointer-events: none;
+    }
+
+    .ancs-tile-silent svg {
+      width: 11px;
+      height: 11px;
+    }
+
+    /* Call tile — a call notification carries no char-0010 payload, so it
+   gets its own neutral icon tile with a solid ring: yellow while ringing/
+   unanswered, red the instant it's answered/active. No pulse/animation
+   (screen-layout.md). */
+    .call-tile {
+      width: 60px;
+      height: 60px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--screen-elev);
+      color: var(--text-1);
+    }
+
+    .call-tile svg {
+      width: 28px;
+      height: 28px;
+    }
+
+    .call-tile.ringing {
+      box-shadow: 0 0 0 3px #FFAA44;
+    }
+
+    .call-tile.active {
+      box-shadow: 0 0 0 3px var(--danger);
     }
 
     .phone-disconnect-wrap {
@@ -411,25 +490,23 @@
       pointer-events: none;
     }
 
-    /* Teams-presence border colors. Applied via a class set by setScreen(); the
-   offline class also wins automatically when the PC link is down (set in JS). */
-    .profile-photo.presence-available {
-      border-color: var(--presence-available);
+    /* Connection-status border colors — Ori's own live Device Status vs
+   Orion (screen-layout.md's profile-card section). Applied via a class set
+   by setScreen(); the offline class also wins automatically when the PC
+   link is down (set in JS). Disconnected gets NO glow — a glow on the
+   grey/no-signal state would read as a render glitch, not a deliberate status. */
+    .profile-photo.conn-ready {
+      border-color: var(--conn-ready);
       box-shadow: 0 0 0 8px rgba(146, 195, 83, 0.55), 0 0 20px 8px rgba(146, 195, 83, 0.70), 0 0 42px 12px rgba(146, 195, 83, 0.40), 0 0 70px 18px rgba(146, 195, 83, 0.18);
     }
 
-    .profile-photo.presence-busy {
-      border-color: var(--presence-busy);
-      box-shadow: 0 0 0 8px rgba(196, 49, 75, 0.55), 0 0 20px 8px rgba(196, 49, 75, 0.70), 0 0 42px 12px rgba(196, 49, 75, 0.40), 0 0 70px 18px rgba(196, 49, 75, 0.18);
-    }
-
-    .profile-photo.presence-away {
-      border-color: var(--presence-away);
+    .profile-photo.conn-syncing {
+      border-color: var(--conn-syncing);
       box-shadow: 0 0 0 8px rgba(255, 170, 68, 0.55), 0 0 20px 8px rgba(255, 170, 68, 0.70), 0 0 42px 12px rgba(255, 170, 68, 0.40), 0 0 70px 18px rgba(255, 170, 68, 0.18);
     }
 
-    .profile-photo.presence-offline {
-      border-color: var(--presence-offline);
+    .profile-photo.conn-offline {
+      border-color: var(--conn-offline);
       box-shadow: none;
     }
 
@@ -501,7 +578,10 @@
 
     .meeting {
       display: grid;
-      grid-template-columns: 108px 1fr;
+      /* Widens for 12-hour format ("2:30 PM" needs more room than "14:30") —
+   TIME_COL_WIDTH_12 in screen_meeting_list.cpp. --time-col-w is set per-list
+   by meetingListHTML() based on the current clock-format preference. */
+      grid-template-columns: var(--time-col-w, 108px) 1fr;
       gap: 16px;
       padding: 14px 4px;
       border-bottom: 3px solid var(--divider);
@@ -600,19 +680,53 @@
       color: var(--text-2);
     }
 
-    .empty .glyph {
-      width: 80px;
-      height: 80px;
-      color: var(--text-3);
+    /* Real-month calendar glyph (screen_no_meetings.cpp's make_cal_glyph) —
+   replaces the old static icon with an actual day-grid: today's cell in
+   accent gold, or red when today is a holiday (only that ONE cell recolors,
+   never the whole glyph). Clickable — same entry point into Calendar month
+   view as the long-press gesture. */
+    .empty .nm-cal-glyph {
+      width: 260px;
+      cursor: pointer;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
       margin-bottom: 22px;
     }
 
-    /* Today-is-a-local-holiday variant: the empty-state glyph recolors and
-   its subtitle (set in JS) names the holiday instead of "Enjoy the focus
-   time" — the color alone would be an unexplained accent, so both change
-   together. */
-    .empty .glyph.holiday {
-      color: var(--holiday);
+    .empty .nm-cal-title {
+      font-size: 20px;
+      color: var(--text-3);
+      text-align: center;
+      margin-bottom: 10px;
+      letter-spacing: 0.4px;
+    }
+
+    .empty .nm-cal-grid {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      gap: 5px;
+    }
+
+    .empty .nm-cal-cell {
+      aspect-ratio: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      font-size: 13px;
+      color: var(--text-3);
+    }
+
+    .empty .nm-cal-cell.nm-cal-today {
+      background: var(--accent-line);
+      color: #fff;
+      font-weight: 600;
+    }
+
+    .empty .nm-cal-cell.nm-cal-today-holiday {
+      background: var(--holiday);
+      color: #fff;
+      font-weight: 600;
     }
 
     .empty .headline {
@@ -637,33 +751,68 @@
     }
 
     .clock-time {
-      font-size: 170px;
+      font-size: 96px;
       font-weight: 200;
-      letter-spacing: -6px;
+      letter-spacing: -3px;
       line-height: 1;
       color: var(--text-1);
       font-variant-numeric: tabular-nums;
       display: flex;
-      align-items: baseline;
+      align-items: center;
+      width: 100%;
+      justify-content: center;
     }
 
-    .clock-time .colon {
-      color: var(--accent);
-      animation: blink 1.5s ease-in-out infinite;
-      margin: 0 6px;
+    /* Colon rendered as two solid dots, not the font glyph — the real
+   96px bitmap font's ":" renders as small squares at this size
+   (screen_clock.cpp). Smooth 2s breathing fade, not a hard on/off step. */
+    .clock-time .colon-dots {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      margin: 0 10px;
+      animation: clock-colon-fade 2s ease-in-out infinite;
     }
 
-    @keyframes blink {
+    .clock-time .colon-dots span {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--accent);
+      display: block;
+    }
+
+    @keyframes clock-colon-fade {
 
       0%,
-      50% {
+      100% {
         opacity: 1;
       }
 
-      51%,
-      100% {
+      50% {
         opacity: 0.25;
       }
+    }
+
+    /* 3-slot row (left spacer / digits / AM-PM) so the digits stay centred
+   regardless of whether the AM/PM slot has content — screen_clock.cpp. */
+    .clock-time .cf-spacer,
+    .clock-time .cf-ampm {
+      flex: 1;
+      display: flex;
+    }
+
+    .clock-time .cf-ampm {
+      font-size: 28px;
+      font-weight: 400;
+      color: var(--text-2);
+      align-items: center;
+      padding-left: 10px;
+    }
+
+    .clock-time .cf-center {
+      display: flex;
+      align-items: center;
     }
 
     /* Date uses 30px to match status-bar time + profile-name. */
@@ -809,11 +958,22 @@
       opacity: 0.5;
     }
 
+    /* A spillover "today" cell (paged into an adjacent month) is never
+   dimmed by the .outside rule above — matches screen_calendar.cpp, whose
+   today-branch check runs before the outside-dimming branch. */
+    .calendar-view .cal-day.outside.today-faint .cal-day-num {
+      opacity: 1;
+    }
+
     /* Local-holiday indicator — a hollow ring (no fill), not a solid fill
    like "today" below. Because a ring and a fill are different properties
    (border vs. background), a day that's both today AND a holiday shows
    both at once — today's gold fill plus this red ring — with no extra
    rule needed for the fill/ring combination itself. */
+    .calendar-view .cal-day.holiday {
+      cursor: pointer;
+    }
+
     .calendar-view .cal-day.holiday .cal-day-num {
       box-shadow: 0 0 0 2px var(--holiday);
       color: var(--holiday);
@@ -961,7 +1121,7 @@
     .timeOffDetail .pd-label {
       font-size: 24px;
       text-transform: uppercase;
-      letter-spacing: 2px;
+      letter-spacing: 4px;
       color: var(--accent);
       font-weight: 500;
     }
@@ -985,7 +1145,7 @@
     .timeOffText .label {
       font-size: 24px;
       text-transform: uppercase;
-      letter-spacing: 2px;
+      letter-spacing: 4px;
       color: var(--accent);
       font-weight: 500;
     }
@@ -1036,7 +1196,6 @@
       width: 100%;
       height: 100%;
       transform: rotate(-90deg);
-      filter: drop-shadow(0 0 10px rgba(224, 184, 106, 0.55)) drop-shadow(0 0 3px rgba(224, 184, 106, 0.80));
     }
 
     .ring .track {
@@ -1097,7 +1256,7 @@
     }
 
     .meeting-detail .md-title {
-      font-size: 28px;
+      font-size: 26px;
       font-weight: 500;
       line-height: 1.35;
       word-wrap: break-word;
@@ -1152,6 +1311,15 @@
       align-items: center;
       justify-content: center;
       margin: 0 auto 18px;
+      font-size: 34px;
+      font-weight: 600;
+    }
+
+    /* Factory-reset confirm uses a larger glyph circle than the notice
+   variant below (ui_helpers.cpp's make_alert_glyph_circle, 96px). */
+    .alert-card.reset .icon-circle {
+      width: 96px;
+      height: 96px;
     }
 
     .alert-card h3 {
@@ -1180,6 +1348,7 @@
     .alert-card.notice .icon-circle {
       background: var(--accent-soft);
       color: var(--accent);
+      border: 2px solid var(--accent-line);
     }
 
     /* iPhone info / stats modal */
@@ -1234,7 +1403,7 @@
 
     /* Battery icon — outline+nub in the same neutral stroke as the signal
        bars' resting color; the fill rect's color is set inline per-render
-       (var(--presence-available) normally, var(--danger) at/below 20%),
+       (var(--conn-ready) normally, var(--danger) at/below 20%),
        mirroring modal_iphone_info.cpp's plain-LVGL-primitives battery glyph. */
     .ip-batt {
       display: flex;
@@ -1260,11 +1429,11 @@
     }
 
     .ip-card .ip-status .dot.on {
-      background: var(--presence-available);
+      background: var(--conn-ready);
     }
 
     .ip-card .ip-status .dot.off {
-      background: var(--presence-offline);
+      background: var(--conn-offline);
     }
 
     /* RSSI-style signal bars — replaces a plain "Strong"/"Weak" text value
@@ -1288,7 +1457,7 @@
     .sig-bars span:nth-child(4) { height: 100%; }
 
     .sig-bars span.active {
-      background: var(--presence-available);
+      background: var(--conn-ready);
     }
 
     .ip-stats {
@@ -1967,8 +2136,10 @@
     }
 
     .setup .steps {
+      /* screen_setup.cpp's DOT_ROW_Y = 456 (of 480px tall) — a fixed layout
+   invariant that must not move between pages. */
       position: absolute;
-      bottom: 40px;
+      bottom: 14px;
       left: 0;
       right: 0;
       display: flex;
@@ -2012,14 +2183,41 @@
       text-align: center;
     }
 
+    /* Determinate ring (byte-driven progress, capped at 99% until END) — same
+   pattern as the Step 2/3 Orioning ring, NOT an indeterminate spinner
+   (screen_reconnect_syncing.cpp / ble-protocol.md §6.0). */
     .reconnect-ring {
       width: 160px;
       height: 160px;
-      border-radius: 50%;
-      border: 3px solid var(--divider-strong);
-      border-top-color: var(--accent);
-      animation: spin 1.4s linear infinite;
+      position: relative;
       flex-shrink: 0;
+    }
+
+    .reconnect-ring svg {
+      width: 100%;
+      height: 100%;
+      transform: rotate(-90deg);
+    }
+
+    .reconnect-ring .track {
+      stroke: rgba(255, 255, 255, 0.08);
+    }
+
+    .reconnect-ring .progress {
+      stroke: var(--accent);
+      stroke-linecap: round;
+    }
+
+    .reconnect-ring .pct-label {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 26px;
+      font-weight: 200;
+      color: var(--text-1);
+      font-variant-numeric: tabular-nums;
     }
 
     @keyframes spin {
@@ -2089,6 +2287,31 @@
       color: var(--danger);
       background: rgba(216, 106, 106, 0.14);
       border: 1px solid rgba(216, 106, 106, 0.30);
+      font-size: 44px;
+      font-weight: 600;
+    }
+
+    /* Visible "Installing firmware" countdown bar — mirrors the real
+   COMMIT_LINGER_MS (3.5s) window shown on the LIT panel before the actual
+   hardware blackout for the flash write (screen_ota_updating.cpp). */
+    .ota-install-countdown-bar {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      height: 6px;
+      width: 0;
+      background: var(--accent);
+      animation: ota-install-fill 3.5s linear forwards;
+    }
+
+    @keyframes ota-install-fill {
+      from {
+        width: 0;
+      }
+
+      to {
+        width: 100%;
+      }
     }
 
     .setup .ok-check svg {
@@ -2273,7 +2496,10 @@
         radial-gradient(circle at 28% 22%, rgba(255, 255, 255, 0.18) 0%, transparent 45%),
         linear-gradient(135deg, #2c1a4c 0%, #6e2456 32%, #c44b3d 65%, #f5b042 100%);
       box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.10);
-      transition: transform 0.18s ease-out, filter 0.18s ease-out, opacity 0.18s ease-out;
+      /* opacity deliberately NOT transitioned — the scrim snaps instantly on
+   both reveal and dismiss (apply_controls_visual() in screen_media_mode.cpp);
+   only the button + progress bar fade. */
+      transition: transform 0.18s ease-out, filter 0.18s ease-out;
       position: relative;
       overflow: hidden;
     }
@@ -2388,6 +2614,19 @@
       transform: translateX(40px);
     }
 
+    /* Album-art streaming veil — a dim (not opaque) black layer shown the
+   moment a new Media Album Art transfer starts, with the non-dimmed area
+   rising from the bottom as real chunk progress comes in. The old/gradient
+   art stays dimly visible underneath the whole time (screen_media_mode.cpp's
+   show_art_loading()/update_art_loading_progress()/hide_art_loading()). */
+    .kbd-art-loading-veil {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.55);
+      pointer-events: none;
+      transition: clip-path 0.15s linear;
+    }
+
     /* Volume HUD — momentary overlay during vertical-swipe-on-art. Shows a
    tall vertical bar fill + percentage. Fades out after the gesture ends. */
     .kbd-art-hud {
@@ -2427,21 +2666,32 @@
     .kbd-art-hud .hud-bar {
       width: 10px;
       height: 100%;
-      background: rgba(255, 255, 255, 0.18);
+      background: rgba(255, 255, 255, 0.65);
       border-radius: 5px;
       position: relative;
       overflow: hidden;
       box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
     }
 
+    /* Darker/more-saturated accent than every other fill in the UI — the
+   standard --accent would wash out against bright album art. */
     .kbd-art-hud .hud-fill {
       position: absolute;
       left: 0;
       right: 0;
       bottom: 0;
-      background: var(--accent);
+      background: var(--accent-dark);
       border-radius: 5px;
       transition: height 0.05s linear;
+    }
+
+    /* Externally-driven volume change (Orion/OS mixer/hardware key — not
+   Ori's own swipe) — shows the HUD as a momentary toast even when no swipe
+   is in progress. Auto-hides after HOST_VOLUME_TOAST_MS with no further
+   change, or immediately if a real swipe takes over. */
+    .kbd-art-wrap.hud-toast .kbd-art-hud {
+      opacity: 1;
+      transition: opacity 0.18s ease-out;
     }
 
     /* "Nothing playing" empty-state — replaces the gradient with a muted dark fill,
@@ -2588,12 +2838,12 @@
       width: 100%;
       display: flex;
       gap: 14px;
-      margin-top: 14px;
+      margin-top: 8px;
     }
 
     .s-btn {
       flex: 1;
-      height: 82px;
+      height: 72px;
       background: var(--screen-card);
       border: 1px solid var(--divider);
       color: var(--text-1);
@@ -2647,7 +2897,7 @@
         <button data-screen="clock-analog">Analog Clock</button>
         <button data-screen="calendar">Calendar (month view)</button>
         <button data-screen="timeOff">Time Off active</button>
-        <button data-screen=”timeOff-long-dest”>Time Off — long destination</button>
+        <button data-screen="timeOff-long-dest">Time Off — long destination</button>
         <button data-screen="kbd-mode">Media mode (BLE bridge)</button>
       </div>
       <div class="group">
@@ -2668,6 +2918,8 @@
         <button data-screen="profile-detail">Profile detail overlay</button>
         <button data-screen="iphone-info">iPhone info / stats</button>
         <button data-screen="ancs-list">ANCS drill-down list</button>
+        <button data-screen="incoming-call">Incoming call (ringing)</button>
+        <button data-screen="active-call">Active call</button>
       </div>
       <div class="group">
         <div class="group-title">Setup flow</div>
@@ -2681,6 +2933,7 @@
       </div>
       <div class="group">
         <div class="group-title">Runtime</div>
+        <button data-screen="boot-splash">Boot splash</button>
         <button data-screen="reconnect-syncing">Reconnect-Syncing overlay</button>
         <button data-screen="unpair-phone">Unpair iPhone? (has bond)</button>
         <button data-screen="repair-phone">Re-pair iPhone (no bond)</button>
@@ -2688,17 +2941,15 @@
       <div class="group">
         <div class="group-title">OTA update</div>
         <button data-screen="ota-updating">1 · Updating firmware</button>
-        <button data-screen="ota-ready">2 · Firmware Install</button>
-        <button data-screen="ota-installing">3 · Installing (dark)</button>
-        <button data-screen="ota-updated-ack">4 · Updated (boot ack)</button>
+        <button data-screen="ota-installing">2 · Installing (visible → dark)</button>
+        <button data-screen="ota-updated-ack">3 · Updated (boot ack)</button>
         <button data-screen="ota-error">⚠ Update failed</button>
       </div>
       <div class="group">
-        <div class="group-title">Teams presence</div>
-        <button data-screen="presence-available">Available (green)</button>
-        <button data-screen="presence-busy">Busy / DND (red)</button>
-        <button data-screen="presence-away">Be right back / Away (yellow)</button>
-        <button data-screen="presence-offline">Appear offline (grey)</button>
+        <div class="group-title">Connection status</div>
+        <button data-screen="conn-ready">Connected (green)</button>
+        <button data-screen="conn-syncing">Reconnecting / syncing (amber)</button>
+        <button data-screen="conn-offline">Disconnected (grey, no glow)</button>
       </div>
       <div class="group">
         <div class="group-title">Weather</div>
@@ -2732,6 +2983,11 @@
         <button data-screen="overlap-and-long">Overlap + long title</button>
         <button data-screen="long-list">Scrollable list</button>
         <button data-screen="cached">Orion offline (synced state)</button>
+        <button data-screen="clock-not-set">Clock — WAITING FOR ORION</button>
+        <button data-screen="clock-analog-not-set">Analog clock — not set</button>
+        <button data-screen="no-meetings-clock-not-set">No-meetings — cold boot (no clock)</button>
+        <button data-screen="kbd-mode-loading">Media mode — album art loading</button>
+        <button data-screen="kbd-mode-volume-toast">Media mode — external volume toast</button>
       </div>
       <div class="footer">Click any item to switch the screen. Long-press the profile photo for factory reset.
         Long-press the phone-disconnect icon to re-pair an iPhone.</div>
@@ -2848,11 +3104,6 @@
         <path d="M3 9h18" stroke="currentColor" stroke-width="1.6" />
         <path d="M8 3v4M16 3v4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
       </symbol>
-      <symbol id="i-warn" viewBox="0 0 24 24">
-        <path d="M12 3 2 21h20L12 3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" />
-        <path d="M12 10v5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
-        <circle cx="12" cy="18" r="1" fill="currentColor" />
-      </symbol>
       <symbol id="i-check" viewBox="0 0 24 24">
         <path d="m5 12 5 5 9-10" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"
           stroke-linejoin="round" />
@@ -2931,6 +3182,14 @@
       <symbol id="i-chev-right" viewBox="0 0 24 24">
         <path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
           stroke-linejoin="round" />
+      </symbol>
+      <symbol id="i-chev-dbl-left" viewBox="0 0 24 24">
+        <path d="M18 5l-7 7 7 7M11 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.2"
+          stroke-linecap="round" stroke-linejoin="round" />
+      </symbol>
+      <symbol id="i-chev-dbl-right" viewBox="0 0 24 24">
+        <path d="M6 5l7 7-7 7M13 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.2"
+          stroke-linecap="round" stroke-linejoin="round" />
       </symbol>
       <symbol id="i-prev" viewBox="0 0 24 24">
         <rect x="5" y="5" width="2.6" height="14" rx="1" fill="currentColor" />

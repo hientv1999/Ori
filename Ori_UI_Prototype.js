@@ -277,18 +277,25 @@ const FW_VERSION = '1.0.1'; // firmware version shown on the post-update ack scr
 // Mock ANCS notification data per app. In firmware, these fields come from
 // the ANCS Notification Attribute commands: Title, Subtitle, Message, Date,
 // and DisplayName (human-readable app name from AppIdentifier lookup).
+// posLabel/negLabel/hasNegAction mirror real ANCS PositiveActionLabel/
+// NegativeActionLabel — message-type notifications never offer a positive
+// action here (no composing/sending a reply, product-intent.md), only a
+// negative "Dismiss" (ancsDetailHTML derives its buttons from these, same
+// rule as the drill-down list's ancsListActionsHTML()).
 const ANCS_NOTIFICATIONS = {
   gmail: {
     displayName: 'Gmail',
     title: 'Priya Nair',
     body: 'Hey, have you had a chance to review the firmware PR? The team is waiting on approval before they can merge and kick off the build.',
     time: '2 min ago',
+    posLabel: '', negLabel: 'Dismiss', hasNegAction: true,
   },
   messenger: {
     displayName: 'Messenger',
     title: 'Marcus Lee',
     body: "Studio is booked for the design review. I'll send the invite now — can you confirm you're free at 10:30? Also, Hannah said she needs at least 20 minutes at the end to walk through the chassis tolerances with the vendor rep, so I've blocked the room until 12:00 just in case. Let me know if you want me to pull in the DFM report beforehand so we're not scrambling for numbers during the meeting.",
     time: '5 min ago',
+    posLabel: '', negLabel: 'Dismiss', hasNegAction: true,
   },
   instagram: {
     displayName: 'Instagram',
@@ -296,12 +303,14 @@ const ANCS_NOTIFICATIONS = {
     body: 'oridevice and 47 others liked your photo.',
     time: '18 min ago',
     silent: true,   // EventFlags SILENT bit — badge shown in the overlay
+    posLabel: '', negLabel: 'Dismiss', hasNegAction: true,
   },
   facebook: {
     displayName: 'Facebook',
     title: 'Hannah Kim commented',
     body: "Great progress on the display calibration — the green channel fix looks solid. Let's review the pin map again before M3.",
     time: '1 hr ago',
+    posLabel: '', negLabel: 'Dismiss', hasNegAction: true,
   },
 };
 
@@ -325,12 +334,19 @@ const TODAY_MEETINGS = [
   { start: '10:30', end: '11:30', title: 'Industrial design review', loc: 'Studio', org: 'Marcus L.' },
   { start: '13:00', end: '13:45', title: 'Orion app sync', loc: 'Zoom', org: 'Hannah K.' },
   { start: '14:00', end: '15:00', title: 'Investor update prep', loc: 'Office', org: 'Xander T.', inProgress: true },
-  { start: '15:30', end: '16:00', title: 'Quick sync with marketing', loc: 'Studio', org: 'Sam R.' },
+  // "imminent" (5-min pre-meeting window) is illustrative here, same as
+  // "inProgress" above — this mock data isn't wired to a live clock, so the
+  // flag is just placed on the next meeting to demonstrate meeting-list.md's
+  // tap-to-imminent-countdown exception (showMeetingDetail()).
+  { start: '15:30', end: '16:00', title: 'Quick sync with marketing', loc: 'Studio', org: 'Sam R.', imminent: true },
   { start: '16:30', end: '17:00', title: 'Q4 budget review', loc: 'Virtual — Microsoft Teams Conference Room B', org: 'Dr. Christopher Vandenbrook' },
 ];
+// Sort order: start ascending, ties broken by earlier end time first
+// (meeting-list.md) — the 10:00-10:30 chat ends first, so it's listed
+// before the 10:00-11:00 review despite both starting at the same time.
 const OVERLAP_MEETINGS = [
-  { start: '10:00', end: '11:00', title: 'Firmware architecture review', loc: 'Conf Room A', org: 'Marcus L.', overlap: true },
   { start: '10:00', end: '10:30', title: 'Quick chat with Priya', loc: 'Coffee bar', org: 'Priya N.', overlap: true },
+  { start: '10:00', end: '11:00', title: 'Firmware architecture review', loc: 'Conf Room A', org: 'Marcus L.', overlap: true },
   { start: '10:30', end: '11:30', title: 'Vendor call — display panels', loc: 'Zoom', org: 'Hannah K.', overlap: true },
 ];
 const LONG_TITLE_MEETINGS = [
@@ -339,8 +355,8 @@ const LONG_TITLE_MEETINGS = [
   { start: '14:00', end: '15:30', title: 'Investor preview', loc: 'Office', org: 'Xander T.', inProgress: true },
 ];
 const OVERLAP_LONG_MEETINGS = [
-  { start: '10:00', end: '11:00', title: 'Strategic planning session for Q4 — deep dive into roadmap and prioritisation', loc: 'Studio', org: 'Marcus L.', overlap: true },
   { start: '10:00', end: '10:45', title: 'Manufacturing partner kickoff with the Shenzhen vendor', loc: 'Zoom', org: 'Hannah K.', overlap: true },
+  { start: '10:00', end: '11:00', title: 'Strategic planning session for Q4 — deep dive into roadmap and prioritisation', loc: 'Studio', org: 'Marcus L.', overlap: true },
   { start: '11:00', end: '12:00', title: 'Standup', loc: 'Studio', org: 'Priya N.' },
 ];
 const LONG_LIST_MEETINGS = [
@@ -358,21 +374,27 @@ const LONG_LIST_MEETINGS = [
 const SCREENS = {
   'meeting-list': {
     label: 'Primary state', title: 'Meeting list — work hours',
-    desc: 'Default left-panel view. Title and location are single-line (ellipsis on overflow). Tap any meeting row to expand — shows full title, location, and time.',
+    desc: 'Default left-panel view. Title and location are single-line (ellipsis on overflow). Tap any meeting row to expand — shows full title, location, and time. Exception: tapping a meeting inside its 5-minute pre-meeting window (the "Quick sync" row here) opens the countdown modal instead — see the imminent-meeting exception in meeting-list.md.',
     statusBar: { ancsApps: ['gmail', 'messenger', 'instagram'], phoneConnected: true },
     leftRender: () => meetingListHTML(TODAY_MEETINGS),
   },
   'no-meetings': {
     label: 'Primary state', title: 'No meetings today',
-    desc: 'Shown during work hours when the cached meeting list is empty.',
+    desc: 'Shown during work hours when the cached meeting list is empty. The glyph is a real current-month calendar with today highlighted, and is itself tappable — the same entry point into Calendar month view as the long-press gesture.',
     statusBar: { ancsApps: ['gmail'], phoneConnected: true },
-    leftRender: () => '<div class="empty"><svg class="glyph"><use href="#i-cal"/></svg><div class="headline">No meetings today</div><div class="sub">Enjoy the focus time</div></div>',
+    leftRender: () => '<div class="empty">' + noMeetingsGlyphHTML(false) + '<div class="headline">No meetings today</div><div class="sub">Enjoy the focus time</div></div>',
   },
   'no-meetings-holiday': {
     label: 'Local holidays', title: 'No meetings — local holiday',
-    desc: 'Demo only: when today is a recognized local holiday, the calendar glyph recolors to the holiday accent and the subtitle names the holiday instead of "Enjoy the focus time." How Ori would learn which dates are holidays (data source) is not yet designed — this reviews the visual treatment only.',
+    desc: 'When today is a recognized local holiday, ONLY today\'s cell in the calendar glyph recolors to the holiday accent (not the whole glyph), and the subtitle names the holiday instead of "Enjoy the focus time." Holidays are computed entirely on-device via compiled-in rule tables for 8 countries, plus a small BLE-pushed lunar table for Vietnamese Tet — see state-machine.md.',
     statusBar: { ancsApps: ['gmail'], phoneConnected: true },
-    leftRender: () => '<div class="empty"><svg class="glyph holiday"><use href="#i-cal"/></svg><div class="headline">No meetings today</div><div class="sub">Local Holiday</div></div>',
+    leftRender: () => '<div class="empty">' + noMeetingsGlyphHTML(true) + '<div class="headline">No meetings today</div><div class="sub">Local Holiday</div></div>',
+  },
+  'no-meetings-clock-not-set': {
+    label: 'Edge case', title: 'No meetings — cold boot (no clock)',
+    desc: 'Before Ori has a valid clock (no battery-backed RTC — a fresh boot before Orion or the bonded phone supplies the time), the calendar glyph falls back to a generic 35-day grid with no today marker or month title, since there\'s no time-based logic to drive one yet.',
+    statusBar: { ancsApps: [], phoneConnected: false, hideDateTime: true },
+    leftRender: () => '<div class="empty">' + noMeetingsGlyphHTML(false, true) + '<div class="headline">No meetings today</div><div class="sub">Enjoy the focus time</div></div>',
   },
   'clock': {
     label: 'Primary state', title: 'Digital clock',
@@ -388,6 +410,20 @@ const SCREENS = {
     mode: 'clock',
     leftRender: () => analogClockHTML(),
   },
+  'clock-not-set': {
+    label: 'Edge case', title: 'Digital clock — no clock yet',
+    desc: 'Before Orion (or the bonded phone\'s Current Time Service) has supplied a clock — e.g. right after a cold boot, no battery-backed RTC — the digital face shows "--:--" and "WAITING FOR ORION" instead of a real time.',
+    statusBar: { ancsApps: [], phoneConnected: false, hideDateTime: true },
+    mode: 'clock',
+    leftRender: () => clockHTML(true),
+  },
+  'clock-analog-not-set': {
+    label: 'Edge case', title: 'Analog clock — no clock yet',
+    desc: 'Same fallback as the digital face, on the analog dial: hands parked at 12 with the same "WAITING FOR ORION" label.',
+    statusBar: { ancsApps: [], phoneConnected: false, hideDateTime: true },
+    mode: 'clock',
+    leftRender: () => analogClockHTML(true),
+  },
   'calendar': {
     label: 'Primary state', title: 'Calendar (month view)',
     desc: 'Entered by long-pressing the time in the status bar for 1s (1.2s here). View-only month grid with today highlighted (a muted gold circle) and its whole week banded behind it in a fainter gold; both dim a tier further when today is only a spillover day from paging to an adjacent month. Left/right arrows navigate months. Mode-toggle (calendar-return icon) returns to the previous mode. Status-bar date/time is hidden since this view IS a calendar.',
@@ -397,7 +433,7 @@ const SCREENS = {
   },
   'calendar-holidays': {
     label: 'Local holidays', title: 'Calendar month view — local holidays',
-    desc: 'Demo only: holiday dates get a hollow red ring around the day number, with the number itself in red too (not a solid fill, so it never competes with "today"’s solid gold fill). A day that is both shows the gold fill and red ring together, with the number staying red rather than turning white (see today’s cell here). Illustrative fixed demo dates (day 3 / day 20 of whichever month is shown, plus today) — the real data source is not yet designed. Left/right arrows still navigate months.',
+    desc: 'Demo only: holiday dates get a hollow red ring around the day number, with the number itself in red too (not a solid fill, so it never competes with "today"’s solid gold fill). A day that is both shows the gold fill and red ring together, with the number staying red rather than turning white (see today’s cell here). Tap a holiday cell for its full-screen detail overlay. Illustrative fixed demo dates (day 3 / day 20 of whichever month is shown, plus today) stand in for the real on-device holiday_data rule tables (state-machine.md); outside/spillover days never get holiday info, matching firmware. Chevrons navigate months; double chevrons navigate years.',
     statusBar: { ancsApps: ['gmail', 'facebook'], phoneConnected: true, hideDateTime: true },
     mode: 'clock',
     leftRender: () => calendarHTML(),
@@ -406,24 +442,24 @@ const SCREENS = {
     label: 'Primary state', title: 'Time Off active',
     desc: 'Destination name is single-line (ellipsis on overflow). Tap the card to open the full Time Off detail overlay.',
     statusBar: { ancsApps: [], phoneConnected: true },
-    leftRender: () => timeOffHTML('Lisbon, Portugal', 'May 13 – May 21'),
+    leftRender: () => timeOffHTML('Lisbon, Portugal', 'May 13 – May 21, 2026'),
   },
   'timeOff-long-dest': {
     label: 'Edge case', title: 'Time Off — long destination name',
     desc: 'Destination overflows the card width and is clipped with ellipsis. Tap the card to see the full name.',
     statusBar: { ancsApps: [], phoneConnected: true },
-    leftRender: () => timeOffHTML('São Paulo, State of São Paulo, Brazil', 'Jun 2 – Jun 14'),
+    leftRender: () => timeOffHTML('São Paulo, State of São Paulo, Brazil', 'Jun 2 – Jun 14, 2026'),
   },
   'timeOffDetail': {
     label: 'Modal popup', title: 'Time Off detail overlay',
     desc: 'Opened by tapping the destination card on the Time Off screen. Shows the full destination and date range. Dismissed via the Close button.',
     statusBar: { ancsApps: [], phoneConnected: true },
-    leftRender: () => timeOffHTML('São Paulo, State of São Paulo, Brazil', 'Jun 2 – Jun 14'),
-    modal: () => timeOffDetailHTML('São Paulo, State of São Paulo, Brazil', 'Jun 2 – Jun 14'),
+    leftRender: () => timeOffHTML('São Paulo, State of São Paulo, Brazil', 'Jun 2 – Jun 14, 2026'),
+    modal: () => timeOffDetailHTML('São Paulo, State of São Paulo, Brazil', 'Jun 2 – Jun 14, 2026'),
   },
   'ancs-notification': {
     label: 'Modal popup', title: 'ANCS notification detail',
-    desc: 'Tap any ANCS icon in the status bar to open. Shows app name, notification title, message preview (up to 3 lines), and timestamp — all fields available from the iOS ANCS protocol. "Read" dismisses the notification from the status bar entirely (firmware triggers ANCS PositiveAction, which tells iOS to mark it read — the device then receives an ANCS Removed event and hides the icon). "Close" dismisses the overlay only.',
+    desc: 'Tap any ANCS icon in the status bar to open. Shows app name, notification title, message preview (up to 3 lines), and timestamp — all fields available from the iOS ANCS protocol. Buttons are derived from the notification\'s own pos/neg action labels, same rule as the ANCS drill-down list — here, "Dismiss" clears the notification from the status bar entirely (an ANCS NegativeAction, which produces an ANCS Removed event and hides the icon); message-type notifications never offer a positive action (no composing/sending a reply, product-intent.md).',
     statusBar: { ancsApps: ['gmail', 'messenger', 'instagram'], phoneConnected: true },
     leftRender: () => meetingListHTML(TODAY_MEETINGS),
     modal: () => ancsDetailHTML('gmail'),
@@ -449,6 +485,20 @@ const SCREENS = {
     leftRender: () => meetingListHTML(TODAY_MEETINGS),
     modal: () => iphoneInfoHTML(),
   },
+  'incoming-call': {
+    label: 'Modal popup', title: 'Incoming call (ringing)',
+    desc: 'ANCS reports a ringing call. The status-bar call tile gets a solid yellow ring (no pulse/animation). Answer/Decline map to ANCS PositiveAction/NegativeAction on the call notification, mirroring an on-device tap exactly.',
+    statusBar: { ancsApps: ['gmail'], phoneConnected: true, callState: 'ringing' },
+    leftRender: () => meetingListHTML(TODAY_MEETINGS),
+    modal: () => callDetailHTML('ringing'),
+  },
+  'active-call': {
+    label: 'Modal popup', title: 'Active call',
+    desc: 'Call answered — the status-bar ring turns red the instant it\'s picked up, and a live duration is shown (resumes from elapsed_s on a reconnect mid-call, never restarts at zero). Dismissing the overlay does NOT hang up; only "End call" does.',
+    statusBar: { ancsApps: ['gmail'], phoneConnected: true, callState: 'active' },
+    leftRender: () => meetingListHTML(TODAY_MEETINGS),
+    modal: () => callDetailHTML('active'),
+  },
   'ancs-list': {
     label: 'Modal popup', title: 'ANCS drill-down list',
     desc: 'Reached by tapping a missed-call / unread-message / notification tile in the iPhone Info modal. One row per app+title group (multiple notifications from the same sender stack into one row with a count badge); tap a row for its full detail. Swipe a row left past ~35% of its width to clear it (or its whole stacked group) — the row slides and fades with the drag, no revealed panel underneath. Same list + swipe-left design as the Orion PC app\'s own drill-down (../Orion/Orion_UI_Prototype.html) — this is the on-device mirror of it. "Back" returns to iPhone Info.',
@@ -464,12 +514,26 @@ const SCREENS = {
     mode: 'media',
     leftRender: () => mediaModeHTML(),
   },
+  'kbd-mode-loading': {
+    label: 'Edge case', title: 'Media mode — album art loading',
+    desc: 'The moment a new Media Album Art transfer starts streaming, a dim (not opaque) veil covers the art — the old/gradient art stays dimly visible underneath, never fully hidden mid-transfer. The non-dimmed area rises from the bottom edge upward as real chunk progress (seq/total_frags) comes in; at 100% the veil is fully gone right as the decoded image swaps in.',
+    statusBar: { ancsApps: ['gmail'], phoneConnected: true },
+    mode: 'media',
+    leftRender: () => mediaModeHTML(45),
+  },
+  'kbd-mode-volume-toast': {
+    label: 'Edge case', title: 'Media mode — external volume change toast',
+    desc: 'A Host Volume State push that is NOT Ori\'s own swipe echoing back (OS mixer, another app, a hardware key) shows the HUD as a momentary toast — even if it wasn\'t already on screen — so an out-of-band volume change is never silently invisible. Auto-hides after ~1.5s with no further change, or immediately if the user starts a real swipe (which takes over the HUD itself).',
+    statusBar: { ancsApps: ['gmail'], phoneConnected: true },
+    mode: 'media',
+    leftRender: () => mediaModeHTML(undefined, true),
+  },
   'countdown': {
     label: 'Modal popup', title: '5-minute pre-meeting alert',
     desc: 'Dismissed via the Close button only.',
     statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
     leftRender: () => meetingListHTML(TODAY_MEETINGS),
-    modal: () => countdownHTML('Industrial design review', 'Starts at 10:30 · Studio'),
+    modal: () => countdownHTML('Industrial design review', 'Marcus L.', 'Studio'),
   },
   'factory-reset': {
     label: 'Modal popup', title: 'Factory reset confirmation',
@@ -494,7 +558,7 @@ const SCREENS = {
   },
   'meeting-detail': {
     label: 'Modal popup', title: 'Meeting detail overlay',
-    desc: 'Tap any meeting row in the list to open this overlay. Shows the full title, location, and time. Tap anywhere on the scrim to dismiss.',
+    desc: 'Tap any meeting row in the list to open this overlay. Shows the full title, location, and time. Dismissed via the Close button only.',
     statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
     leftRender: () => meetingListHTML(LONG_TITLE_MEETINGS),
     modal: () => meetingDetailHTML(LONG_TITLE_MEETINGS[0]),
@@ -543,11 +607,17 @@ const SCREENS = {
     hideStatusBar: true,
     setup: () => setupDoneHTML(),
   },
+  'boot-splash': {
+    label: 'Runtime', title: 'Boot splash',
+    desc: 'Shown immediately on power-on/reboot — a large centered wordmark, no status bar or spinner — while PSRAM and BLE finish initializing (screen_boot_splash.cpp, CLAUDE.md\'s M5 changelog).',
+    hideStatusBar: true,
+    setup: () => bootSplashHTML(),
+  },
   'reconnect-syncing': {
     label: 'Runtime', title: 'Reconnect-Syncing overlay',
-    desc: 'Triggered when Ori reconnects to Orion after being offline. Overlays the left panel only — status bar and profile card remain visible. Auto-dismisses when RUNTIME_READY arrives (~300 ms when nothing changed; longer when calendar data changed). Touch on the overlay is inert.',
-    statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
-    leftRender: () => reconnectSyncingHTML(),
+    desc: 'Triggered by a real SyncControl{BEGIN} frame, not just the BLE link coming up. Overlays the left panel only — status bar and profile card remain visible, but the mode-toggle stays hidden through the whole window (Orion isn\'t fully synced yet). The ring is DETERMINATE — driven by real byte progress into the PSRAM staging buffers, capped at 99% until END, then 100%. Auto-dismisses when RUNTIME_READY arrives. Touch on the overlay is inert.',
+    statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true, pcSynced: false },
+    leftRender: () => reconnectSyncingHTML(67),
   },
   'ota-updating': {
     label: 'OTA update', title: '1 · Updating firmware',
@@ -555,20 +625,14 @@ const SCREENS = {
     hideStatusBar: true,
     setup: () => otaDownloadingHTML(62),
   },
-  'ota-ready': {
-    label: 'OTA update', title: '2 · Ready to install',
-    desc: 'Shown once the image has fully downloaded into PSRAM and its SHA-256 verifies. Explains that the screen goes dark during install. The primary "Update now" button starts the PSRAM→flash copy — this is the user-driven gate before any flash is written. (A download-phase failure instead resumes runtime with the screen still live — no reboot.)',
-    hideStatusBar: true,
-    setup: () => otaReadyHTML(),
-  },
   'ota-installing': {
-    label: 'OTA update', title: '3 · Installing (screen dark)',
-    desc: 'After tapping "Update now": the firmware halts the LCD and copies the staged image from PSRAM to the inactive flash slot. The panel is physically DARK here (the RGB panel\'s PSRAM-framebuffer DMA cannot run while flash is written — shared MSPI bus). Lasts a few seconds; install→reboot is atomic, so it goes straight to the post-reboot "Updated" ack (no separate "Update complete / Restart" step).',
+    label: 'OTA update', title: '2 · Installing (visible → dark)',
+    desc: 'Automatic — no "Update now" confirmation gate exists in firmware (removed along with create_ready/AwaitingConfirm; ota.md). Once the image verifies, the device advances straight into two sub-phases shown here: first a VISIBLE "Installing firmware" frame with a real 3.5s countdown bar while the panel is still lit, then the panel goes physically DARK for the actual flash write (PSRAM-framebuffer DMA can\'t run while flash is written). Install→reboot is atomic, so it goes straight to the post-reboot "Updated" ack (no separate "Update complete / Restart" step).',
     hideStatusBar: true,
     setup: () => otaInstallingHTML(),
   },
   'ota-updated-ack': {
-    label: 'OTA update', title: '4 · Updated (boot ack)',
+    label: 'OTA update', title: '3 · Updated (boot ack)',
     desc: 'The FIRST screen shown after the post-update reboot: confirms the update succeeded and shows the new firmware version, with a "Close" button. The firmware persists an "update acknowledged" flag in NVS — so if the user restarts again without tapping Close, this screen reappears on every boot until acknowledged.',
     hideStatusBar: true,
     setup: () => otaUpdatedAckHTML(),
@@ -581,13 +645,13 @@ const SCREENS = {
   },
   'repair-phone': {
     label: 'Runtime', title: 'Re-pair iPhone',
-    desc: 'Reached by long-pressing the phone-disconnect icon when no iPhone is bonded (or after unpairing). Status bar hidden so the layout matches Step 4 exactly. Cancel returns to the main screen.',
+    desc: 'Reached by tapping the phone icon when no iPhone is bonded (or after unpairing). Status bar hidden so the layout matches Step 3 exactly. "Close" returns to the main screen — firmware labels this button "Close" here (vs. "Skip" on first-boot Step 3), since a non-null prev_screen is always set on a runtime re-pair.',
     hideStatusBar: true,
     setup: () => repairPhoneHTML(),
   },
   'unpair-phone': {
     label: 'Runtime', title: 'Unpair iPhone?',
-    desc: 'Shown when the user long-presses the phone-disconnect icon and an iPhone bond already exists. "Unpair" clears the bond and proceeds to the re-pair screen. "Cancel" returns to the previous screen.',
+    desc: 'Shown from the iPhone Info modal\'s Unpair button when a bond exists. "Unpair" wipes the bond and NVS entry and returns to whatever screen was already active — it does NOT auto-navigate to the re-pair screen. "Cancel" returns the same way.',
     hideStatusBar: true,
     setup: () => unpairPhoneHTML(),
   },
@@ -623,35 +687,28 @@ const SCREENS = {
   },
   'cached': {
     label: 'Edge case', title: 'Orion offline — using cached list',
-    desc: 'No BLE link to Orion. Cached meetings still render with a SYNCED pill. Note: the Media mode-toggle button is hidden from the status bar — Media mode is useless without Orion bridging commands to the OS. The profile-photo border also auto-falls to dark grey (presence-offline) because Ori can no longer verify the user\'s real Teams status.',
+    desc: 'No BLE link to Orion. Cached meetings still render with a "LAST SYNCED" pill. Note: the Media mode-toggle button is hidden from the status bar — Media mode is useless without Orion bridging commands to the OS. The profile-photo border also auto-falls to dark grey (no glow) since that\'s Ori\'s own live Device Status, and it can no longer verify a connection that isn\'t there.',
     statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true, pcConnected: false },
     leftRender: () => meetingListHTML(TODAY_MEETINGS, true),
   },
 
-  'presence-available': {
-    label: 'Teams presence', title: 'Available — green border',
-    desc: 'Default Teams "Available" state. Profile-photo border is green (--presence-available). Orion pushed PresenceStatus = 0x00 to Ori via the BLE Presence Status characteristic.',
+  'conn-ready': {
+    label: 'Connection status', title: 'Connected — green border',
+    desc: 'Device Status = RUNTIME_READY. Border+glow are derived entirely on-device from Ori\'s own BLE connection to Orion — nothing is pushed by Orion for this (there is no "presence" characteristic).',
     statusBar: { ancsApps: ['gmail', 'messenger', 'instagram'], phoneConnected: true },
-    presence: 'available',
+    presence: 'ready',
     leftRender: () => meetingListHTML(TODAY_MEETINGS),
   },
-  'presence-busy': {
-    label: 'Teams presence', title: 'Busy / DND — red border',
-    desc: 'Maps from Teams "Busy", "Do Not Disturb", "In a call", "In a meeting", or "Presenting" — Orion collapses all of these into PresenceStatus = 0x01 (Busy). Profile-photo border is red.',
+  'conn-syncing': {
+    label: 'Connection status', title: 'Reconnecting / syncing — amber border',
+    desc: 'Device Status = RUNTIME_RECONNECTING / RUNTIME_SYNCING (and the equivalent setup-time syncing states). Border+glow turn amber while the hash-manifest delta sync runs.',
     statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
-    presence: 'busy',
+    presence: 'syncing',
     leftRender: () => meetingListHTML(TODAY_MEETINGS),
   },
-  'presence-away': {
-    label: 'Teams presence', title: 'Be right back / Away — yellow border',
-    desc: 'Maps from Teams "Be Right Back" or "Appear Away" — PresenceStatus = 0x02 (Away). Profile-photo border is yellow.',
-    statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
-    presence: 'away',
-    leftRender: () => meetingListHTML(TODAY_MEETINGS),
-  },
-  'presence-offline': {
-    label: 'Teams presence', title: 'Appear offline — grey border',
-    desc: 'User chose Teams "Appear Offline" — PresenceStatus = 0x03 (Offline). Profile-photo border is dark grey. This is also the same border colour the device falls back to whenever Orion is BLE-disconnected (see the "Orion offline" edge case for that fallback path).',
+  'conn-offline': {
+    label: 'Connection status', title: 'Disconnected — grey border, no glow',
+    desc: 'No BLE connection to Orion. Border is dark grey with NO glow — a glow on the no-signal state would read as a render glitch rather than a deliberate status. Same fallback path the "Orion offline" edge case uses.',
     statusBar: { ancsApps: ['gmail', 'messenger'], phoneConnected: true },
     presence: 'offline',
     leftRender: () => meetingListHTML(TODAY_MEETINGS),
@@ -810,8 +867,10 @@ let _meetingData = [];
 
 function meetingListHTML(items, cached) {
   _meetingData = items;
-  let html = '<div class="meeting-list">';
-  if (cached) html += '<div class="synced-pill">SYNCED · 12 min ago</div>';
+  // Time column widens in 12-hour format ("2:30 PM" needs more room than
+  // "14:30") — TIME_COL_WIDTH_12 in screen_meeting_list.cpp.
+  let html = '<div class="meeting-list" style="--time-col-w:' + (USE_24H ? '108px' : '132px') + '">';
+  if (cached) html += '<div class="synced-pill">LAST SYNCED · 12m ago</div>';
   for (let i = 0; i < items.length; i++) {
     const m = items[i];
     // in-progress beats overlap — "you should be in this room right now"
@@ -835,6 +894,16 @@ function showMeetingDetail(idx) {
   const m = _meetingData[idx];
   if (!m) return;
   const modalLayer = document.getElementById('modal-layer');
+  // 5-minute-window exception (meeting-list.md): tapping a meeting that
+  // starts within the pre-meeting countdown window opens the SAME
+  // full-screen countdown modal the automatic alert uses, instead of the
+  // plain detail overlay — and marks it alerted so the automatic alert
+  // doesn't also pop up later in the same window.
+  if (m.imminent) {
+    modalLayer.innerHTML = '<div class="modal-scrim">' +
+      countdownHTML(m.title, m.org, m.loc) + '</div>';
+    return;
+  }
   modalLayer.innerHTML = '<div class="modal-scrim">' +
     meetingDetailHTML(m) + '</div>';
 }
@@ -857,33 +926,47 @@ function meetingDetailHTML(m) {
     '</div>';
 }
 
-function clockHTML() {
+// `notSet` mirrors clock_is_set() — before Orion (or the bonded phone's
+// Current Time Service) has supplied a clock, digital shows "--:--" and
+// "WAITING FOR ORION" instead of parsing a real time (screen_clock.cpp).
+function clockHTML(notSet) {
+  if (notSet) {
+    return '<div class="clock-face"><div class="clock-time" style="color:var(--text-3)">--:--</div>' +
+      '<div class="clock-date" style="color:var(--text-3)">WAITING FOR ORION</div></div>';
+  }
   const d = new Date();
   const h24 = d.getHours();
   const m = d.getMinutes().toString().padStart(2, '0');
   const dateStr = d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
-  // 24-hour: zero-padded hour, no AM/PM. 12-hour: 1–12 hour, AM/PM on the date
-  // strip (the device's XL digit-only clock font can't render letters).
+  // 24-hour: zero-padded hour, no AM/PM slot rendered. 12-hour: 1–12 hour,
+  // AM/PM in its own small subtext slot beside the digits (screen_clock.cpp)
+  // — never on the date strip, which never carries an AM/PM suffix in
+  // either mode (state-machine.md).
   const hour = USE_24H ? h24.toString().padStart(2, '0') : (h24 % 12 || 12);
-  const dateLine = USE_24H
-    ? dateStr.toUpperCase()
-    : dateStr.toUpperCase() + ' · ' + (h24 >= 12 ? 'PM' : 'AM');
-  return '<div class="clock-face"><div class="clock-time"><span>' + hour +
-    '</span><span class="colon">:</span><span>' + m + '</span></div>' +
+  const dateLine = dateStr.toUpperCase();
+  const ampm = USE_24H ? '' : (h24 >= 12 ? 'PM' : 'AM');
+  return '<div class="clock-face"><div class="clock-time">' +
+    '<span class="cf-spacer"></span>' +
+    '<span class="cf-center"><span>' + hour + '</span>' +
+    '<span class="colon-dots"><span></span><span></span></span>' +
+    '<span>' + m + '</span></span>' +
+    '<span class="cf-ampm">' + ampm + '</span>' +
+    '</div>' +
     '<div class="clock-date">' + dateLine + '</div></div>';
 }
 
 // Analog face — same data source as clockHTML(), alternate rendering. Orion
 // setting (mocked here as a sidebar-selectable screen) picks which of the two
 // the device shows; both share the Clock state's entry/exit + status-bar rules.
-function analogClockHTML() {
+function analogClockHTML(notSet) {
   const d = new Date();
-  const h = d.getHours();
-  const m = d.getMinutes();
-  const s = d.getSeconds();
+  const h = notSet ? 0 : d.getHours();
+  const m = notSet ? 0 : d.getMinutes();
+  const s = notSet ? 0 : d.getSeconds();
   const dateStr = d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
   // No AM/PM — the analog dial has no digital time readout to pair a suffix with.
-  const dateLine = dateStr.toUpperCase();
+  // Not-set: hands parked at 12, same "WAITING FOR ORION" label as the digital face.
+  const dateLine = notSet ? 'WAITING FOR ORION' : dateStr.toUpperCase();
 
   const cx = 140, cy = 140;
   let ticks = '';
@@ -939,6 +1022,39 @@ function demoHolidayName(d, isToday) {
   return null;
 }
 
+// Real-month calendar glyph for the "No meetings" empty state
+// (screen_no_meetings.cpp's make_cal_glyph) — today's cell highlighted gold,
+// or red when today is a holiday (ONLY that one cell recolors, never the
+// whole glyph). Clickable — same entry point into Calendar month view the
+// long-press gesture reaches. `clockNotSet` renders the generic 35-day
+// (5x7) fallback grid with no today marker or month title, used on a cold
+// boot before Ori has a valid clock (no battery-backed RTC).
+function noMeetingsGlyphHTML(holidayToday, clockNotSet) {
+  if (clockNotSet) {
+    let cells = '';
+    for (let i = 0; i < 35; i++) cells += '<div class="nm-cal-cell"></div>';
+    return '<div class="nm-cal-glyph" onclick="setScreen(\'calendar\')" title="Open Calendar">' +
+      '<div class="nm-cal-grid">' + cells + '</div></div>';
+  }
+  const today = new Date();
+  const year = today.getFullYear(), month = today.getMonth();
+  const monthLabel = today.toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+  const firstDow = (new Date(year, month, 1).getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const totalCells = Math.ceil((firstDow + daysInMonth) / 7) * 7;
+  let cells = '';
+  for (let i = 0; i < totalCells; i++) {
+    const dayNum = i - firstDow + 1;
+    const inMonth = dayNum >= 1 && dayNum <= daysInMonth;
+    const isToday = inMonth && dayNum === today.getDate();
+    const cls = isToday ? (holidayToday ? ' nm-cal-today-holiday' : ' nm-cal-today') : '';
+    cells += '<div class="nm-cal-cell' + cls + '">' + (inMonth ? dayNum : '') + '</div>';
+  }
+  return '<div class="nm-cal-glyph" onclick="setScreen(\'calendar\')" title="Open Calendar">' +
+    '<div class="nm-cal-title">' + escapeHtml(monthLabel) + '</div>' +
+    '<div class="nm-cal-grid">' + cells + '</div></div>';
+}
+
 function calendarHTML() {
   const today = new Date();
   const view = _calViewDate || new Date(today.getFullYear(), today.getMonth(), 1);
@@ -983,8 +1099,10 @@ function calendarHTML() {
     c.todayFaint = !todayInMonth;
   }
   cells.forEach(c => {
-    if (c.outside && !c.todayFaint) return; // holidays only apply within the viewed month's own days
-    c.holidayName = demoHolidayName(c.day, !!(c.today || c.todayFaint));
+    // Holiday info is NEVER resolved for outside/spillover cells, including
+    // a spillover-today cell — matches screen_calendar.cpp exactly.
+    if (c.outside) return;
+    c.holidayName = demoHolidayName(c.day, !!c.today);
   });
 
   // Faint-gold band behind today's whole week — emitted BEFORE the day cells
@@ -998,8 +1116,10 @@ function calendarHTML() {
     '<div class="cal-header">' +
     '<div class="cal-month">' + monthLabel + '</div>' +
     '<div class="cal-nav">' +
+    '<div class="cal-nav-btn" id="cal-prev-year" title="Previous year"><svg viewBox="0 0 24 24"><use href="#i-chev-dbl-left"/></svg></div>' +
     '<div class="cal-nav-btn" id="cal-prev" title="Previous month"><svg viewBox="0 0 24 24"><use href="#i-chev-left"/></svg></div>' +
     '<div class="cal-nav-btn" id="cal-next" title="Next month"><svg viewBox="0 0 24 24"><use href="#i-chev-right"/></svg></div>' +
+    '<div class="cal-nav-btn" id="cal-next-year" title="Next year"><svg viewBox="0 0 24 24"><use href="#i-chev-dbl-right"/></svg></div>' +
     '</div></div>' +
     '<div class="cal-weekdays">' +
     weekdays.map(w => '<div class="cal-weekday">' + w + '</div>').join('') +
@@ -1008,9 +1128,18 @@ function calendarHTML() {
     weekHighlight +
     cells.map((c, i) => {
       const row = Math.floor(i / 7), col = i % 7;
+      let onclick = '';
+      if (c.holidayName) {
+        // Outside cells never carry a holidayName (see the exclusion above),
+        // so `c.day` here is always a real day of the viewed month.
+        const dateLabel = new Date(year, month, c.day).toLocaleDateString(undefined,
+          { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+        onclick = ' onclick="showHolidayDetail(\'' + escapeHtml(c.holidayName).replace(/'/g, "\\'") +
+          '\',\'' + escapeHtml(dateLabel).replace(/'/g, "\\'") + '\')"';
+      }
       return '<div class="cal-day' + (c.outside ? ' outside' : '') + (c.today ? ' today' : '') +
         (c.todayFaint ? ' today-faint' : '') + (c.holidayName ? ' holiday' : '') + '"' +
-        (c.holidayName ? ' title="' + escapeHtml(c.holidayName) + '"' : '') +
+        (c.holidayName ? ' title="' + escapeHtml(c.holidayName) + '"' + onclick : '') +
         ' style="grid-column:' + (col + 1) + ';grid-row:' + (row + 1) + ';">' +
         '<div class="cal-day-num">' + c.day + '</div></div>';
     }).join('') +
@@ -1033,6 +1162,33 @@ function bindCalendarNav() {
     _calViewDate = new Date(base.getFullYear(), base.getMonth() + 1, 1);
     renderCalendar();
   };
+  document.getElementById('cal-prev-year').onclick = () => {
+    _calViewDate = new Date(base.getFullYear() - 1, base.getMonth(), 1);
+    renderCalendar();
+  };
+  document.getElementById('cal-next-year').onclick = () => {
+    _calViewDate = new Date(base.getFullYear() + 1, base.getMonth(), 1);
+    renderCalendar();
+  };
+}
+
+// Holiday tap-to-detail overlay (gestures.md: "Tap a holiday day cell in
+// Calendar (month view)... Close button only) — non-holiday cells stay inert.
+function showHolidayDetail(name, dateLabel) {
+  document.getElementById('modal-layer').innerHTML = '<div class="modal-scrim">' +
+    holidayDetailHTML(name, dateLabel) + '</div>';
+}
+function closeHolidayDetail() {
+  const ml = document.getElementById('modal-layer');
+  if (ml) ml.innerHTML = '';
+}
+function holidayDetailHTML(name, dateLabel) {
+  return '<div class="meeting-detail">' +
+    '<div class="md-title" style="color:var(--holiday)">' + escapeHtml(name) + '</div>' +
+    '<div class="md-loc">' + escapeHtml(dateLabel) + '</div>' +
+    '<div class="md-org">A day of national or regional observance.</div>' +
+    '<div class="profile-close-row"><button class="btn btn-tertiary" onclick="closeHolidayDetail()">Close</button></div>' +
+    '</div>';
 }
 
 let _timeOffDestination = '';
@@ -1077,22 +1233,29 @@ function timeOffDetailHTML(destination, dates) {
     '</div>';
 }
 
-function countdownHTML(meetingName, when) {
+// Ring conveys time-until-start; firmware never renders an absolute start
+// time here — below the ring it's title, organizer, location, in that
+// order and color tier (modal_countdown.cpp).
+function countdownHTML(meetingName, organizer, loc) {
   const R = 100, C = 2 * Math.PI * R, remain = C * 0.62;
   return '<div class="countdown"><div class="ring"><svg viewBox="0 0 230 230">' +
     '<circle class="track" cx="115" cy="115" r="' + R + '" fill="none" stroke-width="8"/>' +
     '<circle class="progress" cx="115" cy="115" r="' + R + '" fill="none" stroke-width="8" stroke-dasharray="' + C.toFixed(1) + '" stroke-dashoffset="' + (C - remain).toFixed(1) + '"/>' +
     '</svg><div class="label"><div class="big">3:07</div><div class="small">until start</div></div></div>' +
     '<div class="meeting-name">' + escapeHtml(meetingName) + '</div>' +
-    '<div class="meeting-when">' + escapeHtml(when) + '</div>' +
+    '<div class="meeting-when">' + escapeHtml(organizer) + '</div>' +
+    '<div class="meeting-when" style="color:var(--text-3);margin-top:2px">' + escapeHtml(loc) + '</div>' +
     '<div class="profile-close-row"><button class="btn btn-tertiary" onclick="closeModal()">Close</button></div></div>';
 }
 
 function factoryResetHTML() {
-  return '<div class="alert-card reset"><div class="icon-circle"><svg width="36" height="36"><use href="#i-warn"/></svg></div>' +
+  // Plain "!" glyph, not a warning-triangle icon (ui_helpers.cpp's
+  // make_alert_glyph_circle); Cancel before the destructive Reset button
+  // (make_confirm_modal adds Cancel first, left→right).
+  return '<div class="alert-card reset"><div class="icon-circle">!</div>' +
     '<h3>Factory reset Ori?</h3><p>All data and paired devices will be removed</p>' +
-    '<div class="actions"><button class="btn btn-danger" onclick="closeModal()">Reset</button>' +
-    '<button class="btn btn-tertiary" onclick="closeModal()">Cancel</button></div></div>';
+    '<div class="actions"><button class="btn btn-tertiary" onclick="closeModal()">Cancel</button>' +
+    '<button class="btn btn-danger" onclick="closeModal()">Reset</button></div></div>';
 }
 
 // Weather Alert (Orion's end-of-day rain/snow/thunderstorm reminder,
@@ -1129,7 +1292,7 @@ function weatherAlertHTML(condition, endTime) {
 // number belongs in the sentence, matching Orion's own
 // "{name} is at {level}% battery." copy, not crammed into the icon.
 function lowBatteryAlertHTML(name, pct) {
-  const fillColor = pct <= BATT_LOW_THRESHOLD ? 'var(--danger)' : 'var(--presence-available)';
+  const fillColor = pct <= BATT_LOW_THRESHOLD ? 'var(--danger)' : 'var(--conn-ready)';
   const fillW = (14 * pct / 100).toFixed(1);
   const icon = '<svg width="44" height="26" viewBox="0 0 24 14" fill="none">' +
     '<rect x="1" y="2" width="18" height="10" rx="2.5" stroke="currentColor" stroke-width="1.5"/>' +
@@ -1178,14 +1341,26 @@ function setupShell(stepIndex, body, extraStyle) {
   return '<div class="setup"' + styleAttr + '>' + body + '<div class="steps">' + dots + '</div></div>';
 }
 
-function brandMarkHTML(size, mtop) {
+// `scale` (default 1) — used by the boot splash, which shows the wordmark
+// 3x larger than every setup screen (CLAUDE.md's M5 changelog: "boot splash
+// screen shown immediately on boot... while PSRAM/BLE init runs").
+function brandMarkHTML(size, mtop, scale) {
   if (mtop === undefined) mtop = 8;
-  return '<div class="brand-mark" style="margin-top:' + mtop + 'px">' +
+  const scaleStyle = scale ? ';transform:scale(' + scale + ')' : '';
+  return '<div class="brand-mark" style="margin-top:' + mtop + 'px' + scaleStyle + '">' +
     '<div class="bm-namerow">' +
     '<div class="bm-line"></div>' +
     '<div class="word">o<span class="dot">r</span>i</div>' +
     '<div class="bm-line bm-line-r"></div>' +
     '</div>' +
+    '</div>';
+}
+
+// Boot splash — shown immediately on power-on/reboot while PSRAM and BLE
+// initialize; no status bar, no spinner, just the wordmark (screen_boot_splash.cpp).
+function bootSplashHTML() {
+  return '<div class="setup" style="justify-content:center;align-items:center">' +
+    brandMarkHTML(0, 0, 3) +
     '</div>';
 }
 
@@ -1206,7 +1381,7 @@ function setupInstallHTML() {
     brandMarkHTML(132, -2) +
     '<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%">' +
     '<p style="font-size:42px;color:var(--text-1);">Download Orion at <span style="color:var(--accent)">orinari.net/orion</span></p>' +
-    '<p style="margin-top:10px;font-size:26px;color:var(--text-2);">Available on Windows and macOS</p>' +
+    '<p style="margin-top:10px;font-size:26px;color:var(--text-2);">Available on Windows and MacOS</p>' +
     '</div>' +
     '<button class="btn btn-primary" onclick="setScreen(\'setup-link-orion\')">Next</button>',
     'padding-bottom:80px'
@@ -1243,7 +1418,9 @@ function setupDoneHTML() {
   _setupDoneTimer = setTimeout(() => {
     if (currentScreenId === 'setup-done') setScreen('meeting-list');
   }, 5000);
-  return '<div class="setup" style="cursor:pointer" onclick="skipSetupDone()">' +
+  // No tap-to-skip — firmware clears LV_OBJ_FLAG_CLICKABLE on this screen;
+  // the only exit is the 5s timer above (screen_setup.cpp's complete_timer_cb).
+  return '<div class="setup">' +
     brandMarkHTML(132, -2) +
     '<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;width:100%">' +
     '<p style="font-size:42px;color:var(--text-1);">Welcome, ' + firstName + '</p>' +
@@ -1258,36 +1435,43 @@ function setupDoneHTML() {
     '</div>';
 }
 
-function skipSetupDone() {
-  clearTimeout(_setupDoneTimer);
-  setScreen('meeting-list');
-}
-
 // Reconnect-Syncing overlay — replaces the left panel while Ori runs the
 // hash-manifest delta sync after reconnecting to Orion. Status bar and
 // profile card stay visible. Non-dismissable; auto-clears when sync ends.
-function reconnectSyncingHTML() {
+// Ring is determinate (byte-driven progress, ble-protocol.md §6.0) — same
+// pattern as the Step 2/3 Orioning ring, not an indeterminate spinner.
+function reconnectSyncingHTML(pct) {
+  pct = pct || 0;
+  const R = 74, C = 2 * Math.PI * R, off = C * (1 - pct / 100);
   return '<div class="reconnect-overlay">' +
-    '<div class="reconnect-ring"></div>' +
+    '<div class="reconnect-ring">' +
+    '<svg viewBox="0 0 160 160">' +
+    '<circle class="track" cx="80" cy="80" r="' + R + '" fill="none" stroke-width="6"/>' +
+    '<circle class="progress" cx="80" cy="80" r="' + R + '" fill="none" stroke-width="6" stroke-dasharray="' + C.toFixed(1) + '" stroke-dashoffset="' + off.toFixed(1) + '"/>' +
+    '</svg>' +
+    '<div class="pct-label">' + Math.min(pct, 99) + '%</div>' +
+    '</div>' +
     '<p style="margin-top:22px;font-size:24px;color:var(--text-3)">Refreshing your day…</p>' +
     '</div>';
 }
 
 // ── OTA firmware update flow (PSRAM-staging model) ─────────────────────────
 //
-// Sequence on the device:
-//   1. ota-downloading  — image streams into PSRAM; progress bar is LIVE (no
+// Sequence on the device — fully automatic, no user confirmation gate
+// anywhere in this flow (ota.md):
+//   1. ota-updating     — image streams into PSRAM; progress bar is LIVE (no
 //                         flash written yet, so the screen keeps refreshing).
-//   2. ota-ready        — download done + verified; instruction that the screen
-//                         goes dark during install, with a primary "Update now".
-//   3. ota-installing   — user tapped Update; PSRAM→flash copy runs. The panel
-//                         is physically DARK here (LCD halted; PSRAM-DMA can't
-//                         run while flash is written). Shown black in the proto.
-//   4. ota-complete     — flash written; checkmark + primary "Restart".
-//   5. ota-updated-ack  — FIRST screen after the reboot: confirms the update and
-//                         shows the new version, with a "Close" button. Firmware
-//                         persists a flag in NVS so this screen reappears on
-//                         every boot until the user taps Close (acknowledges).
+//   2. ota-installing   — once verified, PSRAM→flash copy runs automatically.
+//                         First a VISIBLE "Installing firmware" frame with a
+//                         real countdown bar (COMMIT_LINGER_MS), then the
+//                         panel goes physically DARK (LCD halted; PSRAM-DMA
+//                         can't run while flash is written) for the actual
+//                         write. Install→reboot is atomic — no separate
+//                         "Update complete / Restart" step.
+//   3. ota-updated-ack  — FIRST screen after the reboot: confirms the update
+//                         and shows the new version, with a "Close" button.
+//                         Firmware persists a flag in NVS so this screen
+//                         reappears on every boot until the user taps Close.
 
 // Reusable success check (same artwork as the Setup-complete screen).
 function okCheckHTML(size) {
@@ -1318,37 +1502,45 @@ function otaDownloadingHTML(pct) {
   );
 }
 
-// 2. Firmware Install — mirrors the downloading layout (title / centre glyph /
-//    short instruction), plus a primary "Update now" at the Start-button spot.
-function otaReadyHTML() {
-  return setupShell('hide',
-    '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;width:100%">' +
-    '<h2>Firmware Install</h2>' +
-    '<div class="ota-install-glyph" style="margin-top:30px">' +
-    '<svg width="68" height="68" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' +
-    '<path d="M12 3 V14 M7 10 l5 4 5-4"/><path d="M4 17 v2 a1 1 0 0 0 1 1 h14 a1 1 0 0 0 1-1 v-2"/>' +
-    '</svg>' +
-    '</div>' +
-    '<p style="margin-top:24px;color:var(--text-2)">Screen will go dark for a few seconds</p>' +
-    '</div>' +
-    '<button class="btn btn-primary" onclick="setScreen(\'ota-installing\')">Update now</button>',
-    'padding-bottom:80px'
-  );
-}
-
-// 3. Installing — the panel is physically dark on the device while flash is
-//    written. Shown black here; auto-advances to the post-reboot ack.
+// 2. Installing — automatic, no user confirmation gate (ota.md: the
+//    "Firmware Install / Update now" confirm-gate was deliberately removed).
+//    Two sub-phases on real hardware, both modeled here:
+//      a. VISIBLE "Installing firmware" frame — title retitled, ring hidden,
+//         instruction text, and a 6px accent countdown bar filling over
+//         COMMIT_LINGER_MS (3.5s) while the panel is still lit
+//         (screen_ota_updating.cpp's set_installing()).
+//      b. The panel then goes physically DARK for the actual flash write
+//         (PSRAM-framebuffer DMA can't run while flash is written), then
+//         install→reboot is atomic, straight to the post-reboot ack.
+const OTA_COMMIT_LINGER_MS = 3500;
+const OTA_DARK_MS = 900;
 let _otaInstallTimer = null;
+let _otaInstallTimer2 = null;
 function otaInstallingHTML() {
   clearTimeout(_otaInstallTimer);
+  clearTimeout(_otaInstallTimer2);
   _otaInstallTimer = setTimeout(() => {
-    // Install → reboot is atomic on the device (no "Update complete / Restart"
-    // step); the post-reboot ack confirms completion.
-    if (currentScreenId === 'ota-installing') setScreen('ota-updated-ack');
-  }, 2400);
-  return '<div class="setup" style="background:#000;justify-content:center;align-items:center">' +
-    '<p style="color:#1c1c1c;font-size:20px;letter-spacing:0.5px">screen is dark while installing</p>' +
+    if (currentScreenId === 'ota-installing') renderOtaInstallingDark();
+  }, OTA_COMMIT_LINGER_MS);
+  return '<div class="setup">' +
+    '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;width:100%">' +
+    '<h2>Installing firmware</h2>' +
+    '<p style="margin-top:24px;color:var(--text-2);max-width:520px;text-align:center">Screen goes dark for a few seconds — keep Ori plugged in. It restarts when done.</p>' +
+    '</div>' +
+    '<div class="ota-install-countdown-bar"></div>' +
     '</div>';
+}
+
+// Sub-phase b — the actual hardware blackout for the flash write, then the
+// atomic reboot straight into the post-reboot ack (no separate "Update
+// complete / Restart" step).
+function renderOtaInstallingDark() {
+  if (currentScreenId !== 'ota-installing') return;
+  const layer = document.getElementById('setup-layer');
+  if (layer) layer.innerHTML = '<div class="setup" style="background:#000"></div>';
+  _otaInstallTimer2 = setTimeout(() => {
+    if (currentScreenId === 'ota-installing') setScreen('ota-updated-ack');
+  }, OTA_DARK_MS);
 }
 
 // 4. Post-reboot acknowledgement — persisted until Close (NVS flag in firmware).
@@ -1375,9 +1567,7 @@ function otaErrorHTML(msg) {
   return setupShell('hide',
     '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;width:100%">' +
     '<h2>Update failed</h2>' +
-    '<div class="ota-error-glyph" style="margin-top:30px">' +
-    '<svg width="62" height="62" viewBox="0 0 24 24"><use href="#i-warn"/></svg>' +
-    '</div>' +
+    '<div class="ota-error-glyph" style="margin-top:30px">!</div>' +
     '<p style="margin-top:24px;color:var(--text-2)">' + escapeHtml(msg) + '</p>' +
     '</div>' +
     '<button class="btn btn-tertiary" onclick="setScreen(\'meeting-list\')">Close</button>',
@@ -1394,27 +1584,31 @@ function repairPhoneHTML() {
     '<div class="ble-name" style="margin-top:20px">' + escapeHtml(BLE_NAME) + '</div>' +
     '<div class="pairing-anim" style="margin-top:24px"></div>' +
     '</div>' +
-    '<button class="btn btn-tertiary" style="margin-top:20px" onclick="setScreen(\'meeting-list\')">Cancel</button>' +
+    '<button class="btn btn-tertiary" style="margin-top:20px" onclick="setScreen(\'meeting-list\')">Close</button>' +
     '</div>';
 }
 
 // Unpair-iPhone confirmation — shown when user long-presses the phone-disconnect
-// icon and an iPhone bond already exists. "Unpair" clears the bond and proceeds
-// to re-pair; "Cancel" returns to wherever the long-press was triggered from.
+// icon and an iPhone bond already exists. Firmware just wipes the iPhone bond
+// and NVS entry, then returns to whatever screen was already active — it does
+// NOT auto-navigate to re-pair (modal_unpair_phone.cpp); re-pairing later
+// needs a fresh tap on the phone icon, same as "Cancel".
 function unpairPhoneHTML() {
   return '<div class="setup" style="justify-content:center">' +
     '<div class="alert-card">' +
-    '<div class="icon-circle">' +
-    '<svg width="36" height="36" viewBox="0 0 24 24"><use href="#i-warn"/></svg>' +
-    '</div>' +
+    '<div class="icon-circle">!</div>' +
     '<h3>Unpair ' + phoneKindWord() + '?</h3>' +
     '<p>Notification will stop showing until you re-pair</p>' +
     '<div class="actions">' +
-    '<button class="btn btn-danger" onclick="setScreen(\'repair-phone\')">Unpair</button>' +
     '<button class="btn btn-tertiary" onclick="setScreen(window._unpairPrev||\'phone-disconnected\')">Cancel</button>' +
+    '<button class="btn btn-danger" onclick="confirmUnpairPhone()">Unpair</button>' +
     '</div>' +
     '</div>' +
     '</div>';
+}
+
+function confirmUnpairPhone() {
+  setScreen(window._unpairPrev || 'phone-disconnected');
 }
 
 // iPhone info / stats overlay — opened by tapping the (paired) status-bar phone
@@ -1450,7 +1644,7 @@ function sigBarsHTML(level) {
 const BATT_LOW_THRESHOLD = 20;
 function battIconHTML(level) {
   const pct = Math.max(0, Math.min(100, level));
-  const fillColor = pct <= BATT_LOW_THRESHOLD ? 'var(--danger)' : 'var(--presence-available)';
+  const fillColor = pct <= BATT_LOW_THRESHOLD ? 'var(--danger)' : 'var(--conn-ready)';
   // viewBox is tightly cropped to the glyph's own bounding box (not a
   // generic 24x24 icon grid) so the CSS display size (.ip-batt svg, matched
   // to the 33px-tall RSSI bars) actually fills — the shape itself IS the box,
@@ -1496,7 +1690,10 @@ function iphoneInfoHTML() {
   };
   return '<div class="ip-card" onclick="event.stopPropagation()">' +
     '<h3>' + escapeHtml(i.name) + '</h3>' +
-    (i.connected && i.deviceType ? '<div class="ip-type">' + escapeHtml(i.deviceType) + '</div>' : '') +
+    // Device-type/model subtitle survives a runtime disconnect — it's a
+    // cached identity fact ("this bond IS this device"), not a live-link
+    // stat, so it stays shown regardless of i.connected (connectivity.md).
+    (i.deviceType ? '<div class="ip-type">' + escapeHtml(i.deviceType) + '</div>' : '') +
     '<div class="ip-status">' +
     '<div class="ip-status-left"><span class="dot ' + (i.connected ? 'on' : 'off') + '"></span>' +
     (i.connected ? 'Connected' : 'Disconnected') + '</div>' +
@@ -1670,7 +1867,9 @@ function ancsRowClick(e) {
 function ancsSwipeStart(e) {
   if (e.button !== undefined && e.button !== 0) return; // primary mouse button / touch / pen only
   const row = e.currentTarget;
-  if (!row.dataset.hasDel) return; // nothing to swipe to
+  // Firmware always allows the swipe — a notification with no negative
+  // action just gets a local-only removal (no ANCS write), the same
+  // dismiss-vs-drop choice an on-device swipe makes (ble-protocol.md §13).
   const rect = row.getBoundingClientRect();
   ancsSwipeState = { row, startX: e.clientX, dx: 0, width: rect.width, dragging: false, pointerId: e.pointerId };
   row.addEventListener('pointermove', ancsSwipeMove);
@@ -1864,7 +2063,12 @@ const KBD_SHORTCUTS = [
   { icon: 'i-star-3' },  // Favorite 3
 ];
 
-function mediaModeHTML() {
+// `loadingPct`: demo-only — shows the album-art streaming veil at a fixed
+// progress (screen_media_mode.cpp's show_art_loading()/update_art_loading_
+// progress()). `volumeToast`: demo-only — shows the volume HUD as a
+// momentary toast for an externally-driven (non-swipe) volume change
+// (update_volume_from_host()); auto-fades via setScreen()'s wiring.
+function mediaModeHTML(loadingPct, volumeToast) {
   const v = kbdVolume;
   const m = MOCK_MEDIA;
   const hasMedia = !!(m.title && m.title.trim());
@@ -1873,6 +2077,10 @@ function mediaModeHTML() {
   // is no permanently-visible state, whether playing or paused. Only touch
   // (or a play/pause button tap) reveals them.
   if (!hasMedia) artClasses.push('empty');
+  if (volumeToast) artClasses.push('hud-toast');
+  const veilHtml = (typeof loadingPct === 'number')
+    ? '<div class="kbd-art-loading-veil" style="clip-path:inset(0 0 ' + loadingPct + '% 0)"></div>'
+    : '';
   const shortcuts = KBD_SHORTCUTS.map(s =>
     '<button class="s-btn">' +
     '<svg viewBox="0 0 24 24"><use href="#' + s.icon + '"/></svg>' +
@@ -1888,6 +2096,7 @@ function mediaModeHTML() {
     //   vert swipe   → volume (with momentary HUD)
     '<div class="' + artClasses.join(' ') + '" id="kbd-art-wrap">' +
     '<div class="kbd-art"></div>' +
+    veilHtml +
     // Double-tap seek-flash — dims the tapped half + "±Ns" label, shown
     // transiently by showSeekFlash().
     '<div class="kbd-seek-flash" id="kbd-seek-flash"><span id="kbd-seek-flash-label"></span></div>' +
@@ -2100,7 +2309,7 @@ function onMediaPress(el) {
 // now, mirroring screen_media_mode.cpp.
 //
 // During a vertical drag the HUD overlay fades in and the volume tracks the
-// swipe distance: ~200 px of vertical travel = full 0..100 range. On release
+// swipe distance: ~400 px of vertical travel = full 0..100 range. On release
 // the HUD lingers ~800 ms so the user can read the final value, then fades.
 // Real device emits KeyboardCommand{op:"vol_set", arg: <0..100>} on release.
 function bindAlbumArtGestures() {
@@ -2109,7 +2318,7 @@ function bindAlbumArtGestures() {
   const TAP_MAX = 20;
   const H_SWIPE_MIN = 50;
   const V_SWIPE_ENGAGE = 25;
-  const V_SENSITIVITY = 100 / 200;
+  const V_SENSITIVITY = 100 / 400;
   let startX = 0, startY = 0, startVolume = 0;
   let tracking = false, verticalEngaged = false;
   let hudFadeTimer = null;
@@ -2308,9 +2517,24 @@ function bindSeekBar() {
   window.addEventListener('touchend', onUp, { passive: true });
 }
 
+// Demo-only stacked-count mock — same app+title collapsed into one tile
+// gets a count badge (make_ancs_tile in widget_status_bar.cpp). Independent
+// of ANCS_LIST_MOCK's own counts — just enough to preview the badge here.
+const ANCS_TILE_COUNTS = { messenger: 3 };
+
 function ancsIconHTML(app) {
+  const n = ANCS_NOTIFICATIONS[app];
+  const count = ANCS_TILE_COUNTS[app] || 0;
+  // Both badges overlap the tile's opposite corners, so they're mutually
+  // exclusive — count wins when a stacked tile's reference also happens to
+  // be silent.
+  const countBadge = count > 1 ? '<div class="ancs-tile-count">' + (count > 9 ? '9+' : count) + '</div>' : '';
+  const silentBadge = (!countBadge && n && n.silent)
+    ? '<div class="ancs-tile-silent" title="Delivered silently"><svg viewBox="0 0 24 24"><use href="#i-bell-off"/></svg></div>' : '';
   return '<div class="ancs-icon-wrap" data-app="' + app + '" onclick="showAncsDetail(\'' + app + '\')">' +
-    '<svg class="ancs-icon" viewBox="0 0 24 24"><use href="#i-' + app + '"/></svg></div>';
+    '<svg class="ancs-icon" viewBox="0 0 24 24"><use href="#i-' + app + '"/></svg>' +
+    countBadge + silentBadge +
+    '</div>';
 }
 
 function ancsDetailHTML(app) {
@@ -2336,6 +2560,15 @@ function ancsDetailHTML(app) {
   //   timestamp â† md-org  (18px tertiary)    — how long ago
   //   app name  â† md-time (22px weight 500)  — definitive source identifier
   //   buttons   â† replaces "Tap to dismiss" hint
+  // Button set/labels are derived from the notification's own fields — same
+  // rule the ANCS drill-down list follows (ancsListActionsHTML): positive
+  // action (if any) as the accent button, negative action (if any) as the
+  // danger button, and a plain Close only when neither is offered. Never a
+  // hardcoded "Read" label.
+  let actions = '';
+  if (n.posLabel) actions += '<button class="btn btn-primary" onclick="ancsPositive(\'' + app + '\')">' + escapeHtml(n.posLabel) + '</button>';
+  if (n.hasNegAction) actions += '<button class="btn btn-danger" onclick="ancsNegative(\'' + app + '\')">' + escapeHtml(n.negLabel || 'Dismiss') + '</button>';
+  if (!n.posLabel && !n.hasNegAction) actions += '<button class="btn btn-tertiary" onclick="closeAncsDetail()">Close</button>';
   return '<div class="' + detailClass + '" onclick="event.stopPropagation()">' +
     silentBadge +
     '<div class="ad-app-icon"><svg viewBox="0 0 24 24"><use href="#i-' + app + '"/></svg></div>' +
@@ -2343,10 +2576,28 @@ function ancsDetailHTML(app) {
     '<div class="ad-body">' + escapeHtml(n.body) + '</div>' +
     '<div class="ad-time">' + escapeHtml(n.time) + '</div>' +
     '<div class="ad-app-name">' + escapeHtml(n.displayName) + '</div>' +
-    '<div class="ad-actions">' +
-    '<button class="btn btn-primary" onclick="readAncsNotification(\'' + app + '\')">Read</button>' +
-    '<button class="btn btn-tertiary" onclick="closeAncsDetail()">Close</button>' +
-    '</div></div>';
+    '<div class="ad-actions">' + actions + '</div></div>';
+}
+
+// Incoming/active call — modal_incoming_call.cpp. A ringing call gets
+// Answer/Decline (ANCS PositiveAction/NegativeAction on the call
+// notification); once answered, the SAME overlay identity becomes an
+// in-call view with a live duration and "End call" instead — ANCS drops the
+// PositiveActionLabel the instant a call is picked up, which is how the
+// device itself tells ringing from on-call.
+function callDetailHTML(state) {
+  const name = 'Mom', app = 'Phone';
+  const actions = state === 'ringing'
+    ? '<button class="btn btn-primary" onclick="closeModal()">Answer</button>' +
+      '<button class="btn btn-danger" onclick="closeModal()">Decline</button>'
+    : '<button class="btn btn-danger" onclick="closeModal()">End call</button>' +
+      '<button class="btn btn-tertiary" onclick="closeModal()">Dismiss</button>';
+  return '<div class="ancs-detail" onclick="event.stopPropagation()">' +
+    '<div class="ad-app-icon"><svg viewBox="0 0 24 24"><use href="#i-call"/></svg></div>' +
+    '<div class="ad-title">' + escapeHtml(name) + '</div>' +
+    '<div class="ad-time">' + (state === 'ringing' ? 'Incoming call' : '02:14') + '</div>' +
+    '<div class="ad-app-name">' + escapeHtml(app) + '</div>' +
+    '<div class="ad-actions">' + actions + '</div></div>';
 }
 
 function showAncsDetail(app) {
@@ -2361,11 +2612,11 @@ function closeAncsDetail() {
 }
 
 function profileDetailHTML(photoColPadTop) {
-  // Mirror the live presence class from the right-panel photo so the border
-  // colour in the overlay always matches the current Teams status.
+  // Mirror the live connection-status class from the right-panel photo so
+  // the border colour in the overlay always matches Ori's current Device Status.
   const livePhoto = document.getElementById('profile-photo');
-  const presenceClass = ['presence-available', 'presence-busy', 'presence-away', 'presence-offline']
-    .find(cls => livePhoto && livePhoto.classList.contains(cls)) || 'presence-offline';
+  const presenceClass = ['conn-ready', 'conn-syncing', 'conn-offline']
+    .find(cls => livePhoto && livePhoto.classList.contains(cls)) || 'conn-offline';
 
   // When a measured value is supplied (from showProfileDetail), apply it as an
   // inline style so the photo lands at exactly the same Y as in calendar mode.
@@ -2415,14 +2666,16 @@ function closeProfileDetail() {
   if (ml) ml.innerHTML = '';
 }
 
-function readAncsNotification(app) {
-  // Remove this app's icon from the status bar ANCS row (simulates iOS
-  // marking the notification as read via the ANCS PositiveAction, which
-  // would send an ANCS Removed event back to the device in firmware).
+// Removes this app's icon from the status bar ANCS row (simulates the
+// resulting ANCS Removed event) — same effect regardless of which action
+// fired it, mirroring queue_remove() being the single choke-point that
+// relays a removal back to Orion in firmware (ble-protocol.md §13).
+function ancsPositive(app) {
   const icon = document.querySelector('.ancs-icon-wrap[data-app="' + app + '"]');
   if (icon) icon.remove();
   closeAncsDetail();
 }
+function ancsNegative(app) { ancsPositive(app); }
 
 function updateStatusDateTime() {
   const el = document.getElementById('status-datetime');
@@ -2450,17 +2703,23 @@ function renderStatusBar(cfg) {
   bindTapAndLongPress(dt, () => setScreen('clock'), () => setScreen('calendar'));
 
   const pcConnected = cfg.pcConnected !== false;
+  // Hidden until Orion has fully SYNCED, not merely connected — a bonded
+  // reconnect keeps it hidden through the whole Reconnect-Syncing window too
+  // (media-mode.md / screen-layout.md). Screens don't need to opt in
+  // individually; only the reconnect-syncing overlay sets this false.
+  const pcSynced = cfg.pcSynced !== false;
   const screenMode = (SCREENS[currentScreenId] && SCREENS[currentScreenId].mode) || 'calendar';
   const isMediaMode = screenMode === 'media';
   const isClockMode = screenMode === 'clock';
 
   // Mode-toggle visibility:
-  //   • Hidden when PC offline (Media mode is useless without Orion) — EXCEPT in
-  //     Clock mode where the toggle acts as a "return" button and must stay visible.
+  //   • Hidden when PC offline OR not yet synced (Media mode is useless
+  //     without a fully-synced Orion) — EXCEPT in Clock mode where the
+  //     toggle acts as a "return" button and must stay visible.
   //   • In Clock mode: calendar icon, neutral bg — "return to previous mode".
   //   • In Calendar mode: headphones icon — "tap to enter Media".
   //   • In Media mode: calendar icon, accent-tinted — "tap to return to Calendar".
-  if (!pcConnected && !isClockMode) {
+  if ((!pcConnected || !pcSynced) && !isClockMode) {
     modeSlot.innerHTML = '';
     // Real device auto-reverts to Calendar mode when Orion drops.
   } else {
@@ -2489,6 +2748,16 @@ function renderStatusBar(cfg) {
 
   if (cfg.phoneConnected) {
     ancsRow.innerHTML = (cfg.ancsApps || []).map(ancsIconHTML).join('');
+    // Call tile — a call carries no char-0010 payload, so it gets its own
+    // neutral icon tile with a solid ring (yellow ringing / red active, no
+    // pulse) rather than riding the per-app ANCS tile above.
+    if (cfg.callState) {
+      const callScreen = cfg.callState === 'ringing' ? 'incoming-call' : 'active-call';
+      ancsRow.innerHTML += '<div class="ancs-icon-wrap" onclick="setScreen(\'' + callScreen + '\')" title="' +
+        (cfg.callState === 'ringing' ? 'Incoming call' : 'Active call') + '">' +
+        '<div class="call-tile ' + cfg.callState + '"><svg viewBox="0 0 24 24"><use href="#i-call"/></svg></div>' +
+        '</div>';
+    }
   } else {
     ancsRow.innerHTML = '';
   }
@@ -2581,18 +2850,18 @@ function setScreen(id) {
   document.getElementById('device').classList.toggle('no-status-bar', !!cfg.hideStatusBar);
   if (!cfg.hideStatusBar) renderStatusBar(cfg.statusBar);
 
-  // Presence-border colour on the profile photo. Source: cfg.presence
-  // (default 'available'). If the PC link is down (statusBar.pcConnected
-  // === false), the device-side rule forces 'offline' regardless of the
-  // last-cached value pushed by Orion — the photo can't claim a presence
-  // we can't currently verify. See `screen-layout.md` and `ble-protocol.md`
-  // Presence Status characteristic.
+  // Connection-status border colour on the profile photo. Source: cfg.presence
+  // (default 'ready'). If the PC link is down (statusBar.pcConnected ===
+  // false), the device-side rule forces 'offline' regardless of the
+  // last-cached value — the photo can't claim a status Ori can't currently
+  // verify. This is Ori's OWN Device Status, not anything pushed by Orion —
+  // see `screen-layout.md`.
   const photo = document.getElementById('profile-photo');
   if (photo) {
-    photo.classList.remove('presence-available', 'presence-busy', 'presence-away', 'presence-offline');
+    photo.classList.remove('conn-ready', 'conn-syncing', 'conn-offline');
     const pcConnected = !cfg.statusBar || cfg.statusBar.pcConnected !== false;
-    const presence = pcConnected ? (cfg.presence || 'available') : 'offline';
-    photo.classList.add('presence-' + presence);
+    const presence = pcConnected ? (cfg.presence || 'ready') : 'offline';
+    photo.classList.add('conn-' + presence);
   }
   // Weather icon + temp text. cfg.weather/cfg.weatherNight/cfg.weatherIntensity
   // let a screen preview a specific condition/day-night/intensity combination
@@ -2619,6 +2888,12 @@ function setScreen(id) {
       bindAlbumArtGestures();
       bindPlayPauseButton();
       bindSeekBar();
+      // Demo-only auto-fade for the external-volume-change toast (matches
+      // HOST_VOLUME_TOAST_MS — screen_media_mode.cpp's update_volume_from_host()).
+      if (id === 'kbd-mode-volume-toast') {
+        const wrap = document.getElementById('kbd-art-wrap');
+        if (wrap) setTimeout(() => { if (currentScreenId === id) wrap.classList.remove('hud-toast'); }, 1500);
+      }
     }
     if (id === 'calendar' || id === 'calendar-holidays') bindCalendarNav();
   }
