@@ -205,8 +205,8 @@ static const char* friendly_reason(const char* code) {
         { "link_lost",        "Orion disconnected during the update. Try again" },
         { "aborted",          "The update was cancelled" },
         { "truncated",        "The download didn't finish — try again from Orion" },
-        { "hash_mismatch",    "The update was corrupted in transfer (checksum failed)" },
-        { "size_overflow",    "The update package was invalid (size mismatch)" },
+        { "hash_mismatch",    "The update was corrupted in transfer — try again" },
+        { "size_overflow",    "The update didn't transfer correctly — try again" },
         { "flash_error",      "Couldn't save the update to storage. Try again" },
         { "version_mismatch", "The update didn't match its expected version — try again from Orion" },
         { "bad_image",        "That file isn't a valid Ori firmware image" },
@@ -586,6 +586,15 @@ void run_end() {
 }
 
 void run_abort() {
+    // Dismissing the Update-failed screen in Orion clears it here too, so the
+    // user doesn't acknowledge one failure twice, once per device. ABORT
+    // already means "the sender is done with this update"; with nothing in
+    // flight the only thing left to abandon is the error screen. Same spirit
+    // as a retry superseding an undismissed error (ota.md).
+    if (g_ota_state == OtaState::Failed) {
+        dismiss_error();
+        return;
+    }
     if (g_ota_state != OtaState::AwaitingData) return;  // too late once installing
     request_fail("aborted");
 }
@@ -653,6 +662,11 @@ void dismiss_error() {
     if (g_ota_state != OtaState::Failed) return;
     LOG("[ota] error dismissed\n");
     g_ota_state = OtaState::Idle;
+    // Mirror it to Orion so its own Update-failed panel closes too — the user
+    // acknowledges the failure once, on whichever device is in front of them.
+    // Sent unconditionally: when Orion initiated this (via ABORT) it has
+    // already closed and simply ignores the echo.
+    gatt_server::notify_fw_status("DISMISSED");
     state_machine::on_reconnect_end();   // re-evaluate → runtime screen
 }
 

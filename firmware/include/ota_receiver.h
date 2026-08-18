@@ -26,6 +26,8 @@
 //                 { "o": "RESUME",    "b": <expected_offset> }
 //                 { "o": "VALIDATED", "v": <version read from the binary> }
 //                 { "o": "FAILED",    "r": <reason> }
+//                 { "o": "DISMISSED" }   — the Update-failed screen was closed
+//                                          on the device; Orion closes its own
 //
 // Data frames carry an absolute byte OFFSET, not a fragment index:
 //
