@@ -469,6 +469,49 @@ static void maybe_restart_advertising_after_connect(bool is_orion, bool is_iphon
     }
 }
 
+// Raw GAP events NimBLE-Arduino's C++ callbacks don't surface. Data Length
+// Extension is the one that matters: it is negotiated by the controllers with
+// no app involvement, it decides how many bytes ride each radio packet, and
+// nothing else in the stack reports what was actually agreed. A link that
+// silently stays at the 27-byte default needs ~10 radio packets per 244-byte
+// ATT write instead of one — the single biggest throughput factor on this
+// link, and invisible without this hook (ota.md's "Measured throughput").
+// Log the Orion link's ACTUAL negotiated parameters. set_ota_link_fast() only
+// *requests*; the central decides and a refusal is silent, so when a transfer
+// is slower than expected these are the numbers that say why (ota.md's
+// "Measured throughput"). Declared here rather than in the header — it is a
+// diagnostic for this file's own use.
+static void log_orion_link_params(const char* tag);
+
+static int on_raw_gap_event(ble_gap_event* event, void* /*arg*/) {
+    if (event->type == BLE_GAP_EVENT_CONN_UPDATE) {
+        log_orion_link_params("conn params updated");
+    }
+    if (event->type == BLE_GAP_EVENT_DATA_LEN_CHG) {
+        LOG("[ble] DLE conn=%u tx=%u octets/%u us  rx=%u octets/%u us\n",
+            (unsigned)event->data_len_chg.conn_handle,
+            (unsigned)event->data_len_chg.max_tx_octets,
+            (unsigned)event->data_len_chg.max_tx_time,
+            (unsigned)event->data_len_chg.max_rx_octets,
+            (unsigned)event->data_len_chg.max_rx_time);
+    }
+    return 0;   // advisory only — NimBLE still runs its own handling
+}
+
+static void log_orion_link_params(const char* tag) {
+    if (!g_orion_connected || g_orion_conn == BLE_HS_CONN_HANDLE_NONE) return;
+    struct ble_gap_conn_desc desc;
+    if (ble_gap_conn_find(g_orion_conn, &desc) != 0) return;
+    uint8_t tx_phy = 0, rx_phy = 0;
+    ble_gap_read_le_phy(g_orion_conn, &tx_phy, &rx_phy);
+    // conn_itvl is in 1.25 ms units; print microseconds rather than pull a
+    // float into the log path. phy: 1 = 1M, 2 = 2M, 3 = coded.
+    LOG("[ble] %s: interval=%u units (%u us) latency=%u mtu=%u phy tx=%u rx=%u\n",
+        tag, (unsigned)desc.conn_itvl, (unsigned)desc.conn_itvl * 1250u,
+        (unsigned)desc.conn_latency, (unsigned)ble_att_mtu(g_orion_conn),
+        (unsigned)tx_phy, (unsigned)rx_phy);
+}
+
 // ── NimBLE Server callbacks ────────────────────────────────────────────────
 
 class OriServerCallbacks : public NimBLEServerCallbacks {
@@ -482,10 +525,26 @@ public:
         // Request maximum MTU.
         NimBLEDevice::setMTU(247);
 
-        // Throughput tuning for bulk sync (photo, meetings, Time Off, album art):
+        // Throughput tuning for bulk sync (photo, meetings, Time Off, album art)
+        // and, above all, the firmware transfer (ota.md):
         //   • Data Length Extension — 251-octet LL PDUs so a full 247-byte ATT
-        //     write rides in a single radio packet (less per-packet overhead).
-        server->setDataLen(handle, 251);
+        //     write rides in a single radio packet. Without DLE the link falls
+        //     back to 27-byte payloads and one ATT write costs ~10 radio
+        //     packets, which is the difference between ~97 KB/s and ~23 KB/s.
+        //
+        // Called through the raw host API rather than NimBLEServer::setDataLen(),
+        // which is wrapped in an ESP-IDF version #if that compiles the whole
+        // body down to `return;` when ESP_IDF_VERSION_MAJOR is not visible at
+        // that point — an undefined macro is 0 in #if, so the guard silently
+        // yields a no-op that logs nothing. Calling ble_gap_set_data_len()
+        // directly removes that trapdoor and, unlike the wrapper, lets us see
+        // the return code. tx_time is the 1M-PHY air time for the payload:
+        // (octets + 14) * 8 us.
+        {
+            const uint16_t kOctets = 251;
+            int rc = ble_gap_set_data_len(handle, kOctets, (kOctets + 14) * 8);
+            if (rc != 0) LOG("[ble] set_data_len(%u) rc=%d\n", (unsigned)kOctets, rc);
+        }
 
         // Faster connection-interval range (15-30 ms vs the conservative
         // default) → more connection events per second. These are requests
@@ -789,6 +848,32 @@ void init() {
     // make today.
     NimBLEDevice::setDefaultPhy(BLE_GAP_LE_PHY_1M_MASK | BLE_GAP_LE_PHY_2M_MASK,
                                 BLE_GAP_LE_PHY_1M_MASK | BLE_GAP_LE_PHY_2M_MASK);
+
+    // See on_raw_gap_event(): the only way to observe the negotiated LL data
+    // length, which no C++ callback exposes.
+    NimBLEDevice::setCustomGapHandler(on_raw_gap_event);
+
+    // Raise the controller's SUGGESTED DEFAULT data length, which is what it
+    // declares in the Data Length Extension exchange on every new connection.
+    //
+    // Why this is needed on top of the per-connection ble_gap_set_data_len()
+    // in onConnect: DLE negotiates octets AND transmission TIME, and the link
+    // layer honours whichever is more restrictive. Measured 2026-08-17, the
+    // link came up "tx=251 octets/328 us" — the octets were granted but the
+    // time stayed at the pre-DLE default of 328 us, which at 1M PHY is the air
+    // time of a 27-BYTE payload. The octet grant was therefore inert: every
+    // 244-byte ATT write was still being split into ~10 radio packets, holding
+    // the firmware transfer to ~23 KB/s against a ~97 KB/s ceiling.
+    //
+    // 2120 us is the 1M-PHY air time for a 251-octet payload ((251+14)*8), and
+    // is the spec maximum for this parameter's useful range.
+    {
+        uint16_t sugg_octets = 0, sugg_time = 0;
+        ble_gap_read_sugg_def_data_len(&sugg_octets, &sugg_time);
+        int rc = ble_gap_write_sugg_def_data_len(251, 2120);
+        LOG("[ble] sugg def data len: was %u octets/%u us -> set 251/2120 rc=%d\n",
+            (unsigned)sugg_octets, (unsigned)sugg_time, rc);
+    }
 
     // Security: LE Secure Connections, Passkey Entry (IO_CAP_DISP_ONLY).
     NimBLEDevice::setSecurityAuth(BLE_SM_PAIR_AUTHREQ_SC |
@@ -1630,6 +1715,10 @@ void set_ota_link_fast(bool fast) {
     // onConnect() asks for. Latency 0, 6 s supervision timeout, matching
     // onConnect()'s own call. A central that declines simply keeps the old
     // interval; the transfer is slower, not broken.
+    // Windows grants the 15 ms end of this range. Pinning the request to 7.5 ms
+    // exactly (min == max == 6) was measured 2026-08-17 and changed throughput
+    // not at all, so the range stays — it is the more permissive request and
+    // costs nothing.
     if (fast) server->updateConnParams(g_orion_conn, 6, 12, 0, 600);
     else      server->updateConnParams(g_orion_conn, 12, 24, 0, 600);
     LOG("[ble] Orion link interval -> %s\n", fast ? "fast (7.5-15 ms)" : "normal (15-30 ms)");

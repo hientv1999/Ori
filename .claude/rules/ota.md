@@ -11,7 +11,7 @@ Firmware updates run over **BLE**, on the same bonded Orion link that carries ev
 | Initiator | Orion (Settings → "Install update") |
 | Transport | BLE — Ori Sync Service chars `0014`/`0015` (`ble-protocol.md` §14) |
 | Authority | The Orion bond. MITM-encrypted, and Ori additionally checks the writer is the bonded Orion peer — the iPhone bond can never reach these characteristics |
-| Time for a ~2.3 MB image | **~95 s measured** — see "Measured throughput" below before quoting a faster number |
+| Time for a ~2.3 MB image | **~94 s measured** on Windows (~24 KB/s) — see "Measured throughput"; the wire is capped by the host stack, not by Ori |
 | Driver requirement | None |
 | Physical requirement | Ori powered and in BLE range of the PC |
 
@@ -34,11 +34,35 @@ Three things this rules out, so they don't get re-investigated:
 - **The checkpoints are not additive overhead.** Removing all 197 of them from a half-image transfer left throughput unchanged. Their ~220 ms cost is the sender blocking while the radio drains a backlog it is already ahead of — not time added to the transfer.
 - **The interval is not the problem.** 15 ms is granted and applied.
 
-**What is still unexplained:** at 1M PHY, 15 ms, and 251-byte LL PDUs, one packet plus its ack is ~2.5 ms, so a connection event has room for roughly 6 packets ≈ 97 KB/s. The link delivers about 1.5. The sender is demonstrably ahead (it blocks against its own window while Windows has the data queued), so the constraint is downstream of the sender.
+### Root cause: Windows negotiates 27-byte LL packets
 
-The untested hypothesis is Ori's controller→host ACL credit pool: `CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT` defaults to **12** in NimBLE-Arduino, and the controller may not hand the host more packets than it has buffers for — a hard per-event ceiling regardless of airtime. Raising it (with `CONFIG_BT_NIMBLE_MSYS1_BLOCK_COUNT` alongside, since msys blocks back L2CAP reassembly) is the next thing to try. It was built and flashed once but **never cleanly measured**, so it is neither confirmed nor ruled out.
+Data Length Extension is agreed as **251 octets but only 328 µs**:
 
-Also worth knowing before chasing this: `NimBLEDevice::setDefaultPhy()` in `ble_manager::init()` only states a preference for *new* connections. It does not renegotiate an established link and does not make the central ask, which is why the link sits at 1M despite that call. Moving an existing link to 2M needs an explicit per-connection `ble_gap_set_prefered_le_phy()`, which Ori deliberately does not issue today.
+```
+[ble] DLE conn=0 tx=251 octets/328 us  rx=251 octets/351 us
+```
+
+Those two halves contradict each other. At 1M PHY a 251-octet payload needs `(251+14)*8 = 2120 µs`; 328 µs is the air time of a **27-byte** payload — the pre-DLE default. The link layer honours whichever limit binds first, so the octet grant is inert and every 244-byte ATT write is split into ~10 radio packets.
+
+Confirmed independently by measuring throughput against ATT payload size — if the wire were carrying 244-byte packets, shrinking the payload 4x would cost 4x throughput:
+
+| ATT payload | Throughput | ATT writes/s |
+|---|---|---|
+| 240 B | 28.0 KB/s | 119.6 |
+| 120 B | 25.3 KB/s | 216.1 |
+| 60 B | 22.7 KB/s | 386.7 |
+
+Nearly flat, exactly as ~27-byte fragmentation predicts (10 packets/write vs 3 → a 1.2x ratio; measured 1.23x).
+
+**It is the Windows host stack, and Ori cannot override it.** Ori's controller default was 27 octets/328 µs and is raised to 251/2120 at init (`ble_gap_write_sugg_def_data_len`, rc=0), and each connection additionally requests 251/2120 (`ble_gap_set_data_len`). The negotiated result is still 328 µs, so the peer is declaring it — the two directions even come back different (328 tx / 351 rx), which only happens if each is a `min()` against the peer's own limits. The radio is not the problem: it is an Intel AX200-class BT 5.1 adapter that supports DLE.
+
+Things measured and found NOT to help, so don't retry them: pinning the connection-parameter request to 7.5 ms exactly (Windows still gives 15 ms, throughput unchanged), and `NimBLEDevice::setDefaultPhy()` — which only states a preference for *new* connections, never renegotiates, and leaves the link on 1M. Moving an established link to 2M needs an explicit `ble_gap_set_prefered_le_phy()`, and 2M would not help while packets are 27 bytes anyway.
+
+One hypothesis remains untested: the controller→host ACL credit pool (`CONFIG_BT_NIMBLE_TRANSPORT_ACL_FROM_LL_COUNT`, default 12). It was built and flashed once but never cleanly measured. Given the fragmentation finding it is unlikely to be the binding constraint, but it is not ruled out.
+
+### The remaining lever is sending fewer bytes
+
+With the wire capped near ~24 KB/s on Windows, the only large win left is compression. The application image is ~50% compressible (`zlib` level 6: 2,275,744 → 1,140,646 B), which would take a full update from ~94 s to ~47 s. That needs a compressed-stream mode on chars `0014`/`0015` (a compressed-size field at `BEGIN`, a decompressor writing into the existing PSRAM staging buffer, and the SHA-256/version checks still run against the *decompressed* image so nothing downstream changes). Not implemented.
 
 ## Firmware implementation
 
