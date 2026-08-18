@@ -1,18 +1,17 @@
 # Ori — Connectivity Model
 
-Ori has **three logical channels**:
+Ori has **two logical channels**, both BLE:
 
 | Channel | Direction | Carries |
 |---|---|---|
-| **USB CDC** (USB-C power cable) | Orion → Ori | Firmware update only — see `ota.md` |
-| **BLE Ori Sync Service** (custom UUID, encrypted+bonded, 19 chars) | bidirectional | Profile, photo, meetings, Time Off, time, backlight, factory reset, sync manifest, Controls-mode commands, host volume state, media metadata, media album art, filtered ANCS notification/call relay, lunar holiday list (`ble-protocol.md` §13) |
+| **BLE Ori Sync Service** (custom UUID, encrypted+bonded, 21 chars) | bidirectional | Profile, photo, meetings, Time Off, time, backlight, factory reset, sync manifest, Controls-mode commands, host volume state, media metadata, media album art, filtered ANCS notification/call relay, lunar holiday list (`ble-protocol.md` §13), **firmware updates** (`ble-protocol.md` §14) |
 | **iPhone/iPad ANCS** (BLE, separate bond) | phone → Ori (+ call actions Ori → phone) | Notification-icon awareness (view-only) + incoming/active call control (Answer/Decline/End) |
 
 No standard BLE HOGP — all Controls-mode interactions ride the custom Ori Sync Service; Orion bridges to OS-level APIs. The mode-toggle is **hidden until Orion has fully synced** — not just whenever the BLE link is down; a bonded reconnect keeps it hidden through the Reconnect-Syncing window too. Full GATT contract: `ble-protocol.md`. Controls-mode UI: `media-mode.md`.
 
-## USB-C: power + opportunistic data
+## USB-C: power only
 
-The USB-C cable is always physically attached (wall power). When the other end is plugged into the Orion PC it also becomes the firmware-update channel via USB CDC. Ori must **never appear as a removable drive**. See `ota.md` and `hardware.md`.
+The USB-C cable is always physically attached and carries **wall power, nothing else**. It used to double as the firmware-update channel over USB CDC; that moved to BLE on 2026-08-16 because the enclosure exposes no reachable data port on a deployed unit (`ota.md`). Ori must **never appear as a removable drive**, and there is no customer-facing data path over this cable at all. The internal UART header remains the service-only recovery route — see `hardware.md`.
 
 ## Bond policy
 

@@ -3,21 +3,44 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// Ori GATT Server — 19 characteristics per ble-protocol.md v1.0 (chars 16-18
-// added for the ANCS relay, §13; char 19/0013 added later for the Lunar
-// Holiday List), plus the BLE SIG standard Device Information Service
-// (Firmware Revision String).
+// Ori GATT Server — 21 characteristics per ble-protocol.md v1.0 (chars 16-18
+// added for the ANCS relay, §13; char 19/0013 later for the Lunar Holiday
+// List; chars 20-21/0014-0015 for the BLE firmware update, §14), plus the BLE
+// SIG standard Device Information Service (Firmware Revision String).
 //
 // Service UUID: 6F726900-0000-4F72-9F00-000000000000
 // Each characteristic UUID has bytes 4-5 replaced with the offset below.
 //
 // This file owns:
 //   - Service + characteristic registration with NimBLE
-//   - Read/Write callbacks for all 19 chars
+//   - Read/Write callbacks for all 21 chars
 //   - Chunked reassembly (delegates to chunked_transfer.h for photo/meetings/Time Off/art)
 //   - SHA-256 hash computation and NVS save after SyncControl{op:"END"}
 //   - State machine transitions triggered by GATT events
-//   - BLE data characteristic NACKing while OTA is active
+//   - BLE data characteristic NACKing while a firmware update is active
+//     (chars 0014/0015 themselves are exempt — they ARE the update)
+
+// Attribute-table layout version. **Bump this on ANY change to the GATT table**
+// — adding or removing a characteristic or service, or changing a UUID or
+// property set.
+//
+// Why it has to exist: BLE lets a bonded client cache the whole attribute table
+// across connections, on the server's promise to announce changes. Ori takes
+// that benefit (Windows caches aggressively and will not re-discover on its
+// own) but has no Database Hash characteristic — NimBLE's
+// MYNEWT_VAL_BLE_GATT_CACHING is 0 in the ESP port — so Service Changed is the
+// only signal available, and nothing was ever firing it. Result before this
+// existed: a firmware update that added a characteristic was invisible to every
+// already-bonded peer until the user manually unpaired and re-paired. Found
+// 2026-08-17, when chars 0014/0015 (the BLE firmware update itself, §14) could
+// not be discovered by an already-paired Windows host. This matters far more
+// now than it used to: firmware arrives over BLE, so the table is *expected* to
+// change on a deployed unit with a live bond, and there is no cable to fall
+// back on.
+//
+// History: 1 = 19 chars (through the USB CDC era). 2 = 21 chars, adds
+// Firmware Update Control/Data (0014/0015).
+constexpr uint8_t ORI_GATT_LAYOUT_VERSION = 2;
 
 namespace gatt_server {
 
@@ -25,11 +48,42 @@ namespace gatt_server {
 // BEFORE NimBLE is started.
 void init();
 
-// Returns true if a firmware OTA is currently in progress (BLE writes NACKed).
+// If the layout version stored in NVS differs from ORI_GATT_LAYOUT_VERSION,
+// send one Service Changed indication covering the whole handle range so
+// bonded peers discard their cached attribute table, then persist the new
+// version so it fires once per change rather than every connect.
+//
+// Call from the main task on a bonded Orion connect — NimBLE has already
+// restored the peer's persisted CCCDs by then (firmware.md), so the
+// indication's subscription is in place, and the NVS write must not run on the
+// host task. No-op when the versions already match.
+void announce_gatt_layout_change();
+
+// Returns true if a firmware update is currently in progress (every BLE data
+// write except the two firmware-update chars is NACKed).
 bool is_ota_active();
 
-// Called by ota_receiver when OTA begins/ends.
+// Called by ota_receiver when the update begins/ends.
 void set_ota_active(bool active);
+
+// ── Firmware Update Control notifies (char 0014, ble-protocol.md §14) ──────
+// Ori → Orion status frames. Each encodes { "o": op } plus at most one payload
+// key, so ota_receiver never has to build CBOR of its own. Safe to call from
+// either task (a bare notify does no flash I/O).
+
+// { "o": op } — used for "READY".
+void notify_fw_status(const char* op);
+
+// { "o": op, "r": reason } — used for "REJECT" and "FAILED".
+void notify_fw_reason(const char* op, const char* reason);
+
+// { "o": op, "b": bytes } — used for "PROGRESS" (bytes received so far) and
+// "RESUME" (the offset Ori wants the sender to rewind to).
+void notify_fw_bytes(const char* op, uint32_t bytes);
+
+// { "o": "VALIDATED", "v": version } — the version read out of the staged
+// binary, sent just before the BLE stack is torn down for the flash commit.
+void notify_fw_validated(const char* version);
 
 // Update the Device Status characteristic value and notify Orion if connected.
 // Status byte values defined in ble-protocol.md §4:

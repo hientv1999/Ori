@@ -5,7 +5,7 @@
 
 Defines the single BLE GATT contract between Ori and the Orion PC app.
 
-**Out of scope for BLE:** ANCS phone link (`connectivity.md`); firmware updates run over USB CDC (`ota.md`).
+**Out of scope for BLE:** ANCS phone link (`connectivity.md`). Firmware updates **are** in scope as of 2026-08-16 — they moved here from USB CDC and ride chars 20–21 (§14, `ota.md`).
 
 ---
 
@@ -88,7 +88,7 @@ Orion uses the mode flag to detect "Ori factory-reset since last bond" without c
 
 ## 3. Service and characteristics
 
-**One service, nineteen characteristics** — plus a separate BLE SIG standard service for firmware version (§3.1).
+**One service, twenty-one characteristics** — plus a separate BLE SIG standard service for firmware version (§3.1).
 
 ```
 Ori Sync Service:  6F726900-0000-4F72-9F00-000000000000
@@ -117,10 +117,14 @@ Each characteristic UUID replaces bytes 4–5 of the base with the offset below.
 | 17 | **ANCS Call State** | `0011` | Read, Notify | Ori → Orion (notify) | Yes |
 | 18 | **ANCS Notification Action** | `0012` | Write (response) | Orion → Ori | Yes |
 | 19 | **Lunar Holiday List** | `0013` | Write (no response) | Orion → Ori (chunked) | Yes |
+| 20 | **Firmware Update Control** | `0014` | Read, Write (response), Notify | Orion ↔ Ori | Yes |
+| 21 | **Firmware Update Data** | `0015` | Write (no response), Write | Orion → Ori (offset-framed) | Yes |
 
-Reads/writes on encrypted characteristics over an unencrypted link return `INSUFFICIENT_AUTHENTICATION`. Chars 16–18 are covered in full in §13.
+Reads/writes on encrypted characteristics over an unencrypted link return `INSUFFICIENT_AUTHENTICATION`. Chars 16–18 are covered in full in §13; chars 20–21 in §14.
 
-**Every notify characteristic MUST also declare base `Read`** (chars 1, 10, 14, 15, 16, 17 all do), even though Orion only ever subscribes to 10/14/16/17. Hard Windows requirement: WinRT's GATT stack silently drops `ValueChanged` for a Notify-only characteristic — `subscribe()`/CCCD-write still report success, so the failure is invisible. Found 2026-07-11 when chars 10/16/17 (originally Notify+MITM only) had every notification silently dropped by WinRT before reaching Orion. Fix: add `Read` (kept MITM-gated via `READ_AUTHEN`). Never remove `Read` from a notify characteristic to "tighten" it. Char 14 (Device Settings) gained `Notify` on 2026-07-13, already satisfying this rule since it already declared base `Read`.
+**Every characteristic here is Orion-only.** Beyond MITM encryption, Ori checks that the writer's connection handle is the bonded Orion peer's — so the iPhone bond, which exists only so Ori can read the phone's ANCS as a *client*, can never write to this service. That check is what stands in for physical access now that firmware arrives over the air (§14).
+
+**Every notify characteristic MUST also declare base `Read`** (chars 1, 10, 14, 15, 16, 17, 20 all do), even though Orion only ever subscribes to 10/14/16/17/20. Hard Windows requirement: WinRT's GATT stack silently drops `ValueChanged` for a Notify-only characteristic — `subscribe()`/CCCD-write still report success, so the failure is invisible. Found 2026-07-11 when chars 10/16/17 (originally Notify+MITM only) had every notification silently dropped by WinRT before reaching Orion. Fix: add `Read` (kept MITM-gated via `READ_AUTHEN`). Never remove `Read` from a notify characteristic to "tighten" it. Char 14 (Device Settings) gained `Notify` on 2026-07-13, already satisfying this rule since it already declared base `Read`.
 
 ### 3.1 Device Information Service (BLE SIG standard — separate from Ori Sync Service)
 
@@ -130,7 +134,7 @@ Ori also exposes the standard **Device Information Service** (`0x180A`), with on
 |---|---|---|---|
 | Firmware Revision String | `0x2A26` | Read | No |
 
-Plain UTF-8 semver string (e.g. `"1.0.0"`) — not CBOR, static for the connection's life (changes only after a USB CDC update reboot, `ota.md`), unencrypted so it's readable without bonding. How Orion learns the running firmware version — see §9.
+Plain UTF-8 semver string (e.g. `"1.0.0"`) — not CBOR, static for the connection's life (changes only after a firmware-update reboot, `ota.md`), unencrypted so it's readable without bonding. How Orion learns the running firmware version — see §9. Also the only thing that actually **proves** an update installed: §14's `VALIDATED` is sent before the flash commit, so this read after the reboot is the confirmation.
 
 ---
 
@@ -467,6 +471,29 @@ AncsCallState = {             // Ori → Orion, notify (char 0011) — see §13
                 // source of a call's icon (calls carry no char-0010 payload).
 }
 
+FirmwareUpdateControl = {     // Orion → Ori, write (response) (char 0014) — see §14
+  "o": "BEGIN" | "END" | "ABORT",  // op
+  "v": text,    // version. BEGIN only, REQUIRED — the version Orion reads out of the
+                // .bin's own "OriFwVer=" marker. Ori re-reads the same marker from the
+                // staged image and FAILS on disagreement; it is never trusted on its own.
+  "n": uint,    // total_size. BEGIN only, REQUIRED. Bytes in the image.
+  "h": bytes(32)// sha256. BEGIN only, REQUIRED. Over the whole image.
+}
+
+FirmwareUpdateStatus = {      // Ori → Orion, notify (char 0014) — see §14
+  "o": "READY" | "REJECT" | "PROGRESS" | "RESUME" | "VALIDATED" | "FAILED",  // op
+  "b": uint,    // bytes. PROGRESS = bytes received so far; RESUME = the offset Ori
+                // wants the sender to rewind to. Absent otherwise.
+  "r": text,    // reason. REJECT/FAILED only — see §14's table.
+  "v": text     // version. VALIDATED only — the version read out of the staged binary.
+}
+// Exactly one of "b"/"r"/"v" is present, or none. Also stored as the characteristic's
+// readable value, so a read returns the last status sent.
+
+// Firmware Update Data (char 0015) — raw, NOT CBOR:
+//   [0..3] offset (uint32 LE), [4..] image bytes.
+// Deliberately not §5's chunk header — see §14.
+
 AncsNotificationAction = {    // Orion → Ori, write (response) (char 0012) — see §13
   "u": uint,    // uid. target notification (or call) UID.
   "a": uint     // action. 0 = Positive, 1 = Negative. 0 → answer_notification(). 1 → the
@@ -491,7 +518,7 @@ AncsNotificationAction = {    // Orion → Ori, write (response) (char 0012) —
 0xF0 ERROR_GENERIC
 ```
 
-(`0x20` reserved — do not reuse. OTA screen is driven locally via USB CDC; see `ota.md`.)
+(`0x20` reserved — do not reuse. The firmware-update screen is driven locally by `ota_receiver`, off chars 20–21, and is deliberately NOT signalled through Device Status; see §14 and `ota.md`.)
 
 ### Device Command (4-byte payload, NOT CBOR)
 
@@ -539,7 +566,7 @@ Offset  Size  Field
 
 ### Write type and flow control (throughput)
 
-Profile Photo, Meeting List, and Time Off Entry advertise **both** `Write` and `Write Without Response`; Media Album Art and Lunar Holiday List are Write-No-Response only. Orion SHOULD stream fragments Write-No-Response — it avoids the per-fragment ATT round-trip, letting many fragments ride each connection event (especially on the 2M PHY). This is the dominant throughput lever (≈5–10× over per-fragment Write-with-response).
+Profile Photo, Meeting List, and Time Off Entry advertise **both** `Write` and `Write Without Response`; Media Album Art and Lunar Holiday List are Write-No-Response only. Orion SHOULD stream fragments Write-No-Response — it avoids the per-fragment ATT round-trip, letting many fragments ride each connection event. This is the dominant throughput lever, by a wider margin than first assumed: measured on Windows 2026-08-17, a Write-No-Response returns in ~1 ms against ~220 ms for a Write-with-response. (Do **not** assume the 2M PHY is helping — links to Windows have been measured running at 1M; see `ota.md`'s "Measured throughput".)
 
 Because Write-No-Response has no ATT-level pacing, Orion MUST bound how far it runs ahead of Ori so a fast burst can't overrun Ori's RX buffers:
 
@@ -565,7 +592,7 @@ Same frame format as §5 (seq_num/total_frags/payload_len, uint16 LE), sized fro
 
 ### 6.0 Sync staging and progress
 
-For **every** sync session (initial pairing or reconnect delta), Ori stages incoming items in PSRAM as they arrive and commits them to NVS **atomically at `SyncControl{op:"END"}`** — mirroring the USB CDC OTA pathway (`ota.md`), which stages the firmware image before a single flash commit.
+For **every** sync session (initial pairing or reconnect delta), Ori stages incoming items in PSRAM as they arrive and commits them to NVS **atomically at `SyncControl{op:"END"}`** — the same shape as the firmware-update pathway (§14, `ota.md`), which stages the whole image in PSRAM before a single flash commit.
 
 - Between `BEGIN` and `END`, nothing is written to NVS and no cached state changes. If the link drops mid-session, Ori discards the staged data and keeps serving previously cached data.
 - At `END`, Ori parses each staged item, computes its SHA-256, and updates the live UI in one batch. **Profile, Profile Photo, and Time Off Entry persist to NVS.**
@@ -729,7 +756,7 @@ Link-layer encryption failure (`BLE_HS_ENC_FAIL`) signals a stale bond — see �
 
 No wire-level protocol version negotiation or compatibility gate — Ori and Orion are developed and released together, and this contract is expected to stay stable. Unknown CBOR keys are always silently ignored (§4), so additive changes are non-breaking by construction; revisit this section only if a genuinely breaking change is ever needed.
 
-`fw_version` (semver, e.g. `"1.2.3"`) is read from the standard **Firmware Revision String** characteristic (§3.1) and drives exactly one thing: Orion polls `orinari.net` for the latest release and offers a user-initiated "Install update" in Settings when newer exists (`ota.md`). Purely optional; never blocks or gates the sync flow.
+`fw_version` (semver, e.g. `"1.2.3"`) is read from the standard **Firmware Revision String** characteristic (§3.1) and drives two things: Orion polls `orinari.net` for the latest release and offers a user-initiated "Install update" in Settings when newer exists, and it re-reads the same characteristic after an update's reboot to confirm the install actually landed (`ota.md`, §14). Neither blocks or gates the sync flow.
 
 ---
 
@@ -787,6 +814,10 @@ No wire-level protocol version negotiation or compatibility gate — Ori and Ori
 | `AncsCallState.state` | uint 0–2 |
 | `AncsCallState.icon_token` | ≤ 24 UTF-8 bytes — char 0011 is NOT chunked (calls carry no body), so it keeps the original tighter size, same vocabulary as `AncsNotification.icon_token` |
 | `AncsNotificationAction.action` | uint 0–1 |
+| `FirmwareUpdateControl.version` | ≤ 23 UTF-8 bytes (firmware `g_claimed_version[24]`) |
+| `FirmwareUpdateControl.total_size` | uint, ≤ 3 MB (the inactive OTA slot) — larger is `REJECT { too_large }` |
+| `FirmwareUpdateControl.sha256` | exactly 32 bytes — any other length counts as absent (`missing_fields`) |
+| Firmware Update Data frame | 4-byte offset header + payload; payload ≤ `ATT_MTU − 3 − 4` (240 B at MTU 247) |
 
 `AncsNotification`'s caps are sized so a worst-case `"add"` (every optional field at max length) still fits one unchunked 238-byte fragment. If real-world CBOR encoding of max-length content ever measures over budget, tighten these caps further rather than adding chunking to a third notify-only characteristic.
 
@@ -794,8 +825,8 @@ No wire-level protocol version negotiation or compatibility gate — Ori and Ori
 
 ## 11. Implementation owners
 
-- **`esp32-connectivity`** — GATT server, bonding, chunk reassembly, NVS persistence + hashes, factory-reset routine, ANCS client, chars 10–19. No HOGP. Owns the filter-gated relay logic (§13) — the SAME filter evaluation used for the on-device status bar, not a second implementation. Owns `holiday_data`'s compiled-in rule tables (Fixed-date/NthWeekday/EasterOffset) and the lunar-date NVS cache char 0013 feeds.
-- **`orion-sync`** — scanning + connection lifecycle, bonding storage, hash-manifest delta, chunked writes, background keep-alive, USB CDC OTA path (`ota.md`), media-mode OS bridge (§12), ANCS relay (§13). Reads char 15 on connect and subscribes to notifies; writes Unpair Phone magic via char 8 on user request; writes char 14 on reconnect (shortcuts+weather+holiday_country), on weather-poll changes, and clock-face/time-format/ANCS-filter changes; writes char 0013 (Lunar Holiday List) on every (re)connect. Subscribes to chars 16–17, maintains Orion's local notification mirror; writes char 18 on Answer/Decline/End-call/Dismiss taps. Owns bringing the Orion window to the foreground on `AncsCallState{st:1}` (`orion-frontend` owns the in-app UI that follows). Owns `holiday.rs`'s lunisolar computation (`pc-app.md`).
+- **`esp32-connectivity`** — GATT server, bonding, chunk reassembly, NVS persistence + hashes, factory-reset routine, ANCS client, chars 10–21 (including the firmware-update receiver behind chars 20–21, §14). No HOGP. Owns the filter-gated relay logic (§13) — the SAME filter evaluation used for the on-device status bar, not a second implementation. Owns `holiday_data`'s compiled-in rule tables (Fixed-date/NthWeekday/EasterOffset) and the lunar-date NVS cache char 0013 feeds.
+- **`orion-sync`** — scanning + connection lifecycle, bonding storage, hash-manifest delta, chunked writes, background keep-alive, BLE firmware-update sender (§14, `ota.md`), media-mode OS bridge (§12), ANCS relay (§13). Reads char 15 on connect and subscribes to notifies; writes Unpair Phone magic via char 8 on user request; writes char 14 on reconnect (shortcuts+weather+holiday_country), on weather-poll changes, and clock-face/time-format/ANCS-filter changes; writes char 0013 (Lunar Holiday List) on every (re)connect. Subscribes to chars 16–17, maintains Orion's local notification mirror; writes char 18 on Answer/Decline/End-call/Dismiss taps. Owns bringing the Orion window to the foreground on `AncsCallState{st:1}` (`orion-frontend` owns the in-app UI that follows). Owns `holiday.rs`'s lunisolar computation (`pc-app.md`).
 
 Pre-release: no need to bump a version header per change — just keep this file in sync with the firmware/Orion implementations as the contract evolves.
 
@@ -874,3 +905,48 @@ Orion writes `AncsNotificationAction` only in direct response to a user tap (Ans
 ### Icon tokens
 
 `"k"` reuses firmware's per-bundle icon token vocabulary (`ancs_icons.h`, `firmware.md`'s token list) — Orion needs matching icon assets keyed by the same tokens (or a category fallback glyph) to stay visually consistent with the device. Adding a new brand icon is a firmware change on Ori's side plus an asset addition on Orion's — the same two-sided update the device's own icon set already requires.
+
+---
+
+## 14. Firmware update over BLE
+
+Chars 20–21 carry the firmware image. Added 2026-08-16, replacing the USB CDC transport outright — the enclosure exposes no reachable data port, so a deployed unit is updatable over the air or not at all. `esp32-connectivity` owns the firmware side (`ota_receiver.cpp`); `orion-sync` owns the sender. **Full behavioural spec, on-device UX, failure semantics, and the sender's algorithm are in `ota.md`** — this section is the wire contract only.
+
+### Authority
+
+Both characteristics are MITM-encrypted **and** writer-checked against the bonded Orion connection handle (§3). That bond is the entire authority to overwrite the application partition, replacing "whoever can reach the USB port." Consequences worth stating plainly:
+
+- The iPhone bond cannot push firmware, even though it is a bonded peer.
+- An unbonded central gets `INSUFFICIENT_AUTHENTICATION` on both chars.
+- The `sha256` and embedded-version checks prove **integrity**, not **origin**. Nothing here proves an image came from Orinari; that needs Secure Boot (`ota.md`'s deferred-to-M8 plan), and it matters more now that the gate is remote rather than physical.
+
+### Control (char `0014`) — Write (response) + Notify
+
+`FirmwareUpdateControl` (Orion → Ori) and `FirmwareUpdateStatus` (Ori → Orion), both CBOR, schemas in §4. Orion **must** subscribe before writing `BEGIN` — `READY` is a notify, and an unsubscribed central simply never sees it. Declaring base `Read` on this notify characteristic is mandatory for the WinRT reason in §3.
+
+### Data (char `0015`) — Write-No-Response + Write
+
+```
+Offset  Size  Field
+0       4     offset (uint32 LE) — absolute position of this payload in the image
+4       N     image bytes
+```
+
+**This is deliberately not §5's chunk frame.** Three reasons:
+
+1. **Recovery cost.** §5's rule is "seq gap → NACK → sender restarts from seq 0." That is fine for a 30 KB album art and unacceptable for a 1.5 MB image on a link that will occasionally drop a packet. An absolute offset lets Ori answer `RESUME { b }` and the sender seek there.
+2. **No fragment-count ceiling.** `total_frags` is a uint16. At §5's fallback MTU of 23 (14-byte payloads) a 1.5 MB image needs ~107,000 fragments.
+3. **Nothing needs the total up front.** `BEGIN`'s `n` already declared it, before the first byte.
+
+Ori accepts a frame only when `offset == bytes_received`; anything else is dropped and answered with `RESUME` (rate-limited to one per 200 ms, so the sender's in-flight window can't produce one notify per stale frame). `RESUME` is a within-session rewind only — there is no resume across a reconnect.
+
+### Flow control
+
+Same windowed-checkpoint technique §5 specifies for bulk sync writes: stream Write-No-Response, and every ~24 frames — plus the last one — send that frame as a **Write-with-response** whose ATT ack proves the burst landed and blocks the sender until Ori has drained it. Without it the controller accepts more than NimBLE can process and fragments are silently dropped (recoverable via `RESUME`, but at a cost). `PROGRESS { b }` also arrives roughly every 1% (capped at 16 KB) and is usable as a secondary ack.
+
+### Interaction with the rest of the protocol
+
+- While a transfer is live, **every other data characteristic is NACKed** (`gatt_server::is_ota_active()`); chars 20–21 are exempt by construction. Orion retries the rest after the reboot.
+- Ori enters transfer quiet mode: advertising stops, ANCS processing suspends, **and the iPhone link is dropped** so the whole radio schedule belongs to the connection carrying the image. It also requests a 7.5–15 ms connection interval. All of this is reversed on failure; a success reboots. Details in `ota.md`.
+- The update is **not** signalled through Device Status (char 1) — `0x20` stays reserved and unused. The OTA screen is a local firmware state.
+- `VALIDATED` is sent **before** the flash commit, not after, because the commit tears down the BLE stack (`NimBLEDevice::deinit`) before the first byte reaches flash. It means "verified, installing." The Firmware Revision String read after the reboot (§3.1) is what proves the install landed; a failed flash shows up as an unchanged version.

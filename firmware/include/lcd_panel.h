@@ -18,8 +18,8 @@ namespace lcd_panel {
 void     init();         // brings up the panel; framebuffer in PSRAM
 
 // stop — gate + reset the LCD_CAM peripheral, halting the RGB DMA scan-out.
-// Used during USB CDC OTA only. There is intentionally no resume() — every OTA
-// outcome reboots, which re-inits the panel.
+// Used for the firmware-update flash commit only. There is intentionally no
+// resume() — every outcome past that point reboots, which re-inits the panel.
 void     stop();
 
 // blackout — fill the entire framebuffer with black and flush the CPU cache so

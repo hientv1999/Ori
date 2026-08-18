@@ -111,7 +111,7 @@ DEVICE_TYPES = {"ori": 1, "origale": 2, "orimat": 3}
 # runtime flash write anywhere in that firmware. Must match
 # ../Origale/firmware/src/serial_id.c.
 SERIAL_BLOCK_MAGIC = b"ORISER01"
-ESP32S3_USB_VID = "303A"                    # native USB — same VID mock_orion_ota.py looks for
+ESP32S3_USB_VID = "303A"                    # native USB — Espressif's vendor ID
 
 
 def load_ledger(path):
@@ -274,7 +274,7 @@ def flash_factory_image(port, bin_path):
 
 
 def find_esp32s3_port():
-    """Best-effort auto-detect, same VID mock_orion_ota.py filters on. Returns
+    """Best-effort auto-detect on Espressif's USB vendor ID. Returns
     None (never guesses) if zero or more than one candidate is found — the
     caller falls back to asking for --port explicitly.
     """

@@ -751,6 +751,20 @@ AppState evaluate() {
     // yank away a view the user explicitly opened.
     bool force = g_force_rebuild;
     g_force_rebuild = false;
+
+    // OTA_ACK is a terminal, user-dismissed takeover: its only content is the
+    // version string, which cannot change while it is on screen, and it carries
+    // a ONE-SHOT checkmark animation. Rebuilding it in place restarts that
+    // animation from zero. Every passive force-rebuild did exactly that, and an
+    // update's own reboot fires a burst of them (Orion connects, Orion syncs,
+    // the clock arrives, the phone re-bonds), so the check visibly re-drew
+    // several times. Nothing here needs rebuilding — on_ota_ack_close() does a
+    // full rebuild with current connectivity the moment the user dismisses it.
+    if (target == AppState::OTA_ACK && g_state == AppState::OTA_ACK &&
+        g_current_screen != nullptr) {
+        return g_state;
+    }
+
     if (!force &&
         (g_state == AppState::CLOCK || g_state == AppState::CALENDAR_VIEW) &&
         target != AppState::SETUP &&
@@ -1510,8 +1524,10 @@ void set_pc_connected(bool connected) {
     }
 
     // Track the flag, but never rebuild the screen during an OTA takeover — a
-    // BLE connect/disconnect mid-update must not yank the OTA screen or starve
-    // the USB CDC poll. evaluate() runs (and resyncs) once the transfer ends.
+    // BLE connect/disconnect mid-update must not yank the OTA screen. (The
+    // iPhone link dropping is now an expected part of an update, not an
+    // anomaly: ble_manager drops it deliberately to free radio time —
+    // ota.md.) evaluate() runs (and resyncs) once the transfer ends.
     //
     // Also skip the rebuild during first-boot setup: the setup flow owns the
     // screen (driven by set_step + the passkey/orioning modals on BLE events),
@@ -1520,7 +1536,14 @@ void set_pc_connected(bool connected) {
     // OrionConnected event (before mark_orion_bonded → is_awaiting_sync) would
     // snap Step 2 "Connect on Orion" back to Welcome. The mode-toggle this
     // rebuild serves is a runtime-only affordance anyway.
-    if (changed && !ota_receiver::is_active() && !nvs::is_first_boot()) {
+    //
+    // g_has_ota_ack is guarded for the same reason as is_active(): the
+    // post-update ack owns the whole screen until the user taps Close. Note
+    // this one CANNOT be caught by evaluate()'s own OTA_ACK guard — the line
+    // below clobbers g_state first, so evaluate() would see a state change
+    // rather than a rebuild-in-place. It has to be stopped here.
+    if (changed && !ota_receiver::is_active() && !g_has_ota_ack &&
+        !nvs::is_first_boot()) {
         g_force_rebuild = true;
         g_state = AppState::NO_MEETINGS;  // ensure evaluate() does a full rebuild
         evaluate();
@@ -1537,7 +1560,10 @@ void set_pc_synced() {
     // every one of those would force a full screen rebuild for no visible
     // change — exactly what state-machine.md's "periodic refreshes ...
     // do not trigger the reconnecting overlay" is designed to avoid.
-    if (changed && !ota_receiver::is_active() && !nvs::is_first_boot()) {
+    // g_has_ota_ack: same clobber-before-evaluate() reasoning as
+    // set_pc_connected() above.
+    if (changed && !ota_receiver::is_active() && !g_has_ota_ack &&
+        !nvs::is_first_boot()) {
         g_force_rebuild = true;
         g_state = AppState::NO_MEETINGS;  // ensure evaluate() does a full rebuild
         evaluate();

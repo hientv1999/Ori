@@ -55,13 +55,14 @@ void on_iphone_disconnected();
 // clear it.
 void clear_phone_identity();
 
-// ── OTA-transfer suspension (ota.md "Behaviour") ───────────────────────────
-// While a USB CDC firmware download is streaming into PSRAM, ANCS processing
+// ── Firmware-transfer suspension (ota.md "Behaviour") ──────────────────────
+// While a firmware download is streaming into PSRAM over BLE, ANCS processing
 // is suspended at the source: the NS/DS notify callbacks drop incoming events
 // instead of ringing them (per-notification attribute fetches + icon lookups
 // across the 48-app registry are the heaviest BLE-triggered work in the
-// system — firmware.md — and must not compete with the USB RX path), and
-// poll() skips its whole body (CTS read, RSSI HCI round-trip, NS/DS drain).
+// system — firmware.md — and now compete for the very same radio carrying the
+// image), and poll() skips its whole body (CTS read, RSSI HCI round-trip,
+// NS/DS drain). ble_manager then drops the phone link outright on top of this.
 // suspend_for_ota() is called from ota_receiver's accepted-BEGIN path via
 // ble_manager::set_ota_transfer_quiet(true).
 void suspend_for_ota();

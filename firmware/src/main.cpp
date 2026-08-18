@@ -36,7 +36,9 @@
 //                               actually visible until loop() begins; the
 //                               eventual lv_scr_load_anim(..., auto_del=true)
 //                               that swaps it in also deletes the splash.
-//  10. ota_receiver::init()   — prepare USB CDC OTA framing state machine.
+//  10. ota_receiver::init()   — prepare the BLE firmware-update state machine.
+//                               Before ble_manager, because the GATT server's
+//                               chars 0014/0015 hand writes straight to it.
 //  11. ble_manager::init()    — NimBLE stack, GATT server, ANCS client, advertising.
 //                               Must be after screen_manager so passkey modal is ready.
 
@@ -54,7 +56,6 @@
 #include "nvs_store.h"
 #include "nvs_sync.h"
 #include "ota_receiver.h"
-#include "identify_responder.h"
 #include "assets/profile_placeholder.h"
 #include "assets/time_off_placeholder.h"
 #include "photo_cache.h"
@@ -92,14 +93,12 @@ void setup() {
     // Serial  = USB CDC  (requires host to be listening — unreliable for boot logs)
     // Serial0 = UART0    (GPIO43 TX / GPIO44 RX, always transmits — use this)
     //
-    // Enlarge the CDC RX ring BEFORE begin(). The default is 256 bytes, which
-    // overflows during a USB CDC OTA: the main loop only drains serial inside
-    // ota_receiver::poll() and there is a multi-ms gap each iteration (LVGL
-    // render + delay(10)) where incoming DATA piles up. A small ring drops
-    // bytes mid-frame → the OTA frame parser desyncs → transfer stalls. 16 KB
-    // absorbs the per-iteration burst; USB endpoint NAK back-pressures the host
-    // when even that fills, so no bytes are lost. (~16 KB SRAM; plenty free.)
-    Serial.setRxBufferSize(32768);
+    // The RX ring stays at the stock 256 bytes. It used to be widened to 32 KB
+    // to absorb USB CDC firmware-update DATA bursts between loop iterations;
+    // firmware updates now arrive over BLE (ota.md), and the only thing left
+    // reading this port is the ORI_DEBUG_SERIAL console (single keypresses).
+    // Nothing inbound on USB is load-bearing any more — the port is TX-only in
+    // a shipped build.
     Serial.begin(115200);
     delay(50);
     LOG("\n");
@@ -187,9 +186,10 @@ void setup() {
     // load from NVS at boot. After a power cycle the list is empty until Orion
     // reconnects and re-pushes it.
 
-    // OTA receiver + BLE stack.
-    // ota_receiver must be initialised before ble_manager because it sets up
-    // the USB CDC framing parser which runs independently of BLE.
+    // Firmware-update receiver + BLE stack.
+    // ota_receiver must be initialised before ble_manager: the GATT server it
+    // registers routes chars 0014/0015 straight into ota_receiver, and
+    // advertising starts the moment ble_manager::init() returns.
     ota_receiver::init();
 
     // BLE must be last because ble_manager::init() starts advertising immediately,
@@ -207,17 +207,12 @@ void loop() {
 
     nvs::tick();
 
-    // Drain BLE event queue before LVGL so BLE-driven state changes are
-    // reflected in the current frame. ota_receiver polls USB CDC for OTA frames.
+    // Drain the BLE event queue before LVGL so BLE-driven state changes are
+    // reflected in the current frame — including the deferred firmware-update
+    // control ops, which ota_receiver::poll() then advances (progress ring,
+    // no-progress watchdog, flash commit).
     ble_manager::poll();
     ota_receiver::poll();
-    // After ota_receiver (which claims 0x4F frames and leaves everything else)
-    // and before poll_serial (the debug console, which claims what's left).
-    // This one claims only 0xA5 — see identify_responder.h on why the three
-    // can share one USB CDC port.
-    if (!ota_receiver::is_active() && !ota_receiver::is_busy()) {
-        identify_responder::poll();
-    }
     state_machine::poll();  // drain deferred NVS writes before LVGL renders
 
     // ------------------------------------------------------------------

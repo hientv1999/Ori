@@ -16,6 +16,8 @@
 //   "hol_region"  — uint8: region within that country, 0=None (holiday_data.h)
 //   "hol_lunar"   — bytes: raw uint16_t[] epoch-day array (Lunar New Year
 //                   dates pushed by Orion — see holiday_data.h)
+//   "gatt_layout" — uint8: the ORI_GATT_LAYOUT_VERSION last announced to
+//                   bonded peers via Service Changed (gatt_server.h)
 //
 // Profile, photo, and meeting/Time Off hashes live in the "ori" namespace too,
 // under keys owned by nvs_sync.h.
@@ -58,6 +60,14 @@ void    clear_orion_bonded();
 // Mode toggle persistence (0 = Calendar, 1 = Media).
 uint8_t get_mode();
 void    set_mode(uint8_t mode);
+
+// GATT attribute-table layout version last announced to bonded peers
+// (ORI_GATT_LAYOUT_VERSION in ble/gatt_server.h). 0 = never announced.
+// Compared on every Orion connect; a mismatch fires one Service Changed
+// indication so the peer drops its cached attribute table. See
+// gatt_server::announce_gatt_layout_change().
+uint8_t get_gatt_layout();
+void    set_gatt_layout(uint8_t version);
 
 // Clock-face preference (0 = Digital, 1 = Analog). Drives which of
 // screen_clock / screen_clock_analog the Clock state shows.
@@ -150,7 +160,7 @@ void   set_lunar_days(const uint16_t* days, size_t count);
 void    factory_reset();
 
 // Post-OTA acknowledgement flag. Set just before the reboot at the end of a
-// successful USB CDC OTA; read on the next boot to show the "Firmware updated"
+// successful firmware update; read on the next boot to show the "Firmware updated"
 // ack screen, which persists across reboots until the user taps Close.
 //   set:   stores the new firmware version string ("needs ack" = present)
 //   get:   true + fills `buf` if an unacknowledged update is pending

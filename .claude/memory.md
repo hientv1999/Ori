@@ -54,7 +54,7 @@ All animated widgets use `lv_timer` (not `lv_anim`) for independent rate control
 |---|---|---|---|
 | Setup spinners, re-pair spinner, `widget_progress_ring` indeterminate | 42 ms | 24 | 10°/step, 36 steps ≈ 1512 ms/rev |
 | Colon blink (`screen_clock`) | 42 ms | 24 | 36-tick linear fade, opacity 255 ↔ 64 |
-| OTA progress ring (`screen_ota_updating`) | 200 ms | 5 | Real PROGRESS frames arrive every 500 ms–1.5 s |
+| OTA progress ring (`screen_ota_updating`) | 200 ms | 5 | Driven by `ota_receiver::poll()` at one update per integer percent; on a ~1.5 MB BLE transfer that lands roughly every 0.4–1 s |
 
 ---
 

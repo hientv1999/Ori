@@ -45,12 +45,14 @@ factory,   data, nvs,      0xFEC000, 0x4000,   # 16 KB, see below
   via `Preferences::begin(name, readOnly, "factory")` (`firmware/src/factory_info.cpp`).
 - **Namespace**: `"factory"`, one key `"sn"` (serial number).
 - **Firmware never writes to it.** `factory_info.h` exposes only a
-  `serial_number()` read accessor — no setter anywhere in firmware, BLE, or
-  USB CDC. The only writer is the one-time manufacturing flash below —
-  smallest possible attack/bug surface for permanent data.
-- **Survives an OTA update**: USB CDC firmware updates (`ota.md`) only ever
-  write the `ota_0`/`ota_1` app-slot partitions; every NVS partition is
-  untouched by construction, same as bonds/profile today.
+  `serial_number()` read accessor — no setter anywhere in firmware or BLE.
+  The only writer is the one-time manufacturing flash below — smallest
+  possible attack/bug surface for permanent data.
+- **Survives a firmware update**: updates (`ota.md`) only ever write the
+  `ota_0`/`ota_1` app-slot partitions; every NVS partition is untouched by
+  construction, same as bonds/profile today. That was true of the old USB CDC
+  transport and is equally true of the BLE one — the property comes from
+  *which partitions get written*, not from how the image arrived.
 
 ## 2. Serial number format
 
@@ -85,11 +87,13 @@ ceiling; if a run ever approaches that, the format needs a real revision rather
 than a rollover.
 
 **There is no check digit.** The previous format carried a Luhn digit for
-catching a mis-typed serial by eye. It is gone because the serial is now
-machine-checked where it matters: Orion compares it byte-for-byte against the
-IDENTITY frame before a firmware update, and a wrong digit fails that
-comparison outright rather than being caught by arithmetic. Nothing in the
-system asks a human to validate a serial unaided.
+catching a mis-typed serial by eye. It is gone because nothing in the system
+asks a human to validate a serial unaided: every consumer of it is comparing
+byte strings, not eyeballing digits. On Origale/Orimat that comparison is
+Orion's IDENTITY-frame check before a firmware update; on Ori it is simply the
+value read back over BLE (§4) — Ori's own updates are addressed by the BLE bond
+now, not by picking the right serial port, so there is no serial comparison in
+its update path at all (`ota.md`).
 
 **`DDMMYY` is the only manufacture-date representation anywhere in the
 system now** (revised 2026-07-27 — an earlier draft additionally stored a
@@ -100,10 +104,14 @@ is a 21st-century one — rather than being sent a second, independently-set
 copy of the same date that could disagree with the first. Orion's Ori Info
 modal, the one place this is displayed, does exactly that (`pc-app-usb-serial.md`).
 
-**The stored string is exactly 12 ASCII digits.** `identify_responder.cpp`
-parses it to the u64 the wire carries and reports 0 for anything that isn't
-exactly that — a partially-parsed serial would be a plausible *wrong* answer,
-and Orion gates a destructive write on it.
+**The stored string is exactly 12 ASCII digits.** Ori never parses it — it is
+exposed verbatim as Device Settings `"s"` (§4) and Orion reads the digits it
+needs off that string. (Origale and Orimat *do* parse theirs to the u64 their
+IDENTITY frame carries, and report 0 for anything that isn't exactly 12
+digits: a partially-parsed serial would be a plausible *wrong* answer, and
+Orion gates a destructive USB write on it. Ori had the same responder until
+2026-08-16; it was deleted along with the USB update path, since Ori is now
+addressed by its BLE bond rather than by picking the right serial port.)
 
 ## 3. Writing it at manufacturing time
 
@@ -164,9 +172,10 @@ have already been issued.
 ### Firmware updates and the serial — Ori vs. the CH32 devices
 
 **Ori's serial survives a firmware update, and that is a property of where it lives**, not luck:
-USB CDC OTA (`ota.md`) writes only the `ota_0`/`ota_1` app slots, and the `factory` partition is a
+an update (`ota.md`) writes only the `ota_0`/`ota_1` app slots, and the `factory` partition is a
 different partition entirely (§1). The same goes for a factory reset, which clears the `"ori"`
-namespace in the *main* NVS partition.
+namespace in the *main* NVS partition. Unaffected by the 2026-08-16 move from USB CDC to BLE —
+the transport changed, the set of partitions written did not.
 
 **Origale and Orimat do not get this for free.** Their serial is a constant inside the application
 image (there is no NVS on a CH32V003), so flashing new firmware overwrites it and the unit comes

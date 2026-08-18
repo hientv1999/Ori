@@ -1,71 +1,89 @@
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>
 #include <stdbool.h>
 
-// Ori USB CDC OTA receiver (ota.md).
+// Ori BLE firmware-update receiver (ota.md).
 //
-// Reads the framed OTA protocol from the USB CDC serial port (Serial, not Serial0).
-// Magic bytes 0x4F54 ("OT") distinguish OTA frames from boot log bytes.
+// Transport is BLE — two characteristics on the Ori Sync Service, written only
+// by the bonded, encrypted Orion peer (ble-protocol.md §14). There is no USB
+// firmware-update path: the enclosure exposes no reachable data port, so the
+// device updates fully wirelessly in the field.
 //
-// Frame format:
+//   0014  Firmware Update Control  Read + Write (response) + Notify
+//   0015  Firmware Update Data     Write no-response (+ Write for the
+//                                  sender's windowed checkpoint)
+//
+// Control payloads are CBOR with single-character keys, matching the rest of
+// the service (ble-protocol.md §4):
+//
+//   Orion → Ori   { "o": "BEGIN", "v": <version>, "n": <total_size>, "h": <sha256> }
+//                 { "o": "END" }   { "o": "ABORT" }
+//   Ori → Orion   { "o": "READY" }
+//                 { "o": "REJECT",    "r": <reason> }
+//                 { "o": "PROGRESS",  "b": <bytes_received> }
+//                 { "o": "RESUME",    "b": <expected_offset> }
+//                 { "o": "VALIDATED", "v": <version read from the binary> }
+//                 { "o": "FAILED",    "r": <reason> }
+//
+// Data frames carry an absolute byte OFFSET, not a fragment index:
+//
 //   Offset  Size  Field
-//   0       2     magic       = 0x4F54
-//   2       1     op
-//   3       3     payload_len (uint24 LE)
-//   6       N     payload     (CBOR for control ops, raw bytes for DATA)
+//   0       4     offset (uint32 LE) — position of this payload in the image
+//   4       N     image bytes
 //
-// Op codes:
-//   0x01 BEGIN       PC → Ori   CBOR: { fw_version, total_size, sha256 }
-//   0x02 READY       Ori → PC   CBOR: {}
-//   0x03 REJECT      Ori → PC   CBOR: { reason }
-//   0x04 DATA        PC → Ori   raw bytes
-//   0x05 PROGRESS    Ori → PC   CBOR: { bytes_received }
-//   0x06 END         PC → Ori   CBOR: {}
-//   0x07 VALIDATED   Ori → PC   CBOR: {}
-//   0x08 FAILED      Ori → PC   CBOR: { reason }
+// The offset makes a lost fragment cost one rewind instead of a whole restart,
+// which matters far more over BLE than it did over a cable, and it has no
+// fragment-count ceiling (a uint16 index would overflow on a small MTU).
+// Ori accepts a frame only at `offset == bytes_received`; anything else is
+// answered with RESUME carrying the offset it actually wants.
 //
-// BEGIN reject reasons: busy (transfer already in progress), missing_fields,
-// too_large (total_size > inactive slot capacity), no_memory (PSRAM staging
-// alloc failed). END failure reasons: truncated, hash_mismatch, bad_image,
-// version_mismatch (binary's embedded version disagrees with the BEGIN
-// claim — same-version reinstalls and downgrades are allowed). There is no
-// countdown-active reject — a pending meeting never blocks the update. Full
-// list and rationale: ota.md.
+// BEGIN reject reasons: busy, missing_fields, not_map, cbor_decode, too_large,
+// no_memory. Post-BEGIN failure reasons: truncated, size_overflow,
+// hash_mismatch, bad_image, version_mismatch (the binary's embedded version
+// disagrees with the BEGIN claim — same-version reinstalls and downgrades are
+// allowed), ble_timeout, link_lost, aborted, flash_error. Full list and
+// rationale: ota.md.
 //
-// While OTA is in progress: all BLE data characteristic writes are NACKed
-// (gatt_server::is_ota_active() returns true).
+// Threading: the two on_*_write() entry points run on the NimBLE host task;
+// everything that touches LVGL, NVS, or PSRAM allocation is deferred to
+// poll() on the Arduino main task. While a transfer is live, every OTHER BLE
+// data characteristic is NACKed (gatt_server::is_ota_active()).
 
 namespace ota_receiver {
 
-// Initialise the OTA receiver state machine. Call once from setup().
+// Initialise the receiver state machine. Call once from setup().
 void init();
 
-// Poll the USB CDC serial port for incoming OTA frames.
-// Call every loop() iteration. Non-blocking.
-// When a complete OTA sequence is detected, this calls:
-//   - state_machine::on_ota_begin() to show the OTA screen
-//   - gatt_server::set_ota_active(true)
-//   - Arduino Update library to flash the inactive slot
-//   - screen_ota_updating progress ring updates
-//   - state_machine transitions on completion/failure
+// Main-task tick: drives the progress ring, the no-progress watchdog, the
+// deferred failure path, and the flash commit. Call every loop() iteration.
 void poll();
 
-// Returns true when an OTA update is currently in progress (BEGIN accepted,
-// END/abort not yet reached). Used to NACK BLE writes and to gate the debug
-// serial consumer off the shared USB CDC port.
+// Firmware Update Control (char 0014) write — NimBLE host task.
+// Parses the op and defers the work to the main task; only the cheap
+// synchronous rejects (busy / malformed CBOR) answer inline.
+void on_control_write(const uint8_t* cbor, uint16_t len);
+
+// Firmware Update Data (char 0015) write — NimBLE host task, hot path.
+// Validates the offset and copies straight into the PSRAM staging buffer.
+void on_data_write(const uint8_t* frame, uint16_t len);
+
+// Deferred control ops, drained from ble_manager::poll() on the main task.
+void run_begin();
+void run_end();
+void run_abort();
+
+// Orion's link dropped. Aborts a download in progress (the image is
+// incomplete and there is no resume across connections); a transfer already
+// past verification is left alone to finish installing.
+void on_orion_disconnected();
+
+// True from an accepted BEGIN until the update commits or its error screen is
+// dismissed. Gates BLE data writes and makes OTA the top-priority app state.
 bool is_active();
 
-// Returns true when the frame parser is mid-frame (header or payload partially
-// received). poll() can return mid-frame on its time budget, so the debug
-// serial consumer must not read the port while this — or is_active() — is true,
-// or it would steal OTA bytes. Covers a BEGIN frame fragmented across polls,
-// before is_active() flips true.
-bool is_busy();
-
-// "Close" on the Update failed screen: drops the failed transfer and returns to
-// runtime. (The install has no user gate — after the download it auto-advances
-// to the Installing frame and commits after a short linger.)
+// "Close" on the Update failed screen: drop the failed transfer, resume runtime.
 void dismiss_error();
 
 } // namespace ota_receiver

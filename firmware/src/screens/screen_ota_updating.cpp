@@ -14,8 +14,8 @@
 // All touch is inert (a transparent clickable layer covers the entire
 // screen and absorbs presses without doing anything).
 //
-// M5: mock timer removed. Progress is driven by ota_receiver::poll()
-// calling screen_ota_updating::set_progress() on each PROGRESS frame.
+// M5: mock timer removed. Progress is driven by ota_receiver::poll() calling
+// screen_ota_updating::set_progress() once per integer percent received.
 
 namespace {
 
@@ -76,10 +76,12 @@ lv_obj_t* create() {
     widget_progress_ring::set_value(state->ring, 0);
     widget_progress_ring::set_label_text_center(state->ring, "0%", -8);
 
-    // Download phase: image streams into PSRAM and the ring advances live.
+    // Download phase: image streams into PSRAM over BLE and the ring advances
+    // live. What the user has to not do is walk the PC away or cut power —
+    // there is no cable to keep plugged in for data any more (ota.md).
     lv_obj_t* sub = lv_label_create(root);
     state->sub_label = sub;
-    lv_label_set_text_static(sub, "Keep Ori plugged in");
+    lv_label_set_text_static(sub, "Keep Ori near your PC");
     // Match "Your desk deserves better" on Welcome — secondary, 26 px.
     lv_obj_set_style_text_color(sub, theme::color(theme::COLOR_TEXT_SECONDARY), 0);
     lv_obj_set_style_text_font(sub, theme::font_title(), 0);
@@ -126,7 +128,7 @@ void set_installing(uint32_t linger_ms) {
     if (g_ota_ui->sub_label) {
         lv_label_set_text_static(g_ota_ui->sub_label,
             "Screen goes dark for a few seconds —\n"
-            "keep Ori plugged in. It restarts when done.");
+            "keep Ori powered. It restarts when done.");
         // Take the instruction text out of the (top-aligned) flex flow and pin it
         // to the centre of the screen, independent of the title at the top.
         lv_obj_add_flag(g_ota_ui->sub_label, LV_OBJ_FLAG_IGNORE_LAYOUT);

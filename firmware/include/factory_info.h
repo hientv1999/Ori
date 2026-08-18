@@ -8,7 +8,7 @@
 //
 // Written exactly once, at manufacturing time, by flashing a pre-built NVS
 // partition image (tools/factory_provision.py) — there is deliberately no
-// runtime setter anywhere in this firmware (BLE, USB CDC, or otherwise).
+// runtime setter anywhere in this firmware (BLE or otherwise).
 // On a dev/bench unit whose "factory" partition was never provisioned, the
 // accessor returns an empty string; callers treat that the same way the rest
 // of the protocol treats "not yet known" (ble-protocol.md's "don't show what

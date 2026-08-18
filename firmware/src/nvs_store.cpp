@@ -30,6 +30,7 @@ constexpr const char* k_wx_alert_en  = "wx_alert_en"; // uint8: weather alert en
 constexpr const char* k_wx_alert_off = "wx_alert_off"; // uint8: weather alert offset minutes
 constexpr const char* k_batt_alert_en = "batt_alert_en"; // uint8: low battery alert enabled
 constexpr const char* k_batt_thresh   = "batt_thresh";   // uint8: low battery threshold pct
+constexpr const char* k_gatt_layout   = "gatt_layout";   // uint8: ORI_GATT_LAYOUT_VERSION last announced
 
 Preferences prefs;
 
@@ -188,6 +189,17 @@ void set_mode(uint8_t mode) {
 
 uint8_t get_clock_face() {
     return get_uchar(k_clock_face, 0);  // default: Digital
+}
+
+uint8_t get_gatt_layout() {
+    // 0 = never announced (fresh unit, or a factory reset wiped the namespace).
+    // Any compiled version differs from 0, so the first Orion connect announces
+    // once — harmless on a fresh pair, which discovers everything anyway.
+    return get_uchar(k_gatt_layout, 0);
+}
+
+void set_gatt_layout(uint8_t version) {
+    set_uchar(k_gatt_layout, version, "gatt_layout");
 }
 
 void set_clock_face(uint8_t face) {

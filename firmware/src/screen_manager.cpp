@@ -418,17 +418,15 @@ void init() {
 
 void poll_serial() {
 #ifdef ORI_DEBUG_SERIAL
-    // OTA owns the USB CDC port while a transfer is in flight or the frame
-    // parser is mid-frame. Reading here would steal OTA bytes (ota_receiver::poll
-    // returns mid-frame on its time budget). Stay off the port until it's idle.
-    if (ota_receiver::is_active() || ota_receiver::is_busy()) return;
+    // A firmware update owns the screen and is about to reboot — the debug
+    // cycler must not swap screens out from under it. (It no longer competes
+    // for the port itself: the image arrives over BLE, not USB CDC.)
+    if (ota_receiver::is_active()) return;
 
+    // Sole reader of this port now — the firmware-update stream moved to BLE
+    // and the Orinari IDENTIFY responder went with it, so there is no other
+    // protocol's first byte to step around.
     while (Serial.available() > 0) {
-        // Don't consume the first byte of a frame belonging to one of the two
-        // binary protocols sharing this port: 0x4F starts an OTA frame
-        // (ota_receiver), 0xA5 starts an Orinari IDENTIFY (identify_responder).
-        const uint8_t next = (uint8_t)Serial.peek();
-        if (next == 0x4F || next == 0xA5) break;
         int b = Serial.read();
         if (b > 0) debug_handle_key((char)b);
     }

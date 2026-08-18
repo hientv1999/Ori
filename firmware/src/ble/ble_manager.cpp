@@ -28,6 +28,7 @@
 #include "holiday_data.h"
 #include "state_machine.h"
 #include "factory_reset.h"
+#include "ota_receiver.h"
 #include "screens/screen_setup.h"
 #include "screens/screen_reconnect_syncing.h"
 #include "screens/screen_media_mode.h"
@@ -89,6 +90,12 @@ enum class BleEventType : uint8_t {
                          // runs on the NimBLE host task (hardware.md's ICache/DCache-disable hazard)
     HolidayCountryUpdate, // Orion wrote holiday_country via Device Settings (char 000E, key "g")
     HolidayRegionUpdate,  // Orion wrote holiday_region via Device Settings (char 000E, key "j")
+    FwUpdateBegin,     // Orion wrote Firmware Update Control{o:"BEGIN"} (char 0014, §14) —
+                       // deferred so the 1.5 MB PSRAM staging allocation and the OTA screen
+                       // takeover run on the main task, not the NimBLE host task
+    FwUpdateEnd,       // Firmware Update Control{o:"END"} — deferred for the SHA-256 pass
+                       // over the staged image and the Installing screen transition
+    FwUpdateAbort,     // Firmware Update Control{o:"ABORT"} — user cancelled from Orion
 };
 
 struct BleEvent {
@@ -771,10 +778,15 @@ void init() {
     NimBLEDevice::init(g_ble_name);
     NimBLEDevice::setMTU(247);
 
-    // Prefer the 2 Mbit PHY on every connection — roughly doubles on-air
-    // throughput for bulk sync (photo, meetings, Time Off, album art). The link
-    // negotiates back to 1M automatically if the central doesn't support 2M,
-    // so this is safe for any Orion PC / iPhone.
+    // State a preference for the 2 Mbit PHY. This is ONLY a preference, and it
+    // is only consulted when a connection is established — it does not
+    // renegotiate an existing link, and it does not make the central ask.
+    // Measured 2026-08-17 mid-firmware-transfer against Windows: the link was
+    // running phy tx=1 rx=1, i.e. plain 1M, despite this call. So do not treat
+    // 2M as a given anywhere; assume 1M when reasoning about throughput.
+    // Getting an established link onto 2M needs an explicit per-connection
+    // ble_gap_set_prefered_le_phy() request, which Ori deliberately does not
+    // make today.
     NimBLEDevice::setDefaultPhy(BLE_GAP_LE_PHY_1M_MASK | BLE_GAP_LE_PHY_2M_MASK,
                                 BLE_GAP_LE_PHY_1M_MASK | BLE_GAP_LE_PHY_2M_MASK);
 
@@ -916,6 +928,12 @@ static void handle_auth_failed() {
 
 static void handle_orion_connected() {
     LOG("[ble:poll] Orion connected\n");
+    // If this build's GATT table differs from what this peer was last told
+    // about, fire Service Changed now so it drops its cached attribute table
+    // before it starts using it. Must happen here, on the main task and before
+    // any sync traffic: a peer acting on a stale cache silently can't see
+    // characteristics this build added (gatt_server.h's ORI_GATT_LAYOUT_VERSION).
+    gatt_server::announce_gatt_layout_change();
     state_machine::set_pc_connected(true);
     // Notify Device Status = RUNTIME_RECONNECTING per ble-protocol.md
     // §6.2 — this is just the wire-protocol status Orion sees. The
@@ -1174,6 +1192,11 @@ static void handle_orion_disconnected() {
     gatt_server::set_device_status(0xF0); // ERROR_GENERIC until reconnect
     // Discard any in-progress sync staging — link dropped before END.
     gatt_server::abort_sync_stage();
+    // Same for a firmware update mid-download: the image is incomplete and
+    // there is no cross-connection resume, so fail it now rather than let the
+    // no-progress watchdog take another 10 s to notice. A transfer already past
+    // verification is left alone to finish installing.
+    ota_receiver::on_orion_disconnected();
 }
 
 static void handle_iphone_disconnected() {
@@ -1403,6 +1426,18 @@ void poll() {
                 handle_holiday_region_update(ev);
                 break;
 
+            case BleEventType::FwUpdateBegin:
+                ota_receiver::run_begin();
+                break;
+
+            case BleEventType::FwUpdateEnd:
+                ota_receiver::run_end();
+                break;
+
+            case BleEventType::FwUpdateAbort:
+                ota_receiver::run_abort();
+                break;
+
             case BleEventType::MediaMetaUpdated:
                 handle_media_meta_updated();
                 break;
@@ -1522,15 +1557,30 @@ void set_ota_transfer_quiet(bool quiet) {
         g_ota_adv_suppress = true;
         // Stop advertising so no reconnect ceremony (the heaviest BLE burst —
         // see g_ota_adv_suppress's doc comment) can start mid-download.
-        // Peers already connected keep their links; gatt_server's
-        // set_ota_active(true) NACK gate has already made them inert.
+        // Orion's own link is exempt by construction: it's already connected,
+        // and it's the one carrying the image.
         NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
         if (adv) adv->stop();
         // Suspend ANCS processing at the source — NS/DS events are dropped in
         // the notify callbacks and ancs_client::poll() skips its whole body
         // (CTS/RSSI round-trips + the NS/DS drain).
         ancs_client::suspend_for_ota();
-        LOG("[ble] OTA transfer quiet mode ON\n");
+        // Then drop the phone link outright for the duration. Suspending ANCS
+        // stops the CPU work, but an idle second connection still costs radio
+        // time: the controller has to schedule its connection events in the
+        // same timeline as Orion's, which is exactly the budget the image
+        // transfer is trying to saturate. One connection gets every event.
+        // The phone comes back on its own when advertising re-arms below (or
+        // after the reboot), and a fresh connection is what makes iOS replay
+        // the notification backlog anyway (setup-flow.md).
+        if (g_iphone_connected && g_iphone_conn != BLE_HS_CONN_HANDLE_NONE) {
+            NimBLEServer* server = NimBLEDevice::getServer();
+            if (server) {
+                LOG("[ble] dropping iPhone link for the firmware transfer\n");
+                server->disconnect(g_iphone_conn);
+            }
+        }
+        LOG("[ble] firmware-transfer quiet mode ON\n");
         return;
     }
 
@@ -1541,7 +1591,7 @@ void set_ota_transfer_quiet(bool quiet) {
     if (!g_ota_adv_suppress) return;
     g_ota_adv_suppress = false;
     bool dropped = ancs_client::resume_from_ota_suspend();
-    LOG("[ble] OTA transfer quiet mode OFF (ancs dropped=%d)\n", (int)dropped);
+    LOG("[ble] firmware-transfer quiet mode OFF (ancs dropped=%d)\n", (int)dropped);
 
     // Anything dropped while suspended is unrecoverable on the SAME iPhone
     // connection (iOS never re-sends NS events) — force a drop so the bonded
@@ -1569,8 +1619,24 @@ void set_ota_transfer_quiet(bool quiet) {
     restart_advertising();
 }
 
+void set_ota_link_fast(bool fast) {
+    if (!g_orion_connected || g_orion_conn == BLE_HS_CONN_HANDLE_NONE) return;
+    NimBLEServer* server = NimBLEDevice::getServer();
+    if (!server) return;
+    // Units of 1.25 ms. Fast = 7.5-15 ms, the tightest range a Windows central
+    // will normally grant a non-HID peripheral, and the single biggest lever on
+    // transfer time — the image moves at (bytes per connection event) × (events
+    // per second), and this doubles the second term against the 15-30 ms range
+    // onConnect() asks for. Latency 0, 6 s supervision timeout, matching
+    // onConnect()'s own call. A central that declines simply keeps the old
+    // interval; the transfer is slower, not broken.
+    if (fast) server->updateConnParams(g_orion_conn, 6, 12, 0, 600);
+    else      server->updateConnParams(g_orion_conn, 12, 24, 0, 600);
+    LOG("[ble] Orion link interval -> %s\n", fast ? "fast (7.5-15 ms)" : "normal (15-30 ms)");
+}
+
 void quiesce_for_commit() {
-    LOG("[ble] quiescing stack for OTA flash commit\n");
+    LOG("[ble] quiescing stack for the firmware flash commit\n");
 
     // Make disconnect handling inert for the rest of this routine: the
     // disconnects we issue below must not restart advertising or open NVS
@@ -2005,6 +2071,28 @@ void ble_post_factory_reset_event() {
     // The event pump in ble_manager::poll() handles the actual wipe+restart.
 }
 
+
+// Deferred firmware-update control ops (from the char 0014 write handler).
+// The payload was already parsed into ota_receiver's own pending-BEGIN slot on
+// the host task; these carry no data of their own, only the "run it now, on the
+// main task" signal (ble-protocol.md §14).
+void ble_post_fw_update_begin_event() {
+    BleEvent ev = {};
+    ev.type = BleEventType::FwUpdateBegin;
+    eq_push(ev);
+}
+
+void ble_post_fw_update_end_event() {
+    BleEvent ev = {};
+    ev.type = BleEventType::FwUpdateEnd;
+    eq_push(ev);
+}
+
+void ble_post_fw_update_abort_event() {
+    BleEvent ev = {};
+    ev.type = BleEventType::FwUpdateAbort;
+    eq_push(ev);
+}
 
 // Deferred clock-face update (from Clock Face write handler).
 void ble_post_clock_face_event(uint8_t face) {

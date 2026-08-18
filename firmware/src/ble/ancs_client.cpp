@@ -1032,10 +1032,10 @@ void init() {
 }
 
 void poll(bool orion_connected) {
-    // OTA download in progress — skip everything (ota.md "Behaviour"). The
-    // CTS read and getRssi() are blocking GATT/HCI round-trips, and the NS/DS
-    // drain below is the heaviest BLE-triggered work in the system; none of
-    // it may compete with the USB CDC RX path. The NS/DS callbacks are
+    // Firmware download in progress — skip everything (ota.md "Behaviour").
+    // The CTS read and getRssi() are blocking GATT/HCI round-trips, and the
+    // NS/DS drain below is the heaviest BLE-triggered work in the system; none
+    // of it may compete with the BLE link carrying the image. The NS/DS callbacks are
     // already dropping events at the source while suspended, so there's
     // nothing accumulating that this drain is falling behind on.
     if (g_ota_suspended) return;

@@ -12,8 +12,9 @@ constexpr const char* k_serial  = "sn";   // string: serial number
 
 // Serial is a fixed 12 ASCII digits (provisioning.md's DDMMYYNNNNCC); the cap
 // keeps generous headroom rather than sizing to exactly 13, so a mis-provisioned
-// over-long value is truncated and then rejected by the 12-digit check in
-// identify_responder.cpp rather than overflowing.
+// over-long value is truncated rather than overflowing. It is exposed verbatim
+// as Device Settings "s" (ble-protocol.md §4) — no on-device parsing of it
+// remains now that the USB IDENTIFY responder is gone.
 char g_serial[32] = "";
 
 } // namespace

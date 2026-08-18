@@ -18,10 +18,10 @@ namespace app_state { struct Meeting; }
 //
 // Priority order (highest → lowest):
 //   1. OTA_UPDATING      — firmware update in progress. Outranks even SETUP:
-//                          USB CDC OTA works without a BLE bond (ota.md —
-//                          physical cable access is sufficient authority), so
-//                          a first-boot unit mid-transfer must not have its
-//                          screen yanked to the Setup wizard.
+//                          an update runs over the bonded Orion link (ota.md),
+//                          and a bond can exist while the setup flow is still
+//                          on screen, so a unit mid-transfer must not have its
+//                          screen yanked back to the Setup wizard.
 //   2. SETUP             — first-boot / factory-reset setup flow
 //   3. TIME_OFF_ACTIVE   — current time within cached Time Off window
 //   4. COUNTDOWN         — 5-min pre-meeting alert modal
@@ -105,7 +105,7 @@ void on_unpair_phone();
 // User tapped the mode-toggle button in the status bar.
 void on_mode_toggle();
 
-// Orion began a firmware update over USB CDC. Called from ota_receiver.
+// Orion began a firmware update over BLE. Called from ota_receiver.
 void on_ota_begin();
 
 // Load a full-screen OTA takeover screen built by ota_receiver (Firmware

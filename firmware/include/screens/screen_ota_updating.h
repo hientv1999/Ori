@@ -13,13 +13,13 @@ namespace screen_ota_updating {
 
 // Create the OTA screen and store it in the module state.
 // The mock timer is NOT started — progress is driven by ota_receiver::poll()
-// calling set_progress() on each PROGRESS frame.
+// calling set_progress() once per integer percent of the image received.
 lv_obj_t* create();
 
 // Update the progress ring to the given percentage (0..100).
-// Called directly from ota_receiver.cpp when a PROGRESS frame arrives.
-// Thread-safe: safe to call from the Arduino main task (where ota_receiver
-// runs) because lv_timer_handler() is also on the main task.
+// Called from ota_receiver::poll() only — i.e. always on the Arduino main
+// task, which is also where lv_timer_handler() runs. Must never be called
+// from the NimBLE host task that receives the image bytes.
 void set_progress(uint8_t pct);
 
 // Switch the page from the live "Updating firmware" state to the

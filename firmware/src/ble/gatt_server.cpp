@@ -1,4 +1,4 @@
-// Ori GATT Server — 19 characteristics, ble-protocol.md v1.0.
+// Ori GATT Server — 21 characteristics, ble-protocol.md v1.0.
 //
 // Service UUID: 6F726900-0000-4F72-9F00-000000000000
 // Each char UUID replaces bytes 4-5 with the offset:
@@ -21,6 +21,8 @@
 //   0011 ANCS Call State         Read+Notify (enc)
 //   0012 ANCS Notification Action Write (enc)
 //   0013 Lunar Holiday List      Write no-rsp (enc, chunked) — no Notify (no CCCD slot)
+//   0014 Firmware Update Control Read+Write+Notify (enc) — BEGIN/END/ABORT ↔ status
+//   0015 Firmware Update Data    Write no-rsp + Write (enc) — offset-framed image bytes
 //
 // Firmware version no longer rides this service — it's exposed via the BLE
 // SIG standard Device Information Service (0x180A) / Firmware Revision
@@ -33,6 +35,7 @@
 #include "ble/rssi_util.h"
 #include "factory_info.h"
 #include "fw_version.h"
+#include "ota_receiver.h"
 
 // These functions are defined in ble_manager.cpp and called from the
 // GATT write callbacks to post events to the main-task event queue.
@@ -70,6 +73,11 @@ void ble_post_ancs_resubscribed_event(bool call_state);
 #include <NimBLEServer.h>
 #include <NimBLEService.h>
 #include <NimBLECharacteristic.h>
+// Service Changed indication (announce_gatt_layout_change) — the raw NimBLE
+// GATT service API, which NimBLE-Arduino neither wraps nor puts on the include
+// path (unlike the host API in NimBLEDevice.h, which is where ble_gap_conn_rssi
+// and ble_att_mtu come from). Hence the full path from the library's src root.
+#include <nimble/nimble/host/services/gatt/include/services/gatt/ble_svc_gatt.h>
 #include <esp_heap_caps.h>
 #include <mbedtls/sha256.h>
 #include <time.h>
@@ -140,6 +148,8 @@ NimBLECharacteristic* c_ancs_notif   = nullptr; // 0010
 NimBLECharacteristic* c_ancs_call    = nullptr; // 0011
 NimBLECharacteristic* c_ancs_action  = nullptr; // 0012
 NimBLECharacteristic* c_lunar_holidays = nullptr; // 0013
+NimBLECharacteristic* c_fw_ctrl      = nullptr; // 0014
+NimBLECharacteristic* c_fw_data      = nullptr; // 0015
 
 // Last-encoded Phone Bond Status fields. The characteristic carries all
 // nine fields in one CBOR blob, but bond/connection-state changes
@@ -708,11 +718,13 @@ static size_t cbor_encode_ancs_call_state(uint8_t* buf, size_t buf_sz,
 // so Ori can read the iPhone's ANCS service as a *client*; it must never be
 // able to write here. Without this check, any bonded peer (i.e. the iPhone)
 // could reach e.g. Device Command and trigger a factory reset.
-static bool check_write_allowed(NimBLEConnInfo& info, const char* char_name) {
-    if (g_ota_active) {
-        LOG("[gatt] NACK %s: OTA active\n", char_name);
-        return false;
-    }
+// Peer check shared by both guards below: encrypted link, and the writer is
+// the bonded Orion peer. Every characteristic in this service is Orion-only
+// (ble-protocol.md §3) — the iPhone bond exists solely so Ori can read the
+// iPhone's ANCS service as a *client*; it must never be able to write here.
+// Without this check, any bonded peer (i.e. the iPhone) could reach e.g.
+// Device Command and trigger a factory reset — or, now, push firmware.
+static bool check_orion_writer(NimBLEConnInfo& info, const char* char_name) {
     if (!info.isEncrypted()) {
         LOG("[gatt] NACK %s: not encrypted\n", char_name);
         return false;
@@ -722,6 +734,23 @@ static bool check_write_allowed(NimBLEConnInfo& info, const char* char_name) {
         return false;
     }
     return true;
+}
+
+static bool check_write_allowed(NimBLEConnInfo& info, const char* char_name) {
+    if (g_ota_active) {
+        LOG("[gatt] NACK %s: firmware update active\n", char_name);
+        return false;
+    }
+    return check_orion_writer(info, char_name);
+}
+
+// Guard for the two firmware-update characteristics (0014/0015). Same peer
+// requirement as everything else — the bond IS the authority to overwrite the
+// app partition, now that there is no physical port standing in for it — but
+// deliberately NOT gated on g_ota_active: these are the only writes that must
+// keep working for the whole duration of an update.
+static bool check_fw_write_allowed(NimBLEConnInfo& info, const char* char_name) {
+    return check_orion_writer(info, char_name);
 }
 
 // -- Characteristic callbacks (one class per char, or a shared dispatcher) -
@@ -761,6 +790,12 @@ public:
             handle_device_settings(data, len, info);
         } else if (c == c_ancs_action) {
             handle_ancs_action(data, len, info);
+        } else if (c == c_fw_ctrl) {
+            if (!check_fw_write_allowed(info, "FwUpdateControl")) return;
+            ota_receiver::on_control_write(data, len);
+        } else if (c == c_fw_data) {
+            if (!check_fw_write_allowed(info, "FwUpdateData")) return;
+            ota_receiver::on_data_write(data, len);
         }
     }
 
@@ -1884,7 +1919,9 @@ void init() {
     // Firmware Revision String characteristic (0x2A26) so Orion (or any
     // generic BLE client) can read the running firmware version without a
     // custom characteristic or CBOR decode. Unencrypted, static value — it
-    // only changes across a reboot after a USB CDC firmware update (ota.md).
+    // only changes across a reboot after a firmware update (ota.md). That
+    // read is also how Orion CONFIRMS an update installed, since §14's
+    // VALIDATED is sent before the flash commit rather than after it.
     NimBLEService* dis_svc = server->createService(NimBLEUUID((uint16_t)0x180A));
     NimBLECharacteristic* c_fw_rev = dis_svc->createCharacteristic(
         NimBLEUUID((uint16_t)0x2A26),
@@ -2098,17 +2135,91 @@ void init() {
         NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_AUTHEN);
     c_ancs_action->setCallbacks(&s_char_cb);
 
+    // 0014 Firmware Update Control — Write with response + Notify, MITM.
+    // Orion writes { o: "BEGIN"|"END"|"ABORT", ... }; Ori notifies READY /
+    // REJECT / PROGRESS / RESUME / VALIDATED / FAILED back on the same char
+    // (ble-protocol.md §14). READ is declared because it NOTIFIES — WinRT
+    // silently drops notifications for a notify-only characteristic
+    // (firmware.md); the read itself returns whatever status was sent last.
+    c_fw_ctrl = svc->createCharacteristic(
+        "6F726900-0014-4F72-9F00-000000000000",
+        NIMBLE_PROPERTY::READ  | NIMBLE_PROPERTY::READ_AUTHEN |
+        NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_AUTHEN |
+        NIMBLE_PROPERTY::NOTIFY);
+    c_fw_ctrl->setCallbacks(&s_char_cb);
+
+    // 0015 Firmware Update Data — Write-no-response for the stream, plus plain
+    // Write so the sender can turn any frame into a windowed checkpoint whose
+    // ATT ack proves the burst before it landed (same technique as §5's bulk
+    // writes). Payload is [offset uint32 LE][image bytes] — not the §5 chunk
+    // header: an absolute offset lets a dropped fragment cost one rewind
+    // instead of the whole image, and has no uint16 fragment-count ceiling.
+    c_fw_data = svc->createCharacteristic(
+        "6F726900-0015-4F72-9F00-000000000000",
+        NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE |
+        NIMBLE_PROPERTY::WRITE_AUTHEN);
+    c_fw_data->setCallbacks(&s_char_cb);
+
     // In NimBLE 2.5, services are started when NimBLEServer::start() is called.
     // svc->start() is deprecated and a no-op; omit it.
     // The server is started in ble_manager::init() after all characteristics are set up.
-    LOG("[gatt] Service registered: 19 characteristics + DIS Firmware Revision\n");
+    LOG("[gatt] Service registered: 21 characteristics + DIS Firmware Revision\n");
+}
+
+void announce_gatt_layout_change() {
+    const uint8_t stored = nvs::get_gatt_layout();
+    if (stored == ORI_GATT_LAYOUT_VERSION) return;
+
+    // Whole-range indication (0x0001-0xFFFF) rather than the exact changed
+    // span: the peer's correct response to either is "re-discover", and a
+    // conservative range can't under-report a handle that moved.
+    ble_svc_gatt_changed(0x0001, 0xFFFF);
+    nvs::set_gatt_layout(ORI_GATT_LAYOUT_VERSION);
+    LOG("[gatt] layout %u -> %u: Service Changed sent, peers will re-discover\n",
+        (unsigned)stored, (unsigned)ORI_GATT_LAYOUT_VERSION);
 }
 
 bool is_ota_active() { return g_ota_active; }
 
 void set_ota_active(bool active) {
     g_ota_active = active;
-    LOG("[gatt] OTA active: %d\n", (int)active);
+    LOG("[gatt] firmware update active: %d\n", (int)active);
+}
+
+// ── Firmware Update Control notifies (char 0014) ──────────────────────────
+// One encoder for all six ops: { "o": <op> } plus at most one payload key.
+// Also stored as the characteristic's readable value so a WinRT read (and the
+// base READ property those notifies depend on) returns the last status.
+static void notify_fw(const char* op, const char* reason,
+                      const char* version, const uint32_t* bytes) {
+    if (!c_fw_ctrl) return;
+    CborEncoder enc, map;
+    uint8_t buf[64];
+    cbor_encoder_init(&enc, buf, sizeof(buf), 0);
+    cbor_encoder_create_map(&enc, &map, (reason || version || bytes) ? 2 : 1);
+    cbor_encode_text_stringz(&map, "o"); cbor_encode_text_stringz(&map, op);
+    if (reason)      { cbor_encode_text_stringz(&map, "r"); cbor_encode_text_stringz(&map, reason); }
+    else if (version){ cbor_encode_text_stringz(&map, "v"); cbor_encode_text_stringz(&map, version); }
+    else if (bytes)  { cbor_encode_text_stringz(&map, "b"); cbor_encode_uint(&map, *bytes); }
+    cbor_encoder_close_container(&enc, &map);
+    size_t n = cbor_encoder_get_buffer_size(&enc, buf);
+    c_fw_ctrl->setValue(buf, n);
+    c_fw_ctrl->notify();
+}
+
+void notify_fw_status(const char* op) { notify_fw(op, nullptr, nullptr, nullptr); }
+
+void notify_fw_reason(const char* op, const char* reason) {
+    LOG("[gatt] fw %s: %s\n", op, reason);
+    notify_fw(op, reason, nullptr, nullptr);
+}
+
+void notify_fw_bytes(const char* op, uint32_t bytes) {
+    notify_fw(op, nullptr, nullptr, &bytes);
+}
+
+void notify_fw_validated(const char* version) {
+    notify_fw("VALIDATED", nullptr, version, nullptr);
 }
 
 void set_device_status(uint8_t status) {

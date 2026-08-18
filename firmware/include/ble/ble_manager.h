@@ -45,26 +45,36 @@ void init();
 // (LVGL calls, factory reset, state machine transitions, etc.).
 void poll();
 
-// Fully tear down the NimBLE stack (host + controller) ahead of the OTA flash
-// commit, so nothing BLE-side can execute non-IRAM code or trigger a bond/NVS
-// flash write while Update.write() has the MSPI cache disabled. One-way: the
-// caller reboots immediately after the commit, which re-inits BLE from scratch.
-// Preserves bonds (they live in NVS and are reloaded on boot).
+// Fully tear down the NimBLE stack (host + controller) ahead of the firmware
+// flash commit, so nothing BLE-side can execute non-IRAM code or trigger a
+// bond/NVS flash write while Update.write() has the MSPI cache disabled.
+// One-way: the caller reboots immediately after the commit, which re-inits BLE
+// from scratch. Preserves bonds (they live in NVS and are reloaded on boot).
+// The image is fully staged in PSRAM by this point, so tearing down the link
+// that delivered it costs nothing — but it does mean VALIDATED must already
+// have been notified before this is called (ota.md).
 void quiesce_for_commit();
 
-// OTA download-phase quiet mode (ota.md "Behaviour") — the reversible little
+// Firmware-transfer quiet mode (ota.md "Behaviour") — the reversible little
 // sibling of quiesce_for_commit(). quiet=true (accepted BEGIN): stops
 // advertising for the whole download (no reconnect ceremony — the heaviest
 // BLE burst in the system — can start mid-stream; restart_advertising()
-// no-ops for the duration) and suspends ANCS processing at the source
-// (ancs_client::suspend_for_ota()). Already-connected peers keep their links,
-// inert behind gatt_server's set_ota_active NACK gate. quiet=false
-// (failure-resume): lifts both, re-arms advertising, and — only if ANCS
-// events were actually dropped while suspended — force-drops the iPhone link
-// so the bonded auto-reconnect replays the missed backlog. No-op when never
-// suppressed (pre-accept rejects). A successful commit never calls this —
+// no-ops for the duration), suspends ANCS processing at the source
+// (ancs_client::suspend_for_ota()), and drops the iPhone link so the whole
+// radio schedule belongs to the connection carrying the image. Orion's own
+// link is untouched — it IS the transport now. quiet=false (failure-resume):
+// lifts the suppression and re-arms advertising, which is what brings the
+// phone back; the force-drop for replaying missed ANCS events is a no-op in
+// the common case since the link is already down. No-op when never suppressed
+// (pre-accept rejects). A successful commit never calls this —
 // quiesce_for_commit() + reboot supersedes it.
 void set_ota_transfer_quiet(bool quiet);
+
+// Request a tighter (fast=true) or the normal (fast=false) connection interval
+// on the Orion link, around a firmware transfer. No-op when Orion isn't
+// connected, and best-effort in general: the central may decline, which only
+// makes the transfer slower. See the unit note in the implementation.
+void set_ota_link_fast(bool fast);
 
 // ── Advertising state machine ──────────────────────────────────────────────
 

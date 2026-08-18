@@ -68,7 +68,7 @@ Left panel: Time Off destination scenic image fills the full panel. A frosted-da
 - Does **not** appear for periodic in-session refreshes.
 
 ### OTA-Updating Screen
-- Trigger: firmware update accepted over USB CDC. State is local to firmware — not signalled over BLE.
+- Trigger: firmware update accepted over BLE (`ble-protocol.md` §14). The state itself is still local to firmware — deliberately NOT signalled through Device Status (`0x20` stays reserved and unused); Orion already knows, since it is the one sending the image.
 - Full-screen takeover: status bar, profile card, and left panel all hidden.
 - Content: "Updating firmware… N%" with a progress indicator.
 - All touch inert; non-dismissable until update validates and reboots, or fails and returns to runtime.

@@ -31,7 +31,8 @@ paths:
 - **Backlight**: always ON — set by `backlight::init()` at boot via CH422G EXIO2; no runtime control
 - **Setup flow**: first-boot sequence, factory reset — `setup-flow.md`
 - **5-minute alert timer**: countdown modal before each meeting — `state-machine.md`
-- **Firmware update receiver**: USB CDC framed OTA only — **not BLE**. Feeds Arduino `Update` library into the inactive OTA slot; SHA-256 verification; bootloader rollback on unhealthy first boot. Bricked-unit recovery: internal UART (service path only, enclosure required). Screen already implemented: `src/screens/screen_ota_updating.cpp` — `ota.md`
+- **Firmware update receiver**: **BLE only** — chars `0014`/`0015` on the Ori Sync Service (`ble-protocol.md` §14), Orion-bond-gated. The USB CDC path was deleted 2026-08-16 (no reachable data port on a deployed unit); do not reintroduce one. Stages the whole image in PSRAM, verifies SHA-256 + the embedded `OriFwVer=` marker, then feeds the Arduino `Update` library into the inactive OTA slot in one burst; bootloader rollback on unhealthy first boot. `VALIDATED` is notified **before** the commit, because the commit deinits NimBLE. Bricked-unit recovery: internal UART (service path only, enclosure required) — now the *only* way back from a build that boots but can't do BLE, so treat "BLE comes up and Orion connects" as a release-blocking smoke test. Receiver `src/ota_receiver.cpp`, screen `src/screens/screen_ota_updating.cpp` — `ota.md`
+  - **Threading rule:** the char `0014`/`0015` write callbacks run on the NimBLE host task and may only do pure computation, memcpy into the already-allocated PSRAM staging buffer, and send notifies. PSRAM allocation, the SHA-256 pass, LVGL, and NVS are all deferred to `ota_receiver::poll()` on the main task via `FwUpdateBegin`/`FwUpdateEnd`/`FwUpdateAbort` on the existing BLE event queue.
 
 ## LVGL Rendering Rules
 
