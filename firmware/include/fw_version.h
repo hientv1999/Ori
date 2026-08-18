@@ -11,4 +11,4 @@
 // gatt_server (Firmware Revision String char) and ota_receiver both read it
 // here so the two can never drift.
 
-#define ORI_FW_VERSION "1.1.0"
+#define ORI_FW_VERSION "1.0.0"
