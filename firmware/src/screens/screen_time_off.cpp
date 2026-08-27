@@ -149,8 +149,8 @@ static void format_date_range(char* out, size_t out_sz,
     time_t st = (time_t)start_epoch;
     time_t et = (time_t)end_epoch;
     struct tm stm = {}, etm = {};
-    gmtime_r(&st, &stm);
-    gmtime_r(&et, &etm);
+    localtime_r(&st, &stm);
+    localtime_r(&et, &etm);
     // "Jun 10 – Jul 5, 2026"
     char s1[16] = {}, s2[24] = {};
     strftime(s1, sizeof(s1), "%b %d", &stm);
