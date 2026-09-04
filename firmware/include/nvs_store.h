@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <stdint.h>
 #include <stddef.h>
 
@@ -9,7 +9,9 @@
 //   "mode"        — uint8: 0=Calendar, 1=Media (immediate write, infrequent)
 //   "clock_face"  — uint8: 0=Digital, 1=Analog (immediate write, infrequent)
 //   "time_fmt"    — uint8: 0=24-hour, 1=12-hour (immediate write, infrequent)
-//   "notif_filt"  — uint8: ANCS filter level 0-3
+//   "notif_filt"  — uint8: ANCS filter level 0-4 (4 = AppPassthrough)
+//   "ancs_apps"   — bytes: packed run of NUL-terminated ANCS icon tokens —
+//                   the AppPassthrough allowlist (see get_ancs_apps below)
 //   "sc_1/2/3"    — string: shortcut slot token (≤19 chars + null)
 //   "seek_step"   — uint8: double-tap seek step, seconds (1-60, default 10)
 //   "hol_ctry"    — uint8: holiday_data::Country (0=None 1=US 2=VN 3=CA ...)
@@ -154,6 +156,17 @@ void    set_low_battery_threshold_pct(uint8_t pct);
 // max_entries.
 size_t get_lunar_days(uint16_t* out, size_t max_entries);
 void   set_lunar_days(const uint16_t* days, size_t count);
+
+// ANCS app-passthrough allowlist — the set of ANCS icon tokens whose
+// notifications get through while the filter level is AppPassthrough (4).
+// Stored as one packed blob of NUL-terminated tokens ("slack\0teams\0"), so a
+// reader walks it with strlen() until it has consumed `len` bytes. Pushed by
+// Orion over the ANCS App Filter characteristic (ble-protocol.md §4) and
+// persisted so the filter still behaves correctly before Orion reconnects
+// after a power cycle. get_ancs_apps() returns the number of bytes written
+// into `out` (0 if never set, or if the stored blob no longer fits).
+size_t get_ancs_apps(char* out, size_t out_sz);
+void   set_ancs_apps(const char* packed, size_t len);
 
 // Factory reset — clears ALL keys in the "ori" namespace.
 // Does NOT reboot; caller is responsible for calling ESP.restart() after.

@@ -101,7 +101,7 @@ void update_face(AnalogFaceState* af) {
     af->last_mday = (int16_t)tm.tm_mday;
     if (date_unchanged) return;
 
-    char day[16], mon[8];
+    char day[16], mon[16];   // mon: "September" is 9 chars + NUL — an 8-byte buffer silently truncated and left the string unterminated
     strftime(day, sizeof(day), "%A", &tm);
     strftime(mon, sizeof(mon), "%B",  &tm);
     // Uppercase: ESP32 strftime may not support %^A/%^B, so do it manually.

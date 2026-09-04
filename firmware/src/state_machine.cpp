@@ -95,9 +95,10 @@ bool     g_weather_valid          = false;
 // g_weather_alert_fired_today: cleared on day rollover (check_day_rollover()
 // below, alongside g_alerted_mins) so the alert can fire again the next
 // qualifying day. g_low_battery_alert_latched: cleared on recovery above
-// low_battery_threshold_pct (check_device_alerts() below) OR the phone
-// reconnecting (set_phone_connected()) — mirrors pc-app.md's
-// checkLowBattery() semantics exactly.
+// low_battery_threshold_pct (check_device_alerts() below) OR the phone link
+// dropping (set_phone_connected(false)) — mirrors pc-app.md's
+// checkLowBattery() semantics exactly. Nothing else re-arms it: below the
+// threshold on a live link the alert fires exactly once.
 bool     g_weather_alert_fired_today = false;
 bool     g_low_battery_alert_latched = false;
 
@@ -658,18 +659,25 @@ static void check_device_alerts(bool have_lt, const struct tm* lt) {
 
     // Low Battery Alert: needs the iPhone actually connected —
     // ancs_client::phone_stats() is all-zero otherwise (same "don't show
-    // what can't be verified" policy, ble-protocol.md).
+    // what can't be verified" policy, ble-protocol.md). battery == 0 is that
+    // all-zero sentinel, not a real reading: it's also what phone_stats()
+    // reports between connect and the first Battery Service read landing, and
+    // 0 <= any threshold, so without this guard every reconnect fired a bogus
+    // "0%" alert before the real level was ever known. A genuinely 0% phone is
+    // powered off and not holding a BLE link anyway.
     if (g_phone_connected && nvs::get_low_battery_alert_enabled()) {
         ancs_client::PhoneStats stats = ancs_client::phone_stats();
         uint8_t threshold = nvs::get_low_battery_threshold_pct();
-        if (!g_low_battery_alert_latched && stats.battery <= threshold) {
-            modal_device_alert::show_low_battery_alert(
-                ancs_client::phone_kind_word(), ancs_client::phone_name(), stats.battery);
-            g_low_battery_alert_latched = true;
-            LOG("[sm] low battery alert fired (battery=%u%%)\n", (unsigned)stats.battery);
-        } else if (g_low_battery_alert_latched && stats.battery > threshold) {
-            // Recovered above the threshold — un-latch so a future dip fires again.
-            g_low_battery_alert_latched = false;
+        if (stats.battery > 0) {
+            if (!g_low_battery_alert_latched && stats.battery <= threshold) {
+                modal_device_alert::show_low_battery_alert(
+                    ancs_client::phone_kind_word(), ancs_client::phone_name(), stats.battery);
+                g_low_battery_alert_latched = true;
+                LOG("[sm] low battery alert fired (battery=%u%%)\n", (unsigned)stats.battery);
+            } else if (g_low_battery_alert_latched && stats.battery > threshold) {
+                // Recovered above the threshold — un-latch so a future dip fires again.
+                g_low_battery_alert_latched = false;
+            }
         }
     }
 }
@@ -709,6 +717,19 @@ void init() {
     // Restore mode, clock-face preference, and ANCS filter from NVS.
     g_mode = nvs::get_mode();
     g_clock_face = nvs::get_clock_face();
+    // Allowlist BEFORE the level: set_filter() runs the full publish/relay/
+    // badge refresh, and at AppPassthrough that refresh reads the allowlist —
+    // loading them the other way round would evaluate one refresh against an
+    // empty list before immediately correcting itself.
+    // Heap, not stack: the buffer is a full kilobyte and the Arduino loop task
+    // only gets 8 KB total, so a boot-only scratch of that size doesn't belong
+    // in this frame. Skipped silently if the allocation fails — the allowlist
+    // just stays empty until Orion's next connect re-pushes it.
+    if (char* packed = (char*)malloc(ancs_client::ANCS_APP_FILTER_MAX_BYTES)) {
+        size_t n = nvs::get_ancs_apps(packed, ancs_client::ANCS_APP_FILTER_MAX_BYTES);
+        if (n > 0) ancs_client::set_app_filter(packed, n);
+        free(packed);
+    }
     ancs_client::set_filter(nvs::get_notif_filter());
 
     // Check if an iPhone bond already exists in NVS (survives reboots).
@@ -1538,14 +1559,22 @@ void set_pc_connected(bool connected) {
     // rebuild serves is a runtime-only affordance anyway.
     //
     // g_has_ota_ack is guarded for the same reason as is_active(): the
-    // post-update ack owns the whole screen until the user taps Close. Note
-    // this one CANNOT be caught by evaluate()'s own OTA_ACK guard — the line
-    // below clobbers g_state first, so evaluate() would see a state change
-    // rather than a rebuild-in-place. It has to be stopped here.
+    // post-update ack owns the whole screen until the user taps Close.
+    //
+    // g_force_rebuild alone is what forces the rebuild — every guard it needs
+    // to defeat in evaluate() (the CLOCK/CALENDAR_VIEW protection and the
+    // "target == g_state, nothing to do" no-op) is `!force`-gated. This used
+    // to ALSO clobber g_state to NO_MEETINGS first; that was redundant for the
+    // rebuild and actively harmful, because the one guard `force` deliberately
+    // does NOT defeat is the COUNTDOWN one — so the clobber punched through it
+    // and destroyed a live 5-minute pre-meeting modal. A reconnect sync
+    // carrying Photo/Time Off runs for tens of seconds, long enough for the
+    // 1 s tick to raise that modal mid-sync, and the sync's own
+    // set_pc_synced() below then wiped it a moment later — with the meeting
+    // already marked alerted, so it never came back (state-machine.md).
     if (changed && !ota_receiver::is_active() && !g_has_ota_ack &&
         !nvs::is_first_boot()) {
         g_force_rebuild = true;
-        g_state = AppState::NO_MEETINGS;  // ensure evaluate() does a full rebuild
         evaluate();
     }
 }
@@ -1560,12 +1589,12 @@ void set_pc_synced() {
     // every one of those would force a full screen rebuild for no visible
     // change — exactly what state-machine.md's "periodic refreshes ...
     // do not trigger the reconnecting overlay" is designed to avoid.
-    // g_has_ota_ack: same clobber-before-evaluate() reasoning as
-    // set_pc_connected() above.
+    // g_has_ota_ack / no g_state clobber: same reasoning as
+    // set_pc_connected() above — this one is the sync-end half of the pair
+    // that used to delete the pre-meeting countdown modal.
     if (changed && !ota_receiver::is_active() && !g_has_ota_ack &&
         !nvs::is_first_boot()) {
         g_force_rebuild = true;
-        g_state = AppState::NO_MEETINGS;  // ensure evaluate() does a full rebuild
         evaluate();
     }
 }
@@ -1592,9 +1621,16 @@ void set_phone_connected(bool connected) {
         // rather than the pairing screen.
         g_phone_bonded = true;
         widget_status_bar::set_all_phone_bonded(true);
-        // Low Battery Alert latch clears on the phone reconnecting, not just
-        // on recovering above the threshold — mirrors pc-app.md's
-        // checkLowBattery() semantics exactly (state-machine.md).
+    } else {
+        // Low Battery Alert latch clears when the phone link DROPS, not when
+        // it comes up: this function is not a connect edge — ancs_client's
+        // queue_add() calls it with `true` on every single incoming
+        // notification (as an authoritative "the link is obviously up" signal
+        // for the status-bar icon), so clearing on the `connected` branch
+        // re-armed the alert every time a notification arrived and the same
+        // low battery level popped the overlay again and again. Clearing here
+        // still gives a reconnect a fresh latch (the disconnect precedes it),
+        // which is what state-machine.md's "or the phone reconnecting" means.
         g_low_battery_alert_latched = false;
     }
     // On disconnect don't clear g_phone_bonded — the bond still exists in NVS.

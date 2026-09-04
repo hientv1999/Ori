@@ -182,7 +182,7 @@ static void show_holiday_detail(lv_obj_t* screen, int year, int month, int day,
     time_t tt = mktime(&t);
     struct tm norm;
     localtime_r(&tt, &norm);
-    char weekday[16], mon[8], date_buf[56];
+    char weekday[16], mon[16], date_buf[56];  // mon: 8 bytes cannot hold "September" + NUL
     strftime(weekday, sizeof(weekday), "%A", &norm);
     strftime(mon, sizeof(mon), "%B", &norm);
     snprintf(date_buf, sizeof(date_buf), "%s, %s %d, %d", weekday, mon, norm.tm_mday, norm.tm_year + 1900);

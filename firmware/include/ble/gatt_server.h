@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -39,8 +39,9 @@
 // back on.
 //
 // History: 1 = 19 chars (through the USB CDC era). 2 = 21 chars, adds
-// Firmware Update Control/Data (0014/0015).
-constexpr uint8_t ORI_GATT_LAYOUT_VERSION = 2;
+// Firmware Update Control/Data (0014/0015). 3 = 22 chars, adds ANCS App
+// Filter (0016) for the AppPassthrough notification-filter level.
+constexpr uint8_t ORI_GATT_LAYOUT_VERSION = 3;
 
 namespace gatt_server {
 

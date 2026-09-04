@@ -1,4 +1,4 @@
-#include "app_state.h"
+﻿#include "app_state.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -274,6 +274,11 @@ time_t ancs_recv_epoch(uint32_t uid) {
 const char* ancs_title(uint32_t uid) {
     AncsDetailEntry* d = find_by_uid(uid);
     return d ? d->title : "";
+}
+
+const char* ancs_token(uint32_t uid) {
+    AncsDetailEntry* d = find_by_uid(uid);
+    return d ? d->token : "";
 }
 
 void remove_ancs_detail(uint32_t uid) {

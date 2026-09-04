@@ -74,6 +74,9 @@ enum class BleEventType : uint8_t {
     IphoneDisconnected,
     UnpairPhone,       // Orion wrote the iPhone unpair magic to Device Command (char 0008)
     AncsFilterUpdate,  // Orion wrote ANCS Notification Filter via Device Settings (char 000E)
+    AncsAppsUpdate,    // Orion finished pushing the ANCS App Filter allowlist (char 0016) —
+                       // `ancs_apps.packed` is a heap buffer owned by the event until the
+                       // handler frees it, same contract as LunarHolidaysUpdate below
     ShortcutUpdate,    // Orion wrote shortcut slots via Device Settings (char 000E) — repaint shortcuts row
     SeekStepUpdate,    // Orion wrote the double-tap seek step via Device Settings (char 000E, key "k")
     HostVolumeUpdate,  // Orion wrote Host Volume State (char 000B) — refresh HUD fill/label, maybe show it
@@ -104,7 +107,9 @@ struct BleEvent {
         uint32_t passkey;
         uint8_t  clock_face;     // ClockFaceUpdate — 0=Digital, 1=Analog
         uint8_t  time_format;    // TimeFormatUpdate — 0=24-hour, 1=12-hour
-        uint8_t  ancs_filter;   // AncsFilterUpdate — 0=Disabled..3=All
+        uint8_t  ancs_filter;   // AncsFilterUpdate — 0=Disabled..4=AppPassthrough
+        struct { char* packed; size_t len; } ancs_apps; // AncsAppsUpdate — packed run of
+                                                         // NUL-terminated icon tokens
         uint8_t  seek_step_s;   // SeekStepUpdate — 1..60 seconds
         struct { uint8_t* buf; size_t len; } art;
         uint16_t conn_handle;
@@ -1315,6 +1320,18 @@ static void handle_ancs_filter_update(const BleEvent& ev) {
     nvs::set_notif_filter(ev.data.ancs_filter);
 }
 
+// AppPassthrough allowlist (char 0016). Owns the heap buffer the GATT write
+// callback handed over, and frees it on every path — a queue-full drop is the
+// only other exit, and ble_post_ancs_apps_event() frees it itself there.
+static void handle_ancs_apps_update(const BleEvent& ev) {
+    char*  packed = ev.data.ancs_apps.packed;
+    size_t len    = ev.data.ancs_apps.len;
+    LOG("[ble:poll] ANCS app filter -> %u bytes\n", (unsigned)len);
+    ancs_client::set_app_filter(packed, len);
+    nvs::set_ancs_apps(packed, len);
+    heap_caps_free(packed);
+}
+
 static void handle_shortcut_update() {
     LOG("[ble:poll] shortcut update\n");
     screen_media_mode::update_shortcuts();
@@ -1501,6 +1518,10 @@ void poll() {
 
             case BleEventType::LunarHolidaysUpdate:
                 handle_lunar_holidays_update(ev);
+                break;
+
+            case BleEventType::AncsAppsUpdate:
+                handle_ancs_apps_update(ev);
                 break;
 
             case BleEventType::HolidayCountryUpdate:
@@ -2233,6 +2254,20 @@ void ble_post_lunar_holidays_event(uint16_t* days, size_t count) {
     ev.data.lunar_holidays.days  = copy;
     ev.data.lunar_holidays.count = count;
     if (!eq_push(ev)) delete[] copy; // queue full — free rather than leak
+}
+
+// Deferred ANCS app-filter allowlist (from the char 0016 write handler).
+// Takes ownership of `packed`, which that callback allocated — freed by
+// handle_ancs_apps_update(), or here if the queue is full. A len of 0 is a
+// meaningful value (clear the allowlist), so unlike ble_post_lunar_holidays_
+// event() above this one does NOT early-return on an empty payload.
+void ble_post_ancs_apps_event(char* packed, size_t len) {
+    if (!packed) return;
+    BleEvent ev = {};
+    ev.type = BleEventType::AncsAppsUpdate;
+    ev.data.ancs_apps.packed = packed;
+    ev.data.ancs_apps.len    = len;
+    if (!eq_push(ev)) heap_caps_free(packed); // queue full — free rather than leak
 }
 
 // Deferred holiday-country update (from Device Settings "g" write handler).

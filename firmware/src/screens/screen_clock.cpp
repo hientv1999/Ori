@@ -89,7 +89,7 @@ static void update_clock_labels(ClockFaceState* cf) {
     lv_label_set_text(cf->hour_lbl, buf);
     snprintf(buf, sizeof(buf), "%02d", tm.tm_min);
     lv_label_set_text(cf->minute_lbl, buf);
-    char day[16], mon[8];
+    char day[16], mon[16];   // mon: "September" is 9 chars + NUL — an 8-byte buffer silently truncated and left the string unterminated
     strftime(day, sizeof(day), "%A", &tm);
     strftime(mon, sizeof(mon), "%B",  &tm);
     char date_buf[56];

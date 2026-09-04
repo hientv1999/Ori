@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // Ori — global runtime state store.
 //
@@ -238,6 +238,12 @@ time_t ancs_recv_epoch(uint32_t uid);
 // client to group status-bar icons by (app, title) rather than by app alone —
 // see AncsConfig above.
 const char* ancs_title(uint32_t uid);
+
+// Stored icon token for a UID ("" if no stored detail yet) — the same
+// ancs_icons.h vocabulary the status bar and the Orion relay already key on.
+// Used by the AppPassthrough filter level to decide whether the notification's
+// app is on the user's allowlist (ancs_client.h's set_app_filter()).
+const char* ancs_token(uint32_t uid);
 
 // Drop the stored detail for a notification UID (ANCS Removed event).
 void remove_ancs_detail(uint32_t uid);

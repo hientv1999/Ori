@@ -1,4 +1,4 @@
-// Ori GATT Server — 21 characteristics, ble-protocol.md v1.0.
+﻿// Ori GATT Server — 22 characteristics, ble-protocol.md v1.0.
 //
 // Service UUID: 6F726900-0000-4F72-9F00-000000000000
 // Each char UUID replaces bytes 4-5 with the offset:
@@ -23,6 +23,7 @@
 //   0013 Lunar Holiday List      Write no-rsp (enc, chunked) — no Notify (no CCCD slot)
 //   0014 Firmware Update Control Read+Write+Notify (enc) — BEGIN/END/ABORT ↔ status
 //   0015 Firmware Update Data    Write no-rsp + Write (enc) — offset-framed image bytes
+//   0016 ANCS App Filter        Write no-rsp (enc, chunked) — AppPassthrough allowlist
 //
 // Firmware version no longer rides this service — it's exposed via the BLE
 // SIG standard Device Information Service (0x180A) / Firmware Revision
@@ -31,6 +32,7 @@
 
 #include "ble/gatt_server.h"
 #include "ble/ble_manager.h"
+#include "ble/ancs_client.h"   // ANCS_APP_FILTER_MAX_BYTES (char 0016 handler)
 #include "ble/chunked_transfer.h"
 #include "ble/rssi_util.h"
 #include "factory_info.h"
@@ -47,6 +49,7 @@ void ble_post_clock_face_event(uint8_t face);
 void ble_post_time_format_event(uint8_t fmt);
 void ble_post_unpair_phone_event();
 void ble_post_ancs_filter_event(uint8_t level);
+void ble_post_ancs_apps_event(char* packed, size_t len);
 void ble_post_weather_event(uint8_t condition, int16_t temp_f, uint8_t unit, bool is_night, uint8_t intensity);
 void ble_post_shortcut_update_event();
 void ble_post_media_meta_event();
@@ -148,6 +151,7 @@ NimBLECharacteristic* c_ancs_notif   = nullptr; // 0010
 NimBLECharacteristic* c_ancs_call    = nullptr; // 0011
 NimBLECharacteristic* c_ancs_action  = nullptr; // 0012
 NimBLECharacteristic* c_lunar_holidays = nullptr; // 0013
+NimBLECharacteristic* c_ancs_app_filter = nullptr; // 0016
 NimBLECharacteristic* c_fw_ctrl      = nullptr; // 0014
 NimBLECharacteristic* c_fw_data      = nullptr; // 0015
 
@@ -189,6 +193,7 @@ chunked_transfer::Context g_meetings_ctx;
 chunked_transfer::Context g_time_off_ctx;
 chunked_transfer::Context g_art_ctx;
 chunked_transfer::Context g_lunar_ctx;
+chunked_transfer::Context g_ancs_apps_ctx;
 // Debounce for the album-art loading ring's percentage — only post a
 // progress event when the integer percent actually changes (same pattern as
 // stage_add_bytes()'s g_stage.last_pct_sent below). 0xFF (never a valid
@@ -786,6 +791,8 @@ public:
             handle_album_art(data, len, info);
         } else if (c == c_lunar_holidays) {
             handle_lunar_holidays(data, len, info);
+        } else if (c == c_ancs_app_filter) {
+            handle_ancs_app_filter(data, len, info);
         } else if (c == c_dev_settings) {
             handle_device_settings(data, len, info);
         } else if (c == c_ancs_action) {
@@ -1366,6 +1373,80 @@ private:
         chunked_transfer::feed(&g_lunar_ctx, data, len);
     }
 
+    // -- ANCS App Filter (char 0016) — chunked CBOR {"a": [text, ...]} -------
+    // The AppPassthrough allowlist: which apps get through while the ANCS
+    // filter level (Device Settings "f") is 4. Same shape as Lunar Holidays
+    // above — no BEGIN/END staging, no manifest hash, Orion re-pushes it on
+    // every (re)connect and it commits straight to NVS on reassembly.
+    //
+    // Chunked rather than another Device Settings field because it doesn't
+    // fit one ATT write: all ~49 compiled-in ancs_icons.h tokens come to
+    // roughly 550 bytes against the 244 a 247-byte MTU leaves for a payload.
+    //
+    // Decoded here on the NimBLE task into the packed NUL-separated layout
+    // ancs_client/nvs both use (pure computation, safe); the NVS write and
+    // the LVGL-touching refresh are deferred to the main task via
+    // ble_post_ancs_apps_event(), which takes ownership of the heap buffer.
+    void handle_ancs_app_filter(const uint8_t* data, uint16_t len, NimBLEConnInfo& info) {
+        if (!check_write_allowed(info, "AncsAppFilter")) return;
+
+        if (!g_ancs_apps_ctx.on_complete) {
+            g_ancs_apps_ctx.on_complete = [](uint8_t* buf, size_t n, const char* nack) {
+                if (nack) {
+                    LOG("[gatt] AncsAppFilter NACK: %s\n", nack);
+                    return;
+                }
+                // Packed output can never exceed the CBOR that carried it
+                // (every token loses its length header and gains one NUL), so
+                // the cap is the only bound worth checking.
+                char*  packed = (char*)heap_caps_malloc(
+                    ancs_client::ANCS_APP_FILTER_MAX_BYTES, MALLOC_CAP_8BIT);
+                size_t used   = 0;
+                size_t apps   = 0;
+                if (!packed) {
+                    LOG("[gatt] AncsAppFilter: alloc failed\n");
+                    heap_caps_free(buf);
+                    return;
+                }
+
+                CborParser parser;
+                CborValue  root, map_val;
+                if (cbor_open_map(buf, n, parser, root, map_val)) {
+                    for_each_cbor_key(map_val, [&](const char* key, CborValue& val) {
+                        if (strcmp(key, "a") != 0 || !cbor_value_is_array(&val)) return;
+                        CborValue arr;
+                        cbor_value_enter_container(&val, &arr);
+                        while (!cbor_value_at_end(&arr)) {
+                            if (cbor_value_is_text_string(&arr)) {
+                                // +1 for the NUL this token needs; stop cleanly
+                                // at the cap rather than writing a partial token.
+                                char   tok[32] = {};
+                                size_t tsz     = sizeof(tok) - 1;
+                                if (cbor_value_copy_text_string(&arr, tok, &tsz, nullptr) == CborNoError) {
+                                    size_t tl = strlen(tok);
+                                    if (tl > 0 &&
+                                        used + tl + 1 <= ancs_client::ANCS_APP_FILTER_MAX_BYTES) {
+                                        memcpy(&packed[used], tok, tl);
+                                        used += tl;
+                                        packed[used++] = '\0';
+                                        ++apps;
+                                    }
+                                }
+                            }
+                            cbor_value_advance(&arr);
+                        }
+                        cbor_value_leave_container(&val, &arr);
+                    });
+                }
+                heap_caps_free(buf);
+                LOG("[gatt] AncsAppFilter received: %u app(s), %u bytes\n",
+                    (unsigned)apps, (unsigned)used);
+                ble_post_ancs_apps_event(packed, used);  // ownership transferred
+            };
+        }
+        chunked_transfer::feed(&g_ancs_apps_ctx, data, len);
+    }
+
     // -- Device Settings read ----------------------------------------------------
     // Returns all NVS-persisted fields: "c" (clock_face), "h" (time_format),
     // "f" (ancs_filter), "1"/"2"/"3" (shortcut slot tokens), "k"
@@ -1569,7 +1650,11 @@ static bool parse_device_settings(const uint8_t* data, uint16_t len, DeviceSetti
             out.timefmt_val = (uint8_t)v; out.has_timefmt = true;
         } else if (strcmp(key, "f") == 0 && cbor_value_is_unsigned_integer(&val)) {
             uint64_t v; cbor_value_get_uint64(&val, &v);
-            if (v > 3) { valid = false; return; }
+            // 0=Disabled 1=CallOnly 2=Important 3=All 4=AppPassthrough. The
+            // allowlist level 4 reads rides its own characteristic (0016) and
+            // is independent of this value — a 4 with an empty allowlist is
+            // legal, it just passes calls only.
+            if (v > 4) { valid = false; return; }
             out.filter_val = (uint8_t)v; out.has_filter = true;
         } else if (strcmp(key, "w") == 0 && cbor_value_is_unsigned_integer(&val)) {
             uint64_t v; cbor_value_get_uint64(&val, &v);
@@ -2072,6 +2157,16 @@ void init() {
         NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_AUTHEN);
     c_lunar_holidays->setCallbacks(&s_char_cb);
 
+    // 0016 ANCS App Filter — Write no response, MITM-authenticated (chunked
+    // CBOR {"a":[token,...]}). Identical treatment to Lunar Holiday List
+    // above: no Notify (no CCCD slot), no BEGIN/END staging, commits straight
+    // to NVS on reassembly. Carries the AppPassthrough allowlist for ANCS
+    // filter level 4 — see ble-protocol.md §4/§6.4.
+    c_ancs_app_filter = svc->createCharacteristic(
+        "6F726900-0016-4F72-9F00-000000000000",
+        NIMBLE_PROPERTY::WRITE_NR | NIMBLE_PROPERTY::WRITE_AUTHEN);
+    c_ancs_app_filter->setCallbacks(&s_char_cb);
+
     // 000E Device Settings — Read + Write + Notify, MITM-authenticated.
     // Notify added 2026-07-13 (ble-protocol.md §4/§6.4) so Orion's Ori Info
     // modal can show live signal_bars ("r") without polling a BLE read —
@@ -2489,6 +2584,7 @@ void abort_sync_stage() {
     chunked_transfer::reset(&g_time_off_ctx);
     chunked_transfer::reset(&g_art_ctx);
     chunked_transfer::reset(&g_lunar_ctx);
+    chunked_transfer::reset(&g_ancs_apps_ctx);
 
     if (!g_stage.active && !g_sync_in_progress) return;
     LOG("[gatt] Sync aborted (disconnect) — discarding staged data\n");
@@ -2503,8 +2599,9 @@ void abort_sync_stage() {
 void poll_chunk_timeouts() {
     chunked_transfer::Context* ctxs[] = {
         &g_photo_ctx, &g_meetings_ctx, &g_time_off_ctx, &g_art_ctx, &g_lunar_ctx,
+        &g_ancs_apps_ctx,
     };
-    chunked_transfer::poll_timeouts(ctxs, 5);
+    chunked_transfer::poll_timeouts(ctxs, 6);
 }
 
 // Notifies Device Settings (char 000E) whenever Ori's own live signal_bars

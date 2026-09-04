@@ -472,12 +472,38 @@ namespace EvtFlag {
 // connection so the filter is active from the very first notification.
 static uint8_t g_filter = 0x03;  // default: ALL
 
-static bool passes_filter(uint8_t cat_id, uint8_t flags) {
+// AppPassthrough (filter level 4) allowlist — a packed run of NUL-terminated
+// ancs_icons.h tokens ("slack\0teams\0"), exactly as it arrives on the wire
+// and as nvs::get/set_ancs_apps() stores it. Packed rather than a token[][]
+// matrix because the worst realistic case (every one of the ~49 compiled-in
+// brands selected) is ~550 bytes packed against 1.2 KB for a fixed matrix,
+// and the only operation needed is a linear "is this token present" scan.
+static char   g_app_allow[ancs_client::ANCS_APP_FILTER_MAX_BYTES] = {};
+static size_t g_app_allow_len = 0;   // bytes used, terminator included
+
+// True when `token` is on the AppPassthrough allowlist. An empty/NULL token
+// (an app with no compiled-in brand asset, or a notification whose detail
+// hasn't been fetched yet) never matches — an allowlist that let unknown apps
+// through would defeat the point of the level.
+static bool app_is_allowed(const char* token) {
+    if (!token || !token[0] || g_app_allow_len == 0) return false;
+    for (size_t i = 0; i < g_app_allow_len; ) {
+        const char* entry = &g_app_allow[i];
+        size_t      n     = strnlen(entry, g_app_allow_len - i);
+        if (n > 0 && strcmp(entry, token) == 0) return true;
+        i += n + 1;   // step past this token AND its terminator
+    }
+    return false;
+}
+
+static bool passes_filter(uint8_t cat_id, uint8_t flags, const char* token) {
     switch (g_filter) {
         case 0x00: return false;
         case 0x01: return (cat_id == 1);                          // IncomingCall only
         case 0x02: return (cat_id == 1) ||                        // IncomingCall OR Important flag
                           ((flags & EvtFlag::IMPORTANT) != 0);
+        case 0x04: return (cat_id == 1) ||                        // IncomingCall OR allowlisted app
+                          app_is_allowed(token);
         default:   return true;                                    // ALL
     }
 }
@@ -490,7 +516,8 @@ static bool passes_filter(uint8_t cat_id, uint8_t flags) {
 // so a filter change behaves identically on both surfaces.
 static bool passes_current_filter(uint32_t uid, uint8_t cat) {
     bool important = app_state::ancs_is_important(uid);
-    return passes_filter(cat, important ? EvtFlag::IMPORTANT : 0);
+    return passes_filter(cat, important ? EvtFlag::IMPORTANT : 0,
+                         app_state::ancs_token(uid));
 }
 
 // ── Pending NS-event metadata ──────────────────────────────────────────────
@@ -1378,7 +1405,7 @@ static void handle_call_notification(uint32_t resp_uid, uint8_t cat, uint8_t fla
     // dialog directly. Best-effort: relies on iOS's action flags.
     bool is_call = (cat == app_state::AncsCategory::INCOMING_CALL ||
                     cat == app_state::AncsCategory::ACTIVE_CALL);
-    if (is_call && !preexisting && !ota_receiver::is_active() && passes_filter(cat, flags)) {
+    if (is_call && !preexisting && !ota_receiver::is_active() && passes_filter(cat, flags, token)) {
         bool can_answer = (flags & EvtFlag::POSITIVE_ACTION) != 0;
         if (can_answer) {
             modal_incoming_call::show(resp_uid);          // ringing
@@ -1459,7 +1486,7 @@ static void process_notification_attributes(uint32_t resp_uid, const char* app_i
     // Genuinely-new notifications animate in; the backlog iOS replays on connect
     // (PreExisting flag) populates silently. Only animate if the notification
     // passes the current filter — filtered-out entries are stored but not surfaced.
-    if (!preexisting && passes_filter(cat, flags)) widget_status_bar::note_new_notification(resp_uid);
+    if (!preexisting && passes_filter(cat, flags, token)) widget_status_bar::note_new_notification(resp_uid);
 
     handle_call_notification(resp_uid, cat, flags, preexisting, display_name,
                               ftitle, fpos, fneg, neg_action, token);
@@ -1850,12 +1877,13 @@ void resync_orion_call_state() {
                                          g_call_state.has_neg_action, g_call_state.icon_token);
 }
 
-void set_filter(uint8_t level) {
-    g_filter = level;
-    LOG("[ancs] filter -> %u (%s)\n", (unsigned)level,
-        level == 0 ? "Disabled" : level == 1 ? "CallOnly" :
-        level == 2 ? "Important" : "All");
-    // Re-publish so the status bar immediately reflects the new filter level
+// Everything that has to re-evaluate when the SET of notifications passing the
+// filter changes — whether that was the level (set_filter) or the
+// AppPassthrough allowlist (set_app_filter). Both change the same predicate,
+// so both owe every surface the same refresh; keeping it in one function is
+// what stops the two entry points from drifting apart.
+static void refresh_after_filter_change() {
+    // Re-publish so the status bar immediately reflects the new filter
     // without waiting for the next incoming notification.
     publish_queue();
 
@@ -1875,11 +1903,55 @@ void set_filter(uint8_t level) {
 
     // Same for an open drill-down list (modal_ancs_list) — a filter change
     // can add or remove rows in whichever bucket is currently on screen.
-    // Called directly (not deferred like queue_add/queue_remove) — set_filter()
-    // is only ever reached from ble_manager::poll()'s event drain or
+    // Called directly (not deferred like queue_add/queue_remove) — both
+    // callers are only ever reached from ble_manager::poll()'s event drain or
     // state_machine's own init path, never from inside an LVGL callback, so
     // there's no reentrancy hazard here.
     modal_ancs_list::refresh_active();
+}
+
+void set_filter(uint8_t level) {
+    g_filter = level;
+    LOG("[ancs] filter -> %u (%s)\n", (unsigned)level,
+        level == 0 ? "Disabled" : level == 1 ? "CallOnly" :
+        level == 2 ? "Important" : level == 4 ? "AppPassthrough" : "All");
+    refresh_after_filter_change();
+}
+
+void set_app_filter(const char* packed, size_t len) {
+    if (!packed || len == 0) {
+        g_app_allow_len = 0;
+        g_app_allow[0]  = '\0';
+        LOG("[ancs] app filter -> (empty)\n");
+        refresh_after_filter_change();
+        return;
+    }
+    if (len > ANCS_APP_FILTER_MAX_BYTES) {
+        // Reject whole rather than truncate: a cut-off final token would match
+        // nothing, and silently dropping the tail of a user's selection is
+        // worse than keeping the previous list until Orion re-pushes a
+        // list that fits.
+        LOG("[ancs] app filter REJECTED: %u bytes > %u cap\n",
+            (unsigned)len, (unsigned)ANCS_APP_FILTER_MAX_BYTES);
+        return;
+    }
+    memcpy(g_app_allow, packed, len);
+    // Force a terminator on the last token so app_is_allowed()'s walk can
+    // never read past the copied bytes, however malformed the input was.
+    if (g_app_allow[len - 1] != '\0') {
+        if (len < ANCS_APP_FILTER_MAX_BYTES) g_app_allow[len++] = '\0';
+        else                                  g_app_allow[len - 1] = '\0';
+    }
+    g_app_allow_len = len;
+
+    size_t n = 0;
+    for (size_t i = 0; i < g_app_allow_len; ) {
+        size_t tok = strnlen(&g_app_allow[i], g_app_allow_len - i);
+        if (tok > 0) ++n;
+        i += tok + 1;
+    }
+    LOG("[ancs] app filter -> %u app(s), %u bytes\n", (unsigned)n, (unsigned)g_app_allow_len);
+    refresh_after_filter_change();
 }
 
 // ── OTA-transfer suspension ────────────────────────────────────────────────
