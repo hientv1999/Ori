@@ -9,7 +9,7 @@
 //   "mode"        — uint8: 0=Calendar, 1=Media (immediate write, infrequent)
 //   "clock_face"  — uint8: 0=Digital, 1=Analog (immediate write, infrequent)
 //   "time_fmt"    — uint8: 0=24-hour, 1=12-hour (immediate write, infrequent)
-//   "notif_filt"  — uint8: ANCS filter level 0-4 (4 = AppPassthrough)
+//   "notif_filt"  — uint8: ANCS filter level 0-4 (3 = AppPassthrough, 4 = All)
 //   "ancs_apps"   — bytes: packed run of NUL-terminated ANCS icon tokens —
 //                   the AppPassthrough allowlist (see get_ancs_apps below)
 //   "sc_1/2/3"    — string: shortcut slot token (≤19 chars + null)

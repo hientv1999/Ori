@@ -244,12 +244,18 @@ DeviceSettings = {          // Orion → Ori, write (response). Fields optional;
                  // (status bar, both clock faces, meeting list, ANCS timestamps).
                  // NVS-persisted, write-only-on-change.
   "f": uint,     // ancs_filter. 0=Disabled 1=CallOnly (ANCS CategoryID 1 only)
-                 // 2=Important (IncomingCall or ANCS Important flag) 3=All (default)
-                 // 4=AppPassthrough (IncomingCall, or an app on the allowlist the
-                 // ANCS App Filter characteristic below carries). Every level except
-                 // Disabled passes calls — 4 is no exception, so a user who allowlists
-                 // only Slack still sees an incoming call. NVS-persisted,
-                 // write-only-on-change.
+                 // 2=Important (IncomingCall or ANCS Important flag)
+                 // 3=AppPassthrough (IncomingCall, or an app on the allowlist the
+                 // ANCS App Filter characteristic below carries) 4=All (default).
+                 // Ordered narrowest to widest, which is also the order Orion lists
+                 // them in — the value IS the list position on both sides, so neither
+                 // needs a mapping table. Every level except Disabled passes calls —
+                 // 3 is no exception, so a user who allowlists only Slack still sees
+                 // an incoming call. NVS-persisted, write-only-on-change.
+                 // (AppPassthrough and All swapped values on 2026-09-04 to keep the
+                 // list monotonic. Both sides changed together and neither had
+                 // shipped, so there is no compatibility path for a stored 3 that
+                 // used to mean All.)
   "w": uint,     // weather_condition. 0=Clear 1=PartlyCloudy 2=Cloudy 3=Rain 4=Thunderstorm
                  // 5=Snow 6=Fog. Ephemeral; always sent together with "d"+"u"+"n"+"i".
   "d": int,      // temperature. Whole degrees in the unit "u" declares — Ori renders the raw
@@ -365,7 +371,7 @@ AncsAppFilter = {          // Orion → Ori, write (char 0016). No BEGIN/END sta
                            // (firmware's `ancs_icons.h` vocabulary — the SAME strings
                            // AncsNotification's "k" carries and Orion's own icon assets
                            // are keyed by), whose notifications Ori displays while
-                           // ancs_filter ("f") is 4. Tokens rather than a bitmask over
+                           // ancs_filter ("f") is 3. Tokens rather than a bitmask over
                            // Ori's compiled-in table deliberately: a bitmask would
                            // silently change meaning the first time a firmware update
                            // inserted an app into that table, and the two sides update
@@ -378,12 +384,12 @@ AncsAppFilter = {          // Orion → Ori, write (char 0016). No BEGIN/END sta
                            // the 244 an MTU-247 link leaves for a payload.
                            //
                            // Ori commits the list to NVS on receipt (nvs::set_ancs_apps,
-                           // packed as NUL-terminated tokens) so level 4 still filters
+                           // packed as NUL-terminated tokens) so level 3 still filters
                            // correctly after a power cycle, before Orion reconnects.
                            // Sent unconditionally on every (re)connect regardless of the
                            // current level — a few hundred bytes, and it means switching
-                           // TO level 4 never waits on a second round trip. An empty
-                           // array clears the allowlist, leaving level 4 passing calls
+                           // TO level 3 never waits on a second round trip. An empty
+                           // array clears the allowlist, leaving level 3 passing calls
                            // only.
                            //
                            // ONE list, not one per Auto-DND slot: Orion's work/off
@@ -691,7 +697,7 @@ Orion writes Device Settings "g" (holiday_country) + Lunar Holiday List — alwa
   the session-cached table with no recomputation (holiday.rs, pc-app.md).
 Orion writes ANCS App Filter (char 0016) — always, immediately BEFORE the Device Settings
   write carrying "f", so the allowlist is already in place if that write selects
-  level 4 (notif_filter.rs's write_filter()).
+  level 3 (notif_filter.rs's write_filter()).
   → Also applied immediately, outside BEGIN/END. Best-effort like weather —
     Ori already has NVS-cached copies of both from the last successful sync,
     so a dropped push here just means the next reconnect retries.
@@ -742,7 +748,7 @@ Device Settings (char `000E`) is outside the BEGIN/END pipeline. Each field is e
 - **Clock Face** (`"c"`): NVS-persisted, write-only-on-change — not on every reconnect.
 - **Time Format** (`"h"`): NVS-persisted, write-only-on-change. 0=24-hour (default), 1=12-hour; governs every wall-clock display on Ori.
 - **ANCS Filter** (`"f"`): NVS-persisted, write-only-on-change. Levels 0-3 need nothing
-  else; level 4 (AppPassthrough) additionally consults the allowlist on char 0016 below.
+  else; level 3 (AppPassthrough) additionally consults the allowlist on char 0016 below.
   Orion doesn't expose this as a single value the user picks — `notif_filter.rs` computes
   it from the Auto Do-Not-Disturb schedule (`pc-app.md`) and pushes whichever of the two
   configured levels the current time resolves to.
@@ -750,8 +756,8 @@ Device Settings (char `000E`) is outside the BEGIN/END pipeline. Each field is e
   Ori, but — like Holiday Country/Region and Weather — Orion is the source of truth and
   simply re-sends it on every (re)connect rather than dirty-tracking it, and it is never
   read back. Always written immediately BEFORE the `"f"` write it belongs with, so the
-  allowlist can never be stale at the moment level 4 becomes active. An empty array clears
-  it (level 4 then passes calls only). See `AncsAppFilter` in §4.
+  allowlist can never be stale at the moment level 3 becomes active. An empty array clears
+  it (level 3 then passes calls only). See `AncsAppFilter` in §4.
 - **Seek Step** (`"k"`): NVS-persisted, write-only-on-change. 1-60 seconds, default 10; how far double-tapping the left/right third of the album art seeks — `media-mode.md`.
 - **Holiday Country** (`"g"`) **and Holiday Region** (`"j"`): both NVS-persisted on Ori, but — unlike Shortcuts/Clock Face/Time Format/ANCS Filter/Seek Step above — Orion doesn't track a "did this change" state for either and simply re-sends both on every (re)connect, same as Weather; the values only ever change if the user's resolved location genuinely changes country/region mid-session (rare for a desk-based PC), so the redundant resend costs two bytes and needs no dirty-tracking. No user-facing setting drives either — Orion derives both automatically from the same location its weather.rs lookup resolves (country from the ISO 3166-1 code, region from the ISO 3166-2 subdivision code the SAME reverse-geocode/IP-lookup response already carries — no second network call). Always sent alongside the Lunar Holiday List (char 0013) — see `pc-app.md`.
 - **Working Hours end + days** (`"o"`/`"p"`), **Weather Alert config** (`"q"`/`"t"`), **Low Battery Alert config** (`"v"`/`"x"`): NVS-persisted, write-only-on-change, mirroring pc-app.md's `store::WorkHours`/`store::WeatherAlert`/`store::LowBatteryAlert`. Orion keeps firing its OWN local copy of these two reminders exactly as before (pc-app.md's `reminders.rs`/`checkLowBattery()`) — these fields don't replace that, they let Ori independently arm the **same** two reminders on-device, the same way Ori already computes its own 5-minute meeting countdown from data it holds rather than waiting for an explicit "show countdown now" push. Ori needs no new live data to evaluate either trigger: weather condition is already in the Weather group above, and the bonded phone's battery level is already read directly from the phone's own Battery Service (`connectivity.md`) — these six fields are the only missing inputs. Ori and Orion's trigger evaluations can't meaningfully disagree (both read the same underlying values) but are two independent implementations, not one shared evaluation — accepted, since a several-second offset between "Orion showed its toast" and "Ori showed its overlay" is immaterial for a UX nudge like this.
@@ -833,7 +839,7 @@ No wire-level protocol version negotiation or compatibility gate — Ori and Ori
 | `DeviceSettings.slot1/2/3` | ≤ 19 chars each (firmware buffer) — icon token, e.g. "vol-mute" |
 | `DeviceSettings.clock_face` | uint 0–1 |
 | `DeviceSettings.time_format` | uint 0–1 |
-| `DeviceSettings.ancs_filter` | uint 0–4 (4 = AppPassthrough, see `AncsAppFilter` below) |
+| `DeviceSettings.ancs_filter` | uint 0–4 — 0 Disabled, 1 CallOnly, 2 Important, 3 AppPassthrough (see `AncsAppFilter` below), 4 All |
 | `DeviceSettings.weather_condition` | uint 0–6 |
 | `DeviceSettings.temperature` | int −40…140 (unit declared by `"u"` — see §4) |
 | `DeviceSettings.temperature_unit` | uint 0–1 |
@@ -932,7 +938,7 @@ Orion's iPhone Info modal drill-down (missed calls / messages / other notificati
 
 ### Filter gates the relay, not just the display
 
-Every notification Ori tracks is gated by the **same** `ancs_filter` level (Device Settings `"f"`, §3/§6.4) that already governs the on-device status bar, evaluated once centrally. **`Disabled` means Orion receives nothing from chars 16–17 at all** — no `add`, no call-state transitions, not even for an incoming call — so Orion's "bring window to front on ringing" needs no filter check of its own; the triggering notify simply never arrives. `CallOnly`/`Important`/`All`/`AppPassthrough` narrow or widen which notifications qualify, identically to the status bar. `AppPassthrough` (4) passes an incoming call, or a notification whose `icon_token` is on the allowlist char `0016` carries (§4's `AncsAppFilter`) — a notification with no recognised token never matches, since an allowlist that let unknown apps through would defeat the level. Changing the allowlist re-evaluates live state exactly the way changing the level does (the clear-and-repopulate below), because both change the same predicate.
+Every notification Ori tracks is gated by the **same** `ancs_filter` level (Device Settings `"f"`, §3/§6.4) that already governs the on-device status bar, evaluated once centrally. **`Disabled` means Orion receives nothing from chars 16–17 at all** — no `add`, no call-state transitions, not even for an incoming call — so Orion's "bring window to front on ringing" needs no filter check of its own; the triggering notify simply never arrives. `CallOnly`/`Important`/`All`/`AppPassthrough` narrow or widen which notifications qualify, identically to the status bar. `AppPassthrough` (3) passes an incoming call, or a notification whose `icon_token` is on the allowlist char `0016` carries (§4's `AncsAppFilter`) — a notification with no recognised token never matches, since an allowlist that let unknown apps through would defeat the level. Changing the allowlist re-evaluates live state exactly the way changing the level does (the clear-and-repopulate below), because both change the same predicate.
 
 **Filter changes re-evaluate live state**, not just future events: on a filter change, Ori sends `{op:"clear"}` then `{op:"add"}` for every currently-queued notification passing the new filter — a full clear-and-repopulate, not a diff, so firmware never has to track which uids it previously relayed. Orion's mirror always reflects the current filter, never a stale connect-time snapshot.
 

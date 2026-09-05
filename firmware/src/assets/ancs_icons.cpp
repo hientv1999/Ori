@@ -55,6 +55,7 @@ extern "C" {
     extern const lv_image_dsc_t venmo;
     extern const lv_image_dsc_t skype;
     extern const lv_image_dsc_t paypal;
+    extern const lv_image_dsc_t wealthsimple;
     extern const lv_image_dsc_t unknown_app;  // generic fallback (bell on neutral tile)
     // Per-category fallback glyphs (white glyph on neutral tile).
     extern const lv_image_dsc_t cat_call;
@@ -126,6 +127,7 @@ static const Entry k_table[] = {
     { "venmo",                   0x3D95CE },
     { "skype",                   0x0078D4 },
     { "paypal",                  0x003087 },
+    { "wealthsimple",            0x231F20 },
 };
 
 } // namespace
@@ -190,6 +192,7 @@ static const ImageEntry k_images[] = {
     { "venmo",                   &venmo                   },
     { "skype",                   &skype                   },
     { "paypal",                  &paypal                  },
+    { "wealthsimple",            &wealthsimple            },
 };
 } // namespace
 

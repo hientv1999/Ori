@@ -496,15 +496,20 @@ static bool app_is_allowed(const char* token) {
     return false;
 }
 
+// Levels are ordered narrowest to widest, so the value is also the position in
+// Orion's own radio list (ble-protocol.md Device Settings "f"). AppPassthrough
+// took 3 and ALL moved to 4 on 2026-09-04 to keep those two in step; ALL stays
+// the `default` arm so any unknown//future value fails open to "show
+// everything" rather than silently hiding notifications.
 static bool passes_filter(uint8_t cat_id, uint8_t flags, const char* token) {
     switch (g_filter) {
         case 0x00: return false;
         case 0x01: return (cat_id == 1);                          // IncomingCall only
         case 0x02: return (cat_id == 1) ||                        // IncomingCall OR Important flag
                           ((flags & EvtFlag::IMPORTANT) != 0);
-        case 0x04: return (cat_id == 1) ||                        // IncomingCall OR allowlisted app
+        case 0x03: return (cat_id == 1) ||                        // IncomingCall OR allowlisted app
                           app_is_allowed(token);
-        default:   return true;                                    // ALL
+        default:   return true;                                    // 0x04 ALL
     }
 }
 
@@ -1914,7 +1919,7 @@ void set_filter(uint8_t level) {
     g_filter = level;
     LOG("[ancs] filter -> %u (%s)\n", (unsigned)level,
         level == 0 ? "Disabled" : level == 1 ? "CallOnly" :
-        level == 2 ? "Important" : level == 4 ? "AppPassthrough" : "All");
+        level == 2 ? "Important" : level == 3 ? "AppPassthrough" : "All");
     refresh_after_filter_change();
 }
 

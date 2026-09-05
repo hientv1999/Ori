@@ -1650,10 +1650,10 @@ static bool parse_device_settings(const uint8_t* data, uint16_t len, DeviceSetti
             out.timefmt_val = (uint8_t)v; out.has_timefmt = true;
         } else if (strcmp(key, "f") == 0 && cbor_value_is_unsigned_integer(&val)) {
             uint64_t v; cbor_value_get_uint64(&val, &v);
-            // 0=Disabled 1=CallOnly 2=Important 3=All 4=AppPassthrough. The
-            // allowlist level 4 reads rides its own characteristic (0016) and
-            // is independent of this value — a 4 with an empty allowlist is
-            // legal, it just passes calls only.
+            // 0=Disabled 1=CallOnly 2=Important 3=AppPassthrough 4=All,
+            // ordered narrowest to widest. The allowlist level 3 consults its
+            // own characteristic (0016) and is independent of this value — a 3
+            // with an empty allowlist is legal, it just passes calls only.
             if (v > 4) { valid = false; return; }
             out.filter_val = (uint8_t)v; out.has_filter = true;
         } else if (strcmp(key, "w") == 0 && cbor_value_is_unsigned_integer(&val)) {

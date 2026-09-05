@@ -44,7 +44,7 @@ TOKENS = [
     "linkedin","messenger","microsoft_authenticator","notion","outlook",
     "paypal","phone","reddit","skype","slack","sms","snapchat","spotify",
     "teams","telegram","threads","tiktok","twitch","twitter","uber","venmo",
-    "viber","wechat","whatsapp","youtube","youtube_music","zoom",
+    "viber","wealthsimple","wechat","whatsapp","youtube","youtube_music","zoom",
     # category fallbacks + generic
     "cat_call","cat_health","email","entertainment","finance","location",
     "news","schedule","social","unknown",
@@ -113,13 +113,26 @@ CF_FOR_BPP = {1: "LV_COLOR_FORMAT_I1", 2: "LV_COLOR_FORMAT_I2",
               4: "LV_COLOR_FORMAT_I4", 8: "LV_COLOR_FORMAT_I8"}
 
 
+# Whether a generated .c still holds RAW ARGB8888 pixel data, i.e. is a
+# candidate for re-encoding. Keyed on the descriptor's own `.cf` field, NOT on
+# the bare word "ARGB8888" appearing anywhere in the file — this script's own
+# output header says "Re-encoded from ARGB8888 to LV_COLOR_FORMAT_I8", so the
+# old substring test matched every file it had already converted. That made
+# the tool non-idempotent in exactly the way its docstring promises it isn't:
+# a re-run blew up on the first already-indexed token (amazon) instead of
+# skipping it, so adding one new icon meant the whole set had to be rebuilt
+# from PNG first.
+def is_argb8888(text):
+    return re.search(r"\.cf\s*=\s*LV_COLOR_FORMAT_ARGB8888", text) is not None
+
+
 def parse_existing(path, symbol):
     text = open(path, "r", errors="ignore").read()
     m = re.search(r"\.w\s*=\s*(\d+)", text)
     w = int(m.group(1))
     m = re.search(r"\.h\s*=\s*(\d+)", text)
     h = int(m.group(1))
-    assert "ARGB8888" in text, f"{path} is not ARGB8888 (already converted?)"
+    assert is_argb8888(text), f"{path} is not ARGB8888 (already converted?)"
     m = re.search(re.escape(symbol) + r"_map\[\] = \{(.*?)\n\};", text, re.S)
     body = m.group(1)
     data = bytes(int(x, 16) for x in re.findall(r"0x[0-9a-fA-F]{2}", body))
@@ -202,7 +215,7 @@ def main():
         if not os.path.isfile(path):
             print(f"SKIP (missing): {path}")
             continue
-        if "ARGB8888" not in open(path, "r", errors="ignore").read():
+        if not is_argb8888(open(path, "r", errors="ignore").read()):
             print(f"SKIP (already indexed): {path}")
             continue
         w, h, data = parse_existing(path, symbol)

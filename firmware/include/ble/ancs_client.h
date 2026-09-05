@@ -215,9 +215,11 @@ size_t list_bucket_groups(uint8_t bucket, ListGroup* out, size_t max);
 //   0x00  DISABLED         — store all; display none (no icons, no call modal, no badge animation)
 //   0x01  CALL_ONLY        — display only CategoryID 1 (IncomingCall)
 //   0x02  IMPORTANT        — display IncomingCall OR ANCS Important flag set
-//   0x03  ALL              — display all (default)
-//   0x04  APP_PASSTHROUGH  — display IncomingCall OR any app on the allowlist
+//   0x03  APP_PASSTHROUGH  — display IncomingCall OR any app on the allowlist
 //                            set by set_app_filter() below
+//   0x04  ALL              — display all (default)
+// Ordered narrowest to widest, matching the order Orion lists them in, so the
+// value doubles as the list position on both sides.
 // set_filter() is called from ble_manager::poll() after Orion writes Device Settings (char 000E);
 // the value is also persisted to NVS (nvs::set_notif_filter) by that poll handler.
 // set_filter() immediately calls publish_queue() to refresh the status bar.
@@ -229,16 +231,16 @@ void set_filter(uint8_t level);
 // around 550 bytes — with room for the token vocabulary to keep growing.
 constexpr size_t ANCS_APP_FILTER_MAX_BYTES = 1024;
 
-// AppPassthrough allowlist (filter level 0x04): `packed` is a run of
+// AppPassthrough allowlist (filter level 0x03): `packed` is a run of
 // NUL-terminated ancs_icons.h tokens ("slack\0teams\0gmail\0") and `len` its
 // total byte count including terminators — the same layout nvs::get_ancs_apps()
 // returns and the ANCS App Filter characteristic carries on the wire
 // (ble-protocol.md §4). Anything over ANCS_APP_FILTER_MAX_BYTES is rejected
 // whole rather than truncated mid-token. Passing len == 0 clears the list,
-// which makes level 0x04 pass calls only.
+// which makes level 0x03 pass calls only.
 //
 // Independent of set_filter(): the list can be set while another level is
-// active (it just has no effect until the level becomes 0x04), and changing
+// active (it just has no effect until the level becomes 0x03), and changing
 // either one re-runs the same publish/relay/badge refresh set_filter() does,
 // so every surface re-evaluates at once. Called from ble_manager::poll();
 // persisted to NVS (nvs::set_ancs_apps) by that same poll handler.

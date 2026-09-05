@@ -1,4 +1,4 @@
-#include "ble/ancs_bundle_map.h"
+﻿#include "ble/ancs_bundle_map.h"
 
 #include <string.h>
 
@@ -55,6 +55,7 @@ static const Entry k_map[] = {
     { "com.venmo.Venmo",                "venmo",                   "Venmo"                  },
     { "com.skype.skype",                "skype",                   "Skype"                  },
     { "com.paypal.PPClient",            "paypal",                  "PayPal"                 },
+    { "com.wealthsimple.wealthsimple",  "wealthsimple",            "Wealthsimple"           },
 };
 static const size_t k_map_count = sizeof(k_map) / sizeof(k_map[0]);
 
