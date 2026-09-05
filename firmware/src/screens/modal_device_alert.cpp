@@ -1,4 +1,4 @@
-#include "screens/modal_device_alert.h"
+﻿#include "screens/modal_device_alert.h"
 
 #include <lvgl.h>
 #include <cstdio>
@@ -42,7 +42,16 @@ lv_obj_t* make_notice_circle(lv_obj_t* parent) {
 // Mirrors ui::make_confirm_modal()'s layout, minus the Cancel/Danger pair —
 // this only ever has one dismiss path. Writes the notice circle (for the
 // caller to fill with its own glyph) to *out_circle.
-void build_overlay(const char* title, const char* body_text, lv_obj_t** out_circle) {
+// The live Low Battery overlay, if one is up. Tracked so the iPhone link
+// dropping can tear it down (connectivity.md) — a battery reading is exactly
+// the kind of claim that stops being verifiable the moment the phone is gone.
+// Deliberately NOT tracked for the Weather Alert: that one is driven by
+// Orion's weather poll and has nothing to do with the phone, so a phone
+// disconnect must leave it alone. Cleared on the scrim's own LV_EVENT_DELETE,
+// so a user-dismissed overlay never leaves a dangling pointer behind.
+lv_obj_t* g_low_battery_scrim = nullptr;
+
+lv_obj_t* build_overlay(const char* title, const char* body_text, lv_obj_t** out_circle) {
     ui::ModalLayout layout = ui::make_modal_layout(lv_screen_active(), 520, 400);
     lv_obj_t* scrim       = layout.scrim;
     lv_obj_t* card        = layout.card;
@@ -81,6 +90,7 @@ void build_overlay(const char* title, const char* body_text, lv_obj_t** out_circ
     lv_obj_t* ok = ui::make_btn(actions, "OK", ui::BtnStyle::Tertiary,
                                 nullptr, nullptr, 12, 26, theme::font_meta());
     lv_obj_add_event_cb(ok, ui::close_scrim_cb, LV_EVENT_CLICKED, scrim);
+    return scrim;
 }
 
 } // namespace
@@ -138,9 +148,22 @@ void show_low_battery_alert(const char* phone_kind_word, const char* phone_name,
     snprintf(body, sizeof(body), "%s is at %u%% battery.", name, (unsigned)battery_pct);
 
     lv_obj_t* circle = nullptr;
-    build_overlay(title, body, &circle);
-    lv_obj_t* glyph = ui::make_battery_glyph(circle, battery_pct);
+    lv_obj_t* scrim  = build_overlay(title, body, &circle);
+    lv_obj_t* glyph  = ui::make_battery_glyph(circle, battery_pct);
     lv_obj_center(glyph);
+
+    // Only this overlay is tracked — see g_low_battery_scrim. Identity-guarded
+    // like every other self-nulling delete handler in the codebase, so a newer
+    // overlay's pointer can't be cleared by an older one's teardown.
+    g_low_battery_scrim = scrim;
+    lv_obj_add_event_cb(scrim, [](lv_event_t* e) {
+        if (static_cast<lv_obj_t*>(lv_event_get_target(e)) == g_low_battery_scrim)
+            g_low_battery_scrim = nullptr;
+    }, LV_EVENT_DELETE, nullptr);
+}
+
+void close_low_battery_alert() {
+    if (g_low_battery_scrim) lv_obj_delete(g_low_battery_scrim);  // delete cb nulls it
 }
 
 } // namespace modal_device_alert

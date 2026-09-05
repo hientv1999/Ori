@@ -39,6 +39,7 @@
 #include "state_machine.h"
 #include "ota_receiver.h"
 #include "screens/modal_ancs_list.h"
+#include "screens/modal_device_alert.h"
 #include "screens/modal_ancs_notification.h"
 #include "screens/modal_incoming_call.h"
 #include "screens/modal_iphone_info.h"
@@ -1290,14 +1291,28 @@ void on_iphone_disconnected() {
     app_state::set_ancs_config(cfg);
     widget_status_bar::refresh_active();
 
-    // The queue was just zeroed directly above (not via queue_remove(), which
-    // is what normally sets g_ancs_list_refresh_pending) — an open drill-down
-    // list needs its own explicit nudge here or it would keep showing
-    // whatever rows it had right up until the modal is closed and reopened.
+    // Phone-derived overlays whose CONTENT stops existing with the link close
+    // outright: the drill-down list (its rows are notifications that no longer
+    // exist), a notification detail overlay (same, plus its action buttons
+    // would be no-ops), and a Low Battery warning (the percentage it names is
+    // gone with the link). The call banner is already handled by close_all()
+    // at the top of this function.
+    //
+    // The iPhone Info/Stats modal deliberately STAYS OPEN. Its subject is the
+    // bond itself, not any one piece of live data, so "disconnected" is a
+    // state it can legitimately show rather than a reason to disappear — and
+    // set_phone_connected(false) below drives modal_iphone_info::set_connected(),
+    // which greys the dot, flips the label to "Disconnected", zeroes the
+    // battery/signal readings and rebuilds the stat badges as non-clickable.
+    // The cached name/model stay (only a real unpair clears those). Weather
+    // Alert is untouched too — it isn't phone-derived. connectivity.md §2.
+    //
     // Safe to call immediately (not deferred): this whole function is reached
     // from ble_manager::poll()'s event drain, never from inside an LVGL
     // callback — same reasoning as set_filter()'s immediate call.
-    modal_ancs_list::refresh_active();
+    modal_ancs_list::close_active();
+    modal_ancs_notification::close_active();
+    modal_device_alert::close_low_battery_alert();
 
     state_machine::set_phone_connected(false);
 }
@@ -1461,6 +1476,12 @@ static void process_notification_attributes(uint32_t resp_uid, const char* app_i
     // then the GetAppAttributes cache; if still unknown, fire a one-off fetch —
     // its async reply back-fills the name for this and future notifications.
     const ancs_bundle_map::Entry* bm = ancs_bundle_map::lookup(app_id);
+    // An app with no bundle-map row renders with a category fallback glyph
+    // instead of its brand icon, and can't be picked in Orion's
+    // AppPassthrough allowlist. Log the raw AppIdentifier so adding it is a
+    // one-line edit to ancs_bundle_map.cpp rather than a guessing game —
+    // several ids in that table are unverified guesses.
+    if (!bm) LOG("[ancs] unmapped app bundle=%s\n", app_id ? app_id : "?");
     const char* token        = bm ? bm->token : "unknown";
     const char* display_name = bm ? bm->name  : appname_cache_lookup(app_id);
     if (!display_name) request_app_attributes(app_id);

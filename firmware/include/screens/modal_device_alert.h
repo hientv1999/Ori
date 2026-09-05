@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <stdint.h>
 
@@ -37,6 +37,13 @@ void show_weather_alert(widget_profile_card::WeatherCondition condition,
 // (ancs_client::phone_kind_word()); `phone_name` is the bonded device's GAP
 // name (ancs_client::phone_name()); `battery_pct` is 0-100
 // (ancs_client::phone_stats().battery).
+// Dismisses an open Low Battery overlay — the iPhone link dropped, so the
+// percentage it names is no longer verifiable (same policy as every other
+// phone-derived reading). Deliberately does NOT touch an open Weather Alert:
+// that one comes from Orion's weather poll and has nothing to do with the
+// phone. No-op when nothing is open.
+void close_low_battery_alert();
+
 void show_low_battery_alert(const char* phone_kind_word, const char* phone_name,
                              uint8_t battery_pct);
 

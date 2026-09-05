@@ -46,6 +46,11 @@ DARK_REPLACEMENT  = (0x16, 0x1B, 0x23)  # theme.h COLOR_ELEV
 # Filename stem → firmware token when they differ (e.g. rebranded app names).
 RENAME_MAP = {
     "X": "twitter",
+    # Apple's own system apps are namespaced apple_* in the firmware token
+    # vocabulary (apple_mail/apple_maps/apple_calendar/...), but the source
+    # art is named for the app. "settings" alone would also be ambiguous —
+    # every app has settings; this one is iOS Settings (com.apple.Preferences).
+    "settings": "apple_settings",
 }
 
 ICON_DIR    = os.path.dirname(os.path.abspath(__file__))

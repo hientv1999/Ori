@@ -38,13 +38,15 @@ ASSETS_DIR = sys.argv[1] if len(sys.argv) > 1 else _DEFAULT_ASSETS_DIR
 # into ancs_icons.cpp (48 brand icons + 9 category fallbacks + unknown_app).
 TOKENS = [
     "amazon","apple_calendar","apple_findmy","apple_mail","apple_maps",
+    "apple_settings",
+    "bmo","cibc",
     "apple_music","apple_reminders","apple_wallet","chatgpt","claude",
     "discord","facebook","facetime","github","gmail","google_authenticator",
     "google_map","google_meet","google_photos","health","instagram","line",
     "linkedin","messenger","microsoft_authenticator","notion","outlook",
     "paypal","phone","reddit","skype","slack","sms","snapchat","spotify",
     "teams","telegram","threads","tiktok","twitch","twitter","uber","venmo",
-    "viber","wealthsimple","wechat","whatsapp","youtube","youtube_music","zoom",
+    "rbc","scotiabank","td","viber","wealthsimple","wechat","whatsapp","zalo","youtube","youtube_music","zoom",
     # category fallbacks + generic
     "cat_call","cat_health","email","entertainment","finance","location",
     "news","schedule","social","unknown",

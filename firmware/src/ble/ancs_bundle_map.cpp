@@ -56,6 +56,30 @@ static const Entry k_map[] = {
     { "com.skype.skype",                "skype",                   "Skype"                  },
     { "com.paypal.PPClient",            "paypal",                  "PayPal"                 },
     { "com.wealthsimple.wealthsimple",  "wealthsimple",            "Wealthsimple"           },
+    // Bundle IDs below are best-effort guesses EXCEPT where marked CONFIRMED,
+    // which means the id was read off a real notification's own
+    // "[ancs] attr ... app=<id>" log line. A wrong id costs only the brand
+    // icon (the notification still shows, with its category fallback glyph)
+    // — and, if the filter is on AppPassthrough, membership of the allowlist,
+    // since an unresolved token can never match a picked app.
+    //
+    // RBC is the cautionary example: the guess com.rbc.mobile.ios was wrong,
+    // and the real id turned out to be com.rbc.mobilebanking. Note it does
+    // NOT follow the com.<brand>.mobile.ios shape several of these assume, so
+    // treat the remaining guesses as genuinely unknown rather than likely.
+    { "com.vng.zalo",                   "zalo",                    "Zalo"                   },
+    { "com.td.TDCTMobile",              "td",                      "TD"                     },
+    { "com.bmo.mobilebanking",          "bmo",                     "BMO"                    },
+    { "com.rbc.mobilebanking",          "rbc",                     "RBC"                    },   // CONFIRMED from a real notification
+    { "com.scotiabank.banking",         "scotiabank",              "Scotiabank"             },
+    { "com.cibc.ios.mobilebanking",     "cibc",                    "CIBC"                   },
+    // iOS Settings — software-update / storage / account alerts. NOTE this is
+    // Settings specifically, not "system notifications" as a class: other
+    // Apple system alerts come from their own bundles (com.apple.springboard,
+    // com.apple.datausage, ...) and each needs its own row. ANCS has no
+    // "system" CategoryID to key on — these arrive as category 0 (Other),
+    // same as any miscellaneous third-party notification.
+    { "com.apple.Preferences",          "apple_settings",          "Settings"               },   // CONFIRMED from a real notification
 };
 static const size_t k_map_count = sizeof(k_map) / sizeof(k_map[0]);
 

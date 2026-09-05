@@ -1,4 +1,4 @@
-#include "screens/modal_incoming_call.h"
+﻿#include "screens/modal_incoming_call.h"
 
 #include <lvgl.h>
 
@@ -242,8 +242,15 @@ void show(uint32_t uid) {
     lv_obj_set_style_text_align(caller, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_top(caller, 8, 0);
 
-    // Secondary line: notification body if present, else the app name.
-    const char* sub = (n.body && n.body[0]) ? n.body : n.display_name;
+    // Secondary line: the CALLING APP's name ("Phone", "WhatsApp", "Messenger"),
+    // not the notification body. iOS routinely sets a call notification's body
+    // to the literal string "Incoming call", which just restated the eyebrow
+    // directly above it and told the user nothing — whereas which app is
+    // ringing is the one fact this line can usefully add. Body is kept only as
+    // a fallback for the window before GetAppAttributes resolves a name for an
+    // app with no bundle-map row (ancs_bundle_map.cpp), where something beats
+    // an empty line.
+    const char* sub = (n.display_name && n.display_name[0]) ? n.display_name : n.body;
     if (sub && sub[0]) {
         lv_obj_t* app = lv_label_create(scroll_area);
         lv_label_set_text(app, sub);

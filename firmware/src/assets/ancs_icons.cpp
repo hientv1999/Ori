@@ -56,6 +56,13 @@ extern "C" {
     extern const lv_image_dsc_t skype;
     extern const lv_image_dsc_t paypal;
     extern const lv_image_dsc_t wealthsimple;
+    extern const lv_image_dsc_t zalo;
+    extern const lv_image_dsc_t td;
+    extern const lv_image_dsc_t bmo;
+    extern const lv_image_dsc_t rbc;
+    extern const lv_image_dsc_t scotiabank;
+    extern const lv_image_dsc_t cibc;
+    extern const lv_image_dsc_t apple_settings;
     extern const lv_image_dsc_t unknown_app;  // generic fallback (bell on neutral tile)
     // Per-category fallback glyphs (white glyph on neutral tile).
     extern const lv_image_dsc_t cat_call;
@@ -128,6 +135,13 @@ static const Entry k_table[] = {
     { "skype",                   0x0078D4 },
     { "paypal",                  0x003087 },
     { "wealthsimple",            0x231F20 },
+    { "zalo",                    0x0068FF },
+    { "td",                      0x00B04F },
+    { "bmo",                     0x0075BE },
+    { "rbc",                     0x005DAA },
+    { "scotiabank",              0xEC111A },
+    { "cibc",                    0xB4131C },
+    { "apple_settings",          0x8E8E93 },   // iOS system grey
 };
 
 } // namespace
@@ -193,6 +207,13 @@ static const ImageEntry k_images[] = {
     { "skype",                   &skype                   },
     { "paypal",                  &paypal                  },
     { "wealthsimple",            &wealthsimple            },
+    { "zalo",                    &zalo                    },
+    { "td",                      &td                      },
+    { "bmo",                     &bmo                     },
+    { "rbc",                     &rbc                     },
+    { "scotiabank",              &scotiabank              },
+    { "cibc",                    &cibc                    },
+    { "apple_settings",          &apple_settings          },
 };
 } // namespace
 

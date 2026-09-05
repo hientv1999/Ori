@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <stdint.h>
 #include <lvgl.h>
@@ -24,6 +24,11 @@ void open_for_uid(lv_obj_t* base_screen, uint32_t uid);
 // Called when the iPhone reports that notification was removed (ANCS Removed
 // event), so a remotely-cleared notification doesn't leave a stale overlay up.
 // No-op if no overlay is open or it's showing a different notification.
+// Tears down whatever detail overlay is open, whichever notification it is —
+// the unconditional counterpart to close_if_showing() below, for when the
+// iPhone link drops and the whole queue goes with it. No-op when none is open.
+void close_active();
+
 void close_if_showing(uint32_t uid);
 
 } // namespace modal_ancs_notification

@@ -1,4 +1,4 @@
-#include "screens/modal_ancs_notification.h"
+﻿#include "screens/modal_ancs_notification.h"
 
 #include <cstring>
 #include <lvgl.h>
@@ -415,6 +415,10 @@ void open_for_uid(lv_obj_t* base_screen, uint32_t uid) {
     } else {
         create(base_screen, uid);
     }
+}
+
+void close_active() {
+    if (g_open_scrim) lv_obj_delete(g_open_scrim);  // delete cb nulls g_open_scrim
 }
 
 void close_if_showing(uint32_t uid) {

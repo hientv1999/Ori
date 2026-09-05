@@ -1,4 +1,4 @@
-#include "screens/modal_ancs_list.h"
+﻿#include "screens/modal_ancs_list.h"
 
 #include <cstdlib>
 #include <lvgl.h>
@@ -458,6 +458,10 @@ lv_obj_t* create(lv_obj_t* base_screen, uint8_t bucket, bool connected) {
     }, LV_EVENT_CLICKED, list);
 
     return scrim;
+}
+
+void close_active() {
+    if (g_active_list) lv_obj_delete(g_active_list->scrim);  // delete cb nulls it
 }
 
 void refresh_active() {

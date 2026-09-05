@@ -1,4 +1,4 @@
-#include "screens/modal_iphone_info.h"
+﻿#include "screens/modal_iphone_info.h"
 
 #include <Arduino.h>
 #include <lvgl.h>

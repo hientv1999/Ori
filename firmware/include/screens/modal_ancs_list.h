@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <stdint.h>
 #include <lvgl.h>
@@ -57,6 +57,11 @@ lv_obj_t* create(lv_obj_t* base_screen, uint8_t bucket, bool connected);
 // otherwise). Called from ancs_client::set_filter() directly, and from
 // ancs_client::poll() when g_ancs_list_refresh_pending is set — see the
 // module comment above.
+// Tears down the open drill-down list, if any — the iPhone link dropped, so
+// every row in it describes a notification that can no longer be acted on.
+// No-op when nothing is open.
+void close_active();
+
 void refresh_active();
 
 } // namespace modal_ancs_list
